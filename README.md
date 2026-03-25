@@ -7,6 +7,27 @@
 
 A fully local [MCP](https://modelcontextprotocol.io/) server for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that captures project knowledge — decisions, failures, discoveries, patterns, and more — so future sessions have context on *why* the code is the way it is. After a one-time model download, all processing and storage happens on your machine — no API keys, no cloud services.
 
+## Quick Start
+
+```bash
+git clone https://github.com/Haagndaazer/vibe-cognition.git
+cd vibe-cognition
+uv sync
+```
+
+Then from your project directory:
+
+```bash
+cd /path/to/your-project
+claude mcp add vibe-cognition \
+  --env REPO_PATH="$PWD" \
+  -- uv run --directory /path/to/vibe-cognition python -m vibe_cognition.server
+```
+
+Restart Claude Code. The embedding model (~250MB) downloads automatically on first start.
+
+> **Don't have uv?** See [Installing uv](#installing-uv). **On Windows?** See [Platform Notes](#platform-notes).
+
 ## Table of Contents
 
 - [Features](#features)
@@ -41,7 +62,7 @@ Vibe Cognition uses:
 
 ### Embedding Model
 
-By default, Vibe Cognition uses [nomic-ai/nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) from Hugging Face. The model is downloaded automatically on first run (~250MB).
+By default, Vibe Cognition uses [nomic-ai/nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) from Hugging Face. The model (~250MB) is downloaded automatically on first server start — no manual setup required.
 
 Alternatively, you can use **Ollama** as an embedding backend if you prefer to manage models separately.
 
@@ -50,7 +71,7 @@ Alternatively, you can use **Ollama** as an embedding backend if you prefer to m
 ### Prerequisites
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — Vibe Cognition is an MCP server designed for Claude Code
-- Python 3.11-3.13 (3.14+ not supported)
+- Python 3.11-3.13 (`python --version` to check — or let `uv` manage it for you)
 - [uv](https://github.com/astral-sh/uv) package manager
 - Internet access for first run (downloads the embedding model, ~250MB)
 
@@ -87,7 +108,7 @@ Shell examples in this README use bash syntax (macOS, Linux, Git Bash on Windows
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/BlckLvls/vibe-cognition.git
+   git clone https://github.com/Haagndaazer/vibe-cognition.git
    cd vibe-cognition
    ```
 
@@ -96,15 +117,23 @@ Shell examples in this README use bash syntax (macOS, Linux, Git Bash on Windows
    uv sync
    ```
 
-3. **First-time setup** — Download the embedding model before first use:
+3. **(Optional) Pre-download the embedding model:**
    ```bash
    uv run python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('nomic-ai/nomic-embed-text-v1.5', trust_remote_code=True)"
    ```
-   This downloads the model (~250MB) so the MCP server can start quickly. If you've already downloaded it, re-running this command completes instantly — a quick way to verify setup.
+   This downloads the model (~250MB) ahead of time so the server starts instantly. **You can skip this step** — the model downloads automatically on first server start, but the initial startup will take 30+ seconds while it downloads.
 
    > `trust_remote_code=True` is required by the nomic model's custom architecture. The code comes from the [nomic-ai HuggingFace repository](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5). Review it there if you want to audit before first run.
 
-4. **(Optional) Curator setup** — The cognition curator is **enabled by default** and uses [Ollama](https://ollama.com) to automatically link knowledge nodes. If you have Ollama installed, the curator model (`qwen3:8b`, ~5.5GB) is pulled automatically on first server start. If Ollama is not installed, the curator logs a warning and skips — nodes are stored but not connected. To explicitly disable:
+4. **Verify the installation:**
+   ```bash
+   uv run python -c "from vibe_cognition.server import mcp; print(f'OK: {mcp.name}')"
+   ```
+   You should see `OK: Vibe Cognition`. If you get import errors, check that `uv sync` completed successfully.
+
+5. **(Optional) Curator setup** — The cognition curator uses [Ollama](https://ollama.com) to automatically link knowledge nodes. It is **enabled by default**, but **Ollama is not required** — without it, the server works normally; nodes are stored and searchable, they just won't have automatic edges between them.
+
+   If you have Ollama installed, the curator model (`qwen3:8b`, ~5.5GB) is pulled automatically on first server start. To explicitly disable:
    ```bash
    # Add --env CURATOR_ENABLED=false when registering the MCP server (see next section)
    ```
@@ -115,6 +144,7 @@ That's it! No API keys or external service configuration needed.
 
 Navigate to your project directory and add Vibe Cognition as an MCP server:
 
+**bash (macOS / Linux / Git Bash):**
 ```bash
 cd /path/to/your-project
 
@@ -123,7 +153,16 @@ claude mcp add vibe-cognition \
   -- uv run --directory /path/to/vibe-cognition python -m vibe_cognition.server
 ```
 
-Replace `/path/to/vibe-cognition` with the absolute path to your Vibe Cognition clone. The `--` separates `claude mcp add` options from the server command.
+**PowerShell (Windows):**
+```powershell
+cd C:\path\to\your-project
+
+claude mcp add vibe-cognition `
+  --env REPO_PATH="$PWD" `
+  -- uv run --directory C:/Users/me/vibe-cognition python -m vibe_cognition.server
+```
+
+Replace `/path/to/vibe-cognition` (or `C:/Users/me/vibe-cognition`) with the absolute path to your Vibe Cognition clone. The `--` separates `claude mcp add` options from the server command.
 
 `$PWD` expands to your current directory at the time you run this command, so make sure you run it from your project's root directory.
 
@@ -154,10 +193,12 @@ your-project/
 └── ... your code
 ```
 
-- **`.cognition/journal.jsonl`** should be committed to Git — it's the shared project knowledge base
+- **`.cognition/journal.jsonl`** should be **committed to Git** — it's the shared project knowledge base
 - **`.cognition/chromadb/`** should be in `.gitignore` — it's a regenerable cache (rebuilt automatically on next server startup if deleted)
 
-Add `.cognition/chromadb/` to your project's `.gitignore`:
+> **Important:** Only gitignore `.cognition/chromadb/`, NOT the entire `.cognition/` directory. The journal file must be committed to Git for team sharing.
+
+Add to your project's `.gitignore`:
 ```bash
 echo '.cognition/chromadb/' >> .gitignore
 ```
@@ -205,7 +246,7 @@ The curator is **enabled by default** (`CURATOR_ENABLED=true`). It uses a local 
 2. The curator model (`qwen3:8b`) is pulled automatically on first server start
 3. Requires ~5.5GB VRAM (or runs on CPU, slower)
 
-If Ollama is not installed or not running, the curator logs a warning and does not function — the server continues normally, but edges are not created.
+**No Ollama?** The server works fine without it. Nodes are stored, searchable via `cognition_search`, and browsable via `cognition_get_history`. The only thing missing is automatic edge creation between nodes.
 
 To disable the curator explicitly, add `--env CURATOR_ENABLED=false` when registering the MCP server.
 
@@ -306,12 +347,14 @@ All configuration is optional. Vibe Cognition works out of the box with sensible
 
 ### Using a `.env` File
 
-Instead of passing `--env` flags, you can create a `.env` file in the vibe-cognition directory:
+Instead of passing `--env` flags, you can create a `.env` file **in the vibe-cognition clone directory** (not in your project):
 
 ```env
 REPO_PATH=C:/Users/me/my-project
 CURATOR_ENABLED=false
 ```
+
+> **Note:** A `.env` file sets `REPO_PATH` to a single project. If you use Vibe Cognition with multiple projects, use `--env REPO_PATH=...` per-project instead.
 
 > **Windows users**: Always use forward slashes in `.env` file paths (e.g., `C:/Users/me/project`). Backslashes are interpreted as escape sequences by python-dotenv (`\t` = tab, `\n` = newline, `\v` = vertical tab), which will silently corrupt your paths.
 
@@ -333,9 +376,9 @@ If you prefer to use Ollama for embeddings:
 
 **"Embedding model is still loading"** — Search tools need the embedding model, which loads in the background on startup (2-30 seconds). Other cognition tools work immediately. Wait and try again.
 
-**ChromaDB lock / database errors** — Only one Vibe Cognition instance can index a project at a time. Check for duplicate MCP server instances or other processes using `.cognition/chromadb/`.
+**ChromaDB lock / database errors** — Only one Vibe Cognition instance can run per project at a time. Check for duplicate MCP server instances or other processes using `.cognition/chromadb/`.
 
-**Curator not creating edges** — Verify Ollama is running (`ollama list`). Without Ollama, the curator logs a warning and does not create edges. Nodes are still stored.
+**Curator not creating edges** — Verify Ollama is running (`ollama list`). Without Ollama, the curator logs a warning and does not create edges. Nodes are still stored and searchable.
 
 **Model download failures** — The embedding model (~250MB) is downloaded from Hugging Face on first run. Check your internet connection and proxy settings. Corporate firewalls may block Hugging Face downloads.
 
