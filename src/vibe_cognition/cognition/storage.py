@@ -2,6 +2,7 @@
 
 import json
 import logging
+import threading
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +37,7 @@ class CognitionStorage:
         self._journal_path = cognition_dir / JOURNAL_FILENAME
         self._graph = nx.MultiDiGraph()
         self._reference_index: dict[str, list[str]] = defaultdict(list)
+        self._lock = threading.RLock()
 
         self._dir.mkdir(parents=True, exist_ok=True)
 
@@ -55,19 +57,20 @@ class CognitionStorage:
         Args:
             node: The cognition node to add
         """
-        self._graph.add_node(
-            node.id,
-            type=node.type.value,
-            summary=node.summary,
-            detail=node.detail,
-            context=node.context,
-            references=node.references,
-            severity=node.severity,
-            timestamp=node.timestamp,
-            author=node.author,
-        )
-        self._index_node_refs(node.id, node.references)
-        self._append_journal("add_node", node.model_dump(mode="json"))
+        with self._lock:
+            self._graph.add_node(
+                node.id,
+                type=node.type.value,
+                summary=node.summary,
+                detail=node.detail,
+                context=node.context,
+                references=node.references,
+                severity=node.severity,
+                timestamp=node.timestamp,
+                author=node.author,
+            )
+            self._index_node_refs(node.id, node.references)
+            self._append_journal("add_node", node.model_dump(mode="json"))
 
     def add_edge(self, edge: CognitionEdge) -> bool:
         """Add an edge between two existing nodes.
@@ -82,23 +85,24 @@ class CognitionStorage:
         Returns:
             True if both nodes exist and the edge was added
         """
-        if edge.from_id not in self._graph or edge.to_id not in self._graph:
-            logger.warning(
-                f"Cannot add edge: node(s) missing "
-                f"(from={edge.from_id}, to={edge.to_id})"
-            )
-            return False
+        with self._lock:
+            if edge.from_id not in self._graph or edge.to_id not in self._graph:
+                logger.warning(
+                    f"Cannot add edge: node(s) missing "
+                    f"(from={edge.from_id}, to={edge.to_id})"
+                )
+                return False
 
-        self._graph.add_edge(
-            edge.from_id,
-            edge.to_id,
-            key=edge.edge_type.value,
-            type=edge.edge_type.value,
-            timestamp=edge.timestamp,
-            source=edge.source,
-        )
-        self._append_journal("add_edge", edge.model_dump(mode="json"))
-        return True
+            self._graph.add_edge(
+                edge.from_id,
+                edge.to_id,
+                key=edge.edge_type.value,
+                type=edge.edge_type.value,
+                timestamp=edge.timestamp,
+                source=edge.source,
+            )
+            self._append_journal("add_edge", edge.model_dump(mode="json"))
+            return True
 
     def update_node(self, node_id: str, **kwargs: Any) -> bool:
         """Update fields on an existing node.
@@ -110,15 +114,16 @@ class CognitionStorage:
         Returns:
             True if the node exists and was updated
         """
-        if node_id not in self._graph:
-            return False
+        with self._lock:
+            if node_id not in self._graph:
+                return False
 
-        for key, value in kwargs.items():
-            self._graph.nodes[node_id][key] = value
+            for key, value in kwargs.items():
+                self._graph.nodes[node_id][key] = value
 
-        data = {"id": node_id, **kwargs}
-        self._append_journal("update_node", data)
-        return True
+            data = {"id": node_id, **kwargs}
+            self._append_journal("update_node", data)
+            return True
 
     def remove_node(self, node_id: str) -> bool:
         """Remove a node and all its edges from the graph.
@@ -129,13 +134,14 @@ class CognitionStorage:
         Returns:
             True if the node existed and was removed
         """
-        if node_id not in self._graph:
-            return False
+        with self._lock:
+            if node_id not in self._graph:
+                return False
 
-        self._unindex_node_refs(node_id)
-        self._graph.remove_node(node_id)
-        self._append_journal("remove_node", {"id": node_id})
-        return True
+            self._unindex_node_refs(node_id)
+            self._graph.remove_node(node_id)
+            self._append_journal("remove_node", {"id": node_id})
+            return True
 
     def remove_edge(
         self,
@@ -157,31 +163,32 @@ class CognitionStorage:
         Returns:
             True if at least one edge was removed
         """
-        if not self._graph.has_edge(from_id, to_id):
-            return False
-
-        if edge_type is not None:
-            key = edge_type.value
-            if key not in self._graph[from_id][to_id]:
+        with self._lock:
+            if not self._graph.has_edge(from_id, to_id):
                 return False
-            self._graph.remove_edge(from_id, to_id, key=key)
-            self._append_journal("remove_edge", {
-                "from_id": from_id,
-                "to_id": to_id,
-                "edge_type": edge_type.value,
-            })
-            return True
-        else:
-            # Remove all edges between the pair
-            keys = list(self._graph[from_id][to_id].keys())
-            for key in keys:
+
+            if edge_type is not None:
+                key = edge_type.value
+                if key not in self._graph[from_id][to_id]:
+                    return False
                 self._graph.remove_edge(from_id, to_id, key=key)
                 self._append_journal("remove_edge", {
                     "from_id": from_id,
                     "to_id": to_id,
-                    "edge_type": key,
+                    "edge_type": edge_type.value,
                 })
-            return len(keys) > 0
+                return True
+            else:
+                # Remove all edges between the pair
+                keys = list(self._graph[from_id][to_id].keys())
+                for key in keys:
+                    self._graph.remove_edge(from_id, to_id, key=key)
+                    self._append_journal("remove_edge", {
+                        "from_id": from_id,
+                        "to_id": to_id,
+                        "edge_type": key,
+                    })
+                return len(keys) > 0
 
     def redirect_edges(self, old_node_id: str, new_node_id: str) -> int:
         """Redirect all edges from/to old_node_id to point to/from new_node_id.
@@ -193,46 +200,47 @@ class CognitionStorage:
         Returns:
             Number of edges redirected
         """
-        if old_node_id not in self._graph or new_node_id not in self._graph:
-            return 0
+        with self._lock:
+            if old_node_id not in self._graph or new_node_id not in self._graph:
+                return 0
 
-        redirected = 0
+            redirected = 0
 
-        # Redirect outgoing edges
-        for _, target_id, key, edge_data in list(
-            self._graph.out_edges(old_node_id, data=True, keys=True)
-        ):
-            if target_id != new_node_id:  # Avoid self-loops
-                edge_type = edge_data.get("type", key)
-                self._graph.add_edge(
-                    new_node_id, target_id, key=edge_type, **edge_data
-                )
-                self._append_journal("add_edge", {
-                    "from_id": new_node_id, "to_id": target_id,
-                    "edge_type": edge_type,
-                    "timestamp": edge_data.get("timestamp", ""),
-                    "source": edge_data.get("source", "curator"),
-                })
-                redirected += 1
+            # Redirect outgoing edges
+            for _, target_id, key, edge_data in list(
+                self._graph.out_edges(old_node_id, data=True, keys=True)
+            ):
+                if target_id != new_node_id:  # Avoid self-loops
+                    edge_type = edge_data.get("type", key)
+                    self._graph.add_edge(
+                        new_node_id, target_id, key=edge_type, **edge_data
+                    )
+                    self._append_journal("add_edge", {
+                        "from_id": new_node_id, "to_id": target_id,
+                        "edge_type": edge_type,
+                        "timestamp": edge_data.get("timestamp", ""),
+                        "source": edge_data.get("source", "curator"),
+                    })
+                    redirected += 1
 
-        # Redirect incoming edges
-        for source_id, _, key, edge_data in list(
-            self._graph.in_edges(old_node_id, data=True, keys=True)
-        ):
-            if source_id != new_node_id:  # Avoid self-loops
-                edge_type = edge_data.get("type", key)
-                self._graph.add_edge(
-                    source_id, new_node_id, key=edge_type, **edge_data
-                )
-                self._append_journal("add_edge", {
-                    "from_id": source_id, "to_id": new_node_id,
-                    "edge_type": edge_type,
-                    "timestamp": edge_data.get("timestamp", ""),
-                    "source": edge_data.get("source", "curator"),
-                })
-                redirected += 1
+            # Redirect incoming edges
+            for source_id, _, key, edge_data in list(
+                self._graph.in_edges(old_node_id, data=True, keys=True)
+            ):
+                if source_id != new_node_id:  # Avoid self-loops
+                    edge_type = edge_data.get("type", key)
+                    self._graph.add_edge(
+                        source_id, new_node_id, key=edge_type, **edge_data
+                    )
+                    self._append_journal("add_edge", {
+                        "from_id": source_id, "to_id": new_node_id,
+                        "edge_type": edge_type,
+                        "timestamp": edge_data.get("timestamp", ""),
+                        "source": edge_data.get("source", "curator"),
+                    })
+                    redirected += 1
 
-        return redirected
+            return redirected
 
     # ── Read operations ───────────────────────────────────────────────
 
@@ -245,13 +253,15 @@ class CognitionStorage:
         Returns:
             Node data dict or None if not found
         """
-        if node_id in self._graph:
-            return dict(self._graph.nodes[node_id])
-        return None
+        with self._lock:
+            if node_id in self._graph:
+                return dict(self._graph.nodes[node_id])
+            return None
 
     def has_node(self, node_id: str) -> bool:
         """Check if a node exists."""
-        return node_id in self._graph
+        with self._lock:
+            return node_id in self._graph
 
     def get_all_nodes(self) -> list[dict[str, Any]]:
         """Get all nodes in the graph.
@@ -259,10 +269,11 @@ class CognitionStorage:
         Returns:
             List of node data dicts with 'id' included
         """
-        return [
-            {"id": node_id, **data}
-            for node_id, data in self._graph.nodes(data=True)
-        ]
+        with self._lock:
+            return [
+                {"id": node_id, **data}
+                for node_id, data in self._graph.nodes(data=True)
+            ]
 
     def get_nodes_by_type(self, node_type: CognitionNodeType) -> list[dict[str, Any]]:
         """Get all nodes of a specific type.
@@ -273,11 +284,12 @@ class CognitionStorage:
         Returns:
             List of matching node data dicts
         """
-        return [
-            {"id": node_id, **data}
-            for node_id, data in self._graph.nodes(data=True)
-            if data.get("type") == node_type.value
-        ]
+        with self._lock:
+            return [
+                {"id": node_id, **data}
+                for node_id, data in self._graph.nodes(data=True)
+                if data.get("type") == node_type.value
+            ]
 
     def get_recent_nodes(
         self,
@@ -293,11 +305,12 @@ class CognitionStorage:
         Returns:
             List of node data dicts sorted by timestamp descending
         """
-        nodes = []
-        for node_id, data in self._graph.nodes(data=True):
-            if node_type and data.get("type") != node_type.value:
-                continue
-            nodes.append({"id": node_id, **data})
+        with self._lock:
+            nodes = []
+            for node_id, data in self._graph.nodes(data=True):
+                if node_type and data.get("type") != node_type.value:
+                    continue
+                nodes.append({"id": node_id, **data})
 
         nodes.sort(key=lambda n: n.get("timestamp", ""), reverse=True)
         return nodes[:limit]
@@ -316,14 +329,15 @@ class CognitionStorage:
         Returns:
             List of (target_id, edge_data) tuples
         """
-        if node_id not in self._graph:
-            return []
+        with self._lock:
+            if node_id not in self._graph:
+                return []
 
-        result = []
-        for _, target_id, edge_data in self._graph.out_edges(node_id, data=True):
-            if edge_type is None or edge_data.get("type") == edge_type.value:
-                result.append((target_id, edge_data))
-        return result
+            result = []
+            for _, target_id, edge_data in self._graph.out_edges(node_id, data=True):
+                if edge_type is None or edge_data.get("type") == edge_type.value:
+                    result.append((target_id, edge_data))
+            return result
 
     def get_predecessors(
         self,
@@ -339,14 +353,15 @@ class CognitionStorage:
         Returns:
             List of (source_id, edge_data) tuples
         """
-        if node_id not in self._graph:
-            return []
+        with self._lock:
+            if node_id not in self._graph:
+                return []
 
-        result = []
-        for source_id, _, edge_data in self._graph.in_edges(node_id, data=True):
-            if edge_type is None or edge_data.get("type") == edge_type.value:
-                result.append((source_id, edge_data))
-        return result
+            result = []
+            for source_id, _, edge_data in self._graph.in_edges(node_id, data=True):
+                if edge_type is None or edge_data.get("type") == edge_type.value:
+                    result.append((source_id, edge_data))
+            return result
 
     def get_statistics(self) -> dict[str, int]:
         """Get graph statistics.
@@ -354,28 +369,29 @@ class CognitionStorage:
         Returns:
             Dictionary with node/edge counts by type
         """
-        stats: dict[str, int] = {
-            "nodes": self._graph.number_of_nodes(),
-            "edges": self._graph.number_of_edges(),
-        }
-        for node_type in CognitionNodeType:
-            stats[node_type.value] = 0
+        with self._lock:
+            stats: dict[str, int] = {
+                "nodes": self._graph.number_of_nodes(),
+                "edges": self._graph.number_of_edges(),
+            }
+            for node_type in CognitionNodeType:
+                stats[node_type.value] = 0
 
-        for _, data in self._graph.nodes(data=True):
-            t = data.get("type", "")
-            if t in stats:
-                stats[t] += 1
+            for _, data in self._graph.nodes(data=True):
+                t = data.get("type", "")
+                if t in stats:
+                    stats[t] += 1
 
-        # Edge counts by type
-        for edge_type in CognitionEdgeType:
-            stats[f"edge_{edge_type.value}"] = 0
-        for _, _, edge_data in self._graph.edges(data=True):
-            et = edge_data.get("type", "")
-            key = f"edge_{et}"
-            if key in stats:
-                stats[key] += 1
+            # Edge counts by type
+            for edge_type in CognitionEdgeType:
+                stats[f"edge_{edge_type.value}"] = 0
+            for _, _, edge_data in self._graph.edges(data=True):
+                et = edge_data.get("type", "")
+                key = f"edge_{et}"
+                if key in stats:
+                    stats[key] += 1
 
-        return stats
+            return stats
 
     # ── Reference index ────────────────────────────────────────────────
 
@@ -428,69 +444,70 @@ class CognitionStorage:
         Returns:
             Number of edges created
         """
-        node_data = self.get_node(node_id)
-        if not node_data:
-            return 0
+        with self._lock:
+            node_data = self.get_node(node_id)
+            if not node_data:
+                return 0
 
-        refs = node_data.get("references", [])
-        if not refs:
-            return 0
+            refs = node_data.get("references", [])
+            if not refs:
+                return 0
 
-        node_type = node_data.get("type", "")
-        is_episode = node_type == CognitionNodeType.EPISODE.value
+            node_type = node_data.get("type", "")
+            is_episode = node_type == CognitionNodeType.EPISODE.value
 
-        created = 0
-        seen_pairs: set[tuple[str, str]] = set()
+            created = 0
+            seen_pairs: set[tuple[str, str]] = set()
 
-        for key in self._normalize_refs(refs):
-            for other_id in self._reference_index.get(key, []):
-                if other_id == node_id:
-                    continue
+            for key in self._normalize_refs(refs):
+                for other_id in self._reference_index.get(key, []):
+                    if other_id == node_id:
+                        continue
 
-                other_data = self.get_node(other_id)
-                if not other_data:
-                    continue
+                    other_data = self.get_node(other_id)
+                    if not other_data:
+                        continue
 
-                other_type = other_data.get("type", "")
-                other_is_episode = other_type == CognitionNodeType.EPISODE.value
+                    other_type = other_data.get("type", "")
+                    other_is_episode = other_type == CognitionNodeType.EPISODE.value
 
-                # One must be episode, other must be entity
-                if is_episode == other_is_episode:
-                    continue
+                    # One must be episode, other must be entity
+                    if is_episode == other_is_episode:
+                        continue
 
-                # Direction: entity -> episode
-                if is_episode:
-                    from_id, to_id = other_id, node_id
-                else:
-                    from_id, to_id = node_id, other_id
+                    # Direction: entity -> episode
+                    if is_episode:
+                        from_id, to_id = other_id, node_id
+                    else:
+                        from_id, to_id = node_id, other_id
 
-                pair = (from_id, to_id)
-                if pair in seen_pairs:
-                    continue
-                seen_pairs.add(pair)
+                    pair = (from_id, to_id)
+                    if pair in seen_pairs:
+                        continue
+                    seen_pairs.add(pair)
 
-                # Skip if a part_of edge already exists between this pair
-                if (self._graph.has_edge(from_id, to_id) and
-                        CognitionEdgeType.PART_OF.value in self._graph[from_id][to_id]):
-                    continue
+                    # Skip if a part_of edge already exists between this pair
+                    if (self._graph.has_edge(from_id, to_id) and
+                            CognitionEdgeType.PART_OF.value in self._graph[from_id][to_id]):
+                        continue
 
-                timestamp = datetime.now(timezone.utc).isoformat()
-                edge = CognitionEdge(
-                    from_id=from_id,
-                    to_id=to_id,
-                    edge_type=CognitionEdgeType.PART_OF,
-                    timestamp=timestamp,
-                    source="deterministic",
+                    timestamp = datetime.now(timezone.utc).isoformat()
+                    edge = CognitionEdge(
+                        from_id=from_id,
+                        to_id=to_id,
+                        edge_type=CognitionEdgeType.PART_OF,
+                        timestamp=timestamp,
+                        source="deterministic",
+                    )
+                    self.add_edge(edge)
+                    created += 1
+
+            if created:
+                logger.info(
+                    f"Deterministic matching: created {created} part_of edge(s) "
+                    f"for node {node_id}"
                 )
-                self.add_edge(edge)
-                created += 1
-
-        if created:
-            logger.info(
-                f"Deterministic matching: created {created} part_of edge(s) "
-                f"for node {node_id}"
-            )
-        return created
+            return created
 
     # ── Internal ──────────────────────────────────────────────────────
 

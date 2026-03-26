@@ -111,21 +111,22 @@ def _load_embeddings_and_curate(config: Settings, context: dict[str, Any]) -> No
         # Populate context
         context["embedding_generator"] = embedding_generator
 
-        # Init curator (depends on embedding_generator)
-        cognition_curator = None
-        if config.curator_enabled:
-            from .cognition.curator import CognitionCurator
+        # Init curator (always instantiated for cognition_curate_now support)
+        from .cognition.curator import CognitionCurator
 
-            cognition_curator = CognitionCurator(
-                storage=context["cognition_storage"],
-                embedding_storage=context["cognition_embedding_storage"],
-                embedding_generator=embedding_generator,
-                ollama_base_url=config.ollama_base_url,
-                model=config.curator_model,
-                max_candidates=config.curator_max_candidates,
-            )
-            context["cognition_curator"] = cognition_curator
-            logger.info(f"Cognition curator initialized (model: {config.curator_model})")
+        cognition_curator = CognitionCurator(
+            storage=context["cognition_storage"],
+            embedding_storage=context["cognition_embedding_storage"],
+            embedding_generator=embedding_generator,
+            ollama_base_url=config.ollama_base_url,
+            model=config.curator_model,
+            max_candidates=config.curator_max_candidates,
+        )
+        context["cognition_curator"] = cognition_curator
+        logger.info(
+            f"Cognition curator initialized (model: {config.curator_model}, "
+            f"background={'enabled' if config.curator_enabled else 'disabled'})"
+        )
 
         # Signal that embedding-dependent tools are ready
         context["embedding_ready"].set()
@@ -146,14 +147,16 @@ def _load_embeddings_and_curate(config: Settings, context: dict[str, Any]) -> No
                 cognition_storage, cognition_embedding_storage, embedding_generator
             )
 
-        # Curate uncurated nodes
-        if cognition_curator is not None:
+        # Curate uncurated nodes (only if background curation enabled)
+        if config.curator_enabled:
             if cognition_curator.ensure_model():
                 count = cognition_curator.curate_uncurated_nodes()
                 if count:
                     logger.info(f"Curator: enqueued {count} uncurated node(s)")
             else:
                 logger.warning("Curator model not available — skipping startup curation")
+        else:
+            logger.info("Background curation disabled (set CURATOR_ENABLED=true to enable)")
 
     except Exception as e:
         logger.error(f"Background initialization failed: {e}")

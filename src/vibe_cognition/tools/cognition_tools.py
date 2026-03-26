@@ -7,6 +7,8 @@ from typing import Any
 from fastmcp import Context
 
 from ..cognition import (
+    CognitionEdge,
+    CognitionEdgeType,
     CognitionNode,
     CognitionNodeType,
     CognitionStorage,
@@ -79,10 +81,12 @@ def _record_node(
     # Create deterministic part_of edges via reference matching
     det_edges = storage.create_deterministic_edges(node_id)
 
-    # Enqueue for curator (edges are created asynchronously by the worker thread)
-    curator: CognitionCurator | None = ctx.request_context.lifespan_context.get("cognition_curator")
-    if curator is not None:
-        curator.enqueue(node)
+    # Enqueue for curator (only if background curation is enabled)
+    config = ctx.request_context.lifespan_context.get("config")
+    if config and config.curator_enabled:
+        curator: CognitionCurator | None = ctx.request_context.lifespan_context.get("cognition_curator")
+        if curator is not None:
+            curator.enqueue(node)
 
     result: dict[str, Any] = {
         "id": node_id,
@@ -298,4 +302,352 @@ def register_cognition_tools(mcp) -> None:
             "context_term": context_term,
             "results": results,
             "count": len(results),
+        }
+
+    @mcp.tool()
+    def cognition_add_edge(
+        ctx: Context,
+        from_id: str,
+        to_id: str,
+        edge_type: str,
+        reason: str | None = None,
+        source: str = "manual",
+    ) -> dict[str, Any]:
+        """Create a directed edge between two existing cognition nodes.
+
+        Use this to manually curate relationships that the background curator
+        missed or to create edges during bulk curation.
+
+        Args:
+            from_id: Source node ID (must exist)
+            to_id: Target node ID (must exist)
+            edge_type: One of: led_to, supersedes, contradicts, relates_to,
+                       resolved_by, part_of
+            reason: Optional brief explanation of why this edge exists
+            source: Provenance tag (default: "manual")
+
+        Returns:
+            {"created": true, ...} or {"error": "..."}
+        """
+        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+
+        try:
+            et = CognitionEdgeType(edge_type)
+        except ValueError:
+            valid = [e.value for e in CognitionEdgeType if e != CognitionEdgeType.DUPLICATE_OF]
+            return {"error": f"Invalid edge_type '{edge_type}'. Valid: {valid}"}
+
+        if et == CognitionEdgeType.DUPLICATE_OF:
+            return {"error": "duplicate_of edges require merge logic. Use cognition_record to let the curator handle duplicates."}
+
+        if from_id == to_id:
+            return {"error": "Self-referencing edges are not allowed"}
+
+        if not storage.has_node(from_id):
+            return {"error": f"Source node '{from_id}' does not exist"}
+        if not storage.has_node(to_id):
+            return {"error": f"Target node '{to_id}' does not exist"}
+
+        # Check if same triple already exists
+        existing = storage.get_successors(from_id, et)
+        if any(tid == to_id for tid, _ in existing):
+            return {"error": f"Edge already exists: {from_id} -[{edge_type}]-> {to_id}"}
+
+        timestamp = datetime.now(timezone.utc).isoformat()
+        edge = CognitionEdge(
+            from_id=from_id,
+            to_id=to_id,
+            edge_type=et,
+            timestamp=timestamp,
+            source=source,
+        )
+        storage.add_edge(edge)
+
+        if reason:
+            logger.info(f"Edge created: {from_id} -[{edge_type}]-> {to_id} (reason: {reason})")
+
+        return {
+            "created": True,
+            "from_id": from_id,
+            "to_id": to_id,
+            "edge_type": edge_type,
+            "timestamp": timestamp,
+        }
+
+    @mcp.tool()
+    def cognition_add_edges_batch(
+        ctx: Context,
+        edges: str,
+    ) -> dict[str, Any]:
+        """Create multiple edges in one call.
+
+        Each edge in the JSON array needs from_id, to_id, and edge_type.
+        Edges are validated individually — invalid ones are skipped and reported.
+
+        Args:
+            edges: JSON array string of edge objects, max 500. Example:
+                   '[{"from_id":"abc","to_id":"def","edge_type":"led_to"}]'
+
+        Returns:
+            {"created": N, "skipped": N, "errors": [...]}
+        """
+        import json as _json
+        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+
+        try:
+            edge_list = _json.loads(edges)
+        except _json.JSONDecodeError as e:
+            return {"error": f"Invalid JSON: {e}"}
+
+        if not isinstance(edge_list, list):
+            return {"error": "Expected a JSON array of edge objects"}
+
+        if len(edge_list) > 500:
+            return {"error": f"Max 500 edges per batch, got {len(edge_list)}"}
+
+        created = 0
+        skipped = 0
+        errors: list[str] = []
+        seen_triples: set[tuple[str, str, str]] = set()
+
+        for i, e in enumerate(edge_list):
+            fid = e.get("from_id", "")
+            tid = e.get("to_id", "")
+            etype_str = e.get("edge_type", "")
+            src = e.get("source", "batch")
+            triple = (fid, tid, etype_str)
+
+            try:
+                et = CognitionEdgeType(etype_str)
+            except ValueError:
+                errors.append(f"[{i}] Invalid edge_type '{etype_str}'")
+                skipped += 1
+                continue
+            if et == CognitionEdgeType.DUPLICATE_OF:
+                errors.append(f"[{i}] duplicate_of not allowed in batch")
+                skipped += 1
+                continue
+            if fid == tid:
+                errors.append(f"[{i}] Self-reference: {fid}")
+                skipped += 1
+                continue
+            if not storage.has_node(fid):
+                errors.append(f"[{i}] Missing from_id: {fid}")
+                skipped += 1
+                continue
+            if not storage.has_node(tid):
+                errors.append(f"[{i}] Missing to_id: {tid}")
+                skipped += 1
+                continue
+
+            # Check for duplicates (in batch and in graph)
+            if triple in seen_triples:
+                errors.append(f"[{i}] Duplicate in batch: {fid} -[{etype_str}]-> {tid}")
+                skipped += 1
+                continue
+            existing = storage.get_successors(fid, et)
+            if any(t == tid for t, _ in existing):
+                errors.append(f"[{i}] Already exists: {fid} -[{etype_str}]-> {tid}")
+                skipped += 1
+                continue
+
+            seen_triples.add(triple)
+            timestamp = datetime.now(timezone.utc).isoformat()
+            edge = CognitionEdge(
+                from_id=fid, to_id=tid, edge_type=et,
+                timestamp=timestamp, source=src,
+            )
+            storage.add_edge(edge)
+            created += 1
+
+        return {"created": created, "skipped": skipped, "errors": errors[:50]}
+
+    @mcp.tool()
+    def cognition_get_edgeless_nodes(
+        ctx: Context,
+        node_type: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Get cognition nodes that have zero edges (no incoming or outgoing).
+
+        Useful for identifying nodes that need curation.
+
+        Args:
+            node_type: Optional filter: decision, fail, discovery, assumption,
+                       constraint, incident, pattern, episode
+            limit: Max results (default: 50, max: 500)
+
+        Returns:
+            {"nodes": [...], "count": N, "total_edgeless": N}
+        """
+        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+        all_nodes = storage.get_all_nodes()
+
+        edgeless = []
+        for node in all_nodes:
+            nid = node["id"]
+            if node_type and node.get("type") != node_type:
+                continue
+            if not storage.get_successors(nid) and not storage.get_predecessors(nid):
+                edgeless.append(node)
+
+        edgeless.sort(key=lambda n: n.get("timestamp", ""), reverse=True)
+        total = len(edgeless)
+        edgeless = edgeless[:min(limit, 500)]
+
+        return {"nodes": edgeless, "count": len(edgeless), "total_edgeless": total}
+
+    @mcp.tool()
+    def cognition_get_neighbors(
+        ctx: Context,
+        node_id: str,
+        edge_type: str | None = None,
+        direction: str = "both",
+    ) -> dict[str, Any]:
+        """Get all nodes connected to a given node, optionally filtered by edge type.
+
+        Unlike cognition_get_chain (which only follows led_to), this returns
+        ALL connected nodes across all edge types.
+
+        Args:
+            node_id: The node to query
+            edge_type: Optional filter (led_to, supersedes, etc.)
+            direction: "incoming", "outgoing", or "both"
+
+        Returns:
+            {"node_id": "...", "incoming": [...], "outgoing": [...]}
+        """
+        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+
+        if not storage.has_node(node_id):
+            return {"error": f"Node '{node_id}' does not exist"}
+
+        et = None
+        if edge_type:
+            try:
+                et = CognitionEdgeType(edge_type)
+            except ValueError:
+                valid = [e.value for e in CognitionEdgeType]
+                return {"error": f"Invalid edge_type '{edge_type}'. Valid: {valid}"}
+
+        result: dict[str, Any] = {"node_id": node_id}
+
+        if direction in ("outgoing", "both"):
+            outgoing = []
+            for tid, edata in storage.get_successors(node_id, et):
+                node_data = storage.get_node(tid)
+                outgoing.append({
+                    "id": tid,
+                    "edge_type": edata.get("type"),
+                    "type": node_data.get("type") if node_data else None,
+                    "summary": node_data.get("summary") if node_data else None,
+                })
+            result["outgoing"] = outgoing
+
+        if direction in ("incoming", "both"):
+            incoming = []
+            for sid, edata in storage.get_predecessors(node_id, et):
+                node_data = storage.get_node(sid)
+                incoming.append({
+                    "id": sid,
+                    "edge_type": edata.get("type"),
+                    "type": node_data.get("type") if node_data else None,
+                    "summary": node_data.get("summary") if node_data else None,
+                })
+            result["incoming"] = incoming
+
+        return result
+
+    @mcp.tool()
+    def cognition_remove_edge(
+        ctx: Context,
+        from_id: str,
+        to_id: str,
+        edge_type: str,
+    ) -> dict[str, Any]:
+        """Remove a specific edge between two cognition nodes.
+
+        Args:
+            from_id: Source node ID
+            to_id: Target node ID
+            edge_type: The edge type to remove (led_to, supersedes, etc.)
+
+        Returns:
+            {"removed": true} or {"error": "..."}
+        """
+        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+
+        try:
+            et = CognitionEdgeType(edge_type)
+        except ValueError:
+            valid = [e.value for e in CognitionEdgeType]
+            return {"error": f"Invalid edge_type '{edge_type}'. Valid: {valid}"}
+
+        if not storage.has_node(from_id):
+            return {"error": f"Source node '{from_id}' does not exist"}
+        if not storage.has_node(to_id):
+            return {"error": f"Target node '{to_id}' does not exist"}
+
+        removed = storage.remove_edge(from_id, to_id, et)
+        if not removed:
+            return {"error": f"No {edge_type} edge exists from {from_id} to {to_id}"}
+
+        return {"removed": True, "from_id": from_id, "to_id": to_id, "edge_type": edge_type}
+
+    @mcp.tool()
+    def cognition_curate_now(
+        ctx: Context,
+        node_id: str,
+    ) -> dict[str, Any]:
+        """Force the curator to curate a specific node immediately.
+
+        Calls the curator synchronously to analyze the node and create edges.
+        Works regardless of whether background curation is enabled.
+
+        Note: This blocks until the curator finishes (typically 5-15 seconds).
+
+        Args:
+            node_id: The node to curate
+
+        Returns:
+            {"edges_created": N, "edges": [...]}
+        """
+        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+        curator: CognitionCurator | None = ctx.request_context.lifespan_context.get("cognition_curator")
+
+        if curator is None:
+            return {"error": "Curator not available. Ensure Ollama is running and CURATOR_ENABLED is not explicitly disabled."}
+
+        if not storage.has_node(node_id):
+            return {"error": f"Node '{node_id}' does not exist"}
+
+        node_data = storage.get_node(node_id)
+        if not node_data:
+            return {"error": f"Could not read node '{node_id}'"}
+
+        node = CognitionNode(
+            id=node_id,
+            type=CognitionNodeType(node_data["type"]),
+            summary=node_data.get("summary", ""),
+            detail=node_data.get("detail", ""),
+            context=node_data.get("context", []),
+            references=node_data.get("references", []),
+            severity=node_data.get("severity"),
+            timestamp=node_data.get("timestamp", ""),
+            author=node_data.get("author", ""),
+        )
+
+        with curator._ollama_lock:
+            edges = curator.curate(node)
+
+        return {
+            "edges_created": len(edges),
+            "edges": [
+                {
+                    "from_id": e.from_id,
+                    "to_id": e.to_id,
+                    "edge_type": e.edge_type.value,
+                }
+                for e in edges
+            ],
         }

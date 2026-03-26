@@ -26,10 +26,6 @@ Available edge types:
 - contradicts: X contradicts or conflicts with Y. Only for genuine conflicts.
 - relates_to: Same topic/system but no causal or hierarchical relationship. Use sparingly.
 - resolved_by: X (incident/failure) was resolved/fixed by Y (decision/discovery).
-- part_of: Entity belongs to an episode. Use when an entity and an episode share the same \
-issue/PR reference (e.g., both reference "issue:LL-298"). If the new node is an entity and \
-the existing node is an episode, direction is "from_new". If the new node is an episode and \
-the existing node is an entity, direction is "to_new".
 - duplicate_of: The new node is semantically identical to this existing node — same fact, \
 same meaning, same type. Use ONLY when nodes genuinely represent the SAME thing, not merely \
 related topics. The new node will be merged into the existing one. Direction is always "from_new".
@@ -37,8 +33,8 @@ related topics. The new node will be merged into the existing one. Direction is 
 Rules:
 - Only suggest edges where there is a genuine, meaningful relationship.
 - Do NOT create edges just because nodes share keywords. The relationship must be substantive.
-- Prefer specific edge types (led_to, supersedes, contradicts, resolved_by, part_of) over relates_to.
-- For part_of: match on shared references (issue numbers, PR numbers). This is the primary signal.
+- Prefer specific edge types (led_to, supersedes, contradicts, resolved_by) over relates_to.
+- Do NOT suggest part_of edges — these are created automatically by deterministic reference matching.
 - For supersedes: only use when the new node explicitly replaces an older decision/assumption.
 - For contradicts: only use when there is a genuine logical conflict.
 - It is perfectly fine to suggest zero edges if none are meaningful.
@@ -49,7 +45,7 @@ Respond with JSON only:
   "edges": [
     {
       "candidate_id": "<id of the existing node>",
-      "edge_type": "<led_to|supersedes|contradicts|relates_to|resolved_by|part_of|duplicate_of>",
+      "edge_type": "<led_to|supersedes|contradicts|relates_to|resolved_by|duplicate_of>",
       "direction": "<from_new|to_new>",
       "reason": "<brief explanation>"
     }
@@ -88,6 +84,7 @@ class CognitionCurator:
 
         self._queue: queue.Queue[CognitionNode | None] = queue.Queue()
         self._ready = threading.Event()
+        self._ollama_lock = threading.Lock()
         self._worker = threading.Thread(target=self._worker_loop, daemon=True)
         self._worker.start()
 
@@ -188,7 +185,8 @@ class CognitionCurator:
                     f"Curating node {node.id} "
                     f"({node.type.value}: {node.summary[:60]})"
                 )
-                edges = self.curate(node)
+                with self._ollama_lock:
+                    edges = self.curate(node)
                 if edges:
                     logger.info(f"Curator created {len(edges)} edge(s) for node {node.id}")
                 else:

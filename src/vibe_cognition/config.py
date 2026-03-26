@@ -57,8 +57,8 @@ class Settings(BaseSettings):
 
     # Curator settings
     curator_enabled: bool = Field(
-        default=True,
-        description="Enable automatic edge curation via local LLM",
+        default=False,
+        description="Enable automatic background edge curation via local LLM",
     )
     curator_model: str = Field(
         default="qwen3:8b",
