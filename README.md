@@ -46,7 +46,9 @@ Restart Claude Code. The embedding model (~250MB) downloads automatically on fir
 
 - **Project Knowledge Graph**: Capture decisions, failures, discoveries, assumptions, constraints, incidents, and patterns
 - **Semantic Search**: Find project history using natural language through local vector embeddings
-- **Automatic Edge Creation**: A local LLM curator automatically links related knowledge nodes
+- **Deterministic Edge Creation**: `part_of` edges are created instantly via reference matching (shared commit/issue/PR refs) — no LLM needed
+- **Manual & Batch Edge Creation**: Create edges individually or in bulk via MCP tools, with provenance tracking
+- **Curation Skill**: `/vibe-curate` skill with edge-analyzer and cluster-analyzer subagents for semantic edge creation and cluster identification
 - **Session Context Injection**: Start every Claude Code session with recent project context via hooks
 - **Auto-Capture**: Automatically create episode nodes from git commits via hooks
 - **Local-First**: All processing and storage happens on your machine — no API keys, no cloud services
@@ -131,11 +133,11 @@ Shell examples in this README use bash syntax (macOS, Linux, Git Bash on Windows
    ```
    You should see `OK: Vibe Cognition`. If you get import errors, check that `uv sync` completed successfully.
 
-5. **(Optional) Curator setup** — The cognition curator uses [Ollama](https://ollama.com) to automatically link knowledge nodes. It is **enabled by default**, but **Ollama is not required** — without it, the server works normally; nodes are stored and searchable, they just won't have automatic edges between them.
+5. **(Optional) Ollama for on-demand curation** — The `cognition_curate_now` tool and the optional background curator use [Ollama](https://ollama.com) with a local LLM. Ollama is **not required** — without it, deterministic `part_of` edges are still created automatically, and semantic edges can be created via the `/vibe-curate` skill or `cognition_add_edge`.
 
-   If you have Ollama installed, the curator model (`qwen3:8b`, ~5.5GB) is pulled automatically on first server start. To explicitly disable:
+   If you have Ollama installed, the curator model (`qwen3:8b`, ~5.5GB) is pulled automatically on first use. To enable background curation:
    ```bash
-   # Add --env CURATOR_ENABLED=false when registering the MCP server (see next section)
+   # Add --env CURATOR_ENABLED=true when registering the MCP server (see next section)
    ```
 
 That's it! No API keys or external service configuration needed.
@@ -172,14 +174,24 @@ Replace `/path/to/vibe-cognition` (or `C:/Users/me/vibe-cognition`) with the abs
 
 ### Cognition Tools
 
-- `cognition_record` - Record a knowledge node (decision, fail, discovery, pattern, episode, etc.)
-- `cognition_search` - Search PROJECT HISTORY (decisions, failures, patterns) by natural language
-- `cognition_get_chain` - Traverse causal reasoning chains between nodes
-- `cognition_get_history` - Browse cognition nodes by context area, type, or recency
+| Tool | Purpose |
+|------|---------|
+| `cognition_record` | Record a knowledge node (decision, fail, discovery, pattern, episode, etc.) |
+| `cognition_search` | Search project history by natural language |
+| `cognition_get_chain` | Traverse causal reasoning chains (LED_TO edges) |
+| `cognition_get_history` | Browse nodes by context area, type, or recency |
+| `cognition_add_edge` | Create a single edge between two nodes |
+| `cognition_add_edges_batch` | Create multiple edges in one call (max 500) |
+| `cognition_get_edgeless_nodes` | Find nodes with no edges (need curation) |
+| `cognition_get_neighbors` | Get all connections to a node (all edge types) |
+| `cognition_remove_edge` | Remove a specific edge between two nodes |
+| `cognition_curate_now` | Force immediate LLM curation of a specific node |
 
 ### Service Tools
 
-- `get_status` - Get cognition graph statistics, embedding status, and curator info
+| Tool | Purpose |
+|------|---------|
+| `get_status` | Graph statistics, embedding status, curator info, edge-type breakdown |
 
 ## Storage
 
@@ -210,8 +222,9 @@ The cognition graph captures project knowledge — decisions made, approaches th
 ### How It Works
 
 1. **Record nodes** during conversations via `cognition_record` (or automatically via hooks)
-2. **Curator LLM** (Qwen3 8B via Ollama) automatically creates edges between related nodes in the background
-3. **Query** with `cognition_search` (semantic) or `cognition_get_history` (by context/type)
+2. **Deterministic matching** instantly creates `part_of` edges when nodes share references (commit hashes, issue/PR numbers)
+3. **Semantic edges** (led_to, resolved_by, supersedes) are created via the `/vibe-curate` skill, manual `cognition_add_edge` calls, or the opt-in background curator
+4. **Query** with `cognition_search` (semantic) or `cognition_get_history` (by context/type)
 
 ### Node Types
 
@@ -226,29 +239,34 @@ The cognition graph captures project knowledge — decisions made, approaches th
 | `pattern` | A reusable lesson learned |
 | `episode` | Full narrative of completed work (Linear task, feature, debugging session) |
 
-### Edge Types (created automatically by curator)
+### Edge Types
 
-| Edge | Meaning |
-|------|---------|
-| `led_to` | Causal chain — X led to Y |
-| `supersedes` | X replaces Y |
-| `contradicts` | X conflicts with Y |
-| `relates_to` | Same topic, no causal link |
-| `resolved_by` | Problem X was fixed by Y |
-| `part_of` | Entity belongs to an episode |
-| `duplicate_of` | X is semantically identical to Y |
+| Edge | Meaning | How Created |
+|------|---------|-------------|
+| `part_of` | Entity belongs to an episode | Deterministic (automatic via shared references) |
+| `led_to` | Causal chain — X led to Y | Semantic (via `/vibe-curate` skill or manual) |
+| `resolved_by` | Problem X was fixed by Y | Semantic |
+| `supersedes` | X replaces Y | Semantic |
+| `contradicts` | X conflicts with Y | Semantic |
+| `relates_to` | Same topic, no causal link | Semantic (use sparingly) |
+| `duplicate_of` | X is semantically identical to Y | Curator only (triggers merge) |
 
-### Setup: Curator (Optional but Recommended)
+The graph uses a **MultiDiGraph** — multiple edge types between the same pair of nodes are supported (e.g., A can be both `part_of` B and `led_to` B). Each (from, to, edge_type) triple is unique.
 
-The curator is **enabled by default** (`CURATOR_ENABLED=true`). It uses a local Ollama LLM to automatically create meaningful edges between cognition nodes. Without it, nodes are stored but not connected.
+### Setup: Curation
 
+Edges are created through three mechanisms:
+
+1. **Deterministic matching** (always on): `part_of` edges are created automatically when nodes share references. No setup needed.
+2. **`/vibe-curate` skill** (recommended): Copy `agents/vibe-curate` to your project's `.claude/skills/` directory. This gives Claude Code a skill for semantic edge creation (led_to, resolved_by, supersedes) and cluster identification.
+3. **Background curator** (optional, disabled by default): Uses a local Ollama LLM to automatically create semantic edges in the background. Enable with `--env CURATOR_ENABLED=true`.
+
+**For the background curator:**
 1. Install [Ollama](https://ollama.com)
 2. The curator model (`qwen3:8b`) is pulled automatically on first server start
 3. Requires ~5.5GB VRAM (or runs on CPU, slower)
 
-**No Ollama?** The server works fine without it. Nodes are stored, searchable via `cognition_search`, and browsable via `cognition_get_history`. The only thing missing is automatic edge creation between nodes.
-
-To disable the curator explicitly, add `--env CURATOR_ENABLED=false` when registering the MCP server.
+**`cognition_curate_now`** is always available for on-demand LLM curation of individual nodes, regardless of `CURATOR_ENABLED`. It requires Ollama to be running.
 
 ### Setup: Auto-Capture Hooks (Optional)
 
@@ -321,11 +339,23 @@ $env:REPO_PATH = "$PWD"; uv run --directory C:/path/to/vibe-cognition vibe-cogni
 
 Also available as the `/vibe-backfill` skill in Claude Code if you copy `agents/vibe-backfill` to your project's `.claude/skills/` directory.
 
-### Setup: Skill File (Optional)
+### Setup: Skill Files (Optional)
 
-Copy the `agents/vibe-cognition` directory from the Vibe Cognition repo to your project's `.claude/skills/` directory. Create `.claude/skills/` first if it doesn't exist.
+Copy skill directories from the Vibe Cognition repo to your project's `.claude/skills/` directory:
 
-This teaches the LLM to use concise entity summaries (<250 chars), create episodes for completed work, and always include references for curator linking.
+| Skill | Directory | Purpose |
+|-------|-----------|---------|
+| `/vibe-cognition` | `agents/vibe-cognition` | Record and query knowledge nodes — teaches Claude when and how to capture decisions, failures, discoveries, patterns |
+| `/vibe-backfill` | `agents/vibe-backfill` | Backfill cognition graph from git commit history |
+| `/vibe-curate` | `agents/vibe-curate` | Curate semantic edges and identify clusters — uses edge-analyzer and cluster-analyzer subagents |
+
+Create `.claude/skills/` first if it doesn't exist. Example:
+```bash
+mkdir -p .claude/skills
+cp -r /path/to/vibe-cognition/agents/vibe-cognition .claude/skills/
+cp -r /path/to/vibe-cognition/agents/vibe-backfill .claude/skills/
+cp -r /path/to/vibe-cognition/agents/vibe-curate .claude/skills/
+```
 
 ## Configuration
 
@@ -340,7 +370,7 @@ All configuration is optional. Vibe Cognition works out of the box with sensible
 | `EMBEDDING_DIMENSIONS` | No | `768` | Embedding vector dimensions |
 | `OLLAMA_BASE_URL` | No | `http://localhost:11434` | Ollama server URL (if using Ollama) |
 | `OLLAMA_MODEL` | No | `nomic-embed-text` | Ollama embedding model |
-| `CURATOR_ENABLED` | No | `true` | Enable automatic cognition edge curation via local LLM |
+| `CURATOR_ENABLED` | No | `false` | Enable automatic background edge curation via local LLM |
 | `CURATOR_MODEL` | No | `qwen3:8b` | Ollama model for cognition graph curation |
 | `CURATOR_MAX_CANDIDATES` | No | `8` | Max candidate nodes to evaluate per curation |
 | `LOG_LEVEL` | No | `INFO` | Logging level |
