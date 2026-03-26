@@ -1,5 +1,5 @@
 ---
-description: Curate the cognition graph — create semantic edges between related nodes and identify clusters of connected knowledge. Use when the graph has edgeless nodes that need linking or after significant new nodes have been added.
+description: Use this skill after adding new cognitive episodes and entities to the graph to curate and organize the new memories. Curate the cognition graph — create semantic edges between related nodes and identify clusters of connected knowledge. Use when the graph has edgeless nodes that need linking or after significant new nodes have been added.
 ---
 
 # Curate Edges — Cognition Graph Curation

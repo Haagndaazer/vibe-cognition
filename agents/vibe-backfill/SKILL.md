@@ -34,7 +34,7 @@ uv run --directory /path/to/vibe-cognition vibe-cognition-backfill
    ```
    cognition_record(
      node_type: "decision" | "discovery" | "constraint" | "pattern" | ...,
-     summary: "<concise fact, max 250 chars>",
+     summary: "<concise fact, max 150 chars>",
      detail: "<1-3 sentence rationale>",
      context: "<relevant files from the commit>",
      author: "<commit author>",
