@@ -6,47 +6,120 @@ description: Find git commits without corresponding cognition episodes and creat
 
 ## What This Does
 
-Finds recent git commits that don't have corresponding episode nodes in the cognition graph, then creates episodes and entity nodes for them.
+Finds recent commits on the main branch that don't have corresponding episode nodes in the cognition graph, then creates episodes and entity nodes for them.
+
+What you extract is ultimately for YOUR benefit as an agent — store what would be most helpful to you in future sessions when you need to retrieve context about the project.
+
+## Concurrency Rules
+
+- **Maximum 5 subagents running at a time.** Each subagent handles a chunk of ~5-10 commits.
+- When a subagent completes, you may launch the next one (rolling pool of 5).
+- Do NOT spawn more than 5 subagents simultaneously.
 
 ## Steps
 
-1. Run the backfill command to find untracked commits:
+### Step 1: Find the last backfilled commit
+
+Fetch the most recent episode nodes via `cognition_get_history(node_type="episode", limit=5)`. Look at their `references` fields for `commit:<hash>` entries. The newest commit hash among those is the **watermark** — the last commit already in the graph.
+
+Then get all commits after it:
 
 ```bash
-uv run --directory /path/to/vibe-cognition vibe-cognition-backfill
+git log main --format="%H %s" --reverse <watermark_hash>..HEAD
 ```
 
-2. For each untracked commit listed in the output, create cognition nodes using `cognition_record`:
+If no episodes exist yet (fresh graph), fall back to recent history:
 
-   **First, create an EPISODE for the commit:**
-   ```
-   cognition_record(
-     node_type: "episode",
-     summary: "<commit message, max 250 chars>",
-     detail: "<full commit message + summary of what the commit accomplished>",
-     context: "<changed files, comma-separated>",
-     author: "<commit author>",
-     references: "commit:<full hash>"
-   )
-   ```
+```bash
+git log main --format="%H %s" --reverse --since="30 days ago"
+```
 
-   **Then, extract ENTITY nodes** for any decisions, discoveries, constraints, or patterns visible in the commit:
-   ```
-   cognition_record(
-     node_type: "decision" | "discovery" | "constraint" | "pattern" | ...,
-     summary: "<concise fact, max 150 chars>",
-     detail: "<1-3 sentence rationale>",
-     context: "<relevant files from the commit>",
-     author: "<commit author>",
-     references: "commit:<full hash>"
-   )
-   ```
+### Step 1b: Filter out noise commits
 
-3. Use the same `references` value (commit hash) for both the episode and its entities so the curator can link them via PART_OF edges.
+Remove commits that don't warrant episodes:
+- Cognition journal updates (`.cognition/` only changes)
+- Empty merges with no file changes
+- Commits that only touch generated or metadata files with no meaningful code/content changes
+
+For borderline commits, check `git diff --stat <hash>~1 <hash>` — if the only changes are in `.cognition/`, skip it.
+
+### Step 2: Chunk the commits
+
+Split the untracked commits into chunks of ~5-10 commits each.
+
+### Step 3: Launch subagents (max 5 concurrent)
+
+Spawn up to 5 subagents in parallel, each given one chunk. When a subagent finishes, launch the next one until all chunks are processed.
+
+### Step 4: Per-commit workflow (inside each subagent)
+
+For each commit in the chunk:
+
+**4a. Get the full file list (stat):**
+
+```bash
+git diff --stat <hash>~1 <hash>
+```
+
+This shows ALL changed files including binary assets.
+
+For the **initial commit** (no parent), use:
+
+```bash
+git diff --stat --root <hash>
+```
+
+**4b. Get the code diff (skip large binaries):**
+
+```bash
+git diff <hash>~1 <hash> -- . ':!*.png' ':!*.jpg' ':!*.jpeg' ':!*.gif' ':!*.bmp' ':!*.ico' ':!*.svg' ':!*.woff' ':!*.woff2' ':!*.ttf' ':!*.eot' ':!*.mp3' ':!*.mp4' ':!*.wav' ':!*.ogg' ':!*.zip' ':!*.tar' ':!*.gz' ':!*.pdf'
+```
+
+For the **initial commit**, use `git diff --root <hash> -- .` with the same exclusions.
+
+Adjust the exclusion list for your project. For example, Unity projects should also exclude `.fbx`, `.obj`, `.blend`, `.mesh`, `.asset`, `.lighting` and similar binary formats.
+
+**4c. Analyze the diff and commit message** to understand what the commit accomplished.
+
+**4d. Record cognition nodes:**
+
+**Create an EPISODE for the commit:**
+```
+cognition_record(
+  node_type: "episode",
+  summary: "<commit message, max 250 chars>",
+  detail: "<full commit message + summary of what the commit accomplished>",
+  context: "<changed files, comma-separated>",
+  author: "<commit author>",
+  references: "commit:<full hash>"
+)
+```
+
+**Then, extract ENTITY nodes** for any decisions, discoveries, constraints, or patterns visible in the commit (0-10 per commit):
+```
+cognition_record(
+  node_type: "decision" | "discovery" | "constraint" | "pattern" | ...,
+  summary: "<concise fact, max 250 chars>",
+  detail: "<1-3 sentence rationale>",
+  context: "<relevant files from the commit>",
+  author: "<commit author>",
+  references: "commit:<full hash>"
+)
+```
+
+Use the same `references` value (commit hash) for both the episode and its entities — deterministic matching will automatically create `part_of` edges linking them.
+
+### Step 5: Report completion
+
+After all subagents finish, report:
+- How many commits were processed
+- How many cognition nodes were created (episodes + entities)
+- Any commits that were skipped and why
 
 ## Guidelines
 
 - Not every commit needs entity nodes — simple refactors or typo fixes may only need the episode
-- Look at the commit message and changed files to determine what entities to extract
+- Look at the diff content and commit message to determine what entities to extract
 - Keep entity summaries under 250 chars — concise, scannable facts
-- The curator LLM will automatically create edges between the new nodes and existing related nodes
+- Binary assets should still be mentioned in episode details even though their diffs are skipped
+- After backfill completes, consider running `/vibe-curate` to create semantic edges between the new nodes
