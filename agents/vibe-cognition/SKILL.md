@@ -12,8 +12,14 @@ description: Use this skill any time you need to retrieve or write project histo
 | `cognition_search` | Semantic search across all cognition nodes |
 | `cognition_get_chain` | Traverse reasoning chains (LED_TO edges) from a node |
 | `cognition_get_history` | Browse nodes by context area, type, or recency |
+| `cognition_add_edge` | Manually create an edge between two nodes |
+| `cognition_add_edges_batch` | Create multiple edges in one call (max 500) |
+| `cognition_get_edgeless_nodes` | Find nodes with no edges (need curation) |
+| `cognition_get_neighbors` | Get all connections to a node (all edge types) |
+| `cognition_remove_edge` | Remove a specific edge between two nodes |
+| `cognition_curate_now` | Force immediate LLM curation of a specific node |
 
-You do NOT create edges manually. A curator LLM automatically analyzes each new node and creates meaningful edges to related existing nodes.
+Deterministic `part_of` edges are created automatically when nodes share references (commit hashes, issue/PR numbers). For semantic edges (led_to, resolved_by, supersedes), use the `/curate-edges` skill or create them manually with `cognition_add_edge`.
 
 ## Two Kinds of Nodes
 
@@ -35,7 +41,7 @@ Episodes capture the **complete narrative** of a body of work — a Linear task 
 - **summary**: Brief title ("LL-298: Data wipe investigation and 3-phase fix")
 - **detail**: The full story — everything that happened, all context. Verbose is fine here.
 
-The curator auto-links entities to episodes via `PART_OF` edges when they share references.
+Entities are automatically linked to episodes via `PART_OF` edges when they share references (commit hashes, issue numbers, PR numbers). This happens instantly via deterministic matching — no LLM needed.
 
 ## When to Record
 
