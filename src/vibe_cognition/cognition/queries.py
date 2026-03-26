@@ -91,7 +91,15 @@ def get_superseded_chain(
 
         # Follow SUPERSEDES edge to the node this one replaced
         successors = storage.get_successors(current_id, CognitionEdgeType.SUPERSEDES)
-        current_id = successors[0][0] if successors else None
+        if not successors:
+            current_id = None
+        else:
+            if len(successors) > 1:
+                logger.warning(
+                    f"Node {current_id} has {len(successors)} SUPERSEDES successors "
+                    f"(expected 1) — following first match"
+                )
+            current_id = successors[0][0]
 
     return chain
 

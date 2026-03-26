@@ -76,17 +76,23 @@ def _record_node(
             metadata["references"] = ",".join(references_list)
         embedding_storage.upsert_embedding(node_id, embedding, metadata)
 
+    # Create deterministic part_of edges via reference matching
+    det_edges = storage.create_deterministic_edges(node_id)
+
     # Enqueue for curator (edges are created asynchronously by the worker thread)
     curator: CognitionCurator | None = ctx.request_context.lifespan_context.get("cognition_curator")
     if curator is not None:
         curator.enqueue(node)
 
-    return {
+    result: dict[str, Any] = {
         "id": node_id,
         "type": node_type.value,
         "summary": summary,
         "timestamp": timestamp,
     }
+    if det_edges:
+        result["deterministic_edges_created"] = det_edges
+    return result
 
 
 def register_cognition_tools(mcp) -> None:

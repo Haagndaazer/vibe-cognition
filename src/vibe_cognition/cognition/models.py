@@ -53,6 +53,7 @@ class CognitionEdge(BaseModel):
     to_id: str
     edge_type: CognitionEdgeType
     timestamp: str
+    source: str = "curator"
 
 
 def generate_node_id(node_type: str, summary: str, timestamp: str | None = None) -> str:

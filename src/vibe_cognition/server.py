@@ -15,6 +15,36 @@ from .tools import register_all_tools
 logger = logging.getLogger(__name__)
 
 
+def _create_deterministic_edges_for_edgeless(
+    cognition_storage: CognitionStorage,
+) -> None:
+    """Run deterministic part_of matching for nodes with no edges.
+
+    This catches nodes created by the post-commit hook or other paths
+    that bypass cognition_record (and thus skip deterministic matching).
+    """
+    all_nodes = cognition_storage.get_all_nodes()
+    if not all_nodes:
+        return
+
+    total_created = 0
+    for node_data in all_nodes:
+        node_id = node_data["id"]
+        # Skip nodes that already have edges
+        if (cognition_storage.get_successors(node_id) or
+                cognition_storage.get_predecessors(node_id)):
+            continue
+        # Skip nodes with no references (can't match)
+        if not node_data.get("references"):
+            continue
+        total_created += cognition_storage.create_deterministic_edges(node_id)
+
+    if total_created:
+        logger.info(
+            f"Startup deterministic matching: created {total_created} part_of edge(s)"
+        )
+
+
 def _sync_cognition_embeddings(
     cognition_storage: CognitionStorage,
     embedding_storage: ChromaDBStorage,
@@ -101,8 +131,13 @@ def _load_embeddings_and_curate(config: Settings, context: dict[str, Any]) -> No
         context["embedding_ready"].set()
         logger.info("All tools now available")
 
-        # Sync cognition embeddings (backfill any missing from JSONL)
+        # Run deterministic part_of matching for edgeless nodes
+        # (catches hook-created episodes that bypassed cognition_record)
         cognition_storage = context.get("cognition_storage")
+        if cognition_storage:
+            _create_deterministic_edges_for_edgeless(cognition_storage)
+
+        # Sync cognition embeddings (backfill any missing from JSONL)
         cognition_embedding_storage = context.get("cognition_embedding_storage")
 
         if cognition_storage and cognition_embedding_storage and embedding_generator:
