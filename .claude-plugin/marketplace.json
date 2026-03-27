@@ -1,0 +1,17 @@
+{
+  "name": "blcklvls",
+  "owner": {
+    "name": "BlckLvls"
+  },
+  "plugins": [
+    {
+      "name": "vibe-cognition",
+      "description": "Project knowledge graph — captures decisions, failures, discoveries, patterns, and reasoning chains. Fully local, no API keys.",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/Haagndaazer/vibe-cognition.git",
+        "sha": "c0a653b2350359f3d3a957ea91e01bf039a45026"
+      }
+    }
+  ]
+}
