@@ -1,5 +1,5 @@
 ---
-description: Use this skill any time you need to retrieve or write project history to persistent memory. 
+description: You MUST use this skill any time you need to retrieve information about the project or write project history to persistent memory, retrieving project information without using this skill will affect the clarity of the research. YOu must also use this skill when storing memories about the project. 
 ---
 
 # Vibe Cognition — Project Knowledge Graph

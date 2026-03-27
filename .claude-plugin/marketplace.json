@@ -1,5 +1,5 @@
 {
-  "name": "blcklvls",
+  "name": "coltondyck",
   "owner": {
     "name": "ColtonDyck"
   },
@@ -10,7 +10,7 @@
       "source": {
         "source": "url",
         "url": "https://github.com/Haagndaazer/vibe-cognition.git",
-        "sha": "520d946fe4a9bfa260ee1bb94d65188833087078"
+        "sha": "d31c98bfc76ef39955a7e2c270807704385a1f8e"
       }
     }
   ]
