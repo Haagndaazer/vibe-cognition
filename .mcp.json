@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "vibe-cognition": {
-      "command": "bash",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/start-server.sh"]
+      "command": "uv",
+      "args": ["run", "--directory", "${CLAUDE_PLUGIN_ROOT}", "python", "-m", "vibe_cognition.server"]
     }
   }
 }
