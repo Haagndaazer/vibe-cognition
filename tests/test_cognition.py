@@ -515,3 +515,120 @@ class TestQueries:
         """Test incident resolution for nonexistent node."""
         result = get_incident_resolution(storage_with_chain, "nonexistent")
         assert "error" in result
+
+
+class TestUncuratedTracking:
+    """Tests for curate-skill uncurated node tracking."""
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        return CognitionStorage(tmp_path / ".cognition")
+
+    def _make_node(self, node_id, node_type=CognitionNodeType.DECISION,
+                   timestamp="2026-03-15T10:00:00Z"):
+        return CognitionNode(
+            id=node_id, type=node_type,
+            summary=f"Node {node_id}", detail="Detail",
+            context=["test"], timestamp=timestamp, author="tester",
+        )
+
+    def test_get_uncurated_nodes_all_when_none_marked(self, storage):
+        """All nodes are uncurated when none have been marked."""
+        storage.add_node(self._make_node("n1"))
+        storage.add_node(self._make_node("n2"))
+        storage.add_node(self._make_node("n3"))
+
+        uncurated = storage.get_uncurated_nodes()
+        assert len(uncurated) == 3
+
+    def test_mark_curated_by_skill(self, storage):
+        """Marked node is excluded from uncurated results."""
+        storage.add_node(self._make_node("n1"))
+        storage.add_node(self._make_node("n2"))
+
+        assert storage.mark_curated_by_skill("n1")
+
+        uncurated = storage.get_uncurated_nodes()
+        assert len(uncurated) == 1
+        assert uncurated[0]["id"] == "n2"
+
+    def test_uncurated_ignores_deterministic_edges(self, storage):
+        """Node with only deterministic part_of edges is still uncurated."""
+        storage.add_node(self._make_node("entity1"))
+        storage.add_node(self._make_node("ep1", CognitionNodeType.EPISODE))
+        storage.add_edge(CognitionEdge(
+            from_id="entity1", to_id="ep1",
+            edge_type=CognitionEdgeType.PART_OF,
+            timestamp="2026-03-15T10:01:00Z",
+            source="deterministic",
+        ))
+
+        uncurated = storage.get_uncurated_nodes()
+        ids = [n["id"] for n in uncurated]
+        assert "entity1" in ids
+        assert "ep1" in ids
+
+    def test_uncurated_ignores_curator_edges(self, storage):
+        """Node with only background-curator edges is still uncurated."""
+        storage.add_node(self._make_node("n1"))
+        storage.add_node(self._make_node("n2"))
+        storage.add_edge(CognitionEdge(
+            from_id="n1", to_id="n2",
+            edge_type=CognitionEdgeType.RELATES_TO,
+            timestamp="2026-03-15T10:01:00Z",
+            source="curator",
+        ))
+
+        uncurated = storage.get_uncurated_nodes()
+        assert len(uncurated) == 2
+
+    def test_mark_curated_persists_through_hydration(self, tmp_path):
+        """curated_by_skill_at survives journal replay."""
+        cog_dir = tmp_path / ".cognition"
+
+        storage1 = CognitionStorage(cog_dir)
+        storage1.add_node(self._make_node("n1"))
+        storage1.add_node(self._make_node("n2"))
+        storage1.mark_curated_by_skill("n1")
+
+        # Re-hydrate from journal
+        storage2 = CognitionStorage(cog_dir)
+        uncurated = storage2.get_uncurated_nodes()
+        assert len(uncurated) == 1
+        assert uncurated[0]["id"] == "n2"
+
+        # Marked node has the attribute
+        marked = storage2.get_node("n1")
+        assert marked["curated_by_skill_at"] is not None
+
+    def test_mark_curated_nonexistent_node(self, storage):
+        """Marking a nonexistent node returns False."""
+        assert not storage.mark_curated_by_skill("nonexistent")
+
+    def test_get_uncurated_nodes_type_filter(self, storage):
+        """Type filter works on uncurated query."""
+        storage.add_node(self._make_node("d1", CognitionNodeType.DECISION))
+        storage.add_node(self._make_node("f1", CognitionNodeType.FAIL))
+        storage.add_node(self._make_node("d2", CognitionNodeType.DECISION))
+
+        uncurated = storage.get_uncurated_nodes(node_type=CognitionNodeType.FAIL)
+        assert len(uncurated) == 1
+        assert uncurated[0]["id"] == "f1"
+
+    def test_get_uncurated_nodes_ordering(self, storage):
+        """Uncurated nodes are sorted oldest-first."""
+        storage.add_node(self._make_node("n3", timestamp="2026-03-17T00:00:00Z"))
+        storage.add_node(self._make_node("n1", timestamp="2026-03-15T00:00:00Z"))
+        storage.add_node(self._make_node("n2", timestamp="2026-03-16T00:00:00Z"))
+
+        uncurated = storage.get_uncurated_nodes()
+        assert [n["id"] for n in uncurated] == ["n1", "n2", "n3"]
+
+    def test_statistics_includes_uncurated(self, storage):
+        """get_statistics() reports uncurated count."""
+        storage.add_node(self._make_node("n1"))
+        storage.add_node(self._make_node("n2"))
+        storage.mark_curated_by_skill("n1")
+
+        stats = storage.get_statistics()
+        assert stats["uncurated"] == 1

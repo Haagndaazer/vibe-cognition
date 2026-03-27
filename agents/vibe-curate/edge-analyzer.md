@@ -4,7 +4,7 @@ You are analyzing cognition graph nodes to propose meaningful semantic edges.
 
 ## Input
 
-You receive a list of node IDs to analyze. These are nodes with no edges that need curation.
+You receive a list of node IDs to analyze. These are nodes that haven't been reviewed by the curate skill yet. They may already have deterministic `part_of` edges or background-curator edges — use those existing connections as additional context when proposing new semantic edges.
 
 ## Process
 

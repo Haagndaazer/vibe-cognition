@@ -315,6 +315,51 @@ class CognitionStorage:
         nodes.sort(key=lambda n: n.get("timestamp", ""), reverse=True)
         return nodes[:limit]
 
+    def get_uncurated_nodes(
+        self,
+        limit: int = 50,
+        node_type: CognitionNodeType | None = None,
+    ) -> list[dict[str, Any]]:
+        """Get nodes not yet reviewed by the curate skill.
+
+        A node is "uncurated" if it lacks a ``curated_by_skill_at`` attribute.
+        Nodes with only deterministic or background-curator edges are still
+        considered uncurated until the curate skill explicitly marks them.
+
+        Args:
+            limit: Maximum number of nodes to return (max 500)
+            node_type: Optional type filter
+
+        Returns:
+            List of uncurated node dicts, sorted oldest-first by timestamp
+        """
+        with self._lock:
+            uncurated = []
+            for node_id, data in self._graph.nodes(data=True):
+                if node_type and data.get("type") != node_type.value:
+                    continue
+                if data.get("curated_by_skill_at") is not None:
+                    continue
+                uncurated.append({"id": node_id, **data})
+
+        uncurated.sort(key=lambda n: n.get("timestamp", ""))
+        return uncurated[:min(limit, 500)]
+
+    def mark_curated_by_skill(self, node_id: str) -> bool:
+        """Mark a node as reviewed by the curate skill.
+
+        Set regardless of whether edges were created, so nodes with no
+        meaningful relationships are not re-processed on subsequent runs.
+
+        Args:
+            node_id: ID of the node to mark
+
+        Returns:
+            True if the node exists and was marked
+        """
+        timestamp = datetime.now(timezone.utc).isoformat()
+        return self.update_node(node_id, curated_by_skill_at=timestamp)
+
     def get_successors(
         self,
         node_id: str,
@@ -390,6 +435,11 @@ class CognitionStorage:
                 key = f"edge_{et}"
                 if key in stats:
                     stats[key] += 1
+
+            stats["uncurated"] = sum(
+                1 for _, data in self._graph.nodes(data=True)
+                if data.get("curated_by_skill_at") is None
+            )
 
             return stats
 

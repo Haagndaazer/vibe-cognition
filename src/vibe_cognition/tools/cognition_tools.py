@@ -470,7 +470,8 @@ def register_cognition_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Get cognition nodes that have zero edges (no incoming or outgoing).
 
-        Useful for identifying nodes that need curation.
+        Useful for graph health diagnostics — finding truly isolated nodes.
+        For curation tracking, prefer cognition_get_uncurated_nodes instead.
 
         Args:
             node_type: Optional filter: decision, fail, discovery, assumption,
@@ -496,6 +497,70 @@ def register_cognition_tools(mcp) -> None:
         edgeless = edgeless[:min(limit, 500)]
 
         return {"nodes": edgeless, "count": len(edgeless), "total_edgeless": total}
+
+    @mcp.tool()
+    def cognition_get_uncurated_nodes(
+        ctx: Context,
+        node_type: str | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Get cognition nodes not yet reviewed by the curate skill.
+
+        Returns nodes lacking a curated_by_skill_at marker. Nodes with only
+        deterministic or background-curator edges are still considered
+        uncurated until the curate skill reviews them.
+
+        Args:
+            node_type: Optional filter: decision, fail, discovery, assumption,
+                       constraint, incident, pattern, episode
+            limit: Max results (default: 50, max: 500)
+
+        Returns:
+            {"nodes": [...], "count": N, "total_uncurated": N}
+        """
+        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+        nt = CognitionNodeType(node_type) if node_type else None
+        capped = min(limit, 500)
+
+        # Get total count (uncapped) for reporting
+        all_uncurated = storage.get_uncurated_nodes(limit=999999, node_type=nt)
+        nodes = all_uncurated[:capped]
+
+        return {
+            "nodes": nodes,
+            "count": len(nodes),
+            "total_uncurated": len(all_uncurated),
+        }
+
+    @mcp.tool()
+    def cognition_mark_curated(
+        ctx: Context,
+        node_ids: str,
+    ) -> dict[str, Any]:
+        """Mark nodes as reviewed by the curate skill.
+
+        Call after analyzing a batch of nodes, even if no edges were created.
+        Prevents re-processing nodes that were reviewed but had no meaningful
+        relationships.
+
+        Args:
+            node_ids: Comma-separated node IDs to mark as curated
+
+        Returns:
+            {"marked": N, "not_found": [...]}
+        """
+        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+        ids = [nid.strip() for nid in node_ids.split(",") if nid.strip()]
+
+        marked = 0
+        not_found = []
+        for nid in ids:
+            if storage.mark_curated_by_skill(nid):
+                marked += 1
+            else:
+                not_found.append(nid)
+
+        return {"marked": marked, "not_found": not_found}
 
     @mcp.tool()
     def cognition_get_neighbors(
