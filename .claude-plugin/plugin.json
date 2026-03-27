@@ -2,7 +2,7 @@
   "name": "vibe-cognition",
   "version": "0.1.0",
   "description": "Project knowledge graph — captures decisions, failures, discoveries, patterns, and reasoning chains. Fully local, no API keys.",
-  "author": { "name": "BlckLvls" },
+  "author": { "name": "ColtonDyck" },
   "license": "MIT",
   "repository": "https://github.com/Haagndaazer/vibe-cognition",
   "keywords": ["knowledge-graph", "cognition", "project-memory", "mcp", "local"]
