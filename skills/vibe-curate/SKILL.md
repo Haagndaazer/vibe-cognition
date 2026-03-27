@@ -33,7 +33,7 @@ Deterministic `part_of` edges and background-curator edges are created automatic
 Process uncurated nodes in batches of 5-10 (timestamp order, oldest first).
 
 For each batch:
-1. Launch the **edge-analyzer** subagent (see `agents/curate-edges/edge-analyzer.md`)
+1. Launch the **edge-analyzer** subagent (see `skills/vibe-curate/edge-analyzer.md`)
    - Pass the node IDs as a list in the prompt
    - The subagent calls MCP tools itself to gather context
    - It returns proposed edges as a JSON list
@@ -53,7 +53,7 @@ Log: "{N} edges created across {M} batches, {K} proposals discarded"
 
 After all edges are committed:
 
-1. Launch the **cluster-analyzer** subagent (see `agents/curate-edges/cluster-analyzer.md`)
+1. Launch the **cluster-analyzer** subagent (see `skills/vibe-curate/cluster-analyzer.md`)
    - It analyzes the graph for densely-connected groups
    - Returns proposed summary nodes (pattern or episode type)
 2. Review each proposed summary node:

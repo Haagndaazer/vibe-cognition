@@ -53,7 +53,7 @@ Thumbs.db
 
 # Project specific
 *.log
-.mcp.json
+# .mcp.json is part of the plugin package — do not ignore
 
 # Claude
 .claude/

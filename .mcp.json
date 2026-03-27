@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "vibe-cognition": {
+      "command": "bash",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/start-server.sh"],
+      "env": {
+        "REPO_PATH": "${CLAUDE_PROJECT_DIR}"
+      }
+    }
+  }
+}

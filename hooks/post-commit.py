@@ -115,7 +115,8 @@ def main():
         return
 
     # Get repo path from env or cwd
-    repo_path = os.environ.get("REPO_PATH", os.getcwd())
+    repo_path = os.environ.get("REPO_PATH",
+                 os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd()))
     journal_path = Path(repo_path) / ".cognition" / "journal.jsonl"
 
     if not journal_path.parent.exists():
