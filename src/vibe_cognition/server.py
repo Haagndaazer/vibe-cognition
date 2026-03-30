@@ -111,7 +111,7 @@ def _load_embeddings_and_curate(config: Settings, context: dict[str, Any]) -> No
         # Populate context
         context["embedding_generator"] = embedding_generator
 
-        # Init curator (always instantiated for cognition_curate_now support)
+        # Init curator (used for background curation and _record_node enqueue)
         from .cognition.curator import CognitionCurator
 
         cognition_curator = CognitionCurator(

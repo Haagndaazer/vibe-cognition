@@ -76,7 +76,7 @@ The plugin bundles everything needed — no manual configuration required:
 
 | Component | What It Does |
 |-----------|-------------|
-| **MCP Server** | 14 tools for recording, searching, and querying the knowledge graph |
+| **MCP Server** | 12 tools for recording, searching, and querying the knowledge graph |
 | `/vibe-cognition` skill | Teaches Claude when and how to capture decisions, failures, discoveries, patterns |
 | `/vibe-curate` skill | Curates semantic edges and identifies clusters using edge-analyzer and cluster-analyzer subagents |
 | `/vibe-backfill` skill | Backfills the cognition graph from git commit history |
@@ -119,7 +119,6 @@ The embedding model (~250MB) also downloads on first use from Hugging Face. Afte
 | `cognition_mark_curated` | Mark a node as reviewed by the curation skill |
 | `cognition_get_neighbors` | Get all connections to a node (all edge types) |
 | `cognition_remove_edge` | Remove a specific edge between two nodes |
-| `cognition_curate_now` | Force immediate LLM curation of a specific node |
 
 ### Service Tools
 
@@ -199,8 +198,6 @@ Edges are created through three mechanisms:
 1. Install [Ollama](https://ollama.com)
 2. The curator model (`qwen3:8b`) is pulled automatically on first server start
 3. Requires ~5.5GB VRAM (or runs on CPU, slower)
-
-**`cognition_curate_now`** is always available for on-demand LLM curation of individual nodes, regardless of the background curator. It requires Ollama to be running.
 
 ## Configuration
 

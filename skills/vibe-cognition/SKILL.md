@@ -17,7 +17,6 @@ description: You MUST use this skill any time you need to retrieve information a
 | `cognition_get_edgeless_nodes` | Find nodes with no edges (need curation) |
 | `cognition_get_neighbors` | Get all connections to a node (all edge types) |
 | `cognition_remove_edge` | Remove a specific edge between two nodes |
-| `cognition_curate_now` | Force immediate LLM curation of a specific node |
 
 Deterministic `part_of` edges are created automatically when nodes share references (commit hashes, issue/PR numbers). For semantic edges (led_to, resolved_by, supersedes), use the `/curate-edges` skill or create them manually with `cognition_add_edge`.
 
