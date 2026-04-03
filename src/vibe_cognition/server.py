@@ -114,18 +114,31 @@ def _load_embeddings_and_curate(config: Settings, context: dict[str, Any]) -> No
         # Init curator (used for background curation and _record_node enqueue)
         from .cognition.curator import CognitionCurator
 
+        # Check if cognition_set_project was called while we were loading
+        override = context.get("_project_override")
+        if override:
+            active_config = override["config"]
+            active_cognition_storage = override["cognition_storage"]
+            active_embedding_storage = override["cognition_embedding_storage"]
+            context.pop("_project_override", None)
+            logger.info("Background init: using project override from cognition_set_project")
+        else:
+            active_config = config
+            active_cognition_storage = context["cognition_storage"]
+            active_embedding_storage = context["cognition_embedding_storage"]
+
         cognition_curator = CognitionCurator(
-            storage=context["cognition_storage"],
-            embedding_storage=context["cognition_embedding_storage"],
+            storage=active_cognition_storage,
+            embedding_storage=active_embedding_storage,
             embedding_generator=embedding_generator,
-            ollama_base_url=config.ollama_base_url,
-            model=config.curator_model,
-            max_candidates=config.curator_max_candidates,
+            ollama_base_url=active_config.ollama_base_url,
+            model=active_config.curator_model,
+            max_candidates=active_config.curator_max_candidates,
         )
         context["cognition_curator"] = cognition_curator
         logger.info(
-            f"Cognition curator initialized (model: {config.curator_model}, "
-            f"background={'enabled' if config.curator_enabled else 'disabled'})"
+            f"Cognition curator initialized (model: {active_config.curator_model}, "
+            f"background={'enabled' if active_config.curator_enabled else 'disabled'})"
         )
 
         # Signal that embedding-dependent tools are ready

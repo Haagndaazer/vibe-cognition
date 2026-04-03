@@ -1,7 +1,6 @@
 """Configuration management for Vibe Cognition."""
 
 import logging
-import os
 from pathlib import Path
 from typing import Literal
 
@@ -20,9 +19,7 @@ class Settings(BaseSettings):
 
     # Repository settings
     repo_path: Path = Field(
-        default_factory=lambda: Path(os.environ["CLAUDE_PROJECT_DIR"])
-        if os.environ.get("CLAUDE_PROJECT_DIR")
-        else Path.cwd(),
+        default_factory=Path.cwd,
         description="Path to the repository to index",
     )
     repo_name: str | None = Field(

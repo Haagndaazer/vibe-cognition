@@ -4,10 +4,15 @@ description: You MUST use this skill any time you need to retrieve information a
 
 # Vibe Cognition — Project Knowledge Graph
 
+## Project Initialization
+
+**Before using any cognition tools**, call `cognition_set_project` with the absolute path to the current project directory. This ensures `.cognition/` data is stored in the correct project, not the plugin cache. You only need to do this once per session.
+
 ## Tools
 
 | Tool | Purpose |
 |------|---------|
+| `cognition_set_project` | Set the project directory (call first, once per session) |
 | `cognition_record` | Record a knowledge node or episode |
 | `cognition_search` | Semantic search across all cognition nodes |
 | `cognition_get_chain` | Traverse reasoning chains (LED_TO edges) from a node |
