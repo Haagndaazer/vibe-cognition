@@ -2,7 +2,10 @@
   "mcpServers": {
     "vibe-cognition": {
       "command": "uv",
-      "args": ["run", "--directory", "${CLAUDE_PLUGIN_ROOT}", "python", "-m", "vibe_cognition.server"]
+      "args": ["run", "--directory", "${CLAUDE_PLUGIN_ROOT}", "python", "-m", "vibe_cognition.server"],
+      "env": {
+        "REPO_PATH": "${CLAUDE_PROJECT_DIR}"
+      }
     }
   }
 }
