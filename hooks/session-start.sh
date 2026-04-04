@@ -73,9 +73,8 @@ if 'mcpServers' not in data:
 # Build the expected entry
 expected = {
     'command': 'uv',
-    'args': ['run', '--no-sync', '--project', plugin_root, 'python', '-m', 'vibe_cognition.server'],
+    'args': ['run', '--directory', plugin_root, 'python', '-m', 'vibe_cognition.server'],
     'env': {
-        'UV_PROJECT_ENVIRONMENT': venv_dir,
         'REPO_PATH': project_dir,
     },
 }
