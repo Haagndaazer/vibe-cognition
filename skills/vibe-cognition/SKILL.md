@@ -4,15 +4,10 @@ description: You MUST use this skill any time you need to retrieve information a
 
 # Vibe Cognition — Project Knowledge Graph
 
-## Project Initialization
-
-The project directory is auto-detected at startup via the SessionStart hook. If `get_status` shows a warning that `repo_path` points to the plugin cache, call `cognition_set_project` with the project's absolute path to fix it.
-
 ## Tools
 
 | Tool | Purpose |
 |------|---------|
-| `cognition_set_project` | Override the project directory (only if auto-detect fails) |
 | `cognition_record` | Record a knowledge node or episode |
 | `cognition_search` | Semantic search across all cognition nodes |
 | `cognition_get_chain` | Traverse reasoning chains (LED_TO edges) from a node |

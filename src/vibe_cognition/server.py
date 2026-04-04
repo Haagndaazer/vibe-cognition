@@ -1,10 +1,8 @@
 """FastMCP server for Vibe Cognition — project knowledge graph."""
 
-import asyncio
 import logging
 import threading
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
@@ -116,31 +114,18 @@ def _load_embeddings_and_curate(config: Settings, context: dict[str, Any]) -> No
         # Init curator (used for background curation and _record_node enqueue)
         from .cognition.curator import CognitionCurator
 
-        # Check if cognition_set_project was called while we were loading
-        override = context.get("_project_override")
-        if override:
-            active_config = override["config"]
-            active_cognition_storage = override["cognition_storage"]
-            active_embedding_storage = override["cognition_embedding_storage"]
-            context.pop("_project_override", None)
-            logger.info("Background init: using project override from cognition_set_project")
-        else:
-            active_config = config
-            active_cognition_storage = context["cognition_storage"]
-            active_embedding_storage = context["cognition_embedding_storage"]
-
         cognition_curator = CognitionCurator(
-            storage=active_cognition_storage,
-            embedding_storage=active_embedding_storage,
+            storage=context["cognition_storage"],
+            embedding_storage=context["cognition_embedding_storage"],
             embedding_generator=embedding_generator,
-            ollama_base_url=active_config.ollama_base_url,
-            model=active_config.curator_model,
-            max_candidates=active_config.curator_max_candidates,
+            ollama_base_url=config.ollama_base_url,
+            model=config.curator_model,
+            max_candidates=config.curator_max_candidates,
         )
         context["cognition_curator"] = cognition_curator
         logger.info(
-            f"Cognition curator initialized (model: {active_config.curator_model}, "
-            f"background={'enabled' if active_config.curator_enabled else 'disabled'})"
+            f"Cognition curator initialized (model: {config.curator_model}, "
+            f"background={'enabled' if config.curator_enabled else 'disabled'})"
         )
 
         # Signal that embedding-dependent tools are ready
@@ -182,32 +167,9 @@ def _load_embeddings_and_curate(config: Settings, context: dict[str, Any]) -> No
 @asynccontextmanager
 async def lifespan(server: FastMCP):
     """Manage server lifecycle - initialize and cleanup resources."""
-    # Read project directory from SessionStart hook marker file
-    marker = Path.cwd() / ".active-project"
-    project_dir = None
-    for _ in range(4):  # 4 × 0.5s = 2s max wait for hook to write
-        if marker.exists():
-            try:
-                project_dir = marker.read_text().strip()
-                marker.unlink(missing_ok=True)
-            except OSError:
-                pass
-            break
-        await asyncio.sleep(0.5)
-
-    # Convert MSYS/Git Bash paths (/c/Users/...) to Windows (C:/Users/...)
-    if project_dir and len(project_dir) >= 3 and project_dir[0] == "/" and project_dir[2] == "/":
-        import re
-        project_dir = re.sub(r"^/([a-zA-Z])/", lambda m: m.group(1).upper() + ":/", project_dir)
-
-    # Load configuration
+    # Load configuration — reads REPO_PATH from env (set by per-project .mcp.json)
     try:
-        if project_dir:
-            logger.info(f"Project marker found: {project_dir}")
-            config = Settings(repo_path=project_dir)
-        else:
-            logger.warning("No .active-project marker — falling back to cwd")
-            config = Settings()
+        config = Settings()
     except Exception as e:
         logger.error(f"Failed to load configuration: {e}")
         raise

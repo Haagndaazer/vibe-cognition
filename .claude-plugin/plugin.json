@@ -1,6 +1,6 @@
 {
   "name": "vibe-cognition",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "description": "Project knowledge graph — captures decisions, failures, discoveries, patterns, and reasoning chains. Fully local, no API keys.",
   "author": { "name": "ColtonDyck" },
   "license": "MIT",
