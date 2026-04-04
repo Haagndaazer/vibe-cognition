@@ -1,8 +1,10 @@
 """FastMCP server for Vibe Cognition — project knowledge graph."""
 
+import asyncio
 import logging
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
@@ -180,9 +182,27 @@ def _load_embeddings_and_curate(config: Settings, context: dict[str, Any]) -> No
 @asynccontextmanager
 async def lifespan(server: FastMCP):
     """Manage server lifecycle - initialize and cleanup resources."""
+    # Read project directory from SessionStart hook marker file
+    marker = Path.cwd() / ".active-project"
+    project_dir = None
+    for _ in range(4):  # 4 × 0.5s = 2s max wait for hook to write
+        if marker.exists():
+            try:
+                project_dir = marker.read_text().strip()
+                marker.unlink(missing_ok=True)
+            except OSError:
+                pass
+            break
+        await asyncio.sleep(0.5)
+
     # Load configuration
     try:
-        config = Settings()
+        if project_dir:
+            logger.info(f"Project marker found: {project_dir}")
+            config = Settings(repo_path=project_dir)
+        else:
+            logger.warning("No .active-project marker — falling back to cwd")
+            config = Settings()
     except Exception as e:
         logger.error(f"Failed to load configuration: {e}")
         raise

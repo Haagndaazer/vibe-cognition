@@ -4,6 +4,9 @@ set -euo pipefail
 
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
+
+# Write project dir marker for MCP server to read at startup
+echo "$PROJECT_DIR" > "${PLUGIN_ROOT}/.active-project"
 VENV_DIR="${PLUGIN_ROOT}/.venv"
 STAMP="${VENV_DIR}/.uv-sync-stamp"
 
