@@ -195,6 +195,11 @@ async def lifespan(server: FastMCP):
             break
         await asyncio.sleep(0.5)
 
+    # Convert MSYS/Git Bash paths (/c/Users/...) to Windows (C:/Users/...)
+    if project_dir and len(project_dir) >= 3 and project_dir[0] == "/" and project_dir[2] == "/":
+        import re
+        project_dir = re.sub(r"^/([a-zA-Z])/", lambda m: m.group(1).upper() + ":/", project_dir)
+
     # Load configuration
     try:
         if project_dir:

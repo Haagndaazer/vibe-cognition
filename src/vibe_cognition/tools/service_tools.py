@@ -107,6 +107,13 @@ def register_service_tools(mcp) -> None:
         lc = ctx.request_context.lifespan_context
         config = lc.get("config")
 
+        # Convert MSYS/Git Bash paths (/c/Users/...) to Windows (C:/Users/...)
+        import re
+        if len(project_dir) >= 3 and project_dir[0] == "/" and project_dir[2] == "/":
+            project_dir = re.sub(
+                r"^/([a-zA-Z])/", lambda m: m.group(1).upper() + ":/", project_dir
+            )
+
         # Resolve and validate
         new_path = Path(project_dir).resolve()
 

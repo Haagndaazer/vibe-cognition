@@ -6,7 +6,12 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 
 # Write project dir marker for MCP server to read at startup
-echo "$PROJECT_DIR" > "${PLUGIN_ROOT}/.active-project"
+# Convert MSYS/Git Bash paths (/c/Users/...) to Windows (C:/Users/...) for Python
+if command -v cygpath &>/dev/null; then
+    cygpath -w "$PROJECT_DIR" > "${PLUGIN_ROOT}/.active-project"
+else
+    echo "$PROJECT_DIR" > "${PLUGIN_ROOT}/.active-project"
+fi
 VENV_DIR="${PLUGIN_ROOT}/.venv"
 STAMP="${VENV_DIR}/.uv-sync-stamp"
 
