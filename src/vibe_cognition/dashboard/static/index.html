@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vibe Cognition Dashboard</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/layout-base@2.0.1/layout-base.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
+</head>
+<body>
+  <header>
+    <div id="brand">vibe-cognition</div>
+    <div id="search-wrap">
+      <input id="search" type="text" placeholder="Search nodes (loading embedding model...)" disabled autocomplete="off" />
+      <div id="search-results" hidden></div>
+    </div>
+    <div id="status-line">
+      <span id="stats"></span>
+      <span id="banner" class="banner-loading">Loading embedding model…</span>
+    </div>
+  </header>
+
+  <main>
+    <aside id="episodes-panel">
+      <div class="panel-header">Episodes <span id="episode-count" class="muted"></span></div>
+      <ul id="episode-list"></ul>
+    </aside>
+    <div id="cy"></div>
+    <aside id="detail">
+      <div class="detail-empty">Click a node to see details</div>
+    </aside>
+  </main>
+
+  <div id="toasts"></div>
+
+  <template id="detail-tpl">
+    <div class="detail">
+      <div class="detail-header">
+        <span class="detail-type"></span>
+        <span class="detail-id"></span>
+      </div>
+      <h2 class="detail-summary"></h2>
+      <pre class="detail-body"></pre>
+      <div class="detail-meta"></div>
+      <div class="detail-section">
+        <h3>References</h3>
+        <ul class="detail-references"></ul>
+      </div>
+      <div class="detail-section">
+        <h3>Outgoing edges</h3>
+        <ul class="detail-successors"></ul>
+      </div>
+      <div class="detail-section">
+        <h3>Incoming edges</h3>
+        <ul class="detail-predecessors"></ul>
+      </div>
+      <button class="detail-delete">Delete node</button>
+    </div>
+  </template>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

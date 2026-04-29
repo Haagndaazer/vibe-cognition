@@ -220,6 +220,14 @@ async def lifespan(server: FastMCP):
 
     logger.info("Shutting down Vibe Cognition...")
 
+    # Stop dashboard server if running
+    if context.get("dashboard"):
+        try:
+            from .dashboard.server import stop_dashboard
+            stop_dashboard(context, join_timeout=3.0)
+        except Exception as e:
+            logger.warning(f"Dashboard shutdown error: {e}")
+
     # Give background thread a chance to finish
     bg_thread = context.get("_bg_thread")
     if bg_thread:

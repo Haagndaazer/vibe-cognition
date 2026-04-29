@@ -1,0 +1,255 @@
+:root {
+  --bg: #0f1115;
+  --panel: #161a22;
+  --panel-2: #1d222d;
+  --border: #262c39;
+  --text: #e6ebf2;
+  --muted: #8a93a3;
+  --accent: #5cb1ff;
+  --danger: #ff6b6b;
+
+  --t-decision: #4f9bff;
+  --t-fail: #ff6b6b;
+  --t-discovery: #5fd17a;
+  --t-assumption: #f4c060;
+  --t-constraint: #b97cff;
+  --t-incident: #ff9444;
+  --t-pattern: #4adcc8;
+  --t-episode: #b6bdc9;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+header {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 16px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  align-items: center;
+}
+
+#brand {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+#search-wrap {
+  position: relative;
+}
+#search {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font: inherit;
+}
+#search:focus { outline: 1px solid var(--accent); }
+#search:disabled { opacity: 0.6; cursor: not-allowed; }
+
+#search-results {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  max-height: 360px;
+  overflow-y: auto;
+  z-index: 10;
+}
+.search-result {
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+.search-result:last-child { border-bottom: none; }
+.search-result:hover { background: var(--panel); }
+.search-result .res-summary { font-size: 14px; }
+.search-result .res-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+#status-line { display: flex; gap: 12px; align-items: center; font-size: 12px; color: var(--muted); }
+#banner { display: none; padding: 4px 10px; border-radius: 4px; font-size: 12px; }
+#banner.banner-loading { display: inline-block; background: #3a3417; color: #f4c060; }
+#banner.banner-error { display: inline-block; background: #3a1717; color: var(--danger); }
+
+main {
+  display: grid;
+  grid-template-columns: 280px 1fr 380px;
+  height: 100%;
+  min-height: 0;
+}
+
+#episodes-panel {
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  font-size: 13px;
+  min-height: 0;
+}
+.panel-header {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+}
+.muted { color: var(--muted); font-weight: 400; }
+#episode-list { list-style: none; margin: 0; padding: 0; }
+.episode-item {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  border-left: 3px solid transparent;
+}
+.episode-item:hover { background: var(--panel-2); }
+.episode-item.active {
+  background: var(--panel-2);
+  border-left-color: var(--accent);
+}
+.episode-summary { line-height: 1.35; }
+.episode-meta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+}
+.episode-empty {
+  padding: 20px 14px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 12px;
+}
+
+#cy {
+  background: #0c0e13;
+  border-right: 1px solid var(--border);
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+#detail {
+  background: var(--panel);
+  overflow-y: auto;
+  padding: 16px;
+  font-size: 14px;
+}
+
+.detail-empty {
+  color: var(--muted);
+  text-align: center;
+  padding-top: 40px;
+}
+
+.detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.detail-type {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--panel-2);
+}
+.detail-id { font-size: 11px; color: var(--muted); font-family: ui-monospace, "SF Mono", Consolas, monospace; }
+.detail-summary { font-size: 16px; margin: 0 0 12px 0; line-height: 1.4; }
+.detail-body {
+  background: var(--panel-2);
+  padding: 10px 12px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  font: 12px ui-monospace, "SF Mono", Consolas, monospace;
+  margin-bottom: 12px;
+}
+.detail-meta { font-size: 12px; color: var(--muted); margin-bottom: 16px; }
+.detail-meta div { margin-bottom: 2px; }
+.detail-section { margin-bottom: 16px; }
+.detail-section h3 {
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0 0 6px 0;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.detail-section ul { margin: 0; padding: 0; list-style: none; font-size: 12px; }
+.detail-section li {
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: ui-monospace, monospace;
+  color: var(--accent);
+  margin-bottom: 2px;
+}
+.detail-section li:hover { background: var(--panel-2); }
+.detail-section .edge-type {
+  display: inline-block;
+  font-family: -apple-system, system-ui, sans-serif;
+  color: var(--muted);
+  margin-right: 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.detail-delete {
+  background: transparent;
+  border: 1px solid var(--danger);
+  color: var(--danger);
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  margin-top: 8px;
+}
+.detail-delete:hover { background: var(--danger); color: white; }
+
+#toasts {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 100;
+  pointer-events: none;
+}
+.toast {
+  padding: 10px 14px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+  max-width: 320px;
+  pointer-events: auto;
+  animation: toast-in 0.15s ease-out;
+}
+.toast.toast-error { border-color: var(--danger); }
+.toast.toast-success { border-color: var(--t-discovery); }
+@keyframes toast-in {
+  from { transform: translateY(8px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}

@@ -37,6 +37,7 @@ That's it. The plugin handles dependency installation, MCP server registration, 
 - [What's Included](#whats-included)
 - [Prerequisites](#prerequisites)
 - [MCP Tools](#mcp-tools)
+- [Dashboard](#dashboard)
 - [Storage](#storage)
 - [Cognition History Graph](#cognition-history-graph)
 - [Configuration](#configuration)
@@ -51,6 +52,7 @@ That's it. The plugin handles dependency installation, MCP server registration, 
 - **Deterministic Edge Creation**: `part_of` edges are created instantly via reference matching (shared commit/issue/PR refs) — no LLM needed
 - **Manual & Batch Edge Creation**: Create edges individually or in bulk via MCP tools, with provenance tracking
 - **Curation Skill**: `/vibe-curate` skill with edge-analyzer and cluster-analyzer subagents for semantic edge creation and cluster identification
+- **Local Dashboard**: Interactive graph viewer with semantic search and node-detail sidebar — launch in your browser from Claude or the CLI
 - **Session Context Injection**: Start every Claude Code session with recent project context via hooks
 - **Auto-Capture**: Automatically create episode nodes from git commits via hooks
 - **Local-First**: All processing and storage happens on your machine — no API keys, no cloud services
@@ -76,7 +78,7 @@ The plugin bundles everything needed — no manual configuration required:
 
 | Component | What It Does |
 |-----------|-------------|
-| **MCP Server** | 12 tools for recording, searching, and querying the knowledge graph |
+| **MCP Server** | 13 tools for recording, searching, querying, and visualizing the knowledge graph |
 | `/vibe-cognition` skill | Teaches Claude when and how to capture decisions, failures, discoveries, patterns |
 | `/vibe-curate` skill | Curates semantic edges and identifies clusters using edge-analyzer and cluster-analyzer subagents |
 | `/vibe-backfill` skill | Backfills the cognition graph from git commit history |
@@ -125,6 +127,53 @@ The embedding model (~250MB) also downloads on first use from Hugging Face. Afte
 | Tool | Purpose |
 |------|---------|
 | `get_status` | Graph statistics, embedding status, curator info, edge-type breakdown |
+| `cognition_dashboard` | Launch the local web dashboard (graph viewer + semantic search). Returns the URL and opens it in your browser. |
+
+## Dashboard
+
+The dashboard is a local web viewer for the cognition graph: an interactive force-directed layout of every node and edge, an episode timeline (newest first) on the left, embedding-powered search that highlights matches and their direct neighbors in the graph, and a node-detail sidebar with delete capability.
+
+It runs on `127.0.0.1` and is protected by a per-session token included in the URL. No data leaves your machine.
+
+### Launch from Claude Code (recommended)
+
+In a Claude Code session inside your project, ask Claude to open it:
+
+> "Open the cognition dashboard"
+
+Claude calls the `cognition_dashboard` MCP tool, which boots a local HTTP server inside the already-running MCP process and opens the URL in your default browser. Calling it again returns the same URL — there's only ever one dashboard per MCP server.
+
+### Launch from the CLI
+
+For browsing without an active Claude Code session, run from your project directory:
+
+```bash
+uv run vibe-cognition-dashboard
+```
+
+Or point at any project from anywhere:
+
+```bash
+uv run vibe-cognition-dashboard --repo-path /path/to/your/project
+```
+
+Useful flags:
+
+| Flag | Effect |
+|------|--------|
+| `--port N` | Preferred port (default `7842`; falls back to `+1..+10`, then ephemeral) |
+| `--no-browser` | Don't auto-open a browser (just print the URL) |
+| `--no-embeddings` | Skip loading the embedding model — the graph view loads instantly but search returns 503. Useful when you only need to browse the structure. |
+
+The CLI runs uvicorn in the foreground; press Ctrl-C to stop.
+
+### What you can do
+
+- **Pan / zoom** the canvas to explore connections; nodes are colored by type (decision, fail, discovery, pattern, episode, …).
+- **Click a node** → its label and its direct neighbors' labels appear; the node-detail sidebar shows the full summary, detail, references, and incoming/outgoing edges.
+- **Click an episode** in the left panel → focuses that episode and its connected entities in the canvas.
+- **Search** with natural language → matching nodes get a yellow border, and the canvas dims everything outside their immediate neighborhood so you can see *where* the matches live.
+- **Delete a node** from the sidebar (it's removed from `journal.jsonl` and the embedding index — irreversible).
 
 ## Storage
 
