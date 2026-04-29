@@ -82,6 +82,7 @@ The plugin bundles everything needed — no manual configuration required:
 | `/vibe-cognition` skill | Teaches Claude when and how to capture decisions, failures, discoveries, patterns |
 | `/vibe-curate` skill | Curates semantic edges and identifies clusters using edge-analyzer and cluster-analyzer subagents |
 | `/vibe-backfill` skill | Backfills the cognition graph from git commit history |
+| `/vibe-dashboard` skill | Launches the local graph dashboard via the `cognition_dashboard` MCP tool |
 | **SessionStart hook** | Injects recent project context (constraints, patterns, decisions, incidents) at session start |
 | **PostToolUse hook** | Auto-creates episode nodes from git commits |
 
@@ -137,11 +138,12 @@ It runs on `127.0.0.1` and is protected by a per-session token included in the U
 
 ### Launch from Claude Code (recommended)
 
-In a Claude Code session inside your project, ask Claude to open it:
+Two equivalent paths inside a Claude Code session:
 
-> "Open the cognition dashboard"
+- **Slash command** — type `/vibe-dashboard` and press enter.
+- **Natural language** — ask Claude something like *"open the cognition dashboard"* or *"show me the graph"*.
 
-Claude calls the `cognition_dashboard` MCP tool, which boots a local HTTP server inside the already-running MCP process and opens the URL in your default browser. Calling it again returns the same URL — there's only ever one dashboard per MCP server.
+Either route invokes the `cognition_dashboard` MCP tool, which boots a local HTTP server inside the already-running MCP process and opens the URL in your default browser. Calling it again returns the same URL — there's only ever one dashboard per MCP server.
 
 ### Launch from the CLI
 
