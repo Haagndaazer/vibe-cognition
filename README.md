@@ -22,7 +22,7 @@ A fully local [MCP](https://modelcontextprotocol.io/) server for [Claude Code](h
 
 2. Add the marketplace and install the plugin:
    ```bash
-   claude plugin marketplace add https://github.com/Haagndaazer/vibe-cognition
+   claude plugin marketplace add https://github.com/Haagndaazer/colton-claude-plugins
    claude plugin install vibe-cognition@coltondyck
    ```
 
