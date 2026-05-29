@@ -4,17 +4,25 @@ set -euo pipefail
 
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
-VENV_DIR="${PLUGIN_ROOT}/.venv"
-STAMP="${VENV_DIR}/.uv-sync-stamp"
+# Persistent plugin-data dir — survives plugin updates, so the venv never lives
+# inside the version-pinned cache dir (a running server would lock it on Windows
+# during /plugin update). Fall back to the version-independent parent of the
+# cache dir if CLAUDE_PLUGIN_DATA is not provided.
+PLUGIN_DATA="${CLAUDE_PLUGIN_DATA:-${PLUGIN_ROOT%/*}}"
 
-# Normalize paths to forward-slash format for JSON / Python
+# Normalize paths to forward-slash native format for uv / Python
 if command -v cygpath &>/dev/null; then
     PLUGIN_ROOT_NATIVE=$(cygpath -m "$PLUGIN_ROOT")
     PROJECT_DIR_NATIVE=$(cygpath -m "$PROJECT_DIR")
+    PLUGIN_DATA_NATIVE=$(cygpath -m "$PLUGIN_DATA")
 else
     PLUGIN_ROOT_NATIVE="$PLUGIN_ROOT"
     PROJECT_DIR_NATIVE="$PROJECT_DIR"
+    PLUGIN_DATA_NATIVE="$PLUGIN_DATA"
 fi
+
+VENV_DIR="${PLUGIN_DATA_NATIVE}/.venv"
+STAMP="${VENV_DIR}/.uv-sync-stamp"
 
 # ── Step 1: Check for uv ─────────────────────────
 if ! command -v uv &>/dev/null; then
@@ -44,75 +52,23 @@ if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$HASH" ]; then
     echo "$HASH" > "$STAMP"
 fi
 
-# ── Step 3: Auto-configure per-project MCP server ─
-# Write/update .mcp.json so the MCP server runs from the project directory.
-# Done AFTER uv sync so --no-sync is safe on next startup.
-MCP_JSON="${PROJECT_DIR}/.mcp.json"
-MCP_UPDATED=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
-    uv run --no-sync --project "${PLUGIN_ROOT}" python -c "
-import json, sys, os
-
-mcp_path = sys.argv[1]
-plugin_root = sys.argv[2]
-project_dir = sys.argv[3]
-venv_dir = sys.argv[4]
-
-# Read existing .mcp.json or start fresh
-try:
-    with open(mcp_path) as f:
-        data = json.load(f)
-except FileNotFoundError:
-    data = {}
-except json.JSONDecodeError:
-    print('skip', end='')
-    sys.exit(0)
-
-if 'mcpServers' not in data:
-    data['mcpServers'] = {}
-
-# Build the expected entry
-expected = {
-    'command': 'uv',
-    'args': ['run', '--directory', plugin_root, 'python', '-m', 'vibe_cognition.server'],
-    'env': {
-        'REPO_PATH': project_dir,
-    },
-}
-
-current = data['mcpServers'].get('vibe-cognition')
-if current == expected:
-    print('ok', end='')
-    sys.exit(0)
-
-# Write updated config
-data['mcpServers']['vibe-cognition'] = expected
-tmp = mcp_path + '.tmp'
-with open(tmp, 'w') as f:
-    json.dump(data, f, indent=2)
-    f.write('\n')
-os.replace(tmp, mcp_path)
-print('updated', end='')
-" "$MCP_JSON" "$PLUGIN_ROOT_NATIVE" "$PROJECT_DIR_NATIVE" "${PLUGIN_ROOT_NATIVE}/.venv" 2>/dev/null) || MCP_UPDATED=""
-
-# If MCP config was just written/updated, tell user to restart
-if [ "$MCP_UPDATED" = "updated" ]; then
-    cat << 'EOF'
-{
-  "hookSpecificOutput": {
-    "hookEventName": "SessionStart",
-    "additionalContext": "# Vibe Cognition\n\nvibe-cognition MCP server has been configured for this project. **Please restart Claude Code so the MCP server can connect.** Subsequent sessions will start automatically."
-  }
-}
-EOF
-    exit 0
-fi
+# ── Step 3: Migrate away from the per-project MCP entry ──
+# Earlier versions wrote a "vibe-cognition" entry into the project's .mcp.json.
+# The server is now declared by the plugin itself (plugin.json), and a
+# project-scope entry OUTRANKS the plugin definition — so remove any stale
+# entry. The removal is surgical: only our entry is touched; every other MCP
+# server and top-level key is preserved (see vibe_cognition.migrate_mcp).
+MCP_JSON="${PROJECT_DIR_NATIVE}/.mcp.json"
+UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
+    uv run --no-sync --project "${PLUGIN_ROOT}" \
+    python -m vibe_cognition.migrate_mcp "$MCP_JSON" >/dev/null 2>&1 || true
 
 # ── Step 4: Inject project context via prime ──────
 COGNITION_DIR="${PROJECT_DIR}/.cognition"
 
 if [ -d "$COGNITION_DIR" ]; then
     PRIME_OUTPUT=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
-        REPO_PATH="${PROJECT_DIR}" \
+        REPO_PATH="${PROJECT_DIR_NATIVE}" \
         uv run --no-sync --project "${PLUGIN_ROOT}" \
         python -m vibe_cognition.cognition.prime 2>/dev/null) || PRIME_OUTPUT=""
 

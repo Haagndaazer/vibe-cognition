@@ -189,6 +189,8 @@ your-project/
 └── ... your code
 ```
 
+`.cognition/` is the **only** thing the plugin writes into your project. The MCP server is declared by the plugin itself and resolves your project directory automatically (via `CLAUDE_PROJECT_DIR`), so there is no per-project `.mcp.json` to manage. Python dependencies live in the plugin's own data directory, not in your repo. (If you installed an earlier version that wrote a `vibe-cognition` entry into your project's `.mcp.json`, the plugin removes just that entry on next start — other servers are left untouched.)
+
 - **`.cognition/journal.jsonl`** should be **committed to Git** — it's the shared project knowledge base
 - **`.cognition/chromadb/`** should be in `.gitignore` — it's a regenerable cache (rebuilt automatically on next server startup if deleted)
 

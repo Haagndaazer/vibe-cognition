@@ -53,7 +53,9 @@ Thumbs.db
 
 # Project specific
 *.log
-# .mcp.json is part of the plugin package — do not ignore
+# The MCP server is declared by the plugin (plugin.json), not via a per-project
+# .mcp.json. Ignore any stale/local one so it never gets re-tracked.
+.mcp.json
 
 # Claude
 .claude/

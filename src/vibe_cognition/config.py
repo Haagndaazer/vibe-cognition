@@ -1,11 +1,23 @@
 """Configuration management for Vibe Cognition."""
 
 import logging
+import os
 from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _default_repo_path() -> Path:
+    """Default repository path when REPO_PATH is not set explicitly.
+
+    Claude Code injects ``CLAUDE_PROJECT_DIR`` into a plugin's spawned MCP
+    server environment, so prefer it; fall back to the current working
+    directory for non-plugin / manual launches.
+    """
+    env_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+    return Path(env_dir) if env_dir else Path.cwd()
 
 
 class Settings(BaseSettings):
@@ -19,7 +31,7 @@ class Settings(BaseSettings):
 
     # Repository settings
     repo_path: Path = Field(
-        default_factory=Path.cwd,
+        default_factory=_default_repo_path,
         description="Path to the repository to index",
     )
     repo_name: str | None = Field(
