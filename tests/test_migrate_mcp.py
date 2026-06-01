@@ -79,8 +79,12 @@ def test_preserved_reports_other_servers_in_insertion_order(tmp_path):
     assert list(on_disk["mcpServers"]) == ["zeta", "alpha"]
 
 
-def test_reduces_to_empty_object_but_keeps_file(tmp_path):
-    """A file that held only our entry collapses to {} and is NOT deleted."""
+def test_emptied_config_becomes_valid_empty_record_not_bare_object(tmp_path):
+    """A file that held only our entry becomes {"mcpServers": {}}, never {}.
+
+    Bare {} is rejected by Claude Code ("mcpServers: expected record, received
+    undefined"); the emptied config must stay a valid (empty) record.
+    """
     mcp = tmp_path / ".mcp.json"
     _write(mcp, {"mcpServers": {"vibe-cognition": OUR_ENTRY}})
 
@@ -89,11 +93,11 @@ def test_reduces_to_empty_object_but_keeps_file(tmp_path):
     assert result["status"] == "removed"
     assert result["preserved"] == []
     assert mcp.exists()  # never deleted
-    assert json.loads(mcp.read_text(encoding="utf-8")) == {}
+    assert json.loads(mcp.read_text(encoding="utf-8")) == {"mcpServers": {}}
 
 
-def test_keeps_other_top_level_keys_when_servers_empties(tmp_path):
-    """Empty mcpServers is dropped, but unrelated top-level keys remain."""
+def test_keeps_other_top_level_keys_and_empty_record_when_servers_empties(tmp_path):
+    """mcpServers stays present (empty) and unrelated top-level keys remain."""
     mcp = tmp_path / ".mcp.json"
     _write(mcp, {"mcpServers": {"vibe-cognition": OUR_ENTRY}, "other": {"k": 1}})
 
@@ -101,8 +105,76 @@ def test_keeps_other_top_level_keys_when_servers_empties(tmp_path):
 
     assert result["status"] == "removed"
     on_disk = json.loads(mcp.read_text(encoding="utf-8"))
-    assert "mcpServers" not in on_disk
-    assert on_disk == {"other": {"k": 1}}
+    assert on_disk == {"mcpServers": {}, "other": {"k": 1}}
+
+
+# ── Self-repair of contentless/invalid shapes left by older versions ────
+
+def test_repairs_bare_empty_object(tmp_path):
+    """An already-damaged `{}` (our entry absent) is repaired to a valid record."""
+    mcp = tmp_path / ".mcp.json"
+    mcp.write_text("{}", encoding="utf-8")
+
+    result = remove_server_entry(str(mcp))
+
+    assert result["status"] == "repaired"
+    assert mcp.exists()  # never deleted
+    assert json.loads(mcp.read_text(encoding="utf-8")) == {"mcpServers": {}}
+
+
+def test_repairs_null_mcpservers(tmp_path):
+    mcp = tmp_path / ".mcp.json"
+    _write(mcp, {"mcpServers": None})
+
+    result = remove_server_entry(str(mcp))
+
+    assert result["status"] == "repaired"
+    assert json.loads(mcp.read_text(encoding="utf-8")) == {"mcpServers": {}}
+
+
+def test_repair_is_dry_runnable(tmp_path):
+    mcp = tmp_path / ".mcp.json"
+    mcp.write_text("{}", encoding="utf-8")
+
+    result = remove_server_entry(str(mcp), dry_run=True)
+
+    assert result["status"] == "repaired"
+    assert mcp.read_text(encoding="utf-8") == "{}"  # untouched
+    assert not (tmp_path / ".mcp.json.tmp").exists()
+
+
+def test_already_valid_empty_record_is_noop(tmp_path):
+    """A valid {"mcpServers": {}} with no other keys is left exactly as-is."""
+    mcp = tmp_path / ".mcp.json"
+    _write(mcp, {"mcpServers": {}})
+    before = mcp.read_text(encoding="utf-8")
+
+    result = remove_server_entry(str(mcp))
+
+    assert result["status"] == "absent"
+    assert mcp.read_text(encoding="utf-8") == before
+
+
+def test_other_content_without_mcpservers_is_left_alone(tmp_path):
+    """A file with other content but no mcpServers is NOT ours to repair."""
+    mcp = tmp_path / ".mcp.json"
+    _write(mcp, {"foo": 1})
+    before = mcp.read_text(encoding="utf-8")
+
+    result = remove_server_entry(str(mcp))
+
+    assert result["status"] == "absent"
+    assert mcp.read_text(encoding="utf-8") == before
+
+
+def test_whitespace_only_file_is_skipped(tmp_path):
+    mcp = tmp_path / ".mcp.json"
+    mcp.write_text("   \n", encoding="utf-8")
+
+    result = remove_server_entry(str(mcp))
+
+    assert result["status"] == "skip"
+    assert mcp.read_text(encoding="utf-8") == "   \n"
 
 
 # ── Dry-run: report, write nothing ──────────────────────────────────────

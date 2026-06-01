@@ -46,10 +46,18 @@ def remove_server_entry(
             }
 
         ``status`` meanings:
-          ``"missing"`` — file does not exist (nothing to do)
-          ``"skip"``    — file exists but is not a valid JSON object (untouched)
-          ``"absent"``  — file valid but had no such entry (nothing changed)
-          ``"removed"`` — the entry was removed (or, under dry_run, would be)
+          ``"missing"``  — file does not exist (nothing to do)
+          ``"skip"``     — file exists but is not a valid JSON object (untouched)
+          ``"absent"``   — file valid, no entry of ours, nothing to repair
+          ``"removed"``  — the entry was removed (or, under dry_run, would be);
+                           ``mcpServers`` is left as a valid (possibly empty)
+                           record — never written as bare ``{}``
+          ``"repaired"`` — our entry was absent but the file was a contentless
+                           invalid shape (e.g. ``{}`` left by an older version);
+                           rewritten to a valid ``{"mcpServers": {}}``
+
+        The file is NEVER deleted; an emptied config becomes ``{"mcpServers":
+        {}}`` (valid), not ``{}`` (which Claude Code rejects).
 
         ``preserved`` is only meaningful when the file parsed as a JSON object
         (``absent``/``removed``); it is ``[]`` for ``missing``/``skip``.
@@ -72,38 +80,53 @@ def remove_server_entry(
         return result
 
     servers = data.get("mcpServers")
-    if not isinstance(servers, dict) or server_name not in servers:
-        # No entry of ours. Report any other servers present for transparency.
-        result["status"] = "absent"
-        if isinstance(servers, dict):
-            result["preserved"] = [k for k in servers if k != server_name]
+
+    # ── Our entry is present → remove just it ──────────────────────────
+    if isinstance(servers, dict) and server_name in servers:
+        # Snapshot what survives BEFORE mutating, in the file's own insertion
+        # order; the removed key is never in preserved.
+        result["status"] = "removed"
+        result["removed"] = [server_name]
+        result["preserved"] = [k for k in servers if k != server_name]
+
+        if dry_run:
+            return result  # report only — touch nothing (not even the .tmp)
+
+        servers.pop(server_name, None)
+        # IMPORTANT: keep `mcpServers` as a (possibly empty) record. Dropping the
+        # key produces a file Claude Code rejects ("mcpServers: expected record,
+        # received undefined"). An empty {} record is valid; never write {}.
+        _atomic_write(mcp_path, data)
         return result
 
-    # Our entry is present. Snapshot what survives BEFORE mutating, in the
-    # file's own insertion order; the removed key is never in preserved.
-    result["status"] = "removed"
-    result["removed"] = [server_name]
-    result["preserved"] = [k for k in servers if k != server_name]
-
-    if dry_run:
-        # Report only — touch nothing on disk (not even the .tmp sibling).
+    # ── Our entry is absent ────────────────────────────────────────────
+    # Self-repair the shape older buggy versions left behind: a contentless
+    # file whose mcpServers is missing/null/empty AND which has no other
+    # top-level keys (e.g. the invalid `{}`). Rewrite it to a VALID empty
+    # record — never delete, never touch files that carry other content.
+    other_keys = [k for k in data if k != "mcpServers"]
+    servers_empty = servers is None or servers == {}
+    if servers_empty and not other_keys and data != {"mcpServers": {}}:
+        result["status"] = "repaired"
+        if dry_run:
+            return result
+        _atomic_write(mcp_path, {"mcpServers": {}})
         return result
 
-    # Remove ONLY our entry; every other server and top-level key is preserved
-    # in its original insertion order (dicts keep order through load/dump).
-    servers.pop(server_name, None)
+    # Nothing of ours and nothing to repair — leave the file untouched.
+    result["status"] = "absent"
+    if isinstance(servers, dict):
+        result["preserved"] = [k for k in servers if k != server_name]
+    return result
 
-    # Cosmetic: drop the mcpServers container only if it is now empty.
-    # Never delete the file itself — if the doc reduces to {}, leave {} on disk.
-    if not servers:
-        data.pop("mcpServers", None)
 
+def _atomic_write(mcp_path: str, data: dict) -> None:
+    """Write JSON to mcp_path atomically via a tmp sibling + os.replace."""
     tmp = mcp_path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
     os.replace(tmp, mcp_path)
-    return result
 
 
 def _format_summary(result: dict) -> str:
@@ -128,6 +151,17 @@ def _format_summary(result: dict) -> str:
             f"Vibe Cognition removed a stale `{SERVER_NAME}` entry from this "
             f"project's .mcp.json (preserved: {pres}). The plugin now provides "
             f"the MCP server; no action needed."
+        )
+
+    if status == "repaired":
+        if dry:
+            return (
+                "[dry-run] Would repair an empty/invalid .mcp.json to a valid "
+                "empty mcpServers record. No changes written."
+            )
+        return (
+            "Vibe Cognition repaired an empty/invalid .mcp.json (restored a "
+            "valid empty `mcpServers` record). No action needed."
         )
 
     if not dry:
