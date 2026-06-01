@@ -97,22 +97,30 @@ def main():
     """Entry point for vibe-cognition-prime CLI command.
 
     Outputs JSON for Claude Code SessionStart/PreCompact hooks.
-    Reads REPO_PATH env var or uses cwd. Exits silently if .cognition/ doesn't exist.
+    Reads REPO_PATH env var or uses cwd. Optionally prepends a one-line
+    migration note from VIBE_MIGRATION_NOTE (set by the SessionStart hook when
+    it removes a stale per-project MCP entry), so that note is surfaced in the
+    same hook output instead of suppressing project-context injection.
+    Exits silently only when there is neither a note nor a .cognition/ dir.
     """
+    note = os.environ.get("VIBE_MIGRATION_NOTE", "").strip()
     repo_path = Path(os.environ.get("REPO_PATH", Path.cwd()))
     cognition_dir = repo_path / ".cognition"
 
-    if not cognition_dir.exists():
-        # Not a cognition-enabled project — exit silently
-        sys.exit(0)
+    sections: list[str] = []
+    if note:
+        sections.append(note)
+    if cognition_dir.exists():
+        sections.append(generate_prime(CognitionStorage(cognition_dir)))
 
-    storage = CognitionStorage(cognition_dir)
-    markdown = generate_prime(storage)
+    if not sections:
+        # Nothing to inject (no migration note, not a cognition-enabled project)
+        sys.exit(0)
 
     output = {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
-            "additionalContext": markdown,
+            "additionalContext": "\n\n".join(sections),
         }
     }
     json.dump(output, sys.stdout)

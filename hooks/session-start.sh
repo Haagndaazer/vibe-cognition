@@ -58,26 +58,26 @@ fi
 # project-scope entry OUTRANKS the plugin definition — so remove any stale
 # entry. The removal is surgical: only our entry is touched; every other MCP
 # server and top-level key is preserved (see vibe_cognition.migrate_mcp).
+# Capture a one-line note ONLY when a stale entry is actually removed (empty
+# otherwise). prime (Step 4) surfaces it, so we never drop project-context
+# injection on the migration session. Guarded for set -e: a failure -> "".
 MCP_JSON="${PROJECT_DIR_NATIVE}/.mcp.json"
-UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
+MIGRATE_NOTE=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
     uv run --no-sync --project "${PLUGIN_ROOT}" \
-    python -m vibe_cognition.migrate_mcp "$MCP_JSON" >/dev/null 2>&1 || true
+    python -m vibe_cognition.migrate_mcp "$MCP_JSON" 2>/dev/null) || MIGRATE_NOTE=""
 
-# ── Step 4: Inject project context via prime ──────
-COGNITION_DIR="${PROJECT_DIR}/.cognition"
+# ── Step 4: Inject project context (+ any migration note) via prime ──────
+# prime self-guards: it emits output when there is a migration note OR a
+# .cognition/ dir, and exits silently otherwise.
+PRIME_OUTPUT=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
+    REPO_PATH="${PROJECT_DIR_NATIVE}" \
+    VIBE_MIGRATION_NOTE="${MIGRATE_NOTE}" \
+    uv run --no-sync --project "${PLUGIN_ROOT}" \
+    python -m vibe_cognition.cognition.prime 2>/dev/null) || PRIME_OUTPUT=""
 
-if [ -d "$COGNITION_DIR" ]; then
-    PRIME_OUTPUT=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
-        REPO_PATH="${PROJECT_DIR_NATIVE}" \
-        uv run --no-sync --project "${PLUGIN_ROOT}" \
-        python -m vibe_cognition.cognition.prime 2>/dev/null) || PRIME_OUTPUT=""
-
-    if [ -n "$PRIME_OUTPUT" ]; then
-        echo "$PRIME_OUTPUT"
-        exit 0
-    fi
+if [ -n "$PRIME_OUTPUT" ]; then
+    echo "$PRIME_OUTPUT"
+else
+    echo '{}'
 fi
-
-# No cognition dir or prime failed — output empty
-echo '{}'
 exit 0
