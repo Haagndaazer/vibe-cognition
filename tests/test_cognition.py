@@ -1,8 +1,6 @@
 """Tests for the cognition history graph module."""
 
 import json
-import tempfile
-from pathlib import Path
 
 import pytest
 
@@ -366,6 +364,163 @@ class TestJSONLPersistence:
         storage = CognitionStorage(cog_dir)
         assert storage.has_node("n1")
         assert storage.has_node("n2")
+
+
+class TestJournalCatchUp:
+    """Multi-process convergence: a running store re-ingests journal lines
+    appended by another process sharing the same project journal."""
+
+    def _node(self, node_id, author="a", context=None, refs=None, ts="2026-03-15T10:00:00Z"):
+        return CognitionNode(
+            id=node_id, type=CognitionNodeType.DECISION,
+            summary=f"summary {node_id}", detail="d",
+            context=context or ["ctx"], references=refs or [],
+            timestamp=ts, author=author,
+        )
+
+    def test_concurrent_instances_converge(self, tmp_path):
+        """storeB sees a node storeA wrote AFTER storeB started, on next op."""
+        cog_dir = tmp_path / ".cognition"
+        store_a = CognitionStorage(cog_dir)
+        store_b = CognitionStorage(cog_dir)  # both live, both hydrated empty
+
+        store_a.add_node(self._node("a1", author="alice"))
+
+        # B's unsynced in-memory view does NOT have it yet...
+        assert "a1" not in store_b._graph
+        # ...but any synced op catches up first, so the node is visible.
+        assert store_b.has_node("a1")
+        assert "a1" in store_b._graph  # now ingested
+
+    def test_cross_author_edge_after_catch_up(self, tmp_path):
+        """The reported bug: A can link to B's node once A catches up."""
+        cog_dir = tmp_path / ".cognition"
+        store_a = CognitionStorage(cog_dir)
+        store_b = CognitionStorage(cog_dir)
+
+        store_a.add_node(self._node("a1", author="alice"))
+        store_b.add_node(self._node("b1", author="bob"))
+
+        # A has never seen b1 in memory, but add_edge catches up first.
+        edge = CognitionEdge(
+            from_id="a1", to_id="b1",
+            edge_type=CognitionEdgeType.RELATES_TO,
+            timestamp="2026-03-15T10:02:00Z",
+        )
+        assert store_a.add_edge(edge) is True
+        succ = store_a.get_successors("a1", CognitionEdgeType.RELATES_TO)
+        assert [t for t, _ in succ] == ["b1"]
+
+    def test_repeated_ops_do_not_double_count(self, tmp_path):
+        """Catch-up replays each journal line at most once (offset guards it)."""
+        cog_dir = tmp_path / ".cognition"
+        store = CognitionStorage(cog_dir)
+        store.add_node(self._node("n1"))
+        store.add_node(self._node("n2"))
+
+        s1 = store.get_statistics()
+        # Several no-op reads must not inflate counts by re-replaying our own writes.
+        store.get_statistics()
+        store.has_node("n1")
+        s2 = store.get_statistics()
+        assert s1["nodes"] == s2["nodes"] == 2
+        assert s1["edges"] == s2["edges"]
+
+    def test_truncation_triggers_full_rehydrate(self, tmp_path):
+        """If the journal shrinks below the offset, the graph is rebuilt and the
+        reference index is reset (no phantom refs survive)."""
+        cog_dir = tmp_path / ".cognition"
+        store = CognitionStorage(cog_dir)
+        store.add_node(self._node("n1", refs=["commit:abcdef0"]))
+        store.add_node(self._node("n2", refs=["commit:abcdef0"]))
+        assert store.has_node("n1") and store.has_node("n2")
+
+        # Wipe the journal entirely (e.g. a .cognition reset by another process).
+        (cog_dir / "journal.jsonl").write_bytes(b"")
+
+        # Any op detects the shrink and re-hydrates from the (now empty) top.
+        assert store.get_statistics()["nodes"] == 0
+        assert "n1" not in store._graph
+        assert store._reference_index.get("commit:abcdef0") in (None, [])
+
+    def test_torn_trailing_line_is_eventually_ingested(self, tmp_path):
+        """A half-written final line is NOT skipped+lost: the offset stays before
+        it, and once the writer completes the line it gets ingested."""
+        cog_dir = tmp_path / ".cognition"
+        cog_dir.mkdir(parents=True)
+        journal = cog_dir / "journal.jsonl"
+
+        complete = (
+            b'{"action":"add_node","data":{"id":"n1","type":"decision",'
+            b'"summary":"ok","detail":"d","context":[],"references":[],'
+            b'"severity":null,"timestamp":"2026-03-15T10:00:00Z","author":"t"}}\n'
+        )
+        partial = (
+            b'{"action":"add_node","data":{"id":"n2","type":"decision",'
+            b'"summary":"torn","detail":"d"'  # cut off mid-line, no newline
+        )
+        journal.write_bytes(complete + partial)
+
+        store = CognitionStorage(cog_dir)  # __init__ catches up
+        assert store.has_node("n1")
+        assert not store.has_node("n2")          # torn line not applied
+        assert store._offset == len(complete)    # offset parked before the torn tail
+
+        # Writer finishes the line.
+        rest = (
+            b',"context":[],"references":[],"severity":null,'
+            b'"timestamp":"2026-03-15T10:01:00Z","author":"t"}}\n'
+        )
+        with open(journal, "ab") as f:
+            f.write(rest)
+
+        assert store.has_node("n2")              # now ingested on next op
+        assert store._offset == len(complete) + len(partial) + len(rest)
+
+    def test_corrupt_complete_line_is_skipped(self, tmp_path):
+        """A fully-written garbage line is skipped; surrounding valid lines load
+        and the offset advances past all of them."""
+        cog_dir = tmp_path / ".cognition"
+        cog_dir.mkdir(parents=True)
+        journal = cog_dir / "journal.jsonl"
+        journal.write_bytes(
+            b'{"action":"add_node","data":{"id":"n1","type":"decision","summary":"ok",'
+            b'"detail":"d","context":[],"references":[],"severity":null,'
+            b'"timestamp":"2026-03-15T10:00:00Z","author":"t"}}\n'
+            b'GARBAGE BUT NEWLINE TERMINATED\n'
+            b'{"action":"add_node","data":{"id":"n2","type":"fail","summary":"ok2",'
+            b'"detail":"d","context":[],"references":[],"severity":null,'
+            b'"timestamp":"2026-03-15T11:00:00Z","author":"t"}}\n'
+        )
+        store = CognitionStorage(cog_dir)
+        assert store.has_node("n1")
+        assert store.has_node("n2")
+        assert store._offset == (cog_dir / "journal.jsonl").stat().st_size
+
+    def test_get_history_reflects_other_process(self, tmp_path):
+        """get_history_for_context (queries.py) goes through a synced accessor,
+        so it reflects another process's writes."""
+        cog_dir = tmp_path / ".cognition"
+        store_a = CognitionStorage(cog_dir)
+        store_b = CognitionStorage(cog_dir)
+
+        store_a.add_node(self._node("a1", author="alice", context=["zebra-topic"]))
+
+        results = get_history_for_context(store_b, "zebra-topic")
+        assert [n["id"] for n in results] == ["a1"]
+
+    def test_reload_reports_before_after(self, tmp_path):
+        """reload() fully re-replays and reports counts."""
+        cog_dir = tmp_path / ".cognition"
+        store_a = CognitionStorage(cog_dir)
+        store_b = CognitionStorage(cog_dir)
+        store_a.add_node(self._node("a1"))
+        store_a.add_node(self._node("a2"))
+
+        # Force B fully stale by NOT touching it, then reload.
+        stats = store_b.reload()
+        assert stats["nodes_before"] == 0
+        assert stats["nodes_after"] == 2
 
 
 class TestQueries:

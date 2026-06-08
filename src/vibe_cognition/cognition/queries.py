@@ -122,13 +122,15 @@ def get_history_for_context(
     term_lower = context_term.lower()
     results = []
 
-    for node_id, data in storage.graph.nodes(data=True):
+    # get_all_nodes() is synced (catches up on the journal under the lock), so
+    # this reflects writes from other processes — unlike a raw storage.graph read.
+    for data in storage.get_all_nodes():
         if node_type and data.get("type") != node_type.value:
             continue
 
         context_list = data.get("context", [])
         if any(term_lower in c.lower() for c in context_list):
-            results.append({"id": node_id, **data})
+            results.append(data)
 
     results.sort(key=lambda n: n.get("timestamp", ""), reverse=True)
     return results

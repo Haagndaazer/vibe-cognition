@@ -4,6 +4,7 @@ import json
 import logging
 import threading
 from collections import defaultdict
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,12 @@ class CognitionStorage:
 
     Writes append to JSONL immediately. The NetworkX graph is hydrated from
     JSONL at startup and updated in-place on every write.
+
+    The journal is the shared source of truth. Multiple server processes (one
+    per Claude session) may share a single project journal, so before every
+    public operation the store *catches up* — replaying any journal lines
+    appended since it last read (by this or any other process). This keeps
+    concurrent sessions converged without a restart or a background watcher.
     """
 
     def __init__(self, cognition_dir: Path):
@@ -38,16 +45,44 @@ class CognitionStorage:
         self._graph = nx.MultiDiGraph()
         self._reference_index: dict[str, list[str]] = defaultdict(list)
         self._lock = threading.RLock()
+        # Byte offset into the journal up to which we've replayed. Only ever
+        # advanced past complete, newline-terminated lines (see _catch_up).
+        self._offset = 0
+        # Re-entrancy depth for _synced(): catch-up runs once per outermost op.
+        self._sync_depth = 0
 
         self._dir.mkdir(parents=True, exist_ok=True)
 
-        if self._journal_path.exists():
-            self._hydrate()
+        # Initial hydrate is just a catch-up from offset 0.
+        self._catch_up()
 
     @property
     def graph(self) -> nx.MultiDiGraph:
-        """Access the underlying NetworkX graph."""
+        """Access the underlying NetworkX graph.
+
+        NOTE: this is an UNSYNCED view — it does not trigger journal catch-up.
+        Prefer the public synced methods (or ``snapshot()``) when correctness
+        across concurrent processes matters.
+        """
         return self._graph
+
+    @contextmanager
+    def _synced(self):
+        """Acquire the lock and catch up on the journal before the operation.
+
+        Re-entrant: the RLock allows nested public calls (e.g.
+        ``create_deterministic_edges`` -> ``add_edge``), and the depth counter
+        ensures the journal catch-up runs only for the outermost call, not on
+        every inner write.
+        """
+        with self._lock:
+            if self._sync_depth == 0:
+                self._catch_up()
+            self._sync_depth += 1
+            try:
+                yield
+            finally:
+                self._sync_depth -= 1
 
     # ── Write operations ──────────────────────────────────────────────
 
@@ -57,7 +92,7 @@ class CognitionStorage:
         Args:
             node: The cognition node to add
         """
-        with self._lock:
+        with self._synced():
             self._graph.add_node(
                 node.id,
                 type=node.type.value,
@@ -85,7 +120,7 @@ class CognitionStorage:
         Returns:
             True if both nodes exist and the edge was added
         """
-        with self._lock:
+        with self._synced():
             if edge.from_id not in self._graph or edge.to_id not in self._graph:
                 logger.warning(
                     f"Cannot add edge: node(s) missing "
@@ -114,7 +149,7 @@ class CognitionStorage:
         Returns:
             True if the node exists and was updated
         """
-        with self._lock:
+        with self._synced():
             if node_id not in self._graph:
                 return False
 
@@ -134,7 +169,7 @@ class CognitionStorage:
         Returns:
             True if the node existed and was removed
         """
-        with self._lock:
+        with self._synced():
             if node_id not in self._graph:
                 return False
 
@@ -163,7 +198,7 @@ class CognitionStorage:
         Returns:
             True if at least one edge was removed
         """
-        with self._lock:
+        with self._synced():
             if not self._graph.has_edge(from_id, to_id):
                 return False
 
@@ -200,7 +235,7 @@ class CognitionStorage:
         Returns:
             Number of edges redirected
         """
-        with self._lock:
+        with self._synced():
             if old_node_id not in self._graph or new_node_id not in self._graph:
                 return 0
 
@@ -253,14 +288,14 @@ class CognitionStorage:
         Returns:
             Node data dict or None if not found
         """
-        with self._lock:
+        with self._synced():
             if node_id in self._graph:
                 return dict(self._graph.nodes[node_id])
             return None
 
     def has_node(self, node_id: str) -> bool:
         """Check if a node exists."""
-        with self._lock:
+        with self._synced():
             return node_id in self._graph
 
     def get_all_nodes(self) -> list[dict[str, Any]]:
@@ -269,7 +304,7 @@ class CognitionStorage:
         Returns:
             List of node data dicts with 'id' included
         """
-        with self._lock:
+        with self._synced():
             return [
                 {"id": node_id, **data}
                 for node_id, data in self._graph.nodes(data=True)
@@ -284,7 +319,7 @@ class CognitionStorage:
         Returns:
             List of matching node data dicts
         """
-        with self._lock:
+        with self._synced():
             return [
                 {"id": node_id, **data}
                 for node_id, data in self._graph.nodes(data=True)
@@ -305,7 +340,7 @@ class CognitionStorage:
         Returns:
             List of node data dicts sorted by timestamp descending
         """
-        with self._lock:
+        with self._synced():
             nodes = []
             for node_id, data in self._graph.nodes(data=True):
                 if node_type and data.get("type") != node_type.value:
@@ -333,7 +368,7 @@ class CognitionStorage:
         Returns:
             List of uncurated node dicts, sorted oldest-first by timestamp
         """
-        with self._lock:
+        with self._synced():
             uncurated = []
             for node_id, data in self._graph.nodes(data=True):
                 if node_type and data.get("type") != node_type.value:
@@ -374,7 +409,7 @@ class CognitionStorage:
         Returns:
             List of (target_id, edge_data) tuples
         """
-        with self._lock:
+        with self._synced():
             if node_id not in self._graph:
                 return []
 
@@ -398,7 +433,7 @@ class CognitionStorage:
         Returns:
             List of (source_id, edge_data) tuples
         """
-        with self._lock:
+        with self._synced():
             if node_id not in self._graph:
                 return []
 
@@ -414,7 +449,7 @@ class CognitionStorage:
         Returns:
             Dictionary with node/edge counts by type
         """
-        with self._lock:
+        with self._synced():
             stats: dict[str, int] = {
                 "nodes": self._graph.number_of_nodes(),
                 "edges": self._graph.number_of_edges(),
@@ -494,7 +529,7 @@ class CognitionStorage:
         Returns:
             Number of edges created
         """
-        with self._lock:
+        with self._synced():
             node_data = self.get_node(node_id)
             if not node_data:
                 return 0
@@ -572,24 +607,114 @@ class CognitionStorage:
         with open(self._journal_path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 
-    def _hydrate(self) -> None:
-        """Replay the JSONL journal to rebuild the in-memory graph."""
-        count = 0
-        with open(self._journal_path, encoding="utf-8") as f:
-            for line_num, line in enumerate(f, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    self._replay_entry(entry)
-                    count += 1
-                except (json.JSONDecodeError, KeyError, ValueError) as e:
-                    logger.warning(f"Skipping malformed journal line {line_num}: {e}")
+    def _catch_up(self) -> int:
+        """Replay journal lines appended since we last read; return entry count.
 
-        logger.info(f"Cognition graph hydrated: {count} entries, "
-                     f"{self._graph.number_of_nodes()} nodes, "
-                     f"{self._graph.number_of_edges()} edges")
+        Caller MUST hold ``self._lock`` (``_synced`` and ``reload`` do). This is
+        the single mechanism that keeps a running process converged with writes
+        made by other processes sharing the same journal.
+
+        Safety:
+          - Reads in BINARY so the byte offset matches ``stat().st_size`` exactly
+            (the journal is written text-mode and is CRLF on Windows; binary
+            read + ``splitlines()`` handles ``\\r\\n`` and keeps byte accounting
+            consistent).
+          - Advances the offset ONLY past complete, newline-terminated lines. If
+            a concurrent writer's final line is half-written, we leave the offset
+            before it and re-read it next pass once it's complete — never losing
+            the entry.
+          - If the journal shrank below our offset (truncation / reset), we wipe
+            the in-memory state and re-hydrate from the top.
+        """
+        try:
+            size = self._journal_path.stat().st_size
+        except FileNotFoundError:
+            return 0
+
+        if size == self._offset:
+            return 0  # nothing new — cheap path (one stat, no open)
+
+        if size < self._offset:
+            # Journal shrank: truncated, rotated, or reset. Rebuild from scratch.
+            logger.info("Journal shrank below replay offset; re-hydrating from top")
+            self._graph = nx.MultiDiGraph()
+            self._reference_index = defaultdict(list)
+            self._offset = 0
+
+        with open(self._journal_path, "rb") as f:
+            f.seek(self._offset)
+            raw = f.read()
+
+        last_nl = raw.rfind(b"\n")
+        if last_nl == -1:
+            return 0  # no complete line yet — do not advance past a torn append
+
+        complete = raw[: last_nl + 1]
+        self._offset += len(complete)
+
+        count = 0
+        for line in complete.decode("utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                self._replay_entry(json.loads(line))
+                count += 1
+            except (json.JSONDecodeError, KeyError, ValueError) as e:
+                logger.warning(f"Skipping malformed journal line: {e}")
+
+        if count:
+            logger.info(
+                f"Cognition graph caught up: +{count} entries, "
+                f"{self._graph.number_of_nodes()} nodes, "
+                f"{self._graph.number_of_edges()} edges"
+            )
+        return count
+
+    def reload(self) -> dict[str, int]:
+        """Force a full re-hydrate from the journal; return before/after stats.
+
+        Auto catch-up makes this unnecessary for correctness, but it's an
+        explicit lever (and a "am I converged?" diagnostic) exposed via the
+        ``cognition_reload`` MCP tool.
+        """
+        with self._lock:
+            before = {
+                "nodes": self._graph.number_of_nodes(),
+                "edges": self._graph.number_of_edges(),
+            }
+            self._graph = nx.MultiDiGraph()
+            self._reference_index = defaultdict(list)
+            self._offset = 0
+            self._catch_up()
+            after = {
+                "nodes": self._graph.number_of_nodes(),
+                "edges": self._graph.number_of_edges(),
+            }
+            return {
+                "nodes_before": before["nodes"],
+                "edges_before": before["edges"],
+                "nodes_after": after["nodes"],
+                "edges_after": after["edges"],
+            }
+
+    def snapshot(self) -> dict[str, Any]:
+        """Return a synced, point-in-time copy of nodes and edges.
+
+        Catches up on the journal first (via ``_synced``), then returns plain
+        lists so callers (e.g. the dashboard) never iterate the live graph
+        unlocked. Edges are ``(from_id, to_id, type, data)`` tuples.
+        """
+        with self._synced():
+            nodes = [
+                {"id": node_id, **data}
+                for node_id, data in self._graph.nodes(data=True)
+            ]
+            edges = [
+                (u, v, key, dict(data))
+                for u, v, key, data in self._graph.edges(keys=True, data=True)
+            ]
+            return {"nodes": nodes, "edges": edges}
 
     def _replay_entry(self, entry: dict[str, Any]) -> None:
         """Replay a single journal entry into the graph (no journal write).

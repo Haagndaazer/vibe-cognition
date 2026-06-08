@@ -659,3 +659,20 @@ def register_cognition_tools(mcp) -> None:
 
         return {"removed": True, "from_id": from_id, "to_id": to_id, "edge_type": edge_type}
 
+    @mcp.tool()
+    def cognition_reload(ctx: Context) -> dict[str, Any]:
+        """Force-reload the cognition graph from the on-disk journal.
+
+        The store auto-catches-up on the shared journal before every operation,
+        so concurrent sessions normally converge on their own. This tool is an
+        explicit lever / diagnostic: it fully re-replays journal.jsonl and
+        reports node/edge counts before and after, so you can confirm the
+        in-memory graph matches what's on disk (e.g. after another agent on the
+        same project recorded nodes).
+
+        Returns:
+            {"nodes_before", "edges_before", "nodes_after", "edges_after"}
+        """
+        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+        return storage.reload()
+

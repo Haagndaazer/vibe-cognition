@@ -37,7 +37,9 @@ def get_graph(request):
     """
     lc = _ctx(request)
     storage = lc["cognition_storage"]
-    all_nodes = storage.get_all_nodes()
+    # snapshot() catches up on the journal and returns nodes + edges together
+    # under the lock — a consistent, converged view (no raw graph/_lock reach-in).
+    snap = storage.snapshot()
 
     nodes_out = [
         {
@@ -51,21 +53,20 @@ def get_graph(request):
                 "severity": n.get("severity"),
             }
         }
-        for n in all_nodes
+        for n in snap["nodes"]
     ]
 
-    edges_out = []
-    graph = storage.graph
-    with storage._lock:  # MultiDiGraph iteration must be locked
-        for source_id, target_id, key, edge_data in graph.edges(keys=True, data=True):
-            edges_out.append({
-                "data": {
-                    "id": f"{source_id}__{key}__{target_id}",
-                    "source": source_id,
-                    "target": target_id,
-                    "type": edge_data.get("type", key),
-                }
-            })
+    edges_out = [
+        {
+            "data": {
+                "id": f"{source_id}__{key}__{target_id}",
+                "source": source_id,
+                "target": target_id,
+                "type": edge_data.get("type", key),
+            }
+        }
+        for source_id, target_id, key, edge_data in snap["edges"]
+    ]
 
     return JSONResponse({"nodes": nodes_out, "edges": edges_out})
 

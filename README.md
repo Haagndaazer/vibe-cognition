@@ -122,6 +122,7 @@ The embedding model (~250MB) also downloads on first use from Hugging Face. Afte
 | `cognition_mark_curated` | Mark a node as reviewed by the curation skill |
 | `cognition_get_neighbors` | Get all connections to a node (all edge types) |
 | `cognition_remove_edge` | Remove a specific edge between two nodes |
+| `cognition_reload` | Force-reload the graph from the on-disk journal (diagnostic; the store auto-converges with concurrent sessions) |
 
 ### Service Tools
 
