@@ -10,6 +10,7 @@ from fastmcp import FastMCP
 from .cognition import CognitionStorage
 from .config import Settings, setup_logging
 from .embeddings import ChromaDBStorage, EmbeddingGenerator
+from .instructions import SERVER_INSTRUCTIONS
 from .tools import register_all_tools
 
 logger = logging.getLogger(__name__)
@@ -211,31 +212,9 @@ async def lifespan(server: FastMCP):
     logger.info("Shutdown complete")
 
 
-# Standing behavioral defaults, surfaced to the agent every session via the MCP
-# `initialize` handshake (Claude Code renders these under "MCP Server Instructions").
-# Kept ASCII-only on purpose (Windows stdout/mojibake safety).
-SERVER_INSTRUCTIONS = (
-    "Vibe Cognition maintains this project's knowledge graph: the durable, "
-    "cross-session record of decisions, failures, discoveries, constraints, "
-    "patterns, and reasoning. Two standing practices keep it valuable for "
-    "non-trivial work:\n"
-    "\n"
-    "1. CHECK HISTORY FIRST. Before starting a new task or writing a plan, "
-    "search the graph (cognition_search, cognition_get_history) so past "
-    "decisions and known failures are respected and not re-litigated.\n"
-    "\n"
-    "2. RECORD AS YOU WORK. Capture cognitive history with cognition_record as "
-    "it happens: decisions (with rejected alternatives), failures, non-obvious "
-    "discoveries, constraints, reusable patterns, and an episode when a unit of "
-    "work completes. Include references (issue/PR/commit) so nodes link to "
-    "their episode.\n"
-    "\n"
-    "After recording, run the /vibe-curate skill to add semantic edges; only "
-    "deterministic part_of edges (from shared references) are automatic. For "
-    "full guidance, use the /vibe-cognition skill."
-)
-
-# Create the MCP server
+# Create the MCP server. SERVER_INSTRUCTIONS (single source of truth in instructions.py,
+# also used by the post-compact re-injection hook) is surfaced to the agent every session
+# via the MCP `initialize` handshake ("MCP Server Instructions").
 mcp = FastMCP("Vibe Cognition", instructions=SERVER_INSTRUCTIONS, lifespan=lifespan)
 
 # Register all tools
