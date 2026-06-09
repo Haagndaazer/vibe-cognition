@@ -113,7 +113,8 @@ def main():
     print("   and changed files as context. Include \"commit:<hash>\" in references.")
     print("2. ENTITY nodes for any decisions, discoveries, constraints, or patterns")
     print("   visible in the commit. Keep entity summaries under 250 chars.")
-    print("   Use the same references so the curator can link them to the episode.")
+    print("   Use the same references so they link to the episode (deterministic")
+    print("   part_of matching). Then run /vibe-curate to add semantic edges.")
 
 
 if __name__ == "__main__":

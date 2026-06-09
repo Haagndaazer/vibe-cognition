@@ -39,7 +39,6 @@ def _build_lifespan_ctx(repo_path: Path, load_embeddings: bool) -> dict[str, Any
         "cognition_storage": cognition_storage,
         "cognition_embedding_storage": cognition_embedding_storage,
         "embedding_generator": None,
-        "cognition_curator": None,
         "embedding_ready": ready_event,
         "embedding_error": None,
     }

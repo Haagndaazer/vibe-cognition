@@ -57,7 +57,7 @@ class Settings(BaseSettings):
         description="Embedding vector dimensions",
     )
 
-    # Ollama settings
+    # Ollama settings (embeddings backend only)
     ollama_base_url: str = Field(
         default="http://localhost:11434",
         description="Ollama server base URL",
@@ -65,20 +65,6 @@ class Settings(BaseSettings):
     ollama_model: str = Field(
         default="nomic-embed-text",
         description="Ollama model name for embeddings",
-    )
-
-    # Curator settings
-    curator_enabled: bool = Field(
-        default=False,
-        description="Enable automatic background edge curation via local LLM",
-    )
-    curator_model: str = Field(
-        default="qwen3:8b",
-        description="Ollama model for cognition graph curation",
-    )
-    curator_max_candidates: int = Field(
-        default=8,
-        description="Maximum number of candidate nodes to evaluate for edge creation",
     )
 
     @field_validator("repo_path", mode="before")

@@ -9,10 +9,6 @@ from .queries import (
 )
 from .storage import CognitionStorage
 
-# CognitionCurator is NOT imported here to avoid pulling in the heavy
-# embeddings/sentence-transformers dependency chain at import time.
-# Import it directly: from vibe_cognition.cognition.curator import CognitionCurator
-
 __all__ = [
     # Models
     "CognitionEdge",

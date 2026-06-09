@@ -53,6 +53,9 @@ class CognitionEdge(BaseModel):
     to_id: str
     edge_type: CognitionEdgeType
     timestamp: str
+    # Historical default provenance tag, NOT an active curator (that feature was
+    # removed). Real write paths pass an explicit source (deterministic, manual,
+    # batch, curate-skill); this default is the fallback for legacy data.
     source: str = "curator"
 
 

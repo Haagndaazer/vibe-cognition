@@ -1,5 +1,5 @@
 ---
-description: You MUST use this skill any time you need to retrieve information about the project or write project history to persistent memory, retrieving project information without using this skill will affect the clarity of the research. YOu must also use this skill when storing memories about the project. 
+description: You MUST use this skill any time you need to retrieve information about the project or write project history to persistent memory, retrieving project information without using this skill will affect the clarity of the research. You must also use this skill when storing memories about the project. Curation is YOUR job — after recording any nodes you MUST run the /vibe-curate skill to link them; there is no automated background curator.
 ---
 
 # Vibe Cognition — Project Knowledge Graph
@@ -92,7 +92,7 @@ Use the current git user name.
 `critical` / `high` / `normal` / `low`
 
 ### `references` (optional)
-Comma-separated references to external resources. This is how the curator links entities to episodes.
+Comma-separated references to external resources. Shared references are how entities link to their episode — instantly, via deterministic `part_of` matching (no LLM).
 - Examples: "issue:LL-298, pr:97" or "commit:ba64aeb"
 
 ## Querying
@@ -110,19 +110,26 @@ Use these tools to query the cognition graph:
 - **During debugging:** Record `fail` nodes
 - **During incidents:** Record `incident` nodes
 - **When work is complete:** Record an `episode` summarizing the full lifecycle
-- **Always include** `references` (issue/PR numbers) so the curator can link related nodes
+- **Always include** `references` (issue/PR numbers) so nodes link to their episode and `/vibe-curate` can relate them
 - **After recording:** run `/vibe-curate` to link the new nodes — don't wait to be asked (see Final Step)
 
-## Final Step: Curate the New Nodes (do this on your own)
+## Final Step: Curate the New Nodes — MANDATORY, do it yourself
 
-If you recorded **any** nodes during this turn / unit of work, run the `/vibe-curate` skill before you finish responding — **without being asked**. This is the step users most often have to remind you about; own it yourself.
+**Curation is your responsibility. There is no automated background curator.** If you
+recorded **any** nodes during this turn / unit of work, you **MUST** run the
+`/vibe-curate` skill before you finish responding — **without being asked**. This is the
+step users most often have to remind you about; own it yourself, every time.
 
+- This is a hard rule, not a suggestion: recording without curating leaves the new
+  nodes semantically disconnected (only their deterministic `part_of` edges exist).
 - `/vibe-curate` only processes **uncurated** nodes, so it just links what you added — cheap to run after recording.
 - **Always** curate after creating an `episode`.
-- Skip it only if you recorded nothing this turn, or `get_status` shows 0 uncurated nodes.
+- Skip it **only** if you recorded nothing this turn, or `get_status` shows 0 uncurated nodes.
 - This is for **recording** sessions only — if you only queried/retrieved (no new nodes), there is nothing to curate.
 
-Deterministic `part_of` edges are already created on record; this step adds the *semantic* relationships (led_to, resolved_by, supersedes) that make the graph navigable.
+Deterministic `part_of` edges are the *only* edges created automatically (on record).
+This step adds the **semantic** relationships (led_to, resolved_by, supersedes,
+contradicts) that make the graph navigable — and only the agent can do it.
 
 ## Examples
 

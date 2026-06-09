@@ -93,10 +93,13 @@ def _sync_cognition_embeddings(
     logger.info(f"Cognition embedding sync complete: {len(missing)} nodes added")
 
 
-def _load_embeddings_and_curate(config: Settings, context: dict[str, Any]) -> None:
-    """Background thread: load embedding model, init curator, sync embeddings.
+def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None:
+    """Background thread: load embedding model, then sync embeddings + edges.
 
     This runs after the MCP handshake completes so the server starts fast.
+    Semantic curation is NOT done here — it is the agent's job via the
+    `/vibe-curate` skill. The only automatic edges are the deterministic
+    `part_of` edges created from shared references.
     """
     import time
 
@@ -110,23 +113,6 @@ def _load_embeddings_and_curate(config: Settings, context: dict[str, Any]) -> No
 
         # Populate context
         context["embedding_generator"] = embedding_generator
-
-        # Init curator (used for background curation and _record_node enqueue)
-        from .cognition.curator import CognitionCurator
-
-        cognition_curator = CognitionCurator(
-            storage=context["cognition_storage"],
-            embedding_storage=context["cognition_embedding_storage"],
-            embedding_generator=embedding_generator,
-            ollama_base_url=config.ollama_base_url,
-            model=config.curator_model,
-            max_candidates=config.curator_max_candidates,
-        )
-        context["cognition_curator"] = cognition_curator
-        logger.info(
-            f"Cognition curator initialized (model: {config.curator_model}, "
-            f"background={'enabled' if config.curator_enabled else 'disabled'})"
-        )
 
         # Signal that embedding-dependent tools are ready
         context["embedding_ready"].set()
@@ -146,17 +132,6 @@ def _load_embeddings_and_curate(config: Settings, context: dict[str, Any]) -> No
             _sync_cognition_embeddings(
                 cognition_storage, cognition_embedding_storage, embedding_generator
             )
-
-        # Curate uncurated nodes (only if background curation enabled)
-        if config.curator_enabled:
-            if cognition_curator.ensure_model():
-                count = cognition_curator.curate_uncurated_nodes()
-                if count:
-                    logger.info(f"Curator: enqueued {count} uncurated node(s)")
-            else:
-                logger.warning("Curator model not available — skipping startup curation")
-        else:
-            logger.info("Background curation disabled (set CURATOR_ENABLED=true to enable)")
 
     except Exception as e:
         logger.error(f"Background initialization failed: {e}")
@@ -197,7 +172,6 @@ async def lifespan(server: FastMCP):
         "cognition_storage": cognition_storage,
         "cognition_embedding_storage": cognition_embedding_storage,
         "embedding_generator": None,  # Set by background thread
-        "cognition_curator": None,  # Set by background thread
         "embedding_ready": threading.Event(),
         "embedding_error": None,
     }
@@ -205,7 +179,7 @@ async def lifespan(server: FastMCP):
     # ── Background init (2-30s for model, then sync + curation) ────
 
     bg_thread = threading.Thread(
-        target=_load_embeddings_and_curate,
+        target=_load_embeddings_and_sync,
         args=(config, context),
         daemon=True,
     )

@@ -64,7 +64,7 @@ Vibe Cognition uses:
 - **ChromaDB** for local vector storage of cognition node embeddings
 - **sentence-transformers** for generating embeddings locally
 - **NetworkX** for building and querying the in-memory cognition graph
-- **Ollama** (optional) for automatic edge creation between related nodes via a local LLM
+- **Ollama** (optional) as an alternative local embeddings backend
 
 ### Embedding Model
 
@@ -78,7 +78,7 @@ The plugin bundles everything needed — no manual configuration required:
 
 | Component | What It Does |
 |-----------|-------------|
-| **MCP Server** | 13 tools for recording, searching, querying, and visualizing the knowledge graph |
+| **MCP Server** | 14 tools for recording, searching, querying, and visualizing the knowledge graph |
 | `/vibe-cognition` skill | Teaches Claude when and how to capture decisions, failures, discoveries, patterns |
 | `/vibe-curate` skill | Curates semantic edges and identifies clusters using edge-analyzer and cluster-analyzer subagents |
 | `/vibe-backfill` skill | Backfills the cognition graph from git commit history |
@@ -96,7 +96,6 @@ The plugin bundles everything needed — no manual configuration required:
 
 - **Disk**: ~2-4GB for Python dependencies (includes PyTorch), ~250MB for the embedding model (cached at `~/.cache/huggingface/`)
 - **RAM**: ~1-2GB for the embedding model at runtime
-- **Disk (if using curator)**: additional ~5.5GB for the Ollama model
 - **GPU**: Not required. CPU is the default; GPU is used automatically when available
 
 ### First Run
@@ -128,7 +127,7 @@ The embedding model (~250MB) also downloads on first use from Hugging Face. Afte
 
 | Tool | Purpose |
 |------|---------|
-| `get_status` | Graph statistics, embedding status, curator info, edge-type breakdown |
+| `get_status` | Graph statistics, embedding status, edge-type breakdown |
 | `cognition_dashboard` | Launch the local web dashboard (graph viewer + semantic search). Returns the URL and opens it in your browser. |
 
 ## Dashboard
@@ -209,8 +208,8 @@ The cognition graph captures project knowledge — decisions made, approaches th
 ### How It Works
 
 1. **Record nodes** during conversations via `cognition_record` (or automatically via the post-commit hook)
-2. **Deterministic matching** instantly creates `part_of` edges when nodes share references (commit hashes, issue/PR numbers)
-3. **Semantic edges** (led_to, resolved_by, supersedes) are created via the `/vibe-curate` skill, manual `cognition_add_edge` calls, or the opt-in background curator
+2. **Deterministic matching** instantly creates `part_of` edges when nodes share references (commit hashes, issue/PR numbers) — the only automatic edges
+3. **Semantic edges** (led_to, resolved_by, supersedes) are the agent's job: after recording, run the `/vibe-curate` skill (or add them with `cognition_add_edge`)
 4. **Query** with `cognition_search` (semantic) or `cognition_get_history` (by context/type)
 
 ### Node Types
@@ -236,22 +235,16 @@ The cognition graph captures project knowledge — decisions made, approaches th
 | `supersedes` | X replaces Y | Semantic |
 | `contradicts` | X conflicts with Y | Semantic |
 | `relates_to` | Same topic, no causal link | Semantic (use sparingly) |
-| `duplicate_of` | X is semantically identical to Y | Curator only (triggers merge) |
+| `duplicate_of` | X is semantically identical to Y | Reserved for merge logic (not user-created) |
 
 The graph uses a **MultiDiGraph** — multiple edge types between the same pair of nodes are supported (e.g., A can be both `part_of` B and `led_to` B). Each (from, to, edge_type) triple is unique.
 
 ### Curation
 
-Edges are created through three mechanisms:
+Edges are created through two mechanisms:
 
-1. **Deterministic matching** (always on): `part_of` edges are created automatically when nodes share references. No setup needed.
-2. **`/vibe-curate` skill** (recommended): Bundled with the plugin. Provides semantic edge creation (led_to, resolved_by, supersedes) and cluster identification via subagents.
-3. **Background curator** (optional, disabled by default): Uses a local Ollama LLM to automatically create semantic edges in the background.
-
-**For the background curator:**
-1. Install [Ollama](https://ollama.com)
-2. The curator model (`qwen3:8b`) is pulled automatically on first server start
-3. Requires ~5.5GB VRAM (or runs on CPU, slower)
+1. **Deterministic matching** (always on): `part_of` edges are created automatically when nodes share references. No setup needed. This is the *only* automatic edge creation.
+2. **`/vibe-curate` skill** (agent-driven): Curation is the agent's responsibility. After recording any nodes, the agent runs the `/vibe-curate` skill to create semantic edges (led_to, resolved_by, supersedes) and identify clusters via subagents. There is no automated background curator.
 
 ## Configuration
 
@@ -264,11 +257,8 @@ All configuration is optional. Vibe Cognition works out of the box with sensible
 | `EMBEDDING_BACKEND` | `sentence-transformers` | Backend: `sentence-transformers` or `ollama` |
 | `EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5` | Model for sentence-transformers |
 | `EMBEDDING_DIMENSIONS` | `768` | Embedding vector dimensions |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL (if using Ollama) |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL (if using Ollama for embeddings) |
 | `OLLAMA_MODEL` | `nomic-embed-text` | Ollama embedding model |
-| `CURATOR_ENABLED` | `false` | Enable automatic background edge curation via local LLM |
-| `CURATOR_MODEL` | `qwen3:8b` | Ollama model for cognition graph curation |
-| `CURATOR_MAX_CANDIDATES` | `8` | Max candidate nodes to evaluate per curation |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
 ### Using Ollama for Embeddings (Optional)
@@ -289,7 +279,7 @@ This avoids the ~2GB sentence-transformers/PyTorch dependency.
 
 **ChromaDB lock / database errors** — Only one Vibe Cognition instance can run per project at a time. Check for duplicate MCP server instances or other processes using `.cognition/chromadb/`.
 
-**Curator not creating edges** — Verify Ollama is running (`ollama list`). Without Ollama, the curator logs a warning and does not create edges. Nodes are still stored and searchable.
+**Semantic edges not appearing** — Curation is agent-driven: after recording nodes, run the `/vibe-curate` skill to create semantic edges. Only `part_of` edges (from shared references) are automatic. Nodes are stored and searchable regardless.
 
 **Model download failures** — The embedding model (~250MB) is downloaded from Hugging Face on first run. Check your internet connection and proxy settings. Corporate firewalls may block Hugging Face downloads.
 

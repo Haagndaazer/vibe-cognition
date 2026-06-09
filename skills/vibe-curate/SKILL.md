@@ -8,7 +8,7 @@ description: Use this skill after adding new cognitive episodes and entities to 
 
 Analyzes uncurated nodes, proposes and creates semantic relationships (led_to, resolved_by, supersedes), then identifies clusters of densely-connected nodes and creates summary nodes for them.
 
-Deterministic `part_of` edges and background-curator edges are created automatically. This skill handles the **quality semantic** curation pass — reviewing nodes that haven't been processed by this skill yet, even if they already have automatic edges.
+Deterministic `part_of` edges are the only edges created automatically (on record). This skill is the agent's **semantic** curation pass — the way semantic edges get created — reviewing nodes that haven't been processed by this skill yet, even if they already have their automatic `part_of` edges.
 
 ## When to Use
 

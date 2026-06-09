@@ -16,7 +16,6 @@ from ..cognition import (
     get_history_for_context,
     get_reasoning_chain,
 )
-from ..cognition.curator import CognitionCurator
 from ..embeddings import ChromaDBStorage, EmbeddingGenerator
 from .utils import require_embeddings
 
@@ -78,15 +77,10 @@ def _record_node(
             metadata["references"] = ",".join(references_list)
         embedding_storage.upsert_embedding(node_id, embedding, metadata)
 
-    # Create deterministic part_of edges via reference matching
+    # Create deterministic part_of edges via reference matching. This is the ONLY
+    # automatic edge creation — semantic curation (led_to, supersedes, contradicts,
+    # etc.) is the agent's job via the /vibe-curate skill after recording.
     det_edges = storage.create_deterministic_edges(node_id)
-
-    # Enqueue for curator (only if background curation is enabled)
-    config = ctx.request_context.lifespan_context.get("config")
-    if config and config.curator_enabled:
-        curator: CognitionCurator | None = ctx.request_context.lifespan_context.get("cognition_curator")
-        if curator is not None:
-            curator.enqueue(node)
 
     result: dict[str, Any] = {
         "id": node_id,
@@ -123,8 +117,11 @@ def register_cognition_tools(mcp) -> None:
         what failed, what was discovered, assumptions made, constraints identified,
         production incidents, generalized patterns, or episode summaries of completed work.
 
-        Edges to related existing nodes are created automatically by a curator LLM
-        in the background — you do not need to specify relationships manually.
+        CURATION IS YOUR JOB. The only edges created automatically are deterministic
+        `part_of` edges, formed when nodes share references (commit/issue/PR). All
+        semantic relationships (led_to, supersedes, contradicts, resolved_by, relates_to)
+        are NOT created for you — after recording, run the `/vibe-curate` skill to link
+        the new nodes (or add edges manually with cognition_add_edge).
 
         NODE TYPES:
         - decision: A choice between alternatives. Include what was chosen AND rejected.
@@ -148,8 +145,9 @@ def register_cognition_tools(mcp) -> None:
         - detail: Full narrative — everything that happened. Verbose is fine for episodes.
 
         IMPORTANT:
-        - Always include references (issue numbers, PR numbers, commit hashes) so the
-          curator can link related nodes. Format: "issue:LL-298,pr:97,commit:abc123"
+        - Always include references (issue numbers, PR numbers, commit hashes) so nodes
+          link to their episode via deterministic part_of matching, and so /vibe-curate
+          has the signal to relate them. Format: "issue:LL-298,pr:97,commit:abc123"
         - Use both file paths AND topical terms in context for better discovery.
         - author should be the current git user name.
 
@@ -162,7 +160,8 @@ def register_cognition_tools(mcp) -> None:
             author: The current git user name (e.g., "Colton Dyck")
             severity: Optional priority — critical, high, normal, low
             references: Optional external refs, comma-separated. Include issue/PR/commit refs
-                        so the curator can link related nodes. Example: "issue:LL-298,pr:97"
+                        so nodes link to their episode (part_of) and /vibe-curate can
+                        relate them. Example: "issue:LL-298,pr:97"
 
         Returns:
             The created node with ID and timestamp
@@ -315,8 +314,8 @@ def register_cognition_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Create a directed edge between two existing cognition nodes.
 
-        Use this to manually curate relationships that the background curator
-        missed or to create edges during bulk curation.
+        Use this to curate relationships directly — either while running the
+        `/vibe-curate` skill or to add a single edge by hand.
 
         Args:
             from_id: Source node ID (must exist)
@@ -338,7 +337,7 @@ def register_cognition_tools(mcp) -> None:
             return {"error": f"Invalid edge_type '{edge_type}'. Valid: {valid}"}
 
         if et == CognitionEdgeType.DUPLICATE_OF:
-            return {"error": "duplicate_of edges require merge logic. Use cognition_record to let the curator handle duplicates."}
+            return {"error": "duplicate_of edges require merge logic and are not supported here."}
 
         if from_id == to_id:
             return {"error": "Self-referencing edges are not allowed"}
@@ -506,9 +505,10 @@ def register_cognition_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Get cognition nodes not yet reviewed by the curate skill.
 
+        This is the agent's curation worklist — run `/vibe-curate` to process it.
         Returns nodes lacking a curated_by_skill_at marker. Nodes with only
-        deterministic or background-curator edges are still considered
-        uncurated until the curate skill reviews them.
+        deterministic (or legacy) edges are still considered uncurated until the
+        curate skill reviews them.
 
         Args:
             node_type: Optional filter: decision, fail, discovery, assumption,

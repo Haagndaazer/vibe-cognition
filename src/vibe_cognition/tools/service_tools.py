@@ -19,11 +19,10 @@ def register_service_tools(mcp) -> None:
     def get_status(ctx: Context) -> dict[str, Any]:
         """Get the current status of the Vibe Cognition server.
 
-        Returns cognition graph statistics, embedding model status,
-        and curator status.
+        Returns cognition graph statistics and embedding model status.
 
         Returns:
-            Server status including graph stats, embedding readiness, and curator info
+            Server status including graph stats and embedding readiness
         """
         lc = ctx.request_context.lifespan_context
         config = lc.get("config")
@@ -60,12 +59,8 @@ def register_service_tools(mcp) -> None:
         else:
             result["embedding_status"] = "loading"
 
-        # Curator status
-        curator = lc.get("cognition_curator")
-        result["curator"] = {
-            "enabled": config.curator_enabled if config else False,
-            "model": config.curator_model if config else "unknown",
-            "active": curator is not None,
-        }
+        # Curation is agent-driven: only deterministic part_of edges are automatic;
+        # semantic edges are created by the agent via the /vibe-curate skill.
+        result["curation"] = "agent-driven via /vibe-curate (no background curator)"
 
         return result

@@ -358,8 +358,8 @@ class CognitionStorage:
         """Get nodes not yet reviewed by the curate skill.
 
         A node is "uncurated" if it lacks a ``curated_by_skill_at`` attribute.
-        Nodes with only deterministic or background-curator edges are still
-        considered uncurated until the curate skill explicitly marks them.
+        Nodes with only deterministic (or legacy) edges are still considered
+        uncurated until the curate skill explicitly marks them.
 
         Args:
             limit: Maximum number of nodes to return (max 500)
@@ -751,6 +751,9 @@ class CognitionStorage:
                     key=edge_type,
                     type=edge_type,
                     timestamp=data.get("timestamp", ""),
+                    # Historical provenance tag, NOT an active curator. Old journals
+                    # contain many edges sourced "curator"; the background curator
+                    # feature was removed, but the stored tag is left intact.
                     source=data.get("source", "curator"),
                 )
         elif action == "remove_edge":
