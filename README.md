@@ -78,7 +78,7 @@ The plugin bundles everything needed — no manual configuration required:
 
 | Component | What It Does |
 |-----------|-------------|
-| **MCP Server** | 14 tools for recording, searching, querying, and visualizing the knowledge graph |
+| **MCP Server** | 15 tools for recording, searching, querying, and visualizing the knowledge graph |
 | `/vibe-cognition` skill | Teaches Claude when and how to capture decisions, failures, discoveries, patterns |
 | `/vibe-curate` skill | Curates semantic edges and identifies clusters using edge-analyzer and cluster-analyzer subagents |
 | `/vibe-backfill` skill | Backfills the cognition graph from git commit history |
@@ -121,6 +121,7 @@ The embedding model (~250MB) also downloads on first use from Hugging Face. Afte
 | `cognition_mark_curated` | Mark a node as reviewed by the curation skill |
 | `cognition_get_neighbors` | Get all connections to a node (all edge types) |
 | `cognition_remove_edge` | Remove a specific edge between two nodes |
+| `cognition_remove_node` | Delete a node and all its attached edges (destructive; also purges its embedding) |
 | `cognition_reload` | Force-reload the graph from the on-disk journal (diagnostic; the store auto-converges with concurrent sessions) |
 
 ### Service Tools

@@ -10,6 +10,7 @@ from vibe_cognition.cognition import (
     CognitionNode,
     CognitionNodeType,
     CognitionStorage,
+    delete_cognition_node,
     generate_node_id,
     get_history_for_context,
     get_incident_resolution,
@@ -521,6 +522,106 @@ class TestJournalCatchUp:
         stats = store_b.reload()
         assert stats["nodes_before"] == 0
         assert stats["nodes_after"] == 2
+
+    def test_node_deletion_converges_across_processes(self, tmp_path):
+        """A delete in store_a (node + its edge) is seen by store_b after catch-up:
+        the remove_node tombstone re-cascades the incident edge on replay."""
+        cog_dir = tmp_path / ".cognition"
+        store_a = CognitionStorage(cog_dir)
+        store_b = CognitionStorage(cog_dir)
+
+        store_a.add_node(self._node("a1", author="alice"))
+        store_a.add_node(self._node("a2", author="alice"))
+        store_a.add_edge(CognitionEdge(
+            from_id="a1", to_id="a2",
+            edge_type=CognitionEdgeType.LED_TO,
+            timestamp="2026-03-15T10:02:00Z",
+        ))
+
+        # store_b catches up and sees both nodes + the edge.
+        assert store_b.has_node("a1") and store_b.has_node("a2")
+        assert [t for t, _ in store_b.get_successors("a1")] == ["a2"]
+
+        # store_a deletes a1; the tombstone is journaled.
+        assert store_a.remove_node("a1")
+
+        # store_b catches up: a1 is gone AND the a1->a2 edge cascaded away.
+        assert not store_b.has_node("a1")
+        assert store_b.get_predecessors("a2") == []
+
+
+class _FakeEmbedStore:
+    """Minimal stand-in for ChromaDBStorage.delete_embedding."""
+
+    def __init__(self, raise_on_delete=False):
+        self.deleted: list[str] = []
+        self._raise = raise_on_delete
+
+    def delete_embedding(self, entity_id: str) -> bool:
+        if self._raise:
+            raise RuntimeError("chromadb boom")
+        self.deleted.append(entity_id)
+        return True
+
+
+class TestDeleteCognitionNode:
+    """Unit tests for the shared delete_cognition_node helper (used by the MCP
+    cognition_remove_node tool and the dashboard delete endpoint)."""
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        return CognitionStorage(tmp_path / ".cognition")
+
+    def _node(self, node_id):
+        return CognitionNode(
+            id=node_id, type=CognitionNodeType.DECISION,
+            summary=f"summary {node_id}", detail="d", context=["ctx"],
+            references=[], timestamp="2026-03-15T10:00:00Z", author="t",
+        )
+
+    def test_deletes_node_edges_and_embedding(self, storage):
+        storage.add_node(self._node("n1"))
+        storage.add_node(self._node("n2"))
+        storage.add_node(self._node("n3"))
+        storage.add_edge(CognitionEdge(
+            from_id="n1", to_id="n2", edge_type=CognitionEdgeType.LED_TO,
+            timestamp="2026-03-15T10:01:00Z",
+        ))
+        storage.add_edge(CognitionEdge(
+            from_id="n3", to_id="n1", edge_type=CognitionEdgeType.RELATES_TO,
+            timestamp="2026-03-15T10:02:00Z",
+        ))
+        embed = _FakeEmbedStore()
+
+        result = delete_cognition_node(storage, embed, "n1")
+
+        assert result is not None
+        assert result["id"] == "n1"
+        assert result["edges_removed"] == 2
+        # Both the outgoing (n1->n2) and incoming (n3->n1) edges are reported.
+        pairs = {(e["from"], e["to"], e["type"]) for e in result["removed_edges"]}
+        assert ("n1", "n2", "led_to") in pairs
+        assert ("n3", "n1", "relates_to") in pairs
+        # Node gone, edges cascaded, embedding purged.
+        assert not storage.has_node("n1")
+        assert storage.get_successors("n2") == []
+        assert storage.get_successors("n3") == []
+        assert embed.deleted == ["n1"]
+
+    def test_missing_node_returns_none(self, storage):
+        embed = _FakeEmbedStore()
+        assert delete_cognition_node(storage, embed, "nope") is None
+        assert embed.deleted == []
+
+    def test_embedding_failure_is_non_fatal(self, storage):
+        """A ChromaDB delete failure is swallowed — the node is still removed."""
+        storage.add_node(self._node("n1"))
+        embed = _FakeEmbedStore(raise_on_delete=True)
+
+        result = delete_cognition_node(storage, embed, "n1")
+
+        assert result is not None and result["id"] == "n1"
+        assert not storage.has_node("n1")  # graph removal still happened
 
 
 class TestQueries:

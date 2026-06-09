@@ -11,6 +11,8 @@ from typing import Any
 
 from starlette.responses import JSONResponse
 
+from ..cognition import delete_cognition_node
+
 logger = logging.getLogger(__name__)
 
 
@@ -101,21 +103,13 @@ def get_node(request):
 def delete_node(request):
     """Remove a node from the graph and ChromaDB."""
     lc = _ctx(request)
-    storage = lc["cognition_storage"]
-    embed_storage = lc["cognition_embedding_storage"]
     node_id = request.path_params["node_id"]
 
-    if not storage.has_node(node_id):
+    result = delete_cognition_node(
+        lc["cognition_storage"], lc["cognition_embedding_storage"], node_id
+    )
+    if result is None:
         return JSONResponse({"error": "not found"}, status_code=404)
-
-    removed = storage.remove_node(node_id)
-    if not removed:
-        return JSONResponse({"error": "not found"}, status_code=404)
-
-    try:
-        embed_storage.delete_embedding(node_id)
-    except Exception as e:
-        logger.warning(f"ChromaDB delete failed for {node_id}: {e}")
 
     return JSONResponse({"deleted": True, "id": node_id})
 

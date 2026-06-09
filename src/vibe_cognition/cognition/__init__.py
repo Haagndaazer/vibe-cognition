@@ -1,6 +1,13 @@
 """Cognition History Graph — captures decisions, failures, discoveries, and reasoning chains."""
 
-from .models import CognitionEdge, CognitionEdgeType, CognitionNode, CognitionNodeType, generate_node_id
+from .models import (
+    CognitionEdge,
+    CognitionEdgeType,
+    CognitionNode,
+    CognitionNodeType,
+    generate_node_id,
+)
+from .operations import delete_cognition_node
 from .queries import (
     get_history_for_context,
     get_incident_resolution,
@@ -18,6 +25,8 @@ __all__ = [
     "generate_node_id",
     # Storage
     "CognitionStorage",
+    # Operations
+    "delete_cognition_node",
     # Queries
     "get_history_for_context",
     "get_incident_resolution",

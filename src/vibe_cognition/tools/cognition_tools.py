@@ -12,6 +12,7 @@ from ..cognition import (
     CognitionNode,
     CognitionNodeType,
     CognitionStorage,
+    delete_cognition_node,
     generate_node_id,
     get_history_for_context,
     get_reasoning_chain,
@@ -658,6 +659,39 @@ def register_cognition_tools(mcp) -> None:
             return {"error": f"No {edge_type} edge exists from {from_id} to {to_id}"}
 
         return {"removed": True, "from_id": from_id, "to_id": to_id, "edge_type": edge_type}
+
+    @mcp.tool()
+    def cognition_remove_node(
+        ctx: Context,
+        node_id: str,
+    ) -> dict[str, Any]:
+        """Delete a cognition node and ALL of its attached edges.
+
+        DESTRUCTIVE and not undoable. Removing a node cascades to every edge
+        incident to it (incoming and outgoing) and purges its embedding so it
+        no longer appears in cognition_search. The deletion converges across
+        concurrent sessions on the shared journal. Use this to prune junk,
+        test, or duplicate nodes — for an outdated-but-real node, prefer adding
+        a `supersedes` edge (cognition_add_edge) over deleting the history.
+
+        Args:
+            node_id: ID of the node to delete.
+
+        Returns:
+            {"removed": true, "id": ..., "removed_edges": [...], "edges_removed": N}
+            on success, where removed_edges lists each orphaned edge
+            ({"from", "to", "type"}); or {"error": "..."} if the node does not exist.
+        """
+        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+        embed_storage: ChromaDBStorage = ctx.request_context.lifespan_context[
+            "cognition_embedding_storage"
+        ]
+
+        result = delete_cognition_node(storage, embed_storage, node_id)
+        if result is None:
+            return {"error": f"Node '{node_id}' does not exist"}
+
+        return {"removed": True, **result}
 
     @mcp.tool()
     def cognition_reload(ctx: Context) -> dict[str, Any]:
