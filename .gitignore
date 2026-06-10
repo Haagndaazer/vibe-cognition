@@ -62,3 +62,7 @@ Thumbs.db
 
 # Local embeddings storage
 .embeddings/
+
+# Cognition graph: the journal is committed (shared via git); the ChromaDB
+# vector store is per-machine and regenerable, so it stays out.
+.cognition/chromadb/
