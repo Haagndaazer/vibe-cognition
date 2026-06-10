@@ -62,3 +62,17 @@ WP-2 — CI + slim install.
     decide deliberately, loosen only when forced.
 - `.cognition/journal.jsonl` marked `-text` in `.gitattributes` so git stores
   it verbatim (byte-determinism for the journal's byte-offset replay; C-3 defense).
+
+WP-3 — post-commit hook + skill correctness.
+
+### Fixed
+- **H-1:** The post-commit hook no longer runs on a bare `python` (which fails
+  silently where python isn't on PATH — macOS default, many Windows installs).
+  It now runs through `uv run` via a `hooks/post-commit.sh` wrapper; uv is a
+  guaranteed plugin dependency.
+- Commit messages with non-ASCII characters are no longer mangled in the
+  cognition journal (e.g. "§" → "Â§"): the hook now decodes git output as UTF-8
+  instead of the system locale codepage.
+- **S-1:** The `vibe-curate` skill now references its subagent prompt files from
+  the skill's own directory, so they resolve when the plugin is installed (they
+  previously used repo-relative paths that only worked from a checkout).
