@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
 
@@ -53,7 +53,7 @@ class _FakeEmbeddingGenerator:
 @pytest.fixture
 def storage(tmp_path: Path) -> CognitionStorage:
     s = CognitionStorage(tmp_path / ".cognition")
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     n1 = CognitionNode(
         id=generate_node_id("decision", "test"),
         type=CognitionNodeType.DECISION,

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# SessionStart hook — installs deps, auto-configures per-project MCP, injects context.
+# SessionStart hook — installs deps, removes any stale per-project .mcp.json
+# vibe-cognition entry (the server is plugin-declared now, not per-project),
+# and injects context.
 set -euo pipefail
 
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"

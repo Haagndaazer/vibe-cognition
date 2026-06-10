@@ -1,2 +1,9 @@
 # Force LF line endings for shell scripts (required for bash on all platforms)
 *.sh text eol=lf
+
+# Append-only JSONL with globally-unique node IDs — union merge keeps both
+# sides' added lines, so concurrent branches don't conflict on the journal.
+# (Union resolves textual conflicts only; it does not guarantee replay order.
+# After any merge/pull touching this file, reload the cognition graph — see
+# audit C-3, unfixed until WP-4.)
+.cognition/journal.jsonl merge=union

@@ -143,7 +143,9 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
 @asynccontextmanager
 async def lifespan(server: FastMCP):
     """Manage server lifecycle - initialize and cleanup resources."""
-    # Load configuration — reads REPO_PATH from env (set by per-project .mcp.json)
+    # Load configuration — reads REPO_PATH from env (set by the plugin's
+    # mcpServers block in plugin.json; config.py also falls back to
+    # CLAUDE_PROJECT_DIR). There is no per-project .mcp.json.
     try:
         config = Settings()
     except Exception as e:

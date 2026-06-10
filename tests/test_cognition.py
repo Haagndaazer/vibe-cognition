@@ -340,7 +340,7 @@ class TestJSONLPersistence:
         ))
 
         journal = (cog_dir / "journal.jsonl").read_text(encoding="utf-8")
-        lines = [l for l in journal.strip().split("\n") if l]
+        lines = [line for line in journal.strip().split("\n") if line]
         assert len(lines) == 1
 
         entry = json.loads(lines[0])

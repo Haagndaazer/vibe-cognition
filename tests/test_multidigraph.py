@@ -287,8 +287,8 @@ class TestRemoveEdge:
         storage.remove_edge("a", "b", CognitionEdgeType.LED_TO)
 
         journal = (cog_dir / "journal.jsonl").read_text(encoding="utf-8")
-        lines = [json.loads(l) for l in journal.strip().split("\n") if l]
-        remove_entries = [l for l in lines if l["action"] == "remove_edge"]
+        lines = [json.loads(line) for line in journal.strip().split("\n") if line]
+        remove_entries = [entry for entry in lines if entry["action"] == "remove_edge"]
         assert len(remove_entries) == 1
         assert remove_entries[0]["data"]["from_id"] == "a"
         assert remove_entries[0]["data"]["to_id"] == "b"

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import chromadb
+from chromadb.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,15 @@ class ChromaDBStorage:
             collection_name: Collection name for embeddings
         """
         persist_directory.mkdir(parents=True, exist_ok=True)
-        self._client = chromadb.PersistentClient(path=str(persist_directory))
+        # anonymized_telemetry=False: defense-in-depth against ChromaDB's
+        # PostHog telemetry (audit E-1). At our pinned chromadb 1.5.5 this is
+        # inert (the telemetry client is a no-op stub), but chromadb 0.5-0.6.x —
+        # which our >=0.5.0 floor permits — actively phoned home gated on
+        # exactly this flag, so we set it across the allowed range.
+        self._client = chromadb.PersistentClient(
+            path=str(persist_directory),
+            settings=Settings(anonymized_telemetry=False),
+        )
         self._collection = self._client.get_or_create_collection(
             name=collection_name,
             metadata={"hnsw:space": "cosine"},

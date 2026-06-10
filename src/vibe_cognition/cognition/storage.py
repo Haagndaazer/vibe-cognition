@@ -5,7 +5,7 @@ import logging
 import threading
 from collections import defaultdict
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -392,7 +392,7 @@ class CognitionStorage:
         Returns:
             True if the node exists and was marked
         """
-        timestamp = datetime.now(timezone.utc).isoformat()
+        timestamp = datetime.now(UTC).isoformat()
         return self.update_node(node_id, curated_by_skill_at=timestamp)
 
     def get_successors(
@@ -576,7 +576,7 @@ class CognitionStorage:
                             CognitionEdgeType.PART_OF.value in self._graph[from_id][to_id]):
                         continue
 
-                    timestamp = datetime.now(timezone.utc).isoformat()
+                    timestamp = datetime.now(UTC).isoformat()
                     edge = CognitionEdge(
                         from_id=from_id,
                         to_id=to_id,
@@ -760,9 +760,12 @@ class CognitionStorage:
             from_id = data["from_id"]
             to_id = data["to_id"]
             edge_type = data.get("edge_type")
-            if self._graph.has_edge(from_id, to_id):
-                if edge_type and edge_type in self._graph[from_id][to_id]:
-                    self._graph.remove_edge(from_id, to_id, key=edge_type)
+            if (
+                self._graph.has_edge(from_id, to_id)
+                and edge_type
+                and edge_type in self._graph[from_id][to_id]
+            ):
+                self._graph.remove_edge(from_id, to_id, key=edge_type)
         elif action == "remove_node":
             node_id = data["id"]
             if node_id in self._graph:

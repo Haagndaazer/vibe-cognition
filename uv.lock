@@ -2892,7 +2892,6 @@ dependencies = [
     { name = "chromadb" },
     { name = "einops" },
     { name = "fastmcp" },
-    { name = "httpx" },
     { name = "networkx" },
     { name = "ollama" },
     { name = "pydantic" },
@@ -2900,15 +2899,6 @@ dependencies = [
     { name = "sentence-transformers" },
     { name = "starlette" },
     { name = "uvicorn" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pyright" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
 ]
 
 [package.dev-dependencies]
@@ -2925,21 +2915,14 @@ requires-dist = [
     { name = "chromadb", specifier = ">=0.5.0" },
     { name = "einops", specifier = ">=0.7.0" },
     { name = "fastmcp", specifier = ">=2.0.0" },
-    { name = "httpx", specifier = ">=0.27.0" },
     { name = "networkx", specifier = ">=3.0" },
     { name = "ollama", specifier = ">=0.3.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },
-    { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.0" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23.0" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=4.0.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.3.0" },
     { name = "sentence-transformers", specifier = ">=3.0.0" },
     { name = "starlette", specifier = ">=0.37.0" },
     { name = "uvicorn", specifier = ">=0.30.0" },
 ]
-provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
 dev = [
