@@ -42,3 +42,23 @@ WP-1 — Tier 1 mechanical cleanup (from the 2026-06-10 audit).
 - Stale `__version__ = "0.1.0"` from `vibe_cognition/__init__.py` (read by
   nothing; real version lives in the manifests) (T-10).
 - `.ruff_cache/` from version control (added to `.gitignore`) (H-6).
+
+WP-2 — CI + slim install.
+
+### Added
+- GitHub Actions CI (`.github/workflows/ci.yml`): runs ruff, pyright, and pytest
+  on every PR and push to `main`. pyright uses a baseline-count ratchet that
+  fails on new type errors and tightens as the count drops.
+
+### Changed
+- **Smaller install:** torch now resolves from PyTorch's CPU wheel index,
+  removing the multi-gigabyte CUDA stack (18 GPU-only packages) from installs —
+  a large first-install size reduction for Linux users, who previously pulled
+  the full nvidia/CUDA toolchain this CPU-inference tool never uses (audit B-4).
+  - Technical note: torch is declared a direct dependency pinned exactly to
+    `==2.11.0` (uv ignores index sources for transitive deps; the exact pin
+    guarantees zero drift at adoption). A future `sentence-transformers` bump
+    requiring newer torch will hard-conflict at re-lock by design — fail loud,
+    decide deliberately, loosen only when forced.
+- `.cognition/journal.jsonl` marked `-text` in `.gitattributes` so git stores
+  it verbatim (byte-determinism for the journal's byte-offset replay; C-3 defense).
