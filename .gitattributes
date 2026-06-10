@@ -6,4 +6,10 @@
 # (Union resolves textual conflicts only; it does not guarantee replay order.
 # After any merge/pull touching this file, reload the cognition graph — see
 # audit C-3, unfixed until WP-4.)
-.cognition/journal.jsonl merge=union
+#
+# -text: store/check out the journal verbatim, no autocrlf normalization. The
+# live file is CRLF (Python text-mode writes); without -text, autocrlf can
+# normalize the index to LF, so a content-equal checkout rewrites bytes under
+# the servers' byte-offset replay — C-3 via a "no-op". -text makes content-equal
+# == byte-equal and the union driver byte-deterministic (C-3/defense).
+.cognition/journal.jsonl merge=union -text
