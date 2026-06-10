@@ -15,6 +15,12 @@ dependencies = [
     # trust_remote_code model code (loaded in embeddings/generator.py) imports
     # einops. Removing it breaks embedding generation at model load.
     "einops>=0.7.0",
+    # torch is declared DIRECTLY (it's otherwise transitive via
+    # sentence-transformers) because uv's [tool.uv.sources] index pinning is
+    # ignored for purely-transitive deps — only a direct dep reaches the
+    # pytorch-cpu index below. The pin is EXACT (==2.11.0) to guarantee zero
+    # version drift at adoption; see [tool.uv.sources] for the full rationale.
+    "torch==2.11.0",
     "ollama>=0.3.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
@@ -58,3 +64,18 @@ ignore = ["E501"]
 [tool.pyright]
 pythonVersion = "3.11"
 typeCheckingMode = "standard"
+
+# This is a CPU-inference tool (nomic-embed runs fine on CPU); the default
+# torch resolution drags in the multi-GB CUDA stack on Linux as dead weight
+# (first-install pain for plugin users — audit B-4). Pin torch to PyTorch's
+# CPU wheel index so installs stay slim on every platform (the index serves
+# linux/win as 2.11.0+cpu and macOS as the plain 2.11.0 arm64 wheel).
+# NB: torch must be a DIRECT dep (see [project.dependencies]) for this source
+# to apply — uv ignores [tool.uv.sources] for purely-transitive packages.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
