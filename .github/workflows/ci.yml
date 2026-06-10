@@ -1,0 +1,51 @@
+name: CI
+
+# Runs on every PR and on push to main (acceptance criterion a).
+#
+# Journal handling: Vince's cognition-journal flushes land on main as direct
+# pushes (not PRs), and WP branches never commit the journal — so a journal-only
+# *PR* cannot occur under our protocol. We therefore path-ignore the journal on
+# `push` only (so a flush doesn't burn a full suite run) and leave `pull_request`
+# unfiltered. This avoids the required-check deadlock entirely: a path-filtered
+# PR that skips a required check would sit "pending" forever, but PRs here always
+# carry code, so the check always runs and reports. No skip/fallback job needed.
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '.cognition/journal.jsonl'
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # Installs from the committed lock (CPU-only torch, no CUDA stack).
+      # --locked fails if pyproject and uv.lock have drifted apart.
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: ruff
+        run: uv run ruff check .
+
+      # pyright runs against a committed baseline count; fails only if NEW errors
+      # push the count above the baseline. Lower the baseline in the same PR that
+      # reduces errors (monotonic ratchet to zero).
+      - name: pyright (baseline ratchet)
+        run: uv run python .github/scripts/pyright_ratchet.py
+
+      - name: pytest
+        run: uv run pytest -q
