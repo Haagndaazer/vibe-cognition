@@ -7,7 +7,10 @@ from enum import Enum
 from pydantic import BaseModel, Field
 
 
-class CognitionNodeType(str, Enum):
+# UP042 (str, Enum -> StrEnum) deferred in WP-1 §8.1: StrEnum changes str()
+# semantics, so it is not a mechanical fix. noqa here and on CognitionEdgeType
+# keeps `ruff check .` clean and gating in CI until that change is made deliberately.
+class CognitionNodeType(str, Enum):  # noqa: UP042
     """Types of nodes in the cognition graph."""
 
     DECISION = "decision"
@@ -20,7 +23,7 @@ class CognitionNodeType(str, Enum):
     EPISODE = "episode"
 
 
-class CognitionEdgeType(str, Enum):
+class CognitionEdgeType(str, Enum):  # noqa: UP042  (see CognitionNodeType above)
     """Types of edges in the cognition graph."""
 
     LED_TO = "led_to"
