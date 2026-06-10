@@ -10,8 +10,10 @@ set -euo pipefail
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"
 # Same plugin-data venv resolution as session-start.sh: the venv lives in CLAUDE_PLUGIN_DATA
 # (persistent, outside the version-pinned cache), NOT in PLUGIN_ROOT — uv must be pointed
-# at it explicitly. Fall back to the version-independent parent of the cache dir.
-PLUGIN_DATA="${CLAUDE_PLUGIN_DATA:-${PLUGIN_ROOT%/*}}"
+# at it explicitly. Fall back to the version-independent parent of the cache dir. %[/\\]*
+# strips the last segment on EITHER separator — a plain %/* leaves a Windows backslash path
+# untouched and the venv lands back inside the pinned cache dir (audit B-3).
+PLUGIN_DATA="${CLAUDE_PLUGIN_DATA:-${PLUGIN_ROOT%[/\\]*}}"
 
 if command -v cygpath &>/dev/null; then
     PLUGIN_ROOT_NATIVE=$(cygpath -m "$PLUGIN_ROOT")

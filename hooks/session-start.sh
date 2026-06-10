@@ -9,8 +9,10 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 # Persistent plugin-data dir — survives plugin updates, so the venv never lives
 # inside the version-pinned cache dir (a running server would lock it on Windows
 # during /plugin update). Fall back to the version-independent parent of the
-# cache dir if CLAUDE_PLUGIN_DATA is not provided.
-PLUGIN_DATA="${CLAUDE_PLUGIN_DATA:-${PLUGIN_ROOT%/*}}"
+# cache dir if CLAUDE_PLUGIN_DATA is not provided. %[/\\]* strips the last
+# segment on EITHER separator — a plain %/* leaves a Windows backslash path
+# untouched and the venv lands back inside the pinned cache dir (audit B-3).
+PLUGIN_DATA="${CLAUDE_PLUGIN_DATA:-${PLUGIN_ROOT%[/\\]*}}"
 
 # Normalize paths to forward-slash native format for uv / Python
 if command -v cygpath &>/dev/null; then

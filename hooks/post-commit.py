@@ -3,10 +3,11 @@
 Called by Claude Code after Bash tool executions. Detects git commit commands
 and creates episode nodes in .cognition/journal.jsonl.
 
-Wired by the plugin in hooks/hooks.json (PostToolUse, matcher "Bash"):
-    "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks/post-commit.py\""
-NB: invoked with bare `python` and so runs on the system interpreter, outside
-the synced venv — it must stay standard-library-only.
+Wired by the plugin in hooks/hooks.json (PostToolUse, matcher "Bash") via the
+post-commit.sh wrapper, which runs this through `uv run --no-sync` so it does
+not depend on a bare `python` on PATH (audit H-1).
+NB: keep this standard-library-only — the wrapper may run it against a bare
+venv (uv creates one if SessionStart hasn't synced yet), so no third-party deps.
 """
 
 import hashlib
@@ -28,8 +29,12 @@ def _get_latest_commit(repo_path: str) -> dict | None:
     """Get the latest commit info from git."""
     try:
         result = subprocess.run(
-            ["git", "-C", repo_path, "log", "-1", "--format=%H|%s|%an|%aI"],
-            capture_output=True, text=True, timeout=5,
+            # -c i18n.logOutputEncoding=utf-8: force git to emit the message as
+            # utf-8 regardless of a user's global config (e.g. latin1), so the
+            # encoding="utf-8" decode below is self-enforcing, not best-effort.
+            ["git", "-C", repo_path, "-c", "i18n.logOutputEncoding=utf-8",
+             "log", "-1", "--format=%H|%s|%an|%aI"],
+            capture_output=True, text=True, encoding="utf-8", timeout=5,
         )
         if result.returncode != 0:
             return None
@@ -51,7 +56,7 @@ def _get_changed_files(repo_path: str, commit_hash: str) -> list[str]:
     try:
         result = subprocess.run(
             ["git", "-C", repo_path, "diff-tree", "--no-commit-id", "--name-only", "-r", commit_hash],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding="utf-8", timeout=5,
         )
         if result.returncode != 0:
             return []
