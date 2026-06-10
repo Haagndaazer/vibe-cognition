@@ -73,6 +73,10 @@ WP-3 — post-commit hook + skill correctness.
 - Commit messages with non-ASCII characters are no longer mangled in the
   cognition journal (e.g. "§" → "Â§"): the hook now decodes git output as UTF-8
   instead of the system locale codepage.
+- **B-3 (Windows):** the hooks' `CLAUDE_PLUGIN_DATA` fallback no longer mis-strips
+  a backslash path, which had placed the venv back inside the version-pinned
+  cache dir (where a `/plugin update` could lock/wipe it). Fixed across all three
+  bash hooks.
 - **S-1:** The `vibe-curate` skill now references its subagent prompt files from
   the skill's own directory, so they resolve when the plugin is installed (they
   previously used repo-relative paths that only worked from a checkout).
