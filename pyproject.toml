@@ -2,7 +2,7 @@
 name = "vibe-cognition"
 version = "0.7.2"
 description = "MCP server for project knowledge graphs — decisions, failures, discoveries, patterns"
-authors = [{ name = "BlckLvls" }]
+authors = [{ name = "Colton Dyck" }]
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
