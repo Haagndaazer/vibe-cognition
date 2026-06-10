@@ -16,9 +16,17 @@ on:
       - '.cognition/journal.jsonl'
   pull_request:
 
+# Least privilege. The repo default is read-only today, but pinning it here keeps
+# a future org/settings change from silently widening what CI can do.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded runs on PRs only. On main a run may be the very one whose
+  # SHA gets pinned for release; cancelling it (e.g. two pushes within a minute)
+  # could leave an unverified SHA pinned.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -26,23 +34,33 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # ubuntu is required; windows is included because this repo's bugs skew
-        # Windows and the matrix runs in parallel (wall-clock = slowest leg).
-        os: [ubuntu-latest, windows-latest]
+        # Pin interpreters explicitly — don't rely on the runner image's default.
+        # The 3.11 floor on both OSes, plus the 3.13 ceiling on ubuntu. Legs run
+        # in parallel, so wall-clock stays ~= the slowest single leg.
+        include:
+          - os: ubuntu-latest
+            python: "3.11"
+          - os: windows-latest
+            python: "3.11"
+          - os: ubuntu-latest
+            python: "3.13"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v8
         with:
+          # Pin uv itself — unpinned latest-at-runtime is resolution-drift surface.
+          version: "0.9.27"
           enable-cache: true
 
       # Installs from the committed lock (CPU-only torch, no CUDA stack).
       # --locked fails if pyproject and uv.lock have drifted apart.
+      # --python pins the interpreter explicitly for this matrix leg.
       - name: Sync dependencies
-        run: uv sync --locked
+        run: uv sync --locked --python ${{ matrix.python }}
 
       - name: ruff
         run: uv run ruff check .
@@ -50,6 +68,8 @@ jobs:
       # pyright runs against a committed baseline count; fails only if NEW errors
       # push the count above the baseline. Lower the baseline in the same PR that
       # reduces errors (monotonic ratchet to zero).
+      # NB: editing .github/pyright-baseline.txt requires manager sign-off — the
+      # ratchet cannot guard a silent raise; the diff review is that guard.
       - name: pyright (baseline ratchet)
         run: uv run python .github/scripts/pyright_ratchet.py
 
