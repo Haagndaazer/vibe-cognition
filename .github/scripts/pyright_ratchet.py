@@ -17,9 +17,16 @@ import sys
 
 BASELINE_PATH = pathlib.Path(__file__).resolve().parents[1] / "pyright-baseline.txt"
 
+# Fail closed if pyright analyzed fewer than this many files: a misconfigured run
+# that analyzes nothing reports errorCount 0, which would otherwise pass the
+# ratchet (0 < baseline) and hide that the check did nothing. The repo has well
+# over this many source+test files.
+MIN_FILES_ANALYZED = 20
+
 
 def main() -> int:
-    baseline = int(BASELINE_PATH.read_text(encoding="utf-8").strip())
+    # utf-8-sig tolerates a BOM (a Windows editor may add one) without raising.
+    baseline = int(BASELINE_PATH.read_text(encoding="utf-8-sig").strip())
 
     # pyright exits non-zero when errors exist; capture stdout regardless.
     proc = subprocess.run(
@@ -36,8 +43,18 @@ def main() -> int:
         print(proc.stderr, file=sys.stderr)
         return 2
 
-    count = int(report["summary"]["errorCount"])
-    print(f"pyright errors: {count} (baseline: {baseline})")
+    summary = report["summary"]
+    files_analyzed = int(summary.get("filesAnalyzed", 0))
+    if files_analyzed < MIN_FILES_ANALYZED:
+        print(
+            f"::error::pyright analyzed only {files_analyzed} files "
+            f"(expected >= {MIN_FILES_ANALYZED}) — the check is misconfigured; "
+            "failing closed rather than trusting a zero-file error count."
+        )
+        return 1
+
+    count = int(summary["errorCount"])
+    print(f"pyright errors: {count} (baseline: {baseline}, files analyzed: {files_analyzed})")
 
     if count > baseline:
         print(
