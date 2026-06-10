@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import chromadb
+from chromadb.config import Settings
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,13 @@ class ChromaDBStorage:
             collection_name: Collection name for embeddings
         """
         persist_directory.mkdir(parents=True, exist_ok=True)
-        self._client = chromadb.PersistentClient(path=str(persist_directory))
+        # anonymized_telemetry=False: ChromaDB's PostHog telemetry is on by
+        # default and would phone home from every user's project on each server
+        # start. We disable it explicitly (audit E-1).
+        self._client = chromadb.PersistentClient(
+            path=str(persist_directory),
+            settings=Settings(anonymized_telemetry=False),
+        )
         self._collection = self._client.get_or_create_collection(
             name=collection_name,
             metadata={"hnsw:space": "cosine"},
