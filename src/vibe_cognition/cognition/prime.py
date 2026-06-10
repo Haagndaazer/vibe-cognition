@@ -3,7 +3,7 @@
 import json
 import os
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .models import CognitionNodeType
@@ -56,7 +56,7 @@ def _format_incidents(storage: CognitionStorage, days: int = 30) -> str:
     if not nodes:
         return ""
 
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
     recent = [n for n in nodes if n.get("timestamp", "") >= cutoff]
     if not recent:
         return ""

@@ -6,14 +6,14 @@ import logging
 import secrets
 import socket
 import threading
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
 import uvicorn
 from starlette.applications import Starlette
-from starlette.responses import FileResponse, Response
+from starlette.responses import FileResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
@@ -107,10 +107,8 @@ def run_dashboard_blocking(
     url = _make_url(chosen_port, token)
     logger.info(f"Dashboard listening at {url}")
     if open_browser:
-        try:
+        with suppress(Exception):
             webbrowser.open(url)
-        except Exception:
-            pass
 
     try:
         uvicorn.run(
@@ -175,10 +173,8 @@ def start_dashboard(
 
     logger.info(f"Dashboard launched at {url}")
     if open_browser:
-        try:
+        with suppress(Exception):
             webbrowser.open(url)
-        except Exception:
-            pass
 
     return {
         "url": url,

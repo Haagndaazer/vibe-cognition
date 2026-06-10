@@ -74,7 +74,9 @@ def _commit_already_tracked(journal_path: Path, commit_hash: str) -> bool:
 
 def _append_episode(journal_path: Path, commit: dict, files: list[str]) -> None:
     """Append an episode node to the JSONL journal."""
-    timestamp = datetime.now(timezone.utc).isoformat()
+    # Keep timezone.utc rather than datetime.UTC (UP017): this hook runs on the
+    # system python (bare `python`), which may be 3.10, and datetime.UTC is 3.11+.
+    timestamp = datetime.now(timezone.utc).isoformat()  # noqa: UP017
     node_id = _generate_id("episode", commit["message"], timestamp)
 
     node_data = {

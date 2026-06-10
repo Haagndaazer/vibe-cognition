@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 
@@ -33,9 +33,11 @@ class TokenMiddleware(BaseHTTPMiddleware):
         if path == "/":
             if request.query_params.get("token") != self._token:
                 return JSONResponse({"error": "missing or invalid token"}, status_code=403)
-        elif path.startswith("/api/"):
-            if request.headers.get("x-dashboard-token") != self._token:
-                return JSONResponse({"error": "missing or invalid token"}, status_code=403)
+        elif (
+            path.startswith("/api/")
+            and request.headers.get("x-dashboard-token") != self._token
+        ):
+            return JSONResponse({"error": "missing or invalid token"}, status_code=403)
 
         return await call_next(request)
 

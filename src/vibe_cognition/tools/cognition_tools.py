@@ -1,7 +1,7 @@
 """MCP tools for the Cognition History Graph."""
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastmcp import Context
@@ -44,7 +44,7 @@ def _record_node(
     context_list = [c.strip() for c in context.split(",") if c.strip()] if context else []
     references_list = [r.strip() for r in references.split(",") if r.strip()] if references else []
 
-    timestamp = datetime.now(timezone.utc).isoformat()
+    timestamp = datetime.now(UTC).isoformat()
     node_id = generate_node_id(node_type.value, summary, timestamp)
 
     node = CognitionNode(
@@ -353,7 +353,7 @@ def register_cognition_tools(mcp) -> None:
         if any(tid == to_id for tid, _ in existing):
             return {"error": f"Edge already exists: {from_id} -[{edge_type}]-> {to_id}"}
 
-        timestamp = datetime.now(timezone.utc).isoformat()
+        timestamp = datetime.now(UTC).isoformat()
         edge = CognitionEdge(
             from_id=from_id,
             to_id=to_id,
@@ -452,7 +452,7 @@ def register_cognition_tools(mcp) -> None:
                 continue
 
             seen_triples.add(triple)
-            timestamp = datetime.now(timezone.utc).isoformat()
+            timestamp = datetime.now(UTC).isoformat()
             edge = CognitionEdge(
                 from_id=fid, to_id=tid, edge_type=et,
                 timestamp=timestamp, source=src,

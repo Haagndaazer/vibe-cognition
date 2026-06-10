@@ -1,7 +1,7 @@
 """Data models for the Cognition History Graph."""
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -71,6 +71,6 @@ def generate_node_id(node_type: str, summary: str, timestamp: str | None = None)
         12-character hex string
     """
     if timestamp is None:
-        timestamp = datetime.now(timezone.utc).isoformat()
+        timestamp = datetime.now(UTC).isoformat()
     raw = f"{node_type}:{summary}:{timestamp}"
     return hashlib.sha256(raw.encode()).hexdigest()[:12]

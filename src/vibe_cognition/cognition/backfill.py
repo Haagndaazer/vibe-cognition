@@ -1,6 +1,5 @@
 """Backfill command — finds git commits without corresponding cognition episode nodes."""
 
-import json
 import os
 import subprocess
 import sys

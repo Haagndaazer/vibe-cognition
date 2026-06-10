@@ -361,7 +361,7 @@ class TestReplayEntryMutationFix:
 
         # Verify the journal data wasn't mutated by reading it back
         with open(journal, encoding="utf-8") as f:
-            lines = [json.loads(l) for l in f if l.strip()]
+            lines = [json.loads(line) for line in f if line.strip()]
         update_entry = lines[1]
         assert "id" in update_entry["data"]  # Should NOT have been popped
 
