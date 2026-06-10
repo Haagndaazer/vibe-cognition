@@ -29,7 +29,11 @@ def _get_latest_commit(repo_path: str) -> dict | None:
     """Get the latest commit info from git."""
     try:
         result = subprocess.run(
-            ["git", "-C", repo_path, "log", "-1", "--format=%H|%s|%an|%aI"],
+            # -c i18n.logOutputEncoding=utf-8: force git to emit the message as
+            # utf-8 regardless of a user's global config (e.g. latin1), so the
+            # encoding="utf-8" decode below is self-enforcing, not best-effort.
+            ["git", "-C", repo_path, "-c", "i18n.logOutputEncoding=utf-8",
+             "log", "-1", "--format=%H|%s|%an|%aI"],
             capture_output=True, text=True, encoding="utf-8", timeout=5,
         )
         if result.returncode != 0:
