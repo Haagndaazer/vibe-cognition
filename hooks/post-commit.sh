@@ -11,7 +11,11 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 # The venv lives in CLAUDE_PLUGIN_DATA (persistent, outside the version-pinned
 # cache dir), NOT in PLUGIN_ROOT — point uv at it explicitly. Fall back to the
 # version-independent parent of the cache dir if CLAUDE_PLUGIN_DATA is unset.
-PLUGIN_DATA="${CLAUDE_PLUGIN_DATA:-${PLUGIN_ROOT%/*}}"
+# %[/\\]* strips the last segment on EITHER separator: a plain %/* leaves a
+# Windows backslash path untouched, landing the venv back INSIDE the pinned
+# cache dir (audit B-3) — and this hook would silently recreate it on every
+# Bash call after a /plugin update wipes it.
+PLUGIN_DATA="${CLAUDE_PLUGIN_DATA:-${PLUGIN_ROOT%[/\\]*}}"
 
 # Normalize to forward-slash native paths for uv / Python.
 if command -v cygpath &>/dev/null; then
@@ -34,6 +38,7 @@ VENV_DIR="${PLUGIN_DATA_NATIVE}/.venv"
 # so it runs even against a bare venv.
 OUT=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
     REPO_PATH="${PROJECT_DIR_NATIVE}" \
+    PYTHONUTF8=1 \
     uv run --no-sync --project "${PLUGIN_ROOT_NATIVE}" \
     python "${PLUGIN_ROOT_NATIVE}/hooks/post-commit.py" 2>/dev/null) || OUT=""
 
