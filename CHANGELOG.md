@@ -18,8 +18,9 @@ WP-1 — Tier 1 mechanical cleanup (from the 2026-06-10 audit).
 - Regression test for ChromaDB telemetry being disabled.
 
 ### Fixed
-- **E-1:** ChromaDB anonymized (PostHog) telemetry is now disabled — it was on
-  by default and phoned home from every project on each server start.
+- **E-1:** Disable ChromaDB anonymized (PostHog) telemetry. Defense-in-depth:
+  inert at our pinned chromadb 1.5.5 (no-op stub), but chromadb 0.5–0.6.x —
+  permitted by our `>=0.5.0` floor — actively phoned home gated on this flag.
 
 ### Changed
 - Unified authorship to "Colton Dyck" across `pyproject.toml` and

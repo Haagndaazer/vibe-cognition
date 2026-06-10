@@ -26,9 +26,11 @@ class ChromaDBStorage:
             collection_name: Collection name for embeddings
         """
         persist_directory.mkdir(parents=True, exist_ok=True)
-        # anonymized_telemetry=False: ChromaDB's PostHog telemetry is on by
-        # default and would phone home from every user's project on each server
-        # start. We disable it explicitly (audit E-1).
+        # anonymized_telemetry=False: defense-in-depth against ChromaDB's
+        # PostHog telemetry (audit E-1). At our pinned chromadb 1.5.5 this is
+        # inert (the telemetry client is a no-op stub), but chromadb 0.5-0.6.x —
+        # which our >=0.5.0 floor permits — actively phoned home gated on
+        # exactly this flag, so we set it across the allowed range.
         self._client = chromadb.PersistentClient(
             path=str(persist_directory),
             settings=Settings(anonymized_telemetry=False),
