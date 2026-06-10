@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] — 2026-06-10
+
 WP-1 — Tier 1 mechanical cleanup (from the 2026-06-10 audit).
 
 ### Added
