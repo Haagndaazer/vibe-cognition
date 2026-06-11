@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The SessionStart hook now detects a half-installed dependency (a venv left
+  mid-swap by an interrupted update) and shows a clear "close all sessions and
+  start one" message, instead of failing with a cryptic MCP connection error.
+
 ## [0.7.3] — 2026-06-10
+
+> **Known upgrade note (0.7.2 → 0.7.3):** this release re-sources torch from a
+> CPU-only wheel index. If you update while other Claude Code sessions are open
+> (which hold the old torch's files, mainly on Windows), the dependency swap can
+> be interrupted and leave the shared venv half-installed — the MCP server then
+> fails to load. It self-heals: close ALL Claude Code sessions and windows, then
+> open ONE. (A later version adds an explicit message for this case.)
 
 WP-1 — Tier 1 mechanical cleanup (from the 2026-06-10 audit).
 
