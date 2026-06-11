@@ -77,6 +77,29 @@ def _commit_already_tracked(journal_path: Path, commit_hash: str) -> bool:
     return False
 
 
+def _append_line(journal_path: Path, entry: str) -> None:
+    """Append one journal record via the shared atomic helper (closes audit H-2).
+
+    The server and this hook now share ONE journal-line format AND the
+    cross-process append lock — a hook write that bypassed the lock would defeat
+    it (audit C-1). The helper is path-loaded (not imported) so it needs neither
+    the package installed nor its heavy import chain, keeping this hook
+    standard-library-only.
+    """
+    import importlib.util
+
+    helper = (
+        Path(__file__).resolve().parent.parent
+        / "src" / "vibe_cognition" / "cognition" / "journal_io.py"
+    )
+    spec = importlib.util.spec_from_file_location("vibe_cognition_journal_io", helper)
+    if spec is None or spec.loader is None:  # pragma: no cover - defensive
+        raise ImportError(f"cannot load journal helper at {helper}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.append_journal_line(journal_path, entry)
+
+
 def _append_episode(journal_path: Path, commit: dict, files: list[str]) -> None:
     """Append an episode node to the JSONL journal."""
     # Keep timezone.utc rather than datetime.UTC (UP017): this hook runs on the
@@ -97,8 +120,7 @@ def _append_episode(journal_path: Path, commit: dict, files: list[str]) -> None:
     }
 
     entry = json.dumps({"action": "add_node", "data": node_data}, ensure_ascii=False)
-    with open(journal_path, "a", encoding="utf-8") as f:
-        f.write(entry + "\n")
+    _append_line(journal_path, entry)
 
 
 def main():
