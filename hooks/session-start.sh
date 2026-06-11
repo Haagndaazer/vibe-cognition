@@ -51,9 +51,38 @@ else
 fi
 
 if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$HASH" ]; then
-    UV_PROJECT_ENVIRONMENT="${VENV_DIR}" uv sync --project "${PLUGIN_ROOT}" --no-dev 2>/dev/null
-    mkdir -p "${VENV_DIR}"
-    echo "$HASH" > "$STAMP"
+    # Guard the sync: a dependency-swap update (e.g. 0.7.3's torch PyPI->CPU-index
+    # move) can fail mid-uninstall when running servers hold the package files
+    # (Windows DLL locks), leaving a half-installed package. Do NOT let that kill
+    # the hook under `set -e` — the health probe below turns it into actionable
+    # guidance instead of a cryptic MCP connection failure.
+    UV_PROJECT_ENVIRONMENT="${VENV_DIR}" uv sync --project "${PLUGIN_ROOT}" --no-dev 2>/dev/null || true
+
+    # Post-sync venv health probe. Runs ONLY here (install / upgrade / broken
+    # retry) — the steady-state happy path matches the stamp and skips this whole
+    # block, paying nothing. Imports the heavy native deps that actually brick
+    # (torch was the 0.7.3 culprit; chromadb is the other native dep). This is a
+    # targeted check for the half-installed-native-dep class, not the server's
+    # full import graph. The `if` reads python's own exit code (no pipe — ledger
+    # 17). The stamp is written ONLY for a verified-importable venv, so a broken
+    # venv leaves it unwritten and re-warns on every start until a clean start
+    # (all sessions closed) finishes the swap and self-heals.
+    if UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
+        uv run --no-sync --project "${PLUGIN_ROOT}" \
+        python -c "import torch, chromadb" 2>/dev/null; then
+        mkdir -p "${VENV_DIR}"
+        echo "$HASH" > "$STAMP"
+    else
+        cat << 'EOF'
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "vibe-cognition: a dependency update did not finish — a Python package is half-installed. This happens when the plugin updates while other Claude Code sessions are open and holding its files (mainly on Windows). The MCP server cannot load until this is repaired, and it self-heals on a clean start. FIX: close ALL Claude Code sessions and windows, then open ONE."
+  }
+}
+EOF
+        exit 0
+    fi
 fi
 
 # ── Step 3: Migrate away from the per-project MCP entry ──
