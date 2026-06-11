@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4] — 2026-06-11
+
 ### Fixed
 - The SessionStart hook now detects a half-installed dependency (a venv left
   mid-swap by an interrupted update) and shows a clear "close all sessions and
