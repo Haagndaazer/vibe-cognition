@@ -14,11 +14,14 @@ N=5-green of the fixed code is only meaningful because the same config reliably
 fails the revert.
 """
 
+import ast
+import importlib.util
 import json
 import pathlib
 import subprocess
 import sys
 
+from vibe_cognition.cognition import journal_io
 from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
 from vibe_cognition.cognition.storage import CognitionStorage
 
@@ -51,10 +54,17 @@ def test_cross_process_append_no_interleave(tmp_path):
         for w in range(nproc)
     ]
     worker_failures = []
-    for w, p in enumerate(procs):
-        _, err = p.communicate(timeout=180)
-        if p.returncode != 0:
-            worker_failures.append(f"worker {w} exited {p.returncode}: {err.decode(errors='replace')}")
+    try:
+        for w, p in enumerate(procs):
+            _, err = p.communicate(timeout=180)
+            if p.returncode != 0:
+                worker_failures.append(
+                    f"worker {w} exited {p.returncode}: {err.decode(errors='replace')}"
+                )
+    finally:
+        for p in procs:
+            if p.poll() is None:  # leaked (e.g. timeout) — don't orphan it
+                p.kill()
 
     # ledger 6: a dead worker must fail LOUD as its own labeled assertion, not
     # surface later as a count mismatch.
@@ -141,9 +151,65 @@ def test_append_after_replacement_converges(tmp_path):
     assert {"node0000", "node0002", "after001"} <= ids, "replacement + post-rebuild append lost"
 
 
+def _node(node_id, summary, detail):
+    return CognitionNode(
+        id=node_id, type=CognitionNodeType.DISCOVERY, summary=summary, detail=detail,
+        context=[], references=[], severity=None,
+        timestamp="2026-06-11T00:00:00+00:00", author="t",
+    )
+
+
+def test_identity_detects_same_first_line_divergent_replacement(tmp_path):
+    """C-3 / CR-1: a replacement that PRESERVES line 1 (the git pull/merge case —
+    an append-only journal always shares its first line) must STILL be detected.
+    A first-line-only check would evade it; the prefix hash catches it."""
+    store = CognitionStorage(tmp_path)
+    common = _node("common00", "shared", "shared detail")
+    store.add_node(common)
+    store.add_node(_node("localonly", "local", "local-only tail"))
+    assert _ids(store) == {"common00", "localonly"}  # offset now past both lines
+
+    journal = tmp_path / "journal.jsonl"
+    original_first_line = journal.read_bytes().split(b"\n", 1)[0]
+
+    # Build a divergent replacement that begins with the IDENTICAL first line
+    # (common00) but then carries unrelated, larger remote content.
+    repl_dir = tmp_path / "repl"
+    s2 = CognitionStorage(repl_dir)
+    s2.add_node(common)  # byte-identical first line
+    s2.add_node(_node("remoteAA", "remoteA", "remote detail A" * 50))
+    s2.add_node(_node("remoteBB", "remoteB", "remote detail B" * 50))
+    replacement = (repl_dir / "journal.jsonl").read_bytes()
+
+    # The first line really is identical (so a first-line check WOULD pass).
+    assert replacement.split(b"\n", 1)[0] == original_first_line
+    journal.write_bytes(replacement)
+
+    ids = _ids(store)  # catch-up -> prefix mismatch -> rehydrate
+    assert "localonly" not in ids, "same-first-line replacement evaded detection (stale tail survived)"
+    assert {"common00", "remoteAA", "remoteBB"} <= ids, "divergent replacement not hydrated"
+
+
+def test_journal_io_imports_only_stdlib():
+    """H-2 contract, bound by AST (not by what's installed): journal_io.py must
+    import nothing outside the standard library — the post-commit hook path-loads
+    it and must run against a bare venv. (Adding e.g. `import networkx` to
+    journal_io fails THIS test even if the venv has networkx — the import-time
+    probe below would stay green because journal_io loads lazily.)"""
+    tree = ast.parse(_JIO.read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            imported.add(node.module.split(".")[0])
+    nonstd = {m for m in imported if m not in sys.stdlib_module_names}
+    assert nonstd == set(), f"journal_io.py imports non-stdlib modules: {nonstd}"
+
+
 def test_post_commit_hook_imports_only_stdlib():
-    """H-2 contract: importing the hook must not pull any heavy third-party module
-    (it must run against a possibly-bare venv)."""
+    """H-2 contract (runtime): importing the hook must not pull any heavy
+    third-party module (it must run against a possibly-bare venv)."""
     probe = (
         "import importlib.util, sys\n"
         "spec = importlib.util.spec_from_file_location('pch', sys.argv[1])\n"
@@ -158,3 +224,38 @@ def test_post_commit_hook_imports_only_stdlib():
         capture_output=True, text=True, check=True, timeout=60,
     )
     assert out.stdout.strip() == "", f"hook pulled heavy modules at import: {out.stdout!r}"
+
+
+def test_hook_append_line_wiring(tmp_path):
+    """Exercises the hook's REAL _append_line path resolution (not the inline
+    appender script) — it must load journal_io and write a parseable record."""
+    spec = importlib.util.spec_from_file_location("pch_wiring", _HOOK)
+    assert spec is not None and spec.loader is not None
+    pch = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(pch)
+
+    journal = tmp_path / "journal.jsonl"
+    pch._append_line(journal, json.dumps({"action": "add_node", "data": {"id": "z"}}))
+    raw = journal.read_bytes()
+    assert json.loads(raw.decode("utf-8").splitlines()[0])["data"]["id"] == "z"
+
+
+def test_snapshot_journal_copies_consistently(tmp_path):
+    """snapshot_journal copies the journal byte-for-byte (CR-4: the manager flush
+    reads via this so it never commits a torn mid-append tail)."""
+    src = tmp_path / "journal.jsonl"
+    for i in range(5):
+        journal_io.append_journal_line(src, json.dumps({"i": i}))
+    dst = tmp_path / "snap.jsonl"
+    journal_io.snapshot_journal(src, dst)
+    assert dst.read_bytes() == src.read_bytes()
+    assert [json.loads(line)["i"] for line in dst.read_bytes().decode("utf-8").splitlines()] == list(range(5))
+
+
+def test_append_fallback_writes_when_lock_unavailable(tmp_path, monkeypatch):
+    """Cover the Windows-only fallback branch: with the lock forced unavailable,
+    the record is still written (never dropped)."""
+    monkeypatch.setattr(journal_io, "_acquire", lambda fd: False)
+    journal = tmp_path / "journal.jsonl"
+    journal_io.append_journal_line(journal, json.dumps({"x": 1}))
+    assert json.loads(journal.read_bytes().decode("utf-8").splitlines()[0]) == {"x": 1}
