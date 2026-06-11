@@ -11,6 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The SessionStart hook now detects a half-installed dependency (a venv left
   mid-swap by an interrupted update) and shows a clear "close all sessions and
   start one" message, instead of failing with a cryptic MCP connection error.
+- **Journal cross-process atomicity (C-1):** journal appends now go through a
+  single shared, lock-protected atomic-append helper, so two processes (two
+  sessions, or a session and the post-commit git hook) appending at the same
+  time can no longer interleave and silently lose entries. The post-commit hook
+  is routed through the same helper (closes H-2 — it used to fork the journal
+  format), so both writers share one format and one lock.
+- **Journal replacement detection (C-3):** a running server now detects when the
+  journal file is replaced or divergently merged (e.g. by a `git pull`/merge of
+  the committed journal — which preserves the first line, so a first-line check
+  would miss it) by hashing the already-replayed prefix and re-hydrating instead
+  of replaying from a now-meaningless byte offset. (Residual: a replacement that
+  matches both byte size and nanosecond mtime evades the cheap skip-path —
+  vanishingly unlikely.)
+- Note on upgrading: until **all** running Claude Code sessions are on this
+  version, an older session keeps appending with the previous unlocked,
+  buffered writer — so the cross-process guarantee holds only once every session
+  has upgraded. Restart sessions after updating.
 
 ## [0.7.3] — 2026-06-10
 
