@@ -16,11 +16,21 @@ concatenates onto — exactly audit C-2 (a torn tail eats the next entry). The
 lock closes that. SCOPE: a local filesystem. O_APPEND offset semantics and
 advisory locks are unreliable on live network mounts (NFS/SMB); not supported.
 
-Lock fallback residual window: if the lock cannot be acquired (Windows byte-range
-contention times out after ~10s), we fall back to a SINGLE un-looped os.write of
-the whole record plus a loud log — never blocking the caller, never dropping the
-entry. That single write is interleave-safe for the common case; its only
-residual is the rare short-write truncation the lock would have prevented.
+Lock fallback residual window: the fallback is reachable ONLY on Windows. On
+POSIX, fcntl.flock(LOCK_EX) blocks until granted, so acquisition cannot "fail";
+on Windows, msvcrt byte-range locking times out (~10s per attempt). We retry a
+bounded number of times, then fall back to a single os.write + a loud log —
+never blocking forever, never dropping the entry. HONEST residual: on Windows,
+CRT O_APPEND is a non-atomic seek-to-EOF-then-write, so a fallback write racing
+the still-locked holder can OVERWRITE a whole record (not merely truncate it).
+This is gated on sustained (> retries × ~10s) contention first, so it is rare
+and bounded — but it is whole-record loss, not a torn tail.
+
+POSIX has NO acquire timeout (fcntl.flock blocks until granted). A wedged-but-
+alive lock holder would therefore hang every session's appends on POSIX (Windows
+gets the ~10s timeout; POSIX gets none). Acceptable because the critical section
+is a single bounded os.write — no legitimate holder keeps the lock long — but
+stated so the asymmetry is visible.
 
 Line endings: append_journal_line reproduces text-mode's per-platform terminator
 as raw bytes (\\r\\n on Windows, \\n on POSIX), so moving from buffered text-mode
@@ -58,6 +68,11 @@ _O_BINARY = getattr(os, "O_BINARY", 0)
 # that byte; a sentinel past EOF is never read or written by normal operations,
 # so the lock serializes appends WITHOUT touching the data region.
 _WIN_LOCK_OFFSET = 1 << 40
+
+# How many times to try acquiring the lock before the Windows-only fallback. Each
+# Windows attempt is ~10s (msvcrt timeout); POSIX flock blocks until granted so it
+# never reaches a second attempt.
+_LOCK_ATTEMPTS = 2
 
 
 def _acquire(fd: int) -> bool:
@@ -108,18 +123,47 @@ def append_journal_line(path, line: str) -> None:
     # mode 0o644 is POSIX-only; Windows ignores it (default ACLs).
     fd = os.open(os.fspath(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT | _O_BINARY, 0o644)
     try:
-        if _acquire(fd):
+        if any(_acquire(fd) for _ in range(_LOCK_ATTEMPTS)):
             try:
                 _write_all(fd, blob)
             finally:
                 _release(fd)
         else:
-            # Lock unavailable (Windows contention timeout). A single un-looped
-            # write is interleave-safe for the common case; see the module's
-            # "fallback residual window" note. Log loudly; never drop the entry.
+            # Windows-only (POSIX flock never fails to acquire). See the module's
+            # "fallback residual window": under sustained contention this single
+            # write can OVERWRITE a record (non-atomic CRT O_APPEND). Loud log;
+            # never block forever, never drop the entry.
             logger.warning(
-                "journal append: lock unavailable, single-write fallback (path=%s)", path
+                "journal append: lock unavailable after %d attempts, single-write "
+                "fallback — record may be lost under contention (path=%s)",
+                _LOCK_ATTEMPTS, path,
             )
             os.write(fd, blob)
     finally:
         os.close(fd)
+
+
+def snapshot_journal(src, dst) -> None:
+    """Copy the journal to dst while holding the append lock — so the copy can
+    never capture a torn mid-append tail.
+
+    The manager flush reads the LIVE journal; the append lock guards APPENDERS
+    only, so without this a copy could capture a half-written final line and, once
+    committed, every clone that pulls it parks before that line forever and the
+    next local append concatenates onto it — audit C-2 via the read path. Taking
+    the same exclusive lock here excludes appenders for the duration of the copy.
+    Lock acquisition is best-effort (Windows may time out under contention); the
+    caller's last-byte-is-newline check is the backstop in that rare case.
+    """
+    lock_fd = os.open(
+        os.fspath(src), os.O_WRONLY | os.O_APPEND | os.O_CREAT | _O_BINARY, 0o644
+    )
+    try:
+        any(_acquire(lock_fd) for _ in range(_LOCK_ATTEMPTS))
+        try:
+            with open(os.fspath(src), "rb") as rf, open(os.fspath(dst), "wb") as wf:
+                wf.write(rf.read())
+        finally:
+            _release(lock_fd)
+    finally:
+        os.close(lock_fd)
