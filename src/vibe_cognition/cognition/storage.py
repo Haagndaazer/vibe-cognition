@@ -50,11 +50,14 @@ class CognitionStorage:
         # Byte offset into the journal up to which we've replayed. Only ever
         # advanced past complete, newline-terminated lines (see _catch_up).
         self._offset = 0
-        # Journal identity (C-3): sha256 of the first line + last-seen mtime.
-        # Together they detect a same-or-larger REPLACEMENT (e.g. a git merge) of
-        # the journal, which a shrink-only offset check would miss and replay
-        # from a stale offset into unrelated content.
-        self._journal_identity: bytes | None = None
+        # Journal identity (C-3): a running sha256 of every byte we've replayed
+        # (i.e. of journal bytes[0:offset]) plus the last-seen mtime. Before
+        # replaying from the stored offset after the file changes, we re-hash the
+        # on-disk prefix and compare: if it differs, the journal was REPLACED or
+        # divergently MERGED under us (git pull/merge — which preserves line 1, so
+        # a first-line check would miss it) and we re-hydrate from the top rather
+        # than replay from a now-meaningless offset.
+        self._journal_hasher = hashlib.sha256()
         self._journal_mtime_ns: int | None = None
         # Re-entrancy depth for _synced(): catch-up runs once per outermost op.
         self._sync_depth = 0
@@ -614,29 +617,12 @@ class CognitionStorage:
         line = json.dumps({"action": action, "data": data}, ensure_ascii=False)
         append_journal_line(self._journal_path, line)
 
-    def _first_line_hash(self) -> bytes | None:
-        """sha256 of the journal's first complete line (its identity anchor).
-
-        The first line is the oldest entry and is never rewritten — storage is
-        pure append-only — so it's a stable fingerprint for "is this the same
-        journal?" Returns None if there is no complete first line yet.
-        """
-        try:
-            with open(self._journal_path, "rb") as f:
-                chunk = f.read(65536)
-        except FileNotFoundError:
-            return None
-        nl = chunk.find(b"\n")
-        if nl == -1:
-            return None
-        return hashlib.sha256(chunk[: nl + 1]).digest()
-
     def _rehydrate_reset(self) -> None:
         """Wipe in-memory state for a full re-hydrate from the top of the journal."""
         self._graph = nx.MultiDiGraph()
         self._reference_index = defaultdict(list)
         self._offset = 0
-        self._journal_identity = None
+        self._journal_hasher = hashlib.sha256()
 
     def _catch_up(self) -> int:
         """Replay journal lines appended since we last read; return entry count.
@@ -652,20 +638,27 @@ class CognitionStorage:
           - Advances the offset ONLY past complete, newline-terminated lines. A
             concurrent writer's half-written final line leaves the offset before
             it; we re-read it next pass once complete — never losing the entry.
-          - Shrink (truncation/reset) OR a journal-identity change (a same-or-
-            larger REPLACEMENT — e.g. a git merge of the committed journal —
-            detected via the first-line hash, with st_mtime_ns catching an
-            equal-byte-size swap the size check alone would miss) wipes the
-            in-memory state and re-hydrates from the top (C-3).
+          - C-3 — REPLACEMENT / divergent MERGE detection. We keep a running hash
+            of every byte we've replayed (journal ``bytes[0:offset]``). When the
+            file changes, we re-hash the on-disk prefix and compare before
+            replaying; a mismatch means the journal was replaced or divergently
+            merged under our offset, so we re-hydrate from the top. A first-line-
+            only check would MISS the real case — a git pull/merge preserves line
+            1 (append-only journal, shared first line) — so only the full-prefix
+            check catches a divergent merge that left our offset pointing into
+            freshly-inserted remote content. Cost: one O(offset) read+hash, and
+            ONLY when the file actually changed (the cheap ``size==offset & mtime``
+            path skips it) — sub-millisecond at journal scale (KB–low-MB).
+            Residual: a replacement that coincidentally matches BOTH size and
+            ``st_mtime_ns`` evades the cheap path (vanishing at ns granularity).
 
         Rebuild-vs-append safety (INVARIANT — do not "tighten" by assuming a
         lock): this read is NOT under the cross-process append lock (that lock,
-        in journal_io, serializes APPENDS only). A rebuild-from-0 reading while
-        another process appends at EOF is safe purely because of (a) torn-tail
-        parking above and (b) idempotent replay — never mutual exclusion. After a
-        replacement, convergence relies on EVERY live process independently
-        catching up and detecting the identity change; there is no cross-process
-        coordination, and that's correct only because replay is idempotent.
+        in journal_io, serializes APPENDS only). A rebuild reading while another
+        process appends at EOF is safe purely because of torn-tail parking +
+        idempotent replay + the per-process prefix check — never mutual exclusion.
+        Convergence after a replacement relies on EVERY live process independently
+        detecting it; correct only because replay is idempotent.
         """
         try:
             st = self._journal_path.stat()
@@ -675,40 +668,41 @@ class CognitionStorage:
         mtime = st.st_mtime_ns
 
         # Cheap path: size AND mtime unchanged → nothing happened (one stat, no
-        # open). mtime catches an equal-byte-size replacement size alone misses.
+        # read). mtime also catches an equal-byte-size replacement.
         if size == self._offset and mtime == self._journal_mtime_ns:
             return 0
         self._journal_mtime_ns = mtime
 
-        if size < self._offset:
-            logger.info("Journal shrank below replay offset; re-hydrating from top")
-            self._rehydrate_reset()
-        elif self._offset == 0 and self._graph.number_of_nodes() > 0:
-            # About to read from the TOP with a non-empty graph: this is a
-            # re-hydrate. It happens if the journal was replaced before this store
-            # advanced its offset past its own first appends (appends don't move
-            # the offset — see C-6). The identity check below is gated on offset>0,
-            # so it would miss a replacement in this window; clearing stale state
-            # makes the from-0 replay authoritative for either case (idempotent
-            # when unchanged, correct when replaced) — C-3.
-            self._rehydrate_reset()
-        elif self._offset > 0 and self._journal_identity is not None:
-            # We've replayed before and the file changed — verify it wasn't
-            # replaced out from under our offset.
-            if self._first_line_hash() != self._journal_identity:
-                logger.info("Journal identity changed; re-hydrating from top")
-                self._rehydrate_reset()
-
         with open(self._journal_path, "rb") as f:
-            f.seek(self._offset)
-            raw = f.read()
+            data = f.read()
 
+        rehydrate = False
+        if size < self._offset:
+            rehydrate = True  # shrank: truncated / rotated / reset
+        elif self._offset == 0 and self._graph.number_of_nodes() > 0:
+            # Reading from the TOP with a non-empty graph = a re-hydrate: the
+            # journal was replaced before this store advanced its offset past its
+            # own first appends (appends don't move the offset — see C-6).
+            rehydrate = True
+        elif (
+            self._offset > 0
+            # C-3: the replayed prefix must still be byte-identical.
+            and hashlib.sha256(data[: self._offset]).digest() != self._journal_hasher.digest()
+        ):
+            rehydrate = True
+
+        if rehydrate:
+            logger.info("Journal changed under our replay offset; re-hydrating from top")
+            self._rehydrate_reset()
+
+        raw = data[self._offset :]
         last_nl = raw.rfind(b"\n")
         if last_nl == -1:
             return 0  # no complete line yet — do not advance past a torn append
 
         complete = raw[: last_nl + 1]
         self._offset += len(complete)
+        self._journal_hasher.update(complete)
 
         count = 0
         for line in complete.decode("utf-8", errors="replace").splitlines():
@@ -720,10 +714,6 @@ class CognitionStorage:
                 count += 1
             except (json.JSONDecodeError, KeyError, ValueError) as e:
                 logger.warning(f"Skipping malformed journal line: {e}")
-
-        # Capture the identity anchor once we have a first line (fresh hydrate).
-        if self._journal_identity is None:
-            self._journal_identity = self._first_line_hash()
 
         if count:
             logger.info(
