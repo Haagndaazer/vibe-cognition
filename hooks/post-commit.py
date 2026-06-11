@@ -162,7 +162,13 @@ def main():
 
     # Get changed files and create episode
     files = _get_changed_files(repo_path, commit["hash"])
-    _append_episode(journal_path, commit, files)
+    try:
+        _append_episode(journal_path, commit, files)
+    except Exception as e:
+        # Never break the hook's {} stdout contract (or the Bash call): if the
+        # shared journal helper can't be loaded or the append fails, log to stderr
+        # and swallow — /vibe-backfill recovers any missed episode later.
+        print(f"vibe-cognition post-commit: journal append failed: {e}", file=sys.stderr)
 
     # Output empty response (hook doesn't need to inject context)
     json.dump({}, sys.stdout)
