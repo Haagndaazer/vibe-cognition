@@ -71,3 +71,18 @@ def test_get_latest_commit_decodes_utf8_message(tmp_path):
     # Codepoint-exact: a locale-decoded mangle ("Â§8.1...") differs here even
     # though a terminal may render it identically to the correct string.
     assert commit["message"] == summary
+
+
+def test_generate_id_discriminates_by_commit_hash():
+    """WP-ID: two DISTINCT commits with an identical message + identical timestamp must
+    get DISTINCT episode ids — the commit hash discriminates. Fails-before (no
+    discriminator): identical inputs → identical id → the second episode overwrites the
+    first on replay (data loss)."""
+    hook = _load_hook()
+    ts = "2026-06-13T00:00:00+00:00"
+    msg = "same message"
+    id_a = hook._generate_id("episode", msg, ts, "a" * 40)
+    id_b = hook._generate_id("episode", msg, ts, "b" * 40)
+    assert id_a != id_b, "identical message+timestamp collided despite distinct commit hashes"
+    # Same commit (same hash) is stable/idempotent.
+    assert hook._generate_id("episode", msg, ts, "a" * 40) == id_a

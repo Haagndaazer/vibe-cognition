@@ -19,9 +19,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-def _generate_id(node_type: str, summary: str, timestamp: str) -> str:
-    """Generate a hash-based node ID."""
-    raw = f"{node_type}:{summary}:{timestamp}"
+def _generate_id(node_type: str, summary: str, timestamp: str, discriminator: str = "") -> str:
+    """Generate a hash-based node ID.
+
+    WP-ID: this hook is a SEPARATE stdlib-only process that writes the journal line
+    directly (the server replays it; it can't share the server's minting add_node lock,
+    and replay doesn't mint). To avoid the same coarse-clock collision (two commits with
+    an identical message in one ~15ms tick → one episode silently overwriting the other
+    on replay) WITHOUT having to load/replay the graph to check ids, fold in a naturally-
+    unique discriminator — the commit hash (globally unique per commit). The id stays an
+    opaque key; nothing depends on it equaling the server's generate_node_id.
+    """
+    raw = f"{node_type}:{summary}:{timestamp}:{discriminator}"
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
 
@@ -105,7 +114,9 @@ def _append_episode(journal_path: Path, commit: dict, files: list[str]) -> None:
     # Keep timezone.utc rather than datetime.UTC (UP017): this hook runs on the
     # system python (bare `python`), which may be 3.10, and datetime.UTC is 3.11+.
     timestamp = datetime.now(timezone.utc).isoformat()  # noqa: UP017
-    node_id = _generate_id("episode", commit["message"], timestamp)
+    # Discriminate the id by the commit hash (unique per commit) — two distinct commits
+    # with an identical message in one clock tick can't collide (WP-ID).
+    node_id = _generate_id("episode", commit["message"], timestamp, commit["hash"])
 
     node_data = {
         "id": node_id,

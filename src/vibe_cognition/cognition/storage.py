@@ -14,7 +14,13 @@ import networkx as nx
 
 from .documents import doc_ref
 from .journal_io import append_journal_line
-from .models import CognitionEdge, CognitionEdgeType, CognitionNode, CognitionNodeType
+from .models import (
+    CognitionEdge,
+    CognitionEdgeType,
+    CognitionNode,
+    CognitionNodeType,
+    generate_node_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -149,13 +155,35 @@ class CognitionStorage:
 
     # ── Write operations ──────────────────────────────────────────────
 
-    def add_node(self, node: CognitionNode) -> None:
-        """Add a cognition node to the graph and journal.
+    def add_node(self, node: CognitionNode, *, mint_unique_id: bool = False) -> str:
+        """Add a cognition node to the graph and journal; return the final node id.
 
-        Args:
-            node: The cognition node to add
+        ``mint_unique_id=False`` (default): add the node under ``node.id`` as-is
+        (overwrites if the id already exists — current behavior; used by replay-adjacent
+        and explicit-id callers). ``mint_unique_id=True``: GLOBAL id-collision guard
+        (WP-ID) — under the lock, if ``node.id`` is already taken, salt the id-hash
+        input (``<summary>#<n>``, leaving the stored summary unchanged) and retry until
+        free, so two same-type+summary nodes minted in one coarse clock tick get
+        DISTINCT ids instead of one silently overwriting the other (data loss).
+
+        THE MINT FIRES ONLY HERE, at the generation/journaling boundary — NEVER during
+        replay (``_replay_entry`` writes ``self._graph.add_node`` directly and never
+        calls this method), so a replayed id that already exists is idempotent
+        cross-process convergence, not a collision to salt around. Do NOT hoist this
+        into the replay path. Running under ``_synced`` (which catches up the journal
+        first) means the check also sees other processes' journaled nodes — closing the
+        in-process collision and SHRINKING (not eliminating) the cross-process
+        has_node→add_node TOCTOU; a truly concurrent cross-process mint landing between
+        this op's catch-up and its append is the documented residual (backlog #2).
         """
         with self._synced():
+            if mint_unique_id:
+                salt = 0
+                while node.id in self._graph:
+                    salt += 1
+                    node = node.model_copy(update={
+                        "id": generate_node_id(node.type.value, f"{node.summary}#{salt}", node.timestamp),
+                    })
             self._graph.add_node(
                 node.id,
                 type=node.type.value,
@@ -170,6 +198,7 @@ class CognitionStorage:
             )
             self._index_node_refs(node.id, node.references)
             self._append_journal("add_node", node.model_dump(mode="json"))
+            return node.id
 
     def add_edge(self, edge: CognitionEdge) -> bool:
         """Add an edge between two existing nodes.
