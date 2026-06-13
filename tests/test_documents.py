@@ -560,10 +560,9 @@ def test_reference_twin_has_no_blob_stake(tmp_path):
 
 
 def test_search_drops_hits_for_graph_absent_nodes(tmp_path):
-    """N1 (§9): cognition_search must drop a Chroma hit whose node was deleted
-    cross-process (replayed remove_node tombstone never un-embeds). A present node
-    and its #chunk- hit are kept; a ghost id is dropped. Fails-before: without the
-    has_node filter the ghost is served (verbatim deleted content)."""
+    """N1 (§9) + D2 dedupe: a ghost id (node deleted cross-process) is dropped; a
+    present node and its #chunk- hit collapse to ONE result keyed on the NODE id (not
+    the chunk id). Fails-before: without the has_node filter the ghost is served."""
     s = CognitionStorage(tmp_path / "cog")
     s.add_node(_node("live0001", CognitionNodeType.DECISION))
     hits = [
@@ -571,10 +570,9 @@ def test_search_drops_hits_for_graph_absent_nodes(tmp_path):
         {"_id": "ghost001", "entity_type": "decision", "summary": "DELETED — must not surface"},
         {"_id": "live0001#chunk-3", "entity_type": "decision", "summary": "chunk of a live node"},
     ]
-    out = _format_search_results(hits, s)
+    out = _format_search_results(hits, s, limit=10)
     ids = [h["id"] for h in out]
-    assert "live0001" in ids, "present node dropped"
-    assert "live0001#chunk-3" in ids, "chunk of a present node dropped (chunk-strip wrong)"
+    assert ids == ["live0001"], f"expected one deduped node id, got {ids}"
     assert "ghost001" not in ids, "ghost (graph-absent) hit served — N1 fix failed"
 
 
@@ -788,3 +786,52 @@ def test_copy_promotion_survives_journal_replay(tmp_path):
     assert node is not None
     assert node["metadata"]["mode"] == "copy", "promotion to copy lost across journal replay"
     assert node["metadata"]["blob_path"] == promoted["blob_path"], "blob_path lost across replay"
+
+
+# --- WP-D2 Commit 5: search over-query + dedupe-to-best-hit-per-node + excerpt ---
+
+
+def test_search_dedupes_chunks_to_one_node_with_excerpt(tmp_path):
+    """Two chunks of one document + another node → the document comes back ONCE
+    (best chunk) keyed on the NODE id, with matched_excerpt; the other node too."""
+    s = CognitionStorage(tmp_path / "cog")
+    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    s.add_node(_node("docaaaa1", CognitionNodeType.DOCUMENT, summary="doc A"))
+    s.add_node(_node("decbbbb1", CognitionNodeType.DECISION, summary="decision B"))
+    q = [1.0, 0.0, 0.0]
+    embed.upsert_embedding("docaaaa1#chunk-0", [1.0, 0.0, 0.0],
+                           {"node_id": "docaaaa1", "entity_type": "document", "is_chunk": True},
+                           document="alpha chunk body")
+    embed.upsert_embedding("docaaaa1#chunk-1", [0.99, 0.01, 0.0],
+                           {"node_id": "docaaaa1", "entity_type": "document", "is_chunk": True},
+                           document="beta chunk body")
+    embed.upsert_embedding("decbbbb1", [0.8, 0.2, 0.0], {"entity_type": "decision"})
+    gen = cast(EmbeddingGenerator, _FixedGen(q))
+
+    res = _search_cognition(s, embed, gen, "anything", limit=10)
+    ids = [h["id"] for h in res["results"]]
+    assert ids.count("docaaaa1") == 1, f"document chunks not deduped to one node: {ids}"
+    assert "decbbbb1" in ids, "other node missing"
+    doc_hit = next(h for h in res["results"] if h["id"] == "docaaaa1")
+    assert doc_hit["matched_excerpt"] == "alpha chunk body", "best-chunk excerpt not carried"
+
+
+def test_overquery_k_returns_distinct_nodes_under_chunk_flood(tmp_path):
+    """Over-query k sufficiency (B3): a document with many chunks all out-ranking
+    other nodes must not starve the result set — limit=2 still returns 2 DISTINCT
+    nodes. Fails-before with k=1 (vector_search returns only same-doc chunks → 1)."""
+    s = CognitionStorage(tmp_path / "cog")
+    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    s.add_node(_node("docaaaa2", CognitionNodeType.DOCUMENT, summary="doc A"))
+    s.add_node(_node("decbbbb2", CognitionNodeType.DECISION, summary="decision B"))
+    q = [1.0, 0.0, 0.0]
+    for i in range(8):  # 8 chunks all at q, out-ranking decB
+        embed.upsert_embedding(f"docaaaa2#chunk-{i}", [1.0, 0.0, 0.0],
+                               {"node_id": "docaaaa2", "entity_type": "document", "is_chunk": True},
+                               document=f"chunk {i}")
+    embed.upsert_embedding("decbbbb2", [0.6, 0.4, 0.0], {"entity_type": "decision"})
+    gen = cast(EmbeddingGenerator, _FixedGen(q))
+
+    res = _search_cognition(s, embed, gen, "x", limit=2)
+    ids = [h["id"] for h in res["results"]]
+    assert set(ids) == {"docaaaa2", "decbbbb2"}, f"chunk flood starved distinct nodes: {ids}"

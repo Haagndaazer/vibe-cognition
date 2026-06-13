@@ -112,32 +112,38 @@ def _record_node(
     return result
 
 
+_SEARCH_OVERQUERY_K = 5   # over-query factor so chunks of one doc don't crowd others
+_MATCHED_EXCERPT_LEN = 500  # chars of chunk text returned as the match excerpt
+
+
 def _format_search_results(
-    results: list[dict[str, Any]], storage: CognitionStorage
+    results: list[dict[str, Any]], storage: CognitionStorage, limit: int
 ) -> list[dict[str, Any]]:
-    """Format vector-search hits, DROPPING any whose (chunk-stripped) node id is
-    absent from the graph — the N1 ghost-search fix (§9 N1).
+    """Dedupe over-queried hits to the BEST hit per node, dropping graph-absent
+    nodes, and carry a ``matched_excerpt`` for chunk hits — the N1 fix + D2 dedupe.
 
-    A cross-process remove_node replays into the graph but never un-embeds (replay
-    touches only the graph; the embedding sync only ADDS), so Chroma serves hits for
-    nodes deleted on another machine — escalated by documents to verbatim deleted
-    client text. Filtering on graph presence is the CORRECTNESS guarantee (it never
-    deletes; the startup sweep is best-effort reclamation). The ``#chunk-`` strip is
-    forward-compatible with D2 chunk ids (``<node_id>#chunk-N``).
+    N1 (§9): a cross-process remove_node replays into the graph but never un-embeds,
+    so Chroma serves hits for nodes deleted on another machine — escalated by
+    documents to verbatim deleted client text. Dropping hits whose (chunk-stripped)
+    node id is absent from the graph is the CORRECTNESS guarantee (it never deletes;
+    the startup sweep is best-effort reclamation).
 
-    SCOPE: this fixes the MCP ``cognition_search`` surface. The dashboard search
-    surface (``dashboard/api.py`` ``search()`` -> ``vector_search`` raw) has NO such
-    filter and still serves cross-process ghosts — pre-existing, out of D1b scope
-    (dashboard is the WP-D4 cluster), harmless while documents aren't embedded.
-    Tracked in BACKLOG under WP-D4."""
+    D2 dedupe: a document yields many ``<node_id>#chunk-N`` hits; collapse them to one
+    result keyed on the NODE id (results arrive score-desc from vector_search, so the
+    FIRST hit per node is the best), carrying its chunk text as ``matched_excerpt``.
+    Returns at most ``limit`` deduped nodes."""
     formatted: list[dict[str, Any]] = []
+    seen_nodes: set[str] = set()
     for r in results:
         raw_id = r.get("_id") or ""
         node_id = raw_id.split("#chunk-")[0]
         if not storage.has_node(node_id):
             continue
-        formatted.append({
-            "id": raw_id,
+        if node_id in seen_nodes:  # keep only the best (first) hit per node
+            continue
+        seen_nodes.add(node_id)
+        entry: dict[str, Any] = {
+            "id": node_id,  # the NODE id, never the chunk id
             "node_type": r.get("entity_type"),
             "summary": r.get("summary") or r.get("name"),
             "author": r.get("author"),
@@ -145,7 +151,13 @@ def _format_search_results(
             "severity": r.get("severity"),
             "context": r.get("context", ""),
             "score": r.get("score"),
-        })
+        }
+        matched = r.get("matched_text")
+        if matched:
+            entry["matched_excerpt"] = matched[:_MATCHED_EXCERPT_LEN]
+        formatted.append(entry)
+        if len(formatted) >= limit:
+            break
     return formatted
 
 
@@ -159,19 +171,19 @@ def _search_cognition(
 ) -> dict[str, Any]:
     """Semantic search core (testable; cognition_search is the thin ctx wrapper).
 
-    Embeds the query, vector-searches Chroma, then applies the N1 graph-presence
-    filter (_format_search_results) so a node deleted on another machine is never
-    served. Keeping vector_search + filter together here is what lets the
-    cross-process ghost test exercise the REAL search path end-to-end (not just the
-    filter function)."""
+    Embeds the query, OVER-queries Chroma (limit×k so multiple chunks of one document
+    don't crowd out other nodes), then dedupes-to-best-hit-per-node + drops graph-
+    absent ghosts (N1) via _format_search_results. Keeping vector_search + the filter
+    together here lets the cross-process ghost test exercise the REAL search path
+    end-to-end."""
     limit = min(limit, 50)
     query_embedding = generator.generate_query_embedding(query)
     results = embedding_storage.vector_search(
         query_embedding=query_embedding,
-        limit=limit,
+        limit=limit * _SEARCH_OVERQUERY_K,
         entity_type=node_type,
     )
-    formatted = _format_search_results(results, storage)
+    formatted = _format_search_results(results, storage, limit)
     return {"query": query, "results": formatted, "count": len(formatted)}
 
 
