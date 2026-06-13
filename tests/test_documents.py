@@ -26,6 +26,7 @@ from vibe_cognition.server import _reconcile_orphan_embeddings, _sync_cognition_
 from vibe_cognition.tools.cognition_tools import (
     _format_search_results,
     _get_document,
+    _search_cognition,
     _store_document,
 )
 
@@ -650,3 +651,89 @@ def test_all_artifact_classes_share_one_delete_path(tmp_path):
     assert not bp.exists(), "blob (artifact class 2) not reclaimed"
     assert not gitignore_has_entry(s.cognition_dir, res["blob_path"]), ".gitignore line not reclaimed"
     assert embed._collection.get()["ids"] == [], "node/chunk vectors (artifact class 3) not reclaimed"
+
+
+class _FixedGen:
+    """Generator stub returning a fixed query embedding (so a real ChromaDB
+    vector_search deterministically returns the seeded vector)."""
+
+    def __init__(self, vec):
+        self._vec = vec
+
+    def generate_query_embedding(self, text):
+        return self._vec
+
+
+def test_n1_cross_process_ghost_filtered_end_to_end(tmp_path):
+    """N1 END-TO-END (§9, the don't-serve-deleted-content guarantee): a node deleted
+    on machine A replays as a remove_node tombstone into B's graph but is NEVER
+    un-embedded in B's Chroma. The REAL search path (_search_cognition: vector_search
+    -> has_node filter, the same core cognition_search calls) must return NOTHING for
+    it. Two CognitionStorage over ONE journal + INDEPENDENT real ChromaDB + real
+    cross-process replay — not a hand-built hits list."""
+    cog = tmp_path / "cog"
+    vec = [0.11, 0.22, 0.33]
+    gen = _FixedGen(vec)
+    embed_b = ChromaDBStorage(persist_directory=tmp_path / "chromaB")
+
+    # A records a normal node into the shared journal.
+    stor_a = CognitionStorage(cog)
+    stor_a.add_node(_node("ghostnode", CognitionNodeType.DECISION, summary="secret deleted decision"))
+
+    # B replays the add and embeds it into B's OWN Chroma (the embedding lands).
+    stor_b = CognitionStorage(cog)
+    embed_b.upsert_embedding("ghostnode", vec, {"entity_type": "decision", "summary": "x"})
+    assert stor_b.has_node("ghostnode")
+    gen_c = cast(EmbeddingGenerator, gen)
+    assert _search_cognition(stor_b, embed_b, gen_c, "find it")["count"] == 1, (
+        "precondition: a live node's embedding is searchable"
+    )
+
+    # A deletes the node (journal tombstone). B replays it (graph-only) — B's Chroma
+    # STILL holds the vector (remove_node never un-embeds; the sync only ADDS).
+    stor_a.remove_node("ghostnode")
+    stor_b2 = CognitionStorage(cog)  # fresh replay picks up the tombstone
+    assert not stor_b2.has_node("ghostnode"), "tombstone did not replay into B's graph"
+
+    res = _search_cognition(stor_b2, embed_b, gen_c, "find it")
+    assert res["count"] == 0, "cross-process ghost served by the real search path (N1 fix not wired)"
+
+
+def test_copy_blob_refcount_is_per_blob_path_not_per_sha(tmp_path):
+    """The deviation's motivating case (Vince should-fix #3): two copy nodes with the
+    SAME bytes but DIFFERENT ext own DIFFERENT blob files. Deleting one unlinks ITS
+    blob and leaves the sibling's. Fails-before a per-SHA refcount (which, seeing the
+    sibling shares the sha, would skip the unlink and leak the deleted node's blob)."""
+    s = CognitionStorage(tmp_path / "cog")
+    a = _store_document(s, title="doc.pdf", document_text="x", context="", author="t",
+                        content_text="dup", store_copy=True)
+    b = _store_document(s, title="doc.txt", document_text="x", context="", author="t",
+                        content_text="dup", store_copy=True, force_new=True)
+    assert a["blob_path"] != b["blob_path"], "different ext did not yield different blob paths"
+    bpa = documents_dir(s.cognition_dir) / a["blob_path"]
+    bpb = documents_dir(s.cognition_dir) / b["blob_path"]
+    assert bpa.exists() and bpb.exists()
+
+    delete_cognition_node(s, _NoopEmbed(), a["node_id"])
+    assert not bpa.exists(), "deleted node's own-ext blob not unlinked"
+    assert bpb.exists(), "sibling's distinct-ext blob wrongly unlinked (per-sha refcount leak)"
+
+
+def test_copy_promotion_survives_journal_replay(tmp_path):
+    """Should-fix #4: a teammate's blob-refcount integrity depends on the promote
+    (reference -> copy via update_node) round-tripping. Store reference, then
+    store_copy the same bytes (dedup -> promote), replay in a 2nd instance, assert
+    mode=='copy' + blob_path survived (else a puller can't refcount the blob)."""
+    cog = tmp_path / "cog"
+    s1 = CognitionStorage(cog)
+    ref = _store_document(s1, title="d", document_text="x", context="", author="t",
+                          content_text="bytes")
+    promoted = _store_document(s1, title="d", document_text="x", context="", author="t",
+                               content_text="bytes", store_copy=True)
+    assert promoted["node_id"] == ref["node_id"] and promoted["mode"] == "copy", "promote did not hit"
+
+    s2 = CognitionStorage(cog)  # fresh replay of add_node + update_node
+    node = s2.get_node(ref["node_id"])
+    assert node is not None
+    assert node["metadata"]["mode"] == "copy", "promotion to copy lost across journal replay"
+    assert node["metadata"]["blob_path"] == promoted["blob_path"], "blob_path lost across replay"

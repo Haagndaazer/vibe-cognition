@@ -122,7 +122,13 @@ def _format_search_results(
     nodes deleted on another machine — escalated by documents to verbatim deleted
     client text. Filtering on graph presence is the CORRECTNESS guarantee (it never
     deletes; the startup sweep is best-effort reclamation). The ``#chunk-`` strip is
-    forward-compatible with D2 chunk ids (``<node_id>#chunk-N``)."""
+    forward-compatible with D2 chunk ids (``<node_id>#chunk-N``).
+
+    SCOPE: this fixes the MCP ``cognition_search`` surface. The dashboard search
+    surface (``dashboard/api.py`` ``search()`` -> ``vector_search`` raw) has NO such
+    filter and still serves cross-process ghosts — pre-existing, out of D1b scope
+    (dashboard is the WP-D4 cluster), harmless while documents aren't embedded.
+    Tracked in BACKLOG under WP-D4."""
     formatted: list[dict[str, Any]] = []
     for r in results:
         raw_id = r.get("_id") or ""
@@ -142,6 +148,32 @@ def _format_search_results(
     return formatted
 
 
+def _search_cognition(
+    storage: CognitionStorage,
+    embedding_storage: ChromaDBStorage,
+    generator: EmbeddingGenerator,
+    query: str,
+    node_type: str | None = None,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Semantic search core (testable; cognition_search is the thin ctx wrapper).
+
+    Embeds the query, vector-searches Chroma, then applies the N1 graph-presence
+    filter (_format_search_results) so a node deleted on another machine is never
+    served. Keeping vector_search + filter together here is what lets the
+    cross-process ghost test exercise the REAL search path end-to-end (not just the
+    filter function)."""
+    limit = min(limit, 50)
+    query_embedding = generator.generate_query_embedding(query)
+    results = embedding_storage.vector_search(
+        query_embedding=query_embedding,
+        limit=limit,
+        entity_type=node_type,
+    )
+    formatted = _format_search_results(results, storage)
+    return {"query": query, "results": formatted, "count": len(formatted)}
+
+
 def _materialize_blob(
     cognition_dir: Path, sha: str, ext: str, blob_rel: str, size: int,
     local_only: bool | None, *, data: bytes | None, src: Path | None,
@@ -151,8 +183,12 @@ def _materialize_blob(
     Returns ``(effective_local_only, status, warnings)``. Size policy §9 S1 (no
     hard cap): ≥50MB auto local_only + warn; ≥95MB default-commit refused (forced
     local_only). S3 dedup transitions: a blob that WAS local_only going to default
-    is ``promoted`` (its .gitignore line removed); a blob already committed going
-    to local_only reports ``already_committed`` (git can't un-publish it)."""
+    is ``promoted`` (its .gitignore line removed); a blob already on the commit track
+    going to local_only reports ``already_committed`` (git can't un-publish it).
+
+    ``already_committed`` is a conservative PROXY: it fires when the blob already
+    existed un-ignored (on the default-commit track), which is the case git may
+    already hold — not proof of an actual commit. The warning is safe either way."""
     was_ignored = gitignore_has_entry(cognition_dir, blob_rel)
     blob_existed = blob_path(cognition_dir, sha, ext).exists()
     warnings: list[str] = []
@@ -168,12 +204,17 @@ def _materialize_blob(
 
     status: dict[str, Any] = {}
     if eff_local:
-        add_gitignore_entry(cognition_dir, blob_rel)
         if blob_existed and not was_ignored:
+            # Already on the default-commit track. A .gitignore line here would be
+            # INERT (git keeps tracking an already-tracked file), so don't write a
+            # misleading one — just warn that local_only can't retroactively un-publish.
             status["already_committed"] = True
             warnings.append(
-                "blob already committed; local_only cannot un-publish it (git history retains it)"
+                "blob is on the default-commit track; local_only cannot retroactively "
+                "un-publish a committed blob (git history retains it)"
             )
+        else:
+            add_gitignore_entry(cognition_dir, blob_rel)
     elif remove_gitignore_entry(cognition_dir, blob_rel):
         status["promoted"] = True
     return eff_local, status, warnings
@@ -586,25 +627,14 @@ def register_cognition_tools(mcp) -> None:
             return err
 
         lifespan = get_lifespan(ctx)
-        embedding_storage: ChromaDBStorage = lifespan["cognition_embedding_storage"]
-        generator: EmbeddingGenerator = lifespan["embedding_generator"]
-        storage: CognitionStorage = lifespan["cognition_storage"]
-
-        limit = min(limit, 50)
-        query_embedding = generator.generate_query_embedding(query)
-
-        results = embedding_storage.vector_search(
-            query_embedding=query_embedding,
+        return _search_cognition(
+            lifespan["cognition_storage"],
+            lifespan["cognition_embedding_storage"],
+            lifespan["embedding_generator"],
+            query,
+            node_type=node_type,
             limit=limit,
-            entity_type=node_type,
         )
-
-        formatted = _format_search_results(results, storage)
-        return {
-            "query": query,
-            "results": formatted,
-            "count": len(formatted),
-        }
 
     @mcp.tool()
     def cognition_get_chain(
