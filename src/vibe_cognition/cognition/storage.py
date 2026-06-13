@@ -547,11 +547,57 @@ class CognitionStorage:
         for key in empty_keys:
             del self._reference_index[key]
 
-    def create_deterministic_edges(self, node_id: str) -> int:
-        """Create part_of edges by matching shared references.
+    @staticmethod
+    def _deterministic_edge_for_pair(
+        type_a: str, id_a: str, type_b: str, id_b: str
+    ) -> tuple[str, str, CognitionEdgeType, bool] | None:
+        """The deterministic edge (if any) for an unordered {a, b} node pair.
 
-        Bidirectional: if the new node is an entity and matches an existing
-        episode (or vice versa), creates entity -> episode part_of edges.
+        Returns ``(from_id, to_id, edge_type, doc_gated)`` or ``None``. ``doc_gated``
+        means the edge fires ONLY when the shared reference is a ``doc:`` key (the
+        §9 S4 vacuum defense — document links must not form on a popular issue:/
+        commit: ref). Truth table (DESIGN §1/§9 S4):
+
+        - entity ↔ episode  → part_of   (entity → episode),  ANY shared ref
+        - entity ↔ document → part_of   (entity → document), doc: ref ONLY
+        - document ↔ episode → relates_to (document → episode), doc: ref ONLY
+        - document ↔ document / episode ↔ episode / entity ↔ entity → no edge
+        """
+        doc = CognitionNodeType.DOCUMENT.value
+        ep = CognitionNodeType.EPISODE.value
+        a_doc, a_ep = type_a == doc, type_a == ep
+        b_doc, b_ep = type_b == doc, type_b == ep
+        a_entity = not a_doc and not a_ep
+        b_entity = not b_doc and not b_ep
+
+        # entity ↔ episode (direction entity → episode), any ref
+        if a_entity and b_ep:
+            return (id_a, id_b, CognitionEdgeType.PART_OF, False)
+        if a_ep and b_entity:
+            return (id_b, id_a, CognitionEdgeType.PART_OF, False)
+        # entity ↔ document (direction entity → document), doc: only
+        if a_entity and b_doc:
+            return (id_a, id_b, CognitionEdgeType.PART_OF, True)
+        if a_doc and b_entity:
+            return (id_b, id_a, CognitionEdgeType.PART_OF, True)
+        # document ↔ episode (direction document → episode), doc: only
+        if a_doc and b_ep:
+            return (id_a, id_b, CognitionEdgeType.RELATES_TO, True)
+        if a_ep and b_doc:
+            return (id_b, id_a, CognitionEdgeType.RELATES_TO, True)
+        # doc↔doc, episode↔episode, entity↔entity: no deterministic edge
+        return None
+
+    def create_deterministic_edges(self, node_id: str) -> int:
+        """Create deterministic edges by matching shared references.
+
+        Six-pair truth table (see ``_deterministic_edge_for_pair``): entity↔episode
+        and entity↔document mint ``part_of``; document↔episode mints ``relates_to``;
+        document-involving pairs require a shared ``doc:`` ref (§9 S4 vacuum defense).
+        Idempotency is keyed per ``(from, to, edge_type)``: an edge of the type a rule
+        would mint blocks a re-mint REGARDLESS of source, so a curator's same-type
+        manual edge is never clobbered (``add_edge`` overwrites by that key), while a
+        different-type edge on the pair does not block.
 
         Args:
             node_id: ID of the node to match
@@ -569,10 +615,9 @@ class CognitionStorage:
                 return 0
 
             node_type = node_data.get("type", "")
-            is_episode = node_type == CognitionNodeType.EPISODE.value
 
             created = 0
-            seen_pairs: set[tuple[str, str]] = set()
+            seen: set[tuple[str, str, str]] = set()
 
             for key in self._normalize_refs(refs):
                 for other_id in self._reference_index.get(key, []):
@@ -584,43 +629,37 @@ class CognitionStorage:
                         continue
 
                     other_type = other_data.get("type", "")
-                    other_is_episode = other_type == CognitionNodeType.EPISODE.value
 
-                    # D1a: documents are graph-inert until D1b adds the real pair
-                    # rules. Skip ANY pair involving a document — the wrong edge
-                    # would otherwise fire from the OTHER node's record call (e.g.
-                    # an episode citing doc:<hash> makes this matcher treat the
-                    # document as an entity and mint a part_of). Pair-level guard,
-                    # not a guard on the recorded node, because either side may be
-                    # the document. D1b replaces this with entity↔doc / doc↔episode.
-                    if CognitionNodeType.DOCUMENT.value in (node_type, other_type):
+                    match = self._deterministic_edge_for_pair(
+                        node_type, node_id, other_type, other_id
+                    )
+                    if match is None:
+                        continue
+                    from_id, to_id, edge_type, doc_gated = match
+
+                    # §9 S4: a document-involving edge fires only on the doc: key,
+                    # not on a shared issue:/commit: ref (vacuum via popular refs).
+                    if doc_gated and not key.startswith("doc:"):
                         continue
 
-                    # One must be episode, other must be entity
-                    if is_episode == other_is_episode:
+                    triple = (from_id, to_id, edge_type.value)
+                    if triple in seen:
                         continue
+                    seen.add(triple)
 
-                    # Direction: entity -> episode
-                    if is_episode:
-                        from_id, to_id = other_id, node_id
-                    else:
-                        from_id, to_id = node_id, other_id
-
-                    pair = (from_id, to_id)
-                    if pair in seen_pairs:
-                        continue
-                    seen_pairs.add(pair)
-
-                    # Skip if a part_of edge already exists between this pair
+                    # Idempotent + non-destructive: skip if an edge of THIS type
+                    # already exists (any source). add_edge keys by edge_type, so a
+                    # re-mint would overwrite — and clobber a same-type manual edge's
+                    # provenance. A different-type edge on the pair does not block.
                     if (self._graph.has_edge(from_id, to_id) and
-                            CognitionEdgeType.PART_OF.value in self._graph[from_id][to_id]):
+                            edge_type.value in self._graph[from_id][to_id]):
                         continue
 
                     timestamp = datetime.now(UTC).isoformat()
                     edge = CognitionEdge(
                         from_id=from_id,
                         to_id=to_id,
-                        edge_type=CognitionEdgeType.PART_OF,
+                        edge_type=edge_type,
                         timestamp=timestamp,
                         source="deterministic",
                     )

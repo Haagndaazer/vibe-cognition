@@ -4,7 +4,12 @@ from datetime import UTC, datetime
 from typing import cast
 
 from vibe_cognition.cognition.documents import sha256_bytes, text_sidecar_path
-from vibe_cognition.cognition.models import CognitionEdgeType, CognitionNode, CognitionNodeType
+from vibe_cognition.cognition.models import (
+    CognitionEdge,
+    CognitionEdgeType,
+    CognitionNode,
+    CognitionNodeType,
+)
 from vibe_cognition.cognition.operations import delete_cognition_node
 from vibe_cognition.cognition.storage import CognitionStorage
 from vibe_cognition.embeddings import ChromaDBStorage, EmbeddingGenerator
@@ -25,23 +30,116 @@ def _node(node_id, node_type, refs=None, summary="s", detail="d"):
     )
 
 
-def test_document_is_graph_inert_no_part_of_from_citing_episode(tmp_path):
-    """D1a: a document is graph-inert. An episode citing the document's doc:<hash>
-    ref must NOT mint a part_of edge — the existing matcher would otherwise treat
-    the document as an entity and link it (the wrong edge fires from the EPISODE's
-    record call, which is why the guard is pair-level). Asserts the SPECIFIC edge
-    is absent in BOTH directions, not just an edge count."""
-    s = CognitionStorage(tmp_path)
-    doc_ref = "doc:abc123def456"
-    s.add_node(_node("doc00001", CognitionNodeType.DOCUMENT, refs=[doc_ref]))
-    s.add_node(_node("ep000001", CognitionNodeType.EPISODE, refs=[doc_ref]))
+# --- WP-D1b matcher pair rules (supersede D1a's inert guard) -----------------
+# D1a's test_document_is_graph_inert_no_part_of_from_citing_episode is intentionally
+# REMOVED: the inert guard was temporary. Documents are now first-class hubs with
+# the §1/§9 S4 truth table below — an episode citing a doc ref now gets a
+# document→episode relates_to (not "no edge").
 
-    s.create_deterministic_edges("ep000001")  # the edge would fire here
-    s.create_deterministic_edges("doc00001")
+
+def test_entity_document_part_of_on_doc_ref(tmp_path):
+    """entity↔document → part_of (direction entity→document), doc:-gated."""
+    s = CognitionStorage(tmp_path)
+    ref = "doc:abc123def456"
+    s.add_node(_node("doc00001", CognitionNodeType.DOCUMENT, refs=[ref]))
+    s.add_node(_node("dec00001", CognitionNodeType.DECISION, refs=[ref]))
+    s.create_deterministic_edges("dec00001")
 
     g = s.graph
-    assert not g.has_edge("ep000001", "doc00001"), "episode→document edge minted (inert guard failed)"
-    assert not g.has_edge("doc00001", "ep000001"), "document→episode part_of minted (inert guard failed)"
+    assert g.has_edge("dec00001", "doc00001"), "entity→document part_of not minted"
+    assert CognitionEdgeType.PART_OF.value in g["dec00001"]["doc00001"]
+    assert not g.has_edge("doc00001", "dec00001"), "wrong-direction edge minted"
+
+
+def test_document_episode_relates_to_on_doc_ref(tmp_path):
+    """document↔episode → relates_to (direction document→episode), doc:-gated.
+    Supersedes D1a's inert guarantee: the episode's record call now mints the
+    relates_to. Asserts the SPECIFIC type+direction, not a count."""
+    s = CognitionStorage(tmp_path)
+    ref = "doc:abc123def456"
+    s.add_node(_node("doc00001", CognitionNodeType.DOCUMENT, refs=[ref]))
+    s.add_node(_node("ep000001", CognitionNodeType.EPISODE, refs=[ref]))
+    s.create_deterministic_edges("ep000001")  # fires from the episode's call
+
+    g = s.graph
+    assert g.has_edge("doc00001", "ep000001"), "document→episode relates_to not minted"
+    assert CognitionEdgeType.RELATES_TO.value in g["doc00001"]["ep000001"]
+    assert CognitionEdgeType.PART_OF.value not in g["doc00001"]["ep000001"], (
+        "document→episode must be relates_to, not part_of (§8(c))"
+    )
+    assert not g.has_edge("ep000001", "doc00001"), "wrong-direction edge minted"
+
+    # Per-(from,to,TYPE) idempotency: re-running must NOT re-mint the relates_to.
+    # (A hardcoded part_of-only existing-edge check would never skip a relates_to
+    # and would re-mint on every run — the A5 keying bug.)
+    assert s.create_deterministic_edges("ep000001") == 0, "relates_to re-minted (not idempotent)"
+    assert s.create_deterministic_edges("doc00001") == 0, "relates_to re-minted from the doc side"
+
+
+def test_s4_vacuum_no_document_link_on_nondoc_shared_ref(tmp_path):
+    """§9 S4 vacuum defense (the key fails-before): a document and an episode
+    sharing ONLY a non-doc ref (issue:X) must get ZERO deterministic edges — a
+    document link fires only on a shared doc: key, never on a popular issue:/
+    commit: ref. Without the doc-gate this would wrongly mint relates_to."""
+    s = CognitionStorage(tmp_path)
+    s.add_node(_node("doc00002", CognitionNodeType.DOCUMENT, refs=["issue:LL-9"]))
+    s.add_node(_node("ep000002", CognitionNodeType.EPISODE, refs=["issue:LL-9"]))
+    s.create_deterministic_edges("ep000002")
+    s.create_deterministic_edges("doc00002")
+
+    g = s.graph
+    assert not g.has_edge("doc00002", "ep000002"), "document linked on a non-doc shared ref (vacuum)"
+    assert not g.has_edge("ep000002", "doc00002"), "document linked on a non-doc shared ref (vacuum)"
+
+
+def test_doc_doc_and_episode_episode_pairs_skip(tmp_path):
+    """document↔document and episode↔episode share a doc: ref but get NO edge
+    (versioning uses explicit supersedes; episodes don't nest deterministically)."""
+    s = CognitionStorage(tmp_path)
+    ref = "doc:abc123def456"
+    s.add_node(_node("doc00003", CognitionNodeType.DOCUMENT, refs=[ref]))
+    s.add_node(_node("doc00004", CognitionNodeType.DOCUMENT, refs=[ref]))
+    s.add_node(_node("ep000003", CognitionNodeType.EPISODE, refs=[ref]))
+    s.add_node(_node("ep000004", CognitionNodeType.EPISODE, refs=[ref]))
+    for nid in ("doc00003", "doc00004", "ep000003", "ep000004"):
+        s.create_deterministic_edges(nid)
+
+    g = s.graph
+    assert not g.has_edge("doc00003", "doc00004") and not g.has_edge("doc00004", "doc00003"), (
+        "doc↔doc edge minted"
+    )
+    # episode↔episode (note: each still links to the documents via relates_to, but not to each other)
+    assert not g.has_edge("ep000003", "ep000004") and not g.has_edge("ep000004", "ep000003"), (
+        "episode↔episode edge minted"
+    )
+
+
+def test_manual_edge_coexistence_and_idempotency(tmp_path):
+    """Per-(from,to,type) idempotency: a manual relates_to does NOT block a
+    deterministic part_of (different type); a manual part_of is NOT clobbered by a
+    re-mint (same type, any source skips); re-running the matcher adds no duplicate."""
+    s = CognitionStorage(tmp_path)
+    ref = "doc:abc123def456"
+    s.add_node(_node("doc00005", CognitionNodeType.DOCUMENT, refs=[ref]))
+    s.add_node(_node("dec00005", CognitionNodeType.DECISION, refs=[ref]))
+
+    # A manual relates_to on the same pair the matcher will mint part_of on.
+    s.add_edge(CognitionEdge(
+        from_id="dec00005", to_id="doc00005", edge_type=CognitionEdgeType.RELATES_TO,
+        timestamp="2026-06-13T00:00:00+00:00", source="manual",
+    ))
+    s.create_deterministic_edges("dec00005")
+    g = s.graph
+    assert CognitionEdgeType.PART_OF.value in g["dec00005"]["doc00005"], (
+        "deterministic part_of blocked by a different-type manual edge"
+    )
+    assert g["dec00005"]["doc00005"][CognitionEdgeType.RELATES_TO.value]["source"] == "manual", (
+        "manual relates_to clobbered"
+    )
+
+    # Re-run: no duplicate part_of, and a pre-existing manual part_of survives untouched.
+    created_second = s.create_deterministic_edges("dec00005")
+    assert created_second == 0, "matcher re-minted an existing edge (not idempotent)"
 
 
 def test_entity_episode_matcher_still_links(tmp_path):
