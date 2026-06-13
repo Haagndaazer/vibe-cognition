@@ -1,7 +1,11 @@
 """WP-D1a: DOCUMENT node type, graph-inert guard, store/get tools, sidecar, sync guard."""
 
+from typing import cast
+
 from vibe_cognition.cognition.models import CognitionEdgeType, CognitionNode, CognitionNodeType
 from vibe_cognition.cognition.storage import CognitionStorage
+from vibe_cognition.embeddings import ChromaDBStorage, EmbeddingGenerator
+from vibe_cognition.server import _sync_cognition_embeddings
 from vibe_cognition.tools.cognition_tools import _get_document, _store_document
 
 
@@ -100,6 +104,44 @@ def test_agent_refs_go_to_context_not_node_references(tmp_path):
         f"document references must be ONLY its doc: key, got {node['references']}"
     )
     assert "issue:LL-1" in node["context"], "agent ref not redirected to context"
+
+
+class _FakeCollection:
+    def get(self, ids):
+        return {"ids": []}  # nothing synced yet -> everything looks "missing"
+
+
+class _FakeEmbeddingStorage:
+    def __init__(self):
+        self._collection = _FakeCollection()
+        self.upserted: list[str] = []
+
+    def upsert_embedding(self, entity_id, embedding, metadata):
+        self.upserted.append(entity_id)
+
+
+class _FakeGenerator:
+    def generate_query_embedding(self, text):
+        return [0.0, 0.1, 0.2]
+
+
+def test_sync_skips_document_nodes_never_embeds_them(tmp_path):
+    """N1-class guard: _sync_cognition_embeddings is the cross-process path that
+    re-embeds JSONL nodes ChromaDB is missing. A document node must be SKIPPED
+    there — otherwise every server start would re-embed documents into semantic
+    search. Asserts the document id is never upserted while a normal node is
+    (fails-before: without the type filter the document id appears in .upserted)."""
+    s = CognitionStorage(tmp_path / "cog")
+    s.add_node(_node("doc00009", CognitionNodeType.DOCUMENT, refs=["doc:abc123abc123"]))
+    s.add_node(_node("dec00009", CognitionNodeType.DECISION, refs=["commit:abc123abc123"]))
+
+    embed = _FakeEmbeddingStorage()
+    _sync_cognition_embeddings(
+        s, cast(ChromaDBStorage, embed), cast(EmbeddingGenerator, _FakeGenerator())
+    )
+
+    assert "doc00009" not in embed.upserted, "document node was embedded (N1 sync guard failed)"
+    assert "dec00009" in embed.upserted, "non-document node was not embedded (guard over-reached)"
 
 
 def test_get_document_freshness_modified_and_missing(tmp_path):
