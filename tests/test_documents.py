@@ -588,7 +588,8 @@ def test_reconcile_orphan_sweep_removes_only_graph_absent(tmp_path):
 
     s.add_node(_node("live0002", CognitionNodeType.DECISION))
     embed.upsert_embedding("live0002", [0.1, 0.2, 0.3], {"entity_type": "decision"})
-    embed.upsert_embedding("live0002#chunk-0", [0.4, 0.5, 0.6], {"node_id": "live0002"})
+    embed.upsert_embedding("live0002#chunk-0", [0.4, 0.5, 0.6],
+                           {"node_id": "live0002", "entity_type": "decision", "is_chunk": True})
     embed.upsert_embedding("ghost002", [0.7, 0.8, 0.9], {"entity_type": "decision"})
 
     _reconcile_orphan_embeddings(s, embed)
@@ -651,7 +652,9 @@ def test_all_artifact_classes_share_one_delete_path(tmp_path):
     bp = documents_dir(s.cognition_dir) / res["blob_path"]
     # Seed the vectors D2 will write: a node vector + a node_id-tagged chunk.
     embed.upsert_embedding(res["node_id"], [0.1, 0.2, 0.3], {"entity_type": "document"})
-    embed.upsert_embedding(f"{res['node_id']}#chunk-0", [0.4, 0.5, 0.6], {"node_id": res["node_id"]})
+    embed.upsert_embedding(f"{res['node_id']}#chunk-0", [0.4, 0.5, 0.6],
+                           {"node_id": res["node_id"], "entity_type": "document", "is_chunk": True},
+                           document="chunk body")
     assert sidecar.exists() and bp.exists()
     assert set(embed._collection.get()["ids"]) == {res["node_id"], f"{res['node_id']}#chunk-0"}
 
@@ -835,3 +838,16 @@ def test_overquery_k_returns_distinct_nodes_under_chunk_flood(tmp_path):
     res = _search_cognition(s, embed, gen, "x", limit=2)
     ids = [h["id"] for h in res["results"]]
     assert set(ids) == {"docaaaa2", "decbbbb2"}, f"chunk flood starved distinct nodes: {ids}"
+
+
+def test_deleted_document_all_chunk_hits_drop(tmp_path):
+    """Composition (N1 x dedupe): a document deleted cross-process leaves multiple
+    chunk vectors behind; EVERY chunk hit must drop (graph-absent) — none survives to
+    serve verbatim deleted client text."""
+    s = CognitionStorage(tmp_path / "cog")  # graph does NOT contain the document
+    hits = [
+        {"_id": "gonedoc1#chunk-0", "entity_type": "document", "matched_text": "secret 0"},
+        {"_id": "gonedoc1#chunk-1", "entity_type": "document", "matched_text": "secret 1"},
+    ]
+    out = _format_search_results(hits, s, limit=10)
+    assert out == [], "a deleted document's chunk hits were served (N1xdedupe compose failed)"

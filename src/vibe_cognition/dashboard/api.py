@@ -143,14 +143,21 @@ async def search(request):
 
     generator = lc["embedding_generator"]
     embed_storage = lc["cognition_embedding_storage"]
+    cognition_storage = lc["cognition_storage"]
 
     def _do_search():
         vector = generator.generate_query_embedding(query)
-        return embed_storage.vector_search(
+        hits = embed_storage.vector_search(
             query_embedding=vector,
             limit=limit,
             entity_type=entity_type,
         )
+        # N1 ghost-search fix (WP-D2): drop hits whose node was deleted cross-process
+        # but never un-embedded — D2 makes documents searchable, so an un-filtered
+        # dashboard would serve verbatim deleted client-document chunk text. Same
+        # shared predicate the MCP search uses; raw {_id, **metadata, score} shape
+        # preserved (the dashboard JS consumes it, unlike the MCP formatter).
+        return [h for h in hits if cognition_storage.search_hit_is_live(h.get("_id") or "")]
 
     results = await run_in_threadpool(_do_search)
     return JSONResponse({"results": results})

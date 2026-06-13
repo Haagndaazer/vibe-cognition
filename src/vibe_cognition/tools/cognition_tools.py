@@ -136,9 +136,9 @@ def _format_search_results(
     seen_nodes: set[str] = set()
     for r in results:
         raw_id = r.get("_id") or ""
-        node_id = raw_id.split("#chunk-")[0]
-        if not storage.has_node(node_id):
+        if not storage.search_hit_is_live(raw_id):  # N1 drop (shared predicate)
             continue
+        node_id = raw_id.split("#chunk-")[0]
         if node_id in seen_nodes:  # keep only the best (first) hit per node
             continue
         seen_nodes.add(node_id)

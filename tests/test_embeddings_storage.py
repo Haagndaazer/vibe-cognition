@@ -41,6 +41,24 @@ def test_delete_by_node_id_purges_chunks_and_is_noop_safe(tmp_path):
     assert set(storage._collection.get()["ids"]) == {"B#chunk-0"}
 
 
+def test_count_documents_splits_nodes_and_chunks(tmp_path):
+    """WP-D2 count split (A1): the node-vs-chunk count separates via the positive
+    is_chunk marker — count_documents(filter={'is_chunk': True}) (the PUBLIC param is
+    filter=, not where=). Node count = total - chunks."""
+    storage = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
+    storage.upsert_embedding("n1", [0.1, 0.2, 0.3], {"entity_type": "decision"})  # node vector
+    storage.upsert_embedding("d1#chunk-0", [0.1, 0.2, 0.3],
+                             {"node_id": "d1", "is_chunk": True}, document="x")
+    storage.upsert_embedding("d1#chunk-1", [0.1, 0.2, 0.31],
+                             {"node_id": "d1", "is_chunk": True}, document="y")
+
+    total = storage.count_documents()
+    chunks = storage.count_documents(filter={"is_chunk": True})
+    assert total == 3, f"total wrong: {total}"
+    assert chunks == 2, f"is_chunk count wrong: {chunks}"
+    assert total - chunks == 1, "node count (total - chunks) wrong"
+
+
 def test_upsert_document_text_round_trips_to_search(tmp_path):
     """WP-D2 Commit 1: a chunk upserted WITH document text returns it as
     matched_text in vector_search; a node vector upserted WITHOUT a document has no
