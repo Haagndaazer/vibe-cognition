@@ -2,11 +2,18 @@
 
 from typing import cast
 
+from vibe_cognition.cognition.documents import text_sidecar_path
 from vibe_cognition.cognition.models import CognitionEdgeType, CognitionNode, CognitionNodeType
+from vibe_cognition.cognition.operations import delete_cognition_node
 from vibe_cognition.cognition.storage import CognitionStorage
 from vibe_cognition.embeddings import ChromaDBStorage, EmbeddingGenerator
 from vibe_cognition.server import _sync_cognition_embeddings
 from vibe_cognition.tools.cognition_tools import _get_document, _store_document
+
+
+class _NoopEmbed:
+    def delete_embedding(self, node_id):
+        return True
 
 
 def _node(node_id, node_type, refs=None, summary="s", detail="d"):
@@ -155,3 +162,45 @@ def test_get_document_freshness_modified_and_missing(tmp_path):
     assert _get_document(s, node_id=res["node_id"])["freshness"] == "modified", "modified not detected"
     doc.unlink()
     assert _get_document(s, node_id=res["node_id"])["freshness"] == "missing", "missing not detected"
+
+
+def test_delete_document_removes_sidecar_not_the_original(tmp_path):
+    """Deleting a reference-mode document purges its managed text sidecar but
+    NEVER the referenced original file (reference-mode deletion reclaims only what
+    the server wrote)."""
+    s = CognitionStorage(tmp_path / "cog")
+    original = tmp_path / "orig.txt"
+    original.write_bytes(b"the real file stays")
+    res = _store_document(s, title="d", document_text="extracted", context="", author="t",
+                          file_path=str(original))
+    node = s.get_node(res["node_id"])
+    assert node is not None
+    sha = node["metadata"]["sha256"]
+    sidecar = text_sidecar_path(s.cognition_dir, sha)
+    assert sidecar.exists(), "sidecar not written on store"
+
+    out = delete_cognition_node(s, _NoopEmbed(), res["node_id"])
+    assert out is not None and out["id"] == res["node_id"]
+    assert not sidecar.exists(), "sidecar not purged on delete"
+    assert original.exists(), "delete touched the referenced original file (must never happen)"
+
+
+def test_delete_one_twin_keeps_shared_sidecar_until_last_gone(tmp_path):
+    """force_new can mint two document nodes over identical bytes -> one shared,
+    content-addressed sidecar. Deleting one twin must NOT orphan the other's
+    sidecar; only the last deletion removes it."""
+    s = CognitionStorage(tmp_path / "cog")
+    a = _store_document(s, title="d", document_text="x", context="", author="t", content_text="dup bytes")
+    b = _store_document(s, title="d", document_text="x", context="", author="t",
+                        content_text="dup bytes", force_new=True)
+    assert a["node_id"] != b["node_id"], "force_new did not create a twin"
+    node = s.get_node(a["node_id"])
+    assert node is not None
+    sha = node["metadata"]["sha256"]
+    sidecar = text_sidecar_path(s.cognition_dir, sha)
+    assert sidecar.exists()
+
+    delete_cognition_node(s, _NoopEmbed(), a["node_id"])
+    assert sidecar.exists(), "shared sidecar purged while a twin still references it (orphaned the twin)"
+    delete_cognition_node(s, _NoopEmbed(), b["node_id"])
+    assert not sidecar.exists(), "sidecar not purged after the last twin was deleted"

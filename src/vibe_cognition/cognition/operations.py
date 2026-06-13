@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from .documents import doc_ref, remove_text_sidecar
+from .models import CognitionNodeType
 from .storage import CognitionStorage
 
 logger = logging.getLogger(__name__)
@@ -40,6 +42,15 @@ def delete_cognition_node(
     if not storage.has_node(node_id):
         return None
 
+    # Capture the document's sha BEFORE removal so we can purge its text sidecar
+    # after — but only if no twin still references it (force_new can mint two
+    # document nodes over identical bytes; deleting one must not orphan the
+    # other's sidecar, since the sidecar is content-addressed by sha).
+    doc_sha: str | None = None
+    pre = storage.get_node(node_id)
+    if pre is not None and pre.get("type") == CognitionNodeType.DOCUMENT.value:
+        doc_sha = pre.get("metadata", {}).get("sha256")
+
     # Capture incident edges before deletion so callers can report what was orphaned.
     removed_edges: list[dict[str, Any]] = [
         {"from": node_id, "to": target_id, "type": edata.get("type")}
@@ -59,6 +70,15 @@ def delete_cognition_node(
         embed_storage.delete_embedding(node_id)
     except Exception as e:
         logger.warning(f"ChromaDB delete failed for {node_id}: {e}")
+
+    # Purge the text sidecar (a managed artifact) iff no remaining node references
+    # the same content. NEVER touches the referenced original file — reference-mode
+    # deletion only reclaims what the server itself wrote.
+    if doc_sha and not storage.find_nodes_by_ref(doc_ref(doc_sha)):
+        try:
+            remove_text_sidecar(storage.cognition_dir, doc_sha)
+        except OSError as e:
+            logger.warning(f"Text sidecar delete failed for {node_id} ({doc_sha[:12]}): {e}")
 
     return {
         "id": node_id,
