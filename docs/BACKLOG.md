@@ -7,7 +7,7 @@ and `docs/DESIGN-document-storage.md` (the v0.8.0 feature spine).
 **Convention:** the proposed WP groupings below are a *triage inventory*, not briefs. Each WP
 gets a peer-reviewed execution plan (a `docs/wp-*-plan.md`) before it's assigned to Vorpid, and
 each ships through the standard gate (SHA-pinned merge, fix+proof same commit, voiding clause,
-journal-flush-via-worktree). Last updated 2026-06-13 (v0.8.0 PINNED LIVE; document-storage + WP-T shipped; WP-ID node-id-collision fix in flight).
+journal-flush-via-worktree). Last updated 2026-06-13 (v0.8.0 LIVE; both P1 audit items done — WP-T + WP-ID; WP-Cap P2 in flight; audit tail now P2/P3).
 
 ---
 
@@ -15,7 +15,7 @@ journal-flush-via-worktree). Last updated 2026-06-13 (v0.8.0 PINNED LIVE; docume
 
 | WP | Scope | State |
 |----|-------|-------|
-| **WP-ID** | GLOBAL node-id collision (data loss): hoist the uniqueness loop INTO `add_node`'s locked block (or a shared `storage.mint_unique_id`) so ALL writers benefit + the `has_node`→`add_node` TOCTOU shrinks; UNIFY (remove the D1a document-scoped salt-retry); cross-writer review incl the post-commit hook's hand-rolled id; **the replay seam** (uniqueness-on-mint must NOT break idempotent replay of an already-journaled add_node). | **Next for Vorpid** — plan + decorrelated peer-review (treat like core/journal work, not a quick fix). Branch off `cc9cd73` (vince aligns). |
+| **WP-Cap** | Capability gaps (P2): `cognition_get_node` (read full detail after a search hit — generalize the D1 get-by-id surface), `cognition_update_node` (**with a re-embed path** — else search serves the stale vector; that's the gate crux), persist the edge `reason` (T-4, journaled+replayed field), expose `get_superseded_chain` (T-11). | **Next for Vorpid** — plan + decorrelated peer-review. Branch off `d585a22` (vince aligns). The update_node re-embed is the silent-search-staleness risk to gate hard. |
 
 **Document-storage feature COMPLETE (D1a → D4) — stored, searchable, deletable, documented, dashboard:**
 - **WP-D1a** (PR #8 → `870ff09`): DOCUMENT type + reference mode + sidecar (+deletion) + store/get + dedup + pair-level graph-inert matcher guard + sync-path embed guard.
@@ -29,8 +29,9 @@ Seam principle held all five PRs: each creates nothing it can't delete. Six gate
 ## v0.8.0 — ✅ RELEASED & PINNED LIVE
 WP-R3 (PR #13 → `8f3079f`) cut the version bump + CHANGELOG; Colton cleared both human checks (vendored-libs render ✓, owed v0.7.4 non-ASCII journal test ✓) and gave the go; **Loki pinned the marketplace to `6c2ce12`** (real ls-remote HEAD; marketplace commit `09e6ab0`; teammate-comms `53827f8` untouched). Rollback if needed = re-pin v0.7.4 `20519b9`. Document storage is live to users. (H-6 also resolved: `.cognition/journal.jsonl` committed, `.cognition/chromadb/` gitignored.)
 
-## Post-v0.8.0 audit-remainder — shipped
+## Post-v0.8.0 audit-remainder — shipped (both P1s done)
 - **WP-T** (PR #14 → `cc9cd73`): tool-layer correctness + pyright ratchet — T-9 (lifespan accessor, baseline **29→8**), T-2 (honest uncurated count), T-3 (batch partial-commit guard), T-6 (unified node_type/direction error contract), C-5 (surface add_edge False). First tests for the previously-untested MCP tool layer.
+- **WP-ID** (PR #15 → `d585a22`): GLOBAL node-id-collision data-loss fix (P1) — mint-on-collision in `add_node`'s locked block (replay-safe by construction, documented), unified out the D1a document salt-retry, post-commit hook commit-hash discriminator, embedding-id rebind closes the orphan-vector. TOCTOU **shrunk** (backlog #2 residual documented, not eliminated). Closes the last P1 audit item.
 
 ## Tracked follow-ups (from the document-storage run)
 - **Dashboard search over-query** (recall, LOW): the dashboard `search()` uses a FIXED `limit*5` over-query while the MCP `_search_cognition` is ADAPTIVE (the D2 B3 fix). Same starve class, far more remote at the dashboard default limit=20 (~100-chunk single-doc domination needed), recall-only, secondary surface. Unify the over-query logic (ledger 11) or document as accepted residual.
@@ -136,3 +137,4 @@ it isn't mistaken for intent.
 | WP-D4 dashboard document list + token-gated path-safe download (traversal+header-injection hardened) + D-6 nav + D-1 liveness + D-4 vendored libs + D-5 security | main `6939c99` (PR #12, pinned `7f07dea`) — in v0.8.0 |
 | WP-R3 v0.8.0 release commit (4-file version bump + CHANGELOG) | main `8f3079f` (PR #13) — **v0.8.0 PINNED LIVE at `6c2ce12`, marketplace `09e6ab0`** |
 | WP-T tool-layer correctness + pyright ratchet (T-9/T-2/T-3/T-6/C-5; pyright 29→8; first tool tests) | main `cc9cd73` (PR #14, pinned `7e090ae`) |
+| WP-ID global node-id-collision data-loss fix (mint-in-add_node, replay-safe, hook discriminator, embedding-id rebind) | main `d585a22` (PR #15, pinned `1494a9c`) — last P1 closed |
