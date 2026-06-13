@@ -110,3 +110,18 @@ def test_add_edges_batch_core_surfaces_failed_add():
     edges = json.dumps([{"from_id": "a", "to_id": "b", "edge_type": "led_to"}])
     res = _add_edges_batch_core(storage, edges)
     assert res["created"] == 0 and res["skipped"] == 1, "failed add counted as created (C-5)"
+
+
+def test_error_contract_is_consistent_across_the_tool_layer():
+    """Composition (rule 11): the tool-layer error paths share ONE shape — a dict with
+    a string `error` key. Locks the T-6 contract across the touched surface so a future
+    edit can't reintroduce a raise or a silent-empty in one tool while the others return
+    error dicts."""
+    bad_node = _parse_node_type("bogus")[1]
+    bad_dir = _validate_direction("sideways", ("incoming", "outgoing"))
+    storage = cast(CognitionStorage, _FakeEdgeStorage(add_result=True))
+    bad_edge_type = _add_edge_core(storage, "a", "b", "not_an_edge_type")
+    self_ref = _add_edge_core(storage, "a", "a", "led_to")
+    bad_batch_json = _add_edges_batch_core(storage, "{not json")
+    for res in (bad_node, bad_dir, bad_edge_type, self_ref, bad_batch_json):
+        assert isinstance(res, dict) and isinstance(res.get("error"), str), f"non-uniform error: {res!r}"
