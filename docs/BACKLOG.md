@@ -7,7 +7,7 @@ and `docs/DESIGN-document-storage.md` (the v0.8.0 feature spine).
 **Convention:** the proposed WP groupings below are a *triage inventory*, not briefs. Each WP
 gets a peer-reviewed execution plan (a `docs/wp-*-plan.md`) before it's assigned to Vorpid, and
 each ships through the standard gate (SHA-pinned merge, fix+proof same commit, voiding clause,
-journal-flush-via-worktree). Last updated 2026-06-13 (post v0.7.4 pin).
+journal-flush-via-worktree). Last updated 2026-06-13 (post WP-D1a merge).
 
 ---
 
@@ -15,7 +15,9 @@ journal-flush-via-worktree). Last updated 2026-06-13 (post v0.7.4 pin).
 
 | WP | Scope | State |
 |----|-------|-------|
-| **WP-D1** | Document storage: reference-mode + opt-in blob store, sidecar, DOCUMENT type + matcher pair rules, store/get tools, dedup, deletion incl. chunk purge + **ghost-search fix (N1)**, extension sanitization, gitattributes, tests | **Assigned to Vorpid** (queued; brief = DESIGN doc §1–§9). Branch `fix/wp-d1-document-store` off main. Acceptance = §9 seam-gate findings. |
+| **WP-D1b** | Document storage, phase 2: opt-in copy-mode blob (write paired with refcount delete + `.gitignore` write/remove), extension sanitization/whitelist (first agent-controlled path component), full matcher pair rules (entity↔doc `part_of` + doc↔episode `relates_to`, `doc:`-gated, skip-if-any-deterministic-edge), chunk-purge wiring, **N1 ghost-search general fix** | **Next for Vorpid** — plan + peer review starting. Branch off post-flush origin/main (vince runs the branch-switch align). Carries the manual-edge-document-guard item (see §audit-remainder WP-Doc/Skill). |
+
+WP-D1 was split: **WP-D1a SHIPPED** (PR #8 → main `870ff09`): reference mode + sidecar (+deletion) + DOCUMENT type + store/get tools + dedup + pair-level graph-inert matcher guard + sync-path embed guard. Seam principle: each PR creates nothing it can't delete.
 
 ## Committed feature spine → v0.8.0
 
@@ -41,6 +43,19 @@ the 31 pyright baseline errors, dropping the ratchet toward strict.
 - **T-3** (MED, bug): `add_edges_batch` crashes mid-batch on a non-dict element *after* earlier edges are journaled (partial commit). Needs `isinstance(e, dict)` guard.
 - **T-6** (MED, inconsistency): error-contract split — error-dicts vs raised exceptions vs silent wrong answers across tools; `node_type` validated three ways. One shared `_parse_node_type` helper fixes most.
 - **C-5** (LOW, bug): tool-level TOCTOU — `add_edge` return ignored, reports `{"created": True}` even when storage declined.
+
+### WP-ID · global node-id collision (data loss) — **P1** (surfaced by WP-D1a)
+`generate_node_id` hashes `type:summary:timestamp`. Under a coarse clock (Windows ~15 ms),
+two nodes of the **same type + same summary** recorded in one tick hash to the **same id**, and
+`add_node` **silently overwrites** the first — silent data loss. WP-D1a fixed only the document
+path (a local salt-retry in `_store_document`); `_record_node` (every decision/discovery/episode)
+and the post-commit hook's hand-rolled id still collide. Discovery `e434566c8440`; defer decision
+`0bd725b83bd0`. **Fix direction:** hoist a uniqueness loop (salt-until-`has_node`-free) **into
+`add_node`'s locked block** (or a shared `storage.mint_unique_id`) so all writers benefit and the
+cross-process `has_node`→`add_node` **TOCTOU** shrinks in the same change. Needs cross-writer
+composition review — the post-commit hook reimplements id-gen (H-2 residue). Until then there's an
+**interim asymmetry** (documents retry-on-collision, all other nodes overwrite) — tracked here so
+it isn't mistaken for intent.
 
 ### WP-Cap · capability gaps — **P2** (synergy with the document track)
 - **T-5** (MED, gap): no `cognition_get_node` (full `detail` unreadable after a search hit) and `update_node` is implemented+tested but unexposed. *Caveat: nothing re-embeds after `update_node` — must ship a re-embed path or search serves a stale summary forever (pairs with E-2). The document track's `get_document` is the graph's first get-by-id surface (audit G1) — coordinate so `get_node` isn't built twice.*
@@ -107,3 +122,4 @@ the 31 pyright baseline errors, dropping the ratchet toward strict.
 | C-1 cross-process atomicity; C-2 short-write; C-3 replacement detection; H-2 journal-format fork | v0.7.4 (WP-4) |
 | WP-5 upgrade-brick detection (ledger 19) | v0.7.4 (WP-5) |
 | H-3 fatal-failure guard (`|| true`) | v0.7.4-era hooks |
+| WP-D1a document storage (reference mode, sidecar, DOCUMENT type, store/get, dedup, graph-inert + sync-path guards, sidecar deletion) | main `870ff09` (PR #8) — ships in v0.8.0 |
