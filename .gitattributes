@@ -20,3 +20,10 @@
 # touching it) between the merge and that flush — doing so would write LF over
 # the live CRLF under the byte-offset replay (C-3 via the defense itself).
 .cognition/journal.jsonl merge=union -text
+
+# Document store (WP-D1): content-addressed blobs + sha-named text sidecars.
+# -text stores them verbatim — autocrlf would rewrite the sidecars at checkout
+# and break the sha-named-content invariant (same bug class as the journal).
+# NO merge=union: content-addressed + binary, so conflicts are impossible.
+# Greenfield dir → -text lands with its first file, no cut-over needed.
+.cognition/documents/** -text

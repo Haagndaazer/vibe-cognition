@@ -7,7 +7,7 @@ from typing import Any
 
 from fastmcp import FastMCP
 
-from .cognition import CognitionStorage
+from .cognition import CognitionNodeType, CognitionStorage
 from .config import Settings, setup_logging
 from .embeddings import ChromaDBStorage, EmbeddingGenerator
 from .instructions import SERVER_INSTRUCTIONS
@@ -68,7 +68,15 @@ def _sync_cognition_embeddings(
     except Exception:
         pass  # If collection is empty or IDs not found, treat all as missing
 
-    missing = [n for n in all_nodes if n["id"] not in existing_ids]
+    # Documents are graph-inert and intentionally NOT embedded (their searchable
+    # text lives in the sidecar, chunked separately in D1b). Skip them here too —
+    # otherwise this cross-process sync would re-embed every document node on the
+    # next server start, re-introducing them into semantic search (N1 class).
+    missing = [
+        n
+        for n in all_nodes
+        if n["id"] not in existing_ids and n.get("type") != CognitionNodeType.DOCUMENT.value
+    ]
 
     if not missing:
         logger.info("Cognition embeddings: all nodes already synced")

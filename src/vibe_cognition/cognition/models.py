@@ -3,6 +3,7 @@
 import hashlib
 from datetime import UTC, datetime
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -21,6 +22,9 @@ class CognitionNodeType(str, Enum):  # noqa: UP042
     INCIDENT = "incident"
     PATTERN = "pattern"
     EPISODE = "episode"
+    # A stored document (client doc, spec, etc.) — episode-like in the matcher
+    # (a hub for part_of links), with reference/blob storage + a text sidecar.
+    DOCUMENT = "document"
 
 
 class CognitionEdgeType(str, Enum):  # noqa: UP042  (see CognitionNodeType above)
@@ -47,6 +51,10 @@ class CognitionNode(BaseModel):
     severity: str | None = None
     timestamp: str
     author: str
+    # Structured, type-specific metadata (e.g. a document node's filename / mime /
+    # size / sha256 / mode / path). Empty for ordinary nodes. Journaled + replayed
+    # like any other field.
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class CognitionEdge(BaseModel):
