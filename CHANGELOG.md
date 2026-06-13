@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-06-13
+
+First-class **document storage**: keep client docs, PDFs, specs, and transcripts as
+durable project memory, with the knowledge inside them woven into the graph.
+
+### Added
+- **Store documents as first-class nodes.** Default **reference mode** records the
+  file path + metadata + a content hash (the bytes stay where they live); opt-in
+  **copy mode** (`store_copy`) saves the bytes into a content-addressed store, with
+  `local_only` to keep a copy out of git.
+- **Searchable document text.** You (the agent) extract the text; it's chunked into
+  the local embedding store, so `cognition_search` finds documents and returns the
+  matching excerpt.
+- **The `/vibe-document` skill.** Stores a document, then records the facts inside it
+  as descriptor nodes that cite the document's `doc:<hash>` in their references —
+  which auto-links them to the document. This citing step is how a document connects
+  to the rest of the graph.
+- **New tools:** `cognition_store_document` and `cognition_get_document` (which reports
+  freshness — `unchanged | modified | missing` — by re-hashing the referenced file).
+- **Dashboard:** a Documents panel listing stored documents, with a token-gated,
+  path-safe **download** (the copied blob, or the extracted text for reference-mode
+  documents).
+- Deleting a document reclaims its managed artifacts (extracted-text sidecar, copied
+  blob, search vectors) but never touches the referenced original file.
+
+### Fixed
+- **Cross-process ghost search (N1):** search (in both the MCP tools and the
+  dashboard) no longer returns hits for nodes that were deleted on another machine —
+  a deletion replayed from the shared journal previously left the embedding behind. A
+  startup sweep also reclaims orphaned vectors.
+
+> **Privacy note:** a copy-mode blob committed to git survives in git history and on
+> the remote even after you delete its node — deleting a document does not un-publish
+> an already-committed copy.
+
 ## [0.7.4] — 2026-06-11
 
 ### Fixed
