@@ -685,6 +685,13 @@ def register_cognition_tools(mcp) -> None:
         Use this to curate relationships directly — either while running the
         `/vibe-curate` skill or to add a single edge by hand.
 
+        DOCUMENT nodes are intentionally manually-linkable: versioning uses an
+        explicit ``supersedes`` edge between document nodes, and curated
+        ``relates_to`` edges are expected. The deterministic matcher only
+        AUTO-links documents on shared ``doc:`` refs (entity→document ``part_of``,
+        document→episode ``relates_to``); manual/curated edges are never blocked,
+        and a deterministic re-mint never overwrites a same-type manual edge.
+
         Args:
             from_id: Source node ID (must exist)
             to_id: Target node ID (must exist)

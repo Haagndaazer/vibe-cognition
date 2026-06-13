@@ -588,3 +588,65 @@ def test_reconcile_orphan_sweep_removes_only_graph_absent(tmp_path):
     assert remaining == {"live0002", "live0002#chunk-0"}, (
         f"sweep removed a present node or its chunk (ordering guard failed): {remaining}"
     )
+
+
+# --- WP-D1b composition review (rule 11): matcher x dedup x deletion -----------
+
+
+def test_composition_copy_twins_matcher_dedup_deletion(tmp_path):
+    """force_new copy twins share ONE blob AND one doc: ref (same content → same
+    sha → same doc_ref). A citing entity links part_of BOTH twins; deleting one
+    cascades only its own edge and keeps the shared blob/sidecar; deleting the last
+    reclaims them. Composes the matcher pair rules, force_new dedup, and per-blob
+    refcount delete in one scenario."""
+    s = CognitionStorage(tmp_path / "cog")
+    a = _store_document(s, title="d", document_text="x", context="", author="t",
+                        content_text="dup", store_copy=True, local_only=True)
+    b = _store_document(s, title="d", document_text="x", context="", author="t",
+                        content_text="dup", store_copy=True, local_only=True, force_new=True)
+    sha = _meta_sha(s, a["node_id"])
+    bp = blob_path(s.cognition_dir, sha, "")
+    sidecar = text_sidecar_path(s.cognition_dir, sha)
+    # An entity citing the shared doc_ref links part_of BOTH document twins.
+    s.add_node(_node("dec00300", CognitionNodeType.DECISION, refs=[a["doc_ref"]]))
+    s.create_deterministic_edges("dec00300")
+    g = s.graph
+    assert g.has_edge("dec00300", a["node_id"]) and g.has_edge("dec00300", b["node_id"]), (
+        "entity did not link part_of both content-identical twins"
+    )
+
+    delete_cognition_node(s, _NoopEmbed(), a["node_id"])
+    assert not g.has_edge("dec00300", a["node_id"]), "deleted twin's edge not cascaded"
+    assert g.has_edge("dec00300", b["node_id"]), "surviving twin's edge wrongly removed"
+    assert bp.exists() and sidecar.exists(), "shared blob/sidecar reclaimed while a twin remains"
+
+    delete_cognition_node(s, _NoopEmbed(), b["node_id"])
+    assert not bp.exists() and not sidecar.exists(), "blob/sidecar not reclaimed after last twin"
+    assert not gitignore_has_entry(s.cognition_dir, a["blob_path"])
+    assert s.has_node("dec00300"), "citing entity wrongly removed"
+
+
+def test_all_artifact_classes_share_one_delete_path(tmp_path):
+    """Vince/Reginald aspiration (ledger 11): every server-written artifact class —
+    text sidecar, content-addressed blob, chunk/node vectors — is reclaimed by the
+    ONE delete_cognition_node path, each keyed on the creator's identity predicate
+    (sidecar+blob via documents_with_sha; vectors via node_id). Deleting the sole
+    node leaves NO managed artifact of any class behind."""
+    s = CognitionStorage(tmp_path / "cog")
+    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    res = _store_document(s, title="d", document_text="extracted", context="", author="t",
+                          content_text="bytes", store_copy=True, local_only=True)
+    sha = _meta_sha(s, res["node_id"])
+    sidecar = text_sidecar_path(s.cognition_dir, sha)
+    bp = documents_dir(s.cognition_dir) / res["blob_path"]
+    # Seed the vectors D2 will write: a node vector + a node_id-tagged chunk.
+    embed.upsert_embedding(res["node_id"], [0.1, 0.2, 0.3], {"entity_type": "document"})
+    embed.upsert_embedding(f"{res['node_id']}#chunk-0", [0.4, 0.5, 0.6], {"node_id": res["node_id"]})
+    assert sidecar.exists() and bp.exists()
+    assert set(embed._collection.get()["ids"]) == {res["node_id"], f"{res['node_id']}#chunk-0"}
+
+    delete_cognition_node(s, embed, res["node_id"])
+    assert not sidecar.exists(), "sidecar (artifact class 1) not reclaimed"
+    assert not bp.exists(), "blob (artifact class 2) not reclaimed"
+    assert not gitignore_has_entry(s.cognition_dir, res["blob_path"]), ".gitignore line not reclaimed"
+    assert embed._collection.get()["ids"] == [], "node/chunk vectors (artifact class 3) not reclaimed"
