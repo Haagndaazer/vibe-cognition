@@ -7,7 +7,7 @@ and `docs/DESIGN-document-storage.md` (the v0.8.0 feature spine).
 **Convention:** the proposed WP groupings below are a *triage inventory*, not briefs. Each WP
 gets a peer-reviewed execution plan (a `docs/wp-*-plan.md`) before it's assigned to Vorpid, and
 each ships through the standard gate (SHA-pinned merge, fix+proof same commit, voiding clause,
-journal-flush-via-worktree). Last updated 2026-06-13 (post WP-D2 merge — documents searchable; D3 + D4 remain for v0.8.0).
+journal-flush-via-worktree). Last updated 2026-06-13 (post WP-D3 merge — D4 is the last WP before the v0.8.0 cut).
 
 ---
 
@@ -15,22 +15,18 @@ journal-flush-via-worktree). Last updated 2026-06-13 (post WP-D2 merge — docum
 
 | WP | Scope | State |
 |----|-------|-------|
-| **WP-D3** | `/vibe-document` skill (store document → record descriptor ENTITY nodes citing the returned `doc_ref` in THEIR references → `/vibe-curate`) + README/SKILL docs. **Load-bearing (DESIGN S4/N3, not a footnote):** episodes/entities link to a document ONLY by citing `doc:<hash>` in their references — the skill must make that the default workflow. Also fold in audit S-3 doc-surface drift (SKILL tool table, edge-type list). | **Next for Vorpid** — plan + peer review starting. Branch off post-flush origin/main (vince runs the align). Last functional WP before v0.8.0. |
+| **WP-D4** | Dashboard: document list + token-gated download (the feature) + **D-6 dashboard-N1 NAVIGATION** (dedupe document hits to node + hydrate metadata in `dashboard/api.py search()` — D2 shipped the safety filter, this is the nav half) + the open dashboard audit findings **D-1…D-5** + the README standalone-dashboard fix (S-3 MED). | **Next for Vorpid** — plan + peer review starting. Branch off post-flush origin/main (vince runs the align). **THE LAST WP — v0.8.0 cuts after it.** Plan must TIER D-1…D-5 (core: feature + D-6 nav + MED D-1/D-2/D-4; D-3/D-5 LOW = implementer's call) so it doesn't balloon. |
 
-**Document-storage searchable core SHIPPED (D1a + D1b + D2):**
+**Document-storage core SHIPPED (D1a + D1b + D2 + D3) — stored, searchable, documented:**
 - **WP-D1a** (PR #8 → `870ff09`): DOCUMENT type + reference mode + sidecar (+deletion) + store/get + dedup + pair-level graph-inert matcher guard + sync-path embed guard.
-- **WP-D1b** (PR #9 → `0faf302`): matcher 6-pair truth table + the ONE shared `documents_with_sha` predicate + copy mode (blob, ext whitelist, size/git policy, S3) + per-blob-path refcounted deletion + chunk-purge wiring + **N1 ghost-search fix** (MCP surface). Manual-edge guard → scope note (documents intentionally manually-linkable for §4 `supersedes`).
-- **WP-D2** (PR #10 → `dd11cd2`): documents are now **searchable** — chunked embeddings (`#chunk-N`, `is_chunk` marker) + **adaptive** over-query/dedupe-to-best-per-node + `matched_excerpt`; re-sync chunking + interim backfill; `get_status` node/chunk split; **dashboard N1 SAFETY filter** (shared `search_hit_is_live`). Held once: over-query `k=5` failed its own B3 (single-doc starve) → fixed adaptive (double-until-`limit`-distinct/exhausted/cap).
+- **WP-D1b** (PR #9 → `0faf302`): matcher 6-pair truth table + the ONE shared `documents_with_sha` predicate + copy mode (blob, ext whitelist, size/git policy, S3) + per-blob-path refcounted deletion + chunk-purge wiring + **N1 ghost-search fix** (MCP surface). Manual-edge guard → scope note.
+- **WP-D2** (PR #10 → `dd11cd2`): documents **searchable** — chunked embeddings + **adaptive** over-query/dedupe + `matched_excerpt`; re-sync/backfill; `get_status` node/chunk split; **dashboard N1 SAFETY filter** (shared `search_hit_is_live`).
+- **WP-D3** (PR #11 → `9afc538`): `/vibe-document` skill (S4/N3 link-by-`doc_ref` workflow + WRONG-vs-RIGHT contrast) + `/vibe-cognition`/README surface fixes (all 17 tools, edge-type accuracy, `relates_to` 3-provenance) + a **doc-drift GUARD test** (S-3 → regression guard, live `list_tools` + enum-pinned). Merged clean, no hold.
 
-Seam principle held all three PRs: each creates nothing it can't delete.
+Seam principle held all four PRs: each creates nothing it can't delete.
 
-## Committed feature spine → v0.8.0
-
-| WP | Scope |
-|----|-------|
-| WP-D4 | Dashboard: document list + token-gated download — **folds in the open dashboard audit findings D-1…D-5 + the D-6 dashboard-N1 NAVIGATION/dedupe (below — D2 shipped the safety half)** |
-
-Version **0.8.0** cuts when D1–D4 land. (D1 + D2 done; D3–D4 remain.)
+## Release gate → v0.8.0 (after WP-D4)
+Once D4 merges: bump `pyproject.toml` + `.claude-plugin/plugin.json` to **0.8.0**, cut the CHANGELOG `[0.8.0]` section (document-storage feature: store/search/copy/delete + `/vibe-document` skill), push to main, then ping **Loki** with the code-commit SHA to re-pin the marketplace (per CLAUDE.md release procedure). This is the release step, NOT a per-WP action — vince drives it with Vorpid + Loki.
 
 ---
 
@@ -129,3 +125,4 @@ it isn't mistaken for intent.
 | WP-D1a document storage (reference mode, sidecar, DOCUMENT type, store/get, dedup, graph-inert + sync-path guards, sidecar deletion) | main `870ff09` (PR #8) — ships in v0.8.0 |
 | WP-D1b document storage (matcher pair rules, shared identity predicate, copy mode + size/git policy, per-blob-path refcounted deletion, N1 ghost-search fix) | main `0faf302` (PR #9, pinned `3f6cdf5`) — ships in v0.8.0 |
 | WP-D2 chunked document search (chunk embeddings + is_chunk count-split, adaptive over-query + dedupe + matched_excerpt, re-sync/backfill, dashboard N1 safety filter) | main `dd11cd2` (PR #10, pinned `63f2246`) — ships in v0.8.0 |
+| WP-D3 /vibe-document skill (S4/N3 link-by-doc_ref workflow) + doc-surface fixes (all 17 tools, edge-type accuracy, relates_to 3-provenance) + doc-drift guard test | main `9afc538` (PR #11, pinned `c3b1bbf`) — ships in v0.8.0 |
