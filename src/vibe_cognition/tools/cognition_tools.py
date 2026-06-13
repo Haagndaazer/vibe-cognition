@@ -651,6 +651,18 @@ def _get_document(
     }
 
 
+def _get_node(storage: CognitionStorage, node_id: str) -> dict[str, Any]:
+    """Read a single node's FULL narrative by id (testable core of cognition_get_node).
+
+    ``storage.get_node`` returns the bare graph attributes (no ``id`` — that's the
+    graph key), so re-attach ``id`` to give a self-describing dict. Returns an error
+    dict for an absent node rather than raising or returning ``None``."""
+    node = storage.get_node(node_id)
+    if node is None:
+        return {"error": f"Node '{node_id}' does not exist"}
+    return {"id": node_id, **node}
+
+
 def register_cognition_tools(mcp) -> None:
     """Register cognition graph tools with the MCP server.
 
@@ -822,6 +834,25 @@ def register_cognition_tools(mcp) -> None:
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         return _get_document(storage, node_id=node_id, doc_ref_arg=doc_ref_arg)
+
+    @mcp.tool()
+    def cognition_get_node(ctx: Context, node_id: str) -> dict[str, Any]:
+        """Read a single cognition node's FULL narrative by id.
+
+        Search results and `cognition_get_neighbors` return summaries only (no
+        `detail`) — use this after a hit to read the complete node. This is the
+        GENERIC node read; for a stored document, `cognition_get_document` is the
+        specialized get-by-id (it adds the sidecar text + a freshness check).
+
+        Args:
+            node_id: The node to read.
+
+        Returns:
+            {id, type, summary, detail, context, references, severity, timestamp,
+            author, metadata} or {"error": ...} if the node is absent.
+        """
+        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
+        return _get_node(storage, node_id)
 
     @mcp.tool()
     def cognition_search(

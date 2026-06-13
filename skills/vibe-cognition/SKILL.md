@@ -10,6 +10,7 @@ description: You MUST use this skill any time you need to retrieve information a
 |------|---------|
 | `cognition_record` | Record a knowledge node or episode |
 | `cognition_search` | Semantic search across all cognition nodes |
+| `cognition_get_node` | Read a single node's full narrative (incl. `detail`) by id |
 | `cognition_get_chain` | Traverse reasoning chains (LED_TO edges) from a node |
 | `cognition_get_history` | Browse nodes by context area, type, or recency |
 | `cognition_add_edge` | Manually create an edge between two nodes |
