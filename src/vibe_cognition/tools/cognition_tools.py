@@ -166,7 +166,8 @@ def _add_edge_core(
 
     timestamp = datetime.now(UTC).isoformat()
     edge = CognitionEdge(
-        from_id=from_id, to_id=to_id, edge_type=et, timestamp=timestamp, source=source,
+        from_id=from_id, to_id=to_id, edge_type=et, timestamp=timestamp,
+        source=source, reason=reason,
     )
     # C-5: add_edge returns False if a node vanished between the has_node check and
     # the write (cross-process delete race) — surface it, don't report created:True.
@@ -250,6 +251,7 @@ def _add_edges_batch_core(storage: CognitionStorage, edges: str) -> dict[str, An
         timestamp = datetime.now(UTC).isoformat()
         edge = CognitionEdge(
             from_id=fid, to_id=tid, edge_type=et, timestamp=timestamp, source=src,
+            reason=e.get("reason"),
         )
         if not storage.add_edge(edge):  # C-5: surface a failed add, don't count it created
             errors.append(f"[{i}] Not created: a node is missing ({fid} or {tid})")
@@ -1162,6 +1164,7 @@ def register_cognition_tools(mcp) -> None:
                 outgoing.append({
                     "id": tid,
                     "edge_type": edata.get("type"),
+                    "reason": edata.get("reason"),
                     "type": node_data.get("type") if node_data else None,
                     "summary": node_data.get("summary") if node_data else None,
                 })
@@ -1174,6 +1177,7 @@ def register_cognition_tools(mcp) -> None:
                 incoming.append({
                     "id": sid,
                     "edge_type": edata.get("type"),
+                    "reason": edata.get("reason"),
                     "type": node_data.get("type") if node_data else None,
                     "summary": node_data.get("summary") if node_data else None,
                 })

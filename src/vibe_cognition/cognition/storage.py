@@ -228,6 +228,7 @@ class CognitionStorage:
                 type=edge.edge_type.value,
                 timestamp=edge.timestamp,
                 source=edge.source,
+                reason=edge.reason,
             )
             self._append_journal("add_edge", edge.model_dump(mode="json"))
             return True
@@ -956,6 +957,9 @@ class CognitionStorage:
                     # contain many edges sourced "curator"; the background curator
                     # feature was removed, but the stored tag is left intact.
                     source=data.get("source", "curator"),
+                    # Graceful for pre-WP-Cap journals (no reason field) — like the
+                    # D1a metadata round-trip: absent -> None, never a KeyError.
+                    reason=data.get("reason"),
                 )
         elif action == "remove_edge":
             from_id = data["from_id"]

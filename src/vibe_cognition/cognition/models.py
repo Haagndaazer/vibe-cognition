@@ -68,6 +68,10 @@ class CognitionEdge(BaseModel):
     # removed). Real write paths pass an explicit source (deterministic, manual,
     # batch, curate-skill); this default is the fallback for legacy data.
     source: str = "curator"
+    # The agent's curation rationale for this edge (why A led_to/supersedes/etc. B).
+    # The edge-analyzer produces one per edge; persisted so it survives replay and
+    # surfaces via get_neighbors. None for deterministic edges (no agent rationale).
+    reason: str | None = None
 
 
 def generate_node_id(node_type: str, summary: str, timestamp: str | None = None) -> str:
