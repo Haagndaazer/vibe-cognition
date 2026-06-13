@@ -111,6 +111,30 @@ def _record_node(
     return result
 
 
+def _parse_node_type(
+    node_type: str | None,
+) -> tuple[CognitionNodeType | None, dict[str, Any] | None]:
+    """Parse an optional node_type string into the enum. THE single node_type parser
+    (T-6): returns ``(enum, None)`` for a valid type, ``(None, None)`` for None, or
+    ``(None, error_dict)`` for an invalid one — so every tool validates the same way
+    and returns the same error shape (no bare raise, no silent empty-success)."""
+    if node_type is None:
+        return None, None
+    try:
+        return CognitionNodeType(node_type), None
+    except ValueError:
+        valid = [e.value for e in CognitionNodeType]
+        return None, {"error": f"Invalid node_type '{node_type}'. Valid: {valid}"}
+
+
+def _validate_direction(direction: str, allowed: tuple[str, ...]) -> dict[str, Any] | None:
+    """Return an error dict for an unknown direction (T-6) instead of silently doing
+    the wrong thing (treating it as incoming, or returning neither list)."""
+    if direction not in allowed:
+        return {"error": f"Invalid direction '{direction}'. Valid: {list(allowed)}"}
+    return None
+
+
 _SEARCH_OVERQUERY_K = 5     # initial over-query factor (chunks of one doc crowd others)
 _SEARCH_OVERQUERY_CAP = 500  # hard ceiling on n_results when widening adaptively
 _MATCHED_EXCERPT_LEN = 500   # chars of chunk text returned as the match excerpt
@@ -739,6 +763,9 @@ def register_cognition_tools(mcp) -> None:
             Nested structure showing the reasoning chain
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
+        err = _validate_direction(direction, ("outgoing", "incoming"))
+        if err:
+            return err
         return get_reasoning_chain(storage, node_id, max_depth, direction)
 
     @mcp.tool()
@@ -764,13 +791,9 @@ def register_cognition_tools(mcp) -> None:
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
 
-        nt = None
-        if node_type:
-            try:
-                nt = CognitionNodeType(node_type)
-            except ValueError:
-                valid = [e.value for e in CognitionNodeType]
-                return {"error": f"Invalid node type '{node_type}'. Valid: {valid}"}
+        nt, err = _parse_node_type(node_type)
+        if err:
+            return err
 
         if context_term:
             results = get_history_for_context(storage, context_term, nt)
@@ -969,12 +992,15 @@ def register_cognition_tools(mcp) -> None:
             {"nodes": [...], "count": N, "total_edgeless": N}
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
+        nt, err = _parse_node_type(node_type)
+        if err:
+            return err
         all_nodes = storage.get_all_nodes()
 
         edgeless = []
         for node in all_nodes:
             nid = node["id"]
-            if node_type and node.get("type") != node_type:
+            if nt and node.get("type") != nt.value:
                 continue
             if not storage.get_successors(nid) and not storage.get_predecessors(nid):
                 edgeless.append(node)
@@ -1007,7 +1033,9 @@ def register_cognition_tools(mcp) -> None:
             {"nodes": [...], "count": N, "total_uncurated": N}
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
-        nt = CognitionNodeType(node_type) if node_type else None
+        nt, err = _parse_node_type(node_type)
+        if err:
+            return err
 
         # The returned list is capped (storage caps at 500); the TOTAL is an honest,
         # uncapped count (T-2 — deriving the total from the capped list under-reported
@@ -1072,6 +1100,9 @@ def register_cognition_tools(mcp) -> None:
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
 
+        err = _validate_direction(direction, ("incoming", "outgoing", "both"))
+        if err:
+            return err
         if not storage.has_node(node_id):
             return {"error": f"Node '{node_id}' does not exist"}
 
