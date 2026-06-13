@@ -274,3 +274,67 @@ def test_incident_resolution_includes_resolutions_and_all_led_to(tmp_path):
 def test_incident_resolution_missing_node_errors(tmp_path):
     s = CognitionStorage(tmp_path / ".cognition")
     assert "error" in get_incident_resolution(s, "nope")
+
+
+# --- Commit 5: composition ---------------------------------------------------
+
+def test_update_node_preserves_id_edges_and_curation(tmp_path):
+    """The whole reason update_node exists: edit a node's narrative WITHOUT the
+    delete+re-record that would lose its id, its edges, and its curation marker. After
+    a summary edit + re-embed: same id, the edge survives, the curated marker persists,
+    and search reflects the NEW text. (This is the end-to-end composition of Commits
+    1+3 — the read surface, the in-place edit, and the re-embed.)"""
+    s = CognitionStorage(tmp_path / ".cognition")
+    embed = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
+    gen = _gen()
+
+    a = CognitionNode(
+        id="A", type=CognitionNodeType.DECISION, summary="alpha plan", detail="body",
+        context=[], references=[], timestamp="2026-06-13T00:00:00+00:00", author="t",
+    )
+    s.add_node(a)
+    _embed_entity_node(embed, gen, a)
+    s.add_node(_typed_node("B", CognitionNodeType.DECISION))
+    _edge(s, "A", "B", CognitionEdgeType.LED_TO)
+    assert s.mark_curated_by_skill("A")
+
+    out = _update_node(s, embed, gen, node_id="A", embeddings_ready=True, summary="beta plan")
+    assert out.get("reembed") == "done"
+    assert out.get("id") == "A", "the id must be preserved across an edit"
+
+    assert any(t == "B" for t, _ in s.get_successors("A")), "edge lost across the edit"
+    node = s.get_node("A")
+    assert node is not None and node.get("curated_by_skill_at") is not None, (
+        "curation marker lost across the edit"
+    )
+    score = _score_for(_search_cognition(s, embed, gen, "beta")["results"], "A")
+    assert score is not None and score > 0.99, "search did not reflect the edited text"
+
+
+def test_record_and_update_share_one_embed_path(tmp_path):
+    """Ledger 11: _embed_entity_node is the SINGLE node-vector path. For identical
+    text, the vector a fresh record produces and the vector an update_node re-embed
+    produces must be the same — i.e. update routes through the same helper, not a
+    re-encoded copy that could drift."""
+    s = CognitionStorage(tmp_path / ".cognition")
+    embed = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
+    gen = _gen()
+
+    # record a node directly on GAMMA
+    rec = CognitionNode(
+        id="REC", type=CognitionNodeType.DECISION, summary="gamma topic", detail="body",
+        context=[], references=[], timestamp="2026-06-13T00:00:00+00:00", author="t",
+    )
+    s.add_node(rec)
+    _embed_entity_node(embed, gen, rec)
+
+    # a different node edited INTO the same GAMMA text via update_node
+    s.add_node(_node("UPD", summary="alpha topic"))
+    _embed_entity_node(embed, gen, _node("UPD", summary="alpha topic"))
+    _update_node(s, embed, gen, node_id="UPD", embeddings_ready=True, summary="gamma topic")
+
+    # both now match a GAMMA query identically (same embed path -> same vector)
+    results = _search_cognition(s, embed, gen, "gamma")["results"]
+    assert _score_for(results, "REC") == _score_for(results, "UPD"), (
+        "record and update produced different vectors for identical text (embed path drift)"
+    )
