@@ -564,6 +564,10 @@ class _FakeEmbedStore:
         self.deleted.append(entity_id)
         return True
 
+    def delete_by_node_id(self, node_id: str) -> None:
+        if self._raise:
+            raise RuntimeError("chromadb boom")
+
 
 class TestDeleteCognitionNode:
     """Unit tests for the shared delete_cognition_node helper (used by the MCP

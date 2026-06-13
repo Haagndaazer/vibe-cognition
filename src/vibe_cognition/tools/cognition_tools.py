@@ -19,10 +19,19 @@ from ..cognition import (
     get_reasoning_chain,
 )
 from ..cognition.documents import (
+    BLOB_REFUSE_BYTES,
+    BLOB_WARN_BYTES,
+    add_gitignore_entry,
+    blob_path,
+    blob_rel_path,
     doc_ref,
+    gitignore_has_entry,
     read_text_sidecar,
+    remove_gitignore_entry,
+    sanitize_extension,
     sha256_bytes,
     sha256_file,
+    write_blob,
     write_text_sidecar,
 )
 from ..embeddings import ChromaDBStorage, EmbeddingGenerator
@@ -102,6 +111,115 @@ def _record_node(
     return result
 
 
+def _format_search_results(
+    results: list[dict[str, Any]], storage: CognitionStorage
+) -> list[dict[str, Any]]:
+    """Format vector-search hits, DROPPING any whose (chunk-stripped) node id is
+    absent from the graph — the N1 ghost-search fix (§9 N1).
+
+    A cross-process remove_node replays into the graph but never un-embeds (replay
+    touches only the graph; the embedding sync only ADDS), so Chroma serves hits for
+    nodes deleted on another machine — escalated by documents to verbatim deleted
+    client text. Filtering on graph presence is the CORRECTNESS guarantee (it never
+    deletes; the startup sweep is best-effort reclamation). The ``#chunk-`` strip is
+    forward-compatible with D2 chunk ids (``<node_id>#chunk-N``).
+
+    SCOPE: this fixes the MCP ``cognition_search`` surface. The dashboard search
+    surface (``dashboard/api.py`` ``search()`` -> ``vector_search`` raw) has NO such
+    filter and still serves cross-process ghosts — pre-existing, out of D1b scope
+    (dashboard is the WP-D4 cluster), harmless while documents aren't embedded.
+    Tracked in BACKLOG under WP-D4."""
+    formatted: list[dict[str, Any]] = []
+    for r in results:
+        raw_id = r.get("_id") or ""
+        node_id = raw_id.split("#chunk-")[0]
+        if not storage.has_node(node_id):
+            continue
+        formatted.append({
+            "id": raw_id,
+            "node_type": r.get("entity_type"),
+            "summary": r.get("summary") or r.get("name"),
+            "author": r.get("author"),
+            "timestamp": r.get("timestamp"),
+            "severity": r.get("severity"),
+            "context": r.get("context", ""),
+            "score": r.get("score"),
+        })
+    return formatted
+
+
+def _search_cognition(
+    storage: CognitionStorage,
+    embedding_storage: ChromaDBStorage,
+    generator: EmbeddingGenerator,
+    query: str,
+    node_type: str | None = None,
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Semantic search core (testable; cognition_search is the thin ctx wrapper).
+
+    Embeds the query, vector-searches Chroma, then applies the N1 graph-presence
+    filter (_format_search_results) so a node deleted on another machine is never
+    served. Keeping vector_search + filter together here is what lets the
+    cross-process ghost test exercise the REAL search path end-to-end (not just the
+    filter function)."""
+    limit = min(limit, 50)
+    query_embedding = generator.generate_query_embedding(query)
+    results = embedding_storage.vector_search(
+        query_embedding=query_embedding,
+        limit=limit,
+        entity_type=node_type,
+    )
+    formatted = _format_search_results(results, storage)
+    return {"query": query, "results": formatted, "count": len(formatted)}
+
+
+def _materialize_blob(
+    cognition_dir: Path, sha: str, ext: str, blob_rel: str, size: int,
+    local_only: bool | None, *, data: bytes | None, src: Path | None,
+) -> tuple[bool, dict[str, Any], list[str]]:
+    """Write the content-addressed blob (write-once) and reconcile its git policy.
+
+    Returns ``(effective_local_only, status, warnings)``. Size policy §9 S1 (no
+    hard cap): ≥50MB auto local_only + warn; ≥95MB default-commit refused (forced
+    local_only). S3 dedup transitions: a blob that WAS local_only going to default
+    is ``promoted`` (its .gitignore line removed); a blob already on the commit track
+    going to local_only reports ``already_committed`` (git can't un-publish it).
+
+    ``already_committed`` is a conservative PROXY: it fires when the blob already
+    existed un-ignored (on the default-commit track), which is the case git may
+    already hold — not proof of an actual commit. The warning is safe either way."""
+    was_ignored = gitignore_has_entry(cognition_dir, blob_rel)
+    blob_existed = blob_path(cognition_dir, sha, ext).exists()
+    warnings: list[str] = []
+    eff_local = bool(local_only)
+    if size >= BLOB_REFUSE_BYTES and not local_only:
+        eff_local = True
+        warnings.append(f"size {size}B >= 95MB: default-commit refused; stored local_only")
+    elif size >= BLOB_WARN_BYTES and not local_only:
+        eff_local = True
+        warnings.append(f"size {size}B >= 50MB: auto local_only (exceeds GitHub push limit)")
+
+    write_blob(cognition_dir, sha, ext, data=data, src_path=src)
+
+    status: dict[str, Any] = {}
+    if eff_local:
+        if blob_existed and not was_ignored:
+            # Already on the default-commit track. A .gitignore line here would be
+            # INERT (git keeps tracking an already-tracked file), so don't write a
+            # misleading one — just warn that local_only can't retroactively un-publish.
+            status["already_committed"] = True
+            warnings.append(
+                "blob is on the default-commit track; local_only cannot retroactively "
+                "un-publish a committed blob (git history retains it)"
+            )
+        else:
+            add_gitignore_entry(cognition_dir, blob_rel)
+    elif remove_gitignore_entry(cognition_dir, blob_rel):
+        status["promoted"] = True
+    return eff_local, status, warnings
+
+
 def _store_document(
     storage: CognitionStorage,
     title: str,
@@ -113,12 +231,19 @@ def _store_document(
     references: str | None = None,
     mime: str | None = None,
     force_new: bool = False,
+    store_copy: bool = False,
+    local_only: bool | None = None,
 ) -> dict[str, Any]:
-    """Reference-mode document store (testable core of cognition_store_document)."""
+    """Document store, reference (default) or opt-in copy mode (testable core of
+    cognition_store_document). ``store_copy`` copies the bytes into a content-
+    addressed blob; ``local_only`` keeps that blob out of git (else committed,
+    subject to the size policy)."""
     cognition_dir = storage.cognition_dir
 
     if file_path and content_text is not None:
         return {"error": "provide file_path OR content_text, not both"}
+    blob_data: bytes | None = None
+    blob_src: Path | None = None
     if file_path:
         p = Path(file_path)
         if not p.is_file():
@@ -127,36 +252,73 @@ def _store_document(
         size = p.stat().st_size
         filename = p.name
         source_path: str | None = str(p.resolve())
+        blob_src = p
     elif content_text is not None:
         data = content_text.encode("utf-8")
         sha = sha256_bytes(data)
         size = len(data)
         filename = title
         source_path = None
+        blob_data = data
     else:
         return {"error": "provide file_path or content_text"}
 
     ref = doc_ref(sha)
+    ext = sanitize_extension(Path(filename).suffix)
+    blob_rel = blob_rel_path(sha, ext)
 
-    # Dedup: O(1) via the doc: ref index, CONFIRMED by full sha (a 12-char prefix
-    # collision is astronomically unlikely, but the confirm is cheap insurance).
+    # Dedup via the ONE shared document-identity predicate (storage.documents_with_sha
+    # confirms type==document AND full sha — the same expression sidecar/blob reclaim
+    # use, so dedup and delete cannot drift; F1 root cause).
     if not force_new:
-        for nid in storage.find_nodes_by_ref(ref):
+        for nid in storage.documents_with_sha(sha):
             existing = storage.get_node(nid)
-            if (existing
-                    and existing.get("type") == CognitionNodeType.DOCUMENT.value
-                    and existing.get("metadata", {}).get("sha256") == sha):
-                meta = existing.get("metadata", {})
-                return {
-                    "node_id": nid,
-                    "doc_ref": ref,
-                    "mode": "reference",
-                    "size": meta.get("size", size),
-                    "indexed_text_chars": meta.get("indexed_text_chars", 0),
-                    "already_stored": True,
-                }
+            meta = existing.get("metadata", {}) if existing else {}
+            result: dict[str, Any] = {
+                "node_id": nid,
+                "doc_ref": ref,
+                "mode": meta.get("mode", "reference"),
+                "size": meta.get("size", size),
+                "indexed_text_chars": meta.get("indexed_text_chars", 0),
+                "already_stored": True,
+            }
+            # S3: store_copy on an existing node ensures the blob + reconciles git
+            # policy (promote/demote). Node returned as-is otherwise (context NOT
+            # merged — stated). Updates only the blob-policy metadata keys.
+            if store_copy:
+                eff_local, status, warnings = _materialize_blob(
+                    cognition_dir, sha, ext, blob_rel, size, local_only,
+                    data=blob_data, src=blob_src,
+                )
+                storage.update_node(nid, metadata={
+                    **meta, "mode": "copy", "blob_path": blob_rel,
+                    "local_only": eff_local, "blob_bytes": size,
+                })
+                result.update({
+                    "mode": "copy", "blob_bytes": size, "blob_path": blob_rel,
+                    "local_only": eff_local, **status,
+                })
+                if warnings:
+                    result["warnings"] = warnings
+            return result
 
     indexed_chars = write_text_sidecar(cognition_dir, sha, document_text)
+
+    # Copy mode (new node): materialize the blob + resolve git policy now, so the
+    # node's metadata records the blob path/policy it owns.
+    mode = "reference"
+    blob_meta: dict[str, Any] = {}
+    blob_result: dict[str, Any] = {}
+    if store_copy:
+        eff_local, status, warnings = _materialize_blob(
+            cognition_dir, sha, ext, blob_rel, size, local_only,
+            data=blob_data, src=blob_src,
+        )
+        mode = "copy"
+        blob_meta = {"blob_path": blob_rel, "local_only": eff_local, "blob_bytes": size}
+        blob_result = {"blob_bytes": size, "blob_path": blob_rel, "local_only": eff_local, **status}
+        if warnings:
+            blob_result["warnings"] = warnings
 
     context_list = [c.strip() for c in context.split(",") if c.strip()] if context else []
     # S4/N3: agent-supplied refs go to CONTEXT; the document node's OWN references
@@ -184,8 +346,9 @@ def _store_document(
         "mime": mime or "",
         "size": size,
         "sha256": sha,
-        "mode": "reference",
+        "mode": mode,
         "indexed_text_chars": indexed_chars,
+        **blob_meta,
     }
     if source_path:
         metadata["path"] = source_path
@@ -210,9 +373,10 @@ def _store_document(
     return {
         "node_id": node_id,
         "doc_ref": ref,
-        "mode": "reference",
+        "mode": mode,
         "size": size,
         "indexed_text_chars": indexed_chars,
+        **blob_result,
     }
 
 
@@ -365,16 +529,27 @@ def register_cognition_tools(mcp) -> None:
         references: str | None = None,
         mime: str | None = None,
         force_new: bool = False,
+        store_copy: bool = False,
+        local_only: bool | None = None,
     ) -> dict[str, Any]:
-        """Store a document as a first-class DOCUMENT node (reference mode).
+        """Store a document as a first-class DOCUMENT node.
 
-        The node records the document's PATH + metadata + content sha256 — the
-        bytes STAY WHERE THEY LIVE (reference mode). Your extracted `document_text`
-        goes into a text sidecar (kept small out of the node so journal lines stay
-        small; it powers document search in a later version). To capture what's
-        INSIDE the document, record its facts as separate entity nodes with
-        cognition_record, citing this document's returned `doc_ref` in THEIR
-        `references` — they auto-link to the document.
+        Default REFERENCE mode: the node records the document's PATH + metadata +
+        content sha256 — the bytes STAY WHERE THEY LIVE. Your extracted
+        `document_text` goes into a text sidecar (kept small out of the node so
+        journal lines stay small; it powers document search in a later version). To
+        capture what's INSIDE the document, record its facts as separate entity
+        nodes with cognition_record, citing this document's returned `doc_ref` in
+        THEIR `references` — they auto-link `part_of` the document.
+
+        Opt-in COPY mode (`store_copy=true`) also copies the bytes into a content-
+        addressed blob under `.cognition/documents/`, so the document survives the
+        original moving and can travel via git. By default the blob is committed;
+        `local_only=true` keeps it out of git (a per-machine choice). Size policy
+        (no hard cap): >=50MB is auto-forced local_only with a warning; >=95MB
+        refuses default-commit (forced local_only) so a huge blob can't brick later
+        pushes. PRIVACY: a committed blob survives in git history and on the remote
+        even after the node is deleted — deleting does NOT un-publish it.
 
         Provide EITHER `file_path` (a document on disk) OR `content_text` (inline).
 
@@ -383,21 +558,25 @@ def register_cognition_tools(mcp) -> None:
             document_text: The full extracted text (you extract it; stored in the sidecar).
             context: Comma-separated topical terms / related areas.
             author: The current git user name.
-            file_path: Absolute path to the document on disk (reference mode).
+            file_path: Absolute path to the document on disk.
             content_text: Inline text instead of a file (hashed directly).
             references: Optional extra refs — these go to CONTEXT (the node's own
                 references are restricted to its doc: key by design).
             mime: Optional MIME type (metadata only).
             force_new: Store even if a document with the same content already exists.
+            store_copy: Copy the bytes into the content-addressed blob store.
+            local_only: Keep the copied blob out of git (copy mode only).
 
         Returns:
-            {node_id, doc_ref, mode, size, indexed_text_chars, already_stored?}
+            {node_id, doc_ref, mode, size, indexed_text_chars, already_stored?,
+             blob_bytes?, blob_path?, local_only?, promoted?, already_committed?, warnings?}
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         return _store_document(
             storage, title, document_text, context, author,
             file_path=file_path, content_text=content_text,
             references=references, mime=mime, force_new=force_new,
+            store_copy=store_copy, local_only=local_only,
         )
 
     @mcp.tool()
@@ -447,38 +626,15 @@ def register_cognition_tools(mcp) -> None:
         if err:
             return err
 
-        embedding_storage: ChromaDBStorage = ctx.request_context.lifespan_context[
-            "cognition_embedding_storage"
-        ]
-        generator: EmbeddingGenerator = ctx.request_context.lifespan_context["embedding_generator"]
-
-        limit = min(limit, 50)
-        query_embedding = generator.generate_query_embedding(query)
-
-        results = embedding_storage.vector_search(
-            query_embedding=query_embedding,
+        lifespan = get_lifespan(ctx)
+        return _search_cognition(
+            lifespan["cognition_storage"],
+            lifespan["cognition_embedding_storage"],
+            lifespan["embedding_generator"],
+            query,
+            node_type=node_type,
             limit=limit,
-            entity_type=node_type,
         )
-
-        formatted = []
-        for r in results:
-            formatted.append({
-                "id": r.get("_id"),
-                "node_type": r.get("entity_type"),
-                "summary": r.get("summary") or r.get("name"),
-                "author": r.get("author"),
-                "timestamp": r.get("timestamp"),
-                "severity": r.get("severity"),
-                "context": r.get("context", ""),
-                "score": r.get("score"),
-            })
-
-        return {
-            "query": query,
-            "results": formatted,
-            "count": len(formatted),
-        }
 
     @mcp.tool()
     def cognition_get_chain(
@@ -558,6 +714,13 @@ def register_cognition_tools(mcp) -> None:
 
         Use this to curate relationships directly — either while running the
         `/vibe-curate` skill or to add a single edge by hand.
+
+        DOCUMENT nodes are intentionally manually-linkable: versioning uses an
+        explicit ``supersedes`` edge between document nodes, and curated
+        ``relates_to`` edges are expected. The deterministic matcher only
+        AUTO-links documents on shared ``doc:`` refs (entity→document ``part_of``,
+        document→episode ``relates_to``); manual/curated edges are never blocked,
+        and a deterministic re-mint never overwrites a same-type manual edge.
 
         Args:
             from_id: Source node ID (must exist)

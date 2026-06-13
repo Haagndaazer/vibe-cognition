@@ -10,24 +10,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .documents import doc_ref, remove_text_sidecar
+from .documents import remove_blob_rel, remove_gitignore_entry, remove_text_sidecar
 from .models import CognitionNodeType
 from .storage import CognitionStorage
 
 logger = logging.getLogger(__name__)
-
-
-def _other_document_has_sha(storage: CognitionStorage, ref: str, sha: str) -> bool:
-    """True if a remaining DOCUMENT node carries ``sha`` (a force_new twin sharing
-    the content-addressed sidecar). Entity/episode nodes that merely cite the
-    doc: ref do NOT count — only another document keeps the sidecar alive."""
-    for nid in storage.find_nodes_by_ref(ref):
-        node = storage.get_node(nid)
-        if (node
-                and node.get("type") == CognitionNodeType.DOCUMENT.value
-                and node.get("metadata", {}).get("sha256") == sha):
-            return True
-    return False
 
 
 def delete_cognition_node(
@@ -55,14 +42,18 @@ def delete_cognition_node(
     if not storage.has_node(node_id):
         return None
 
-    # Capture the document's sha BEFORE removal so we can purge its text sidecar
-    # after — but only if no twin still references it (force_new can mint two
-    # document nodes over identical bytes; deleting one must not orphan the
-    # other's sidecar, since the sidecar is content-addressed by sha).
+    # Capture the document's sha + blob path BEFORE removal so we can reclaim its
+    # managed artifacts after — each only if no twin still references it (force_new
+    # can mint two document nodes over identical bytes; deleting one must not orphan
+    # the other's sidecar/blob, which are content-addressed).
     doc_sha: str | None = None
+    doc_blob_rel: str | None = None
     pre = storage.get_node(node_id)
     if pre is not None and pre.get("type") == CognitionNodeType.DOCUMENT.value:
-        doc_sha = pre.get("metadata", {}).get("sha256")
+        pre_meta = pre.get("metadata", {})
+        doc_sha = pre_meta.get("sha256")
+        if pre_meta.get("mode") == "copy":
+            doc_blob_rel = pre_meta.get("blob_path")
 
     # Capture incident edges before deletion so callers can report what was orphaned.
     removed_edges: list[dict[str, Any]] = [
@@ -79,29 +70,54 @@ def delete_cognition_node(
 
     # delete_embedding returns True even when nothing was actually deleted (ChromaDB
     # doesn't report it), so we don't surface its boolean — just purge best-effort.
+    # The node-level vector AND any chunk vectors (chunk-embedding is D2; this is a
+    # forward-compatible no-op today, present so document deletes inherit it).
     try:
         embed_storage.delete_embedding(node_id)
+        embed_storage.delete_by_node_id(node_id)
     except Exception as e:
         logger.warning(f"ChromaDB delete failed for {node_id}: {e}")
 
-    # Purge the text sidecar (a managed artifact) iff no OTHER document node still
-    # carries the same content. A "twin" is specifically another DOCUMENT node with
-    # the same sha256 (force_new can mint these) — NOT any node merely citing the
-    # doc: ref: per DESIGN §1/§9 S4 the intended pattern is descriptor ENTITIES
-    # citing doc:<hash> in their references, and counting those as twins would leak
-    # the sidecar forever (no document node remains to ever re-trigger the purge).
-    # This mirrors the dedup filter in _store_document (type==document AND sha
-    # match); the just-deleted id returns None from get_node, so it self-excludes.
-    # NEVER touches the referenced original file — deletion reclaims only what the
-    # server itself wrote.
-    if doc_sha and not _other_document_has_sha(storage, doc_ref(doc_sha), doc_sha):
-        try:
-            remove_text_sidecar(storage.cognition_dir, doc_sha)
-        except OSError as e:
-            logger.warning(f"Text sidecar delete failed for {node_id} ({doc_sha[:12]}): {e}")
+    unlinked: list[str] = []
+    if doc_sha:
+        # Sidecar reclaim: purge iff NO document with this sha remains (any mode) —
+        # via the ONE shared identity predicate. Called AFTER remove_node, so the
+        # just-deleted node self-excludes; a force_new twin keeps it; a mere doc:-ref
+        # CITER (entity/episode) is NOT a document and so does not count (F1 fix, now
+        # structural). NEVER touches the referenced original file.
+        sha_cohort = storage.documents_with_sha(doc_sha)
+        if not sha_cohort:
+            try:
+                if remove_text_sidecar(storage.cognition_dir, doc_sha):
+                    unlinked.append(f"text/{doc_sha}.txt")
+            except OSError as e:
+                logger.warning(f"Text sidecar delete failed for {node_id} ({doc_sha[:12]}): {e}")
 
-    return {
+        # Blob reclaim (copy mode): unlink iff no OTHER copy-mode document owns this
+        # EXACT blob file. Same sha cohort, refined caller-side to mode=="copy" AND
+        # same blob_path — a reference twin has no blob stake; a same-sha diff-ext
+        # twin owns a different file (so per-blob-path, not per-sha).
+        if doc_blob_rel:
+            blob_siblings = [
+                n for n in sha_cohort
+                if (sib := storage.get_node(n)) is not None
+                and sib.get("metadata", {}).get("mode") == "copy"
+                and sib.get("metadata", {}).get("blob_path") == doc_blob_rel
+            ]
+            if not blob_siblings:
+                if remove_blob_rel(storage.cognition_dir, doc_blob_rel):
+                    unlinked.append(doc_blob_rel)
+                # Local_only blobs leave a .gitignore line; reclaim it at refcount-zero.
+                remove_gitignore_entry(storage.cognition_dir, doc_blob_rel)
+
+    result: dict[str, Any] = {
         "id": node_id,
         "removed_edges": removed_edges,
         "edges_removed": len(removed_edges),
     }
+    if doc_sha is not None:
+        # Privacy caveat (§9 N2/§4): a committed blob survives in git history and on
+        # the remote after deletion — deleting the node does not un-publish it; other
+        # clones retain managed artifacts until they pull the removal.
+        result["unlinked_artifacts"] = unlinked
+    return result

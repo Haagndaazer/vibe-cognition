@@ -1,19 +1,33 @@
 """Document storage helpers (WP-D1).
 
-Content-addressed paths, text sidecar, and sha256. Reference mode + the text
-sidecar land in D1a; the opt-in content-addressed BLOB (and the extension
-sanitization that guards the blob filename — the only agent-controlled path
-component) land in D1b, since D1a composes no path from agent input (the sidecar
-name is the server-generated sha). Stdlib-only — the agent extracts document
-text, so the server never parses binaries (zero new deps).
+Content-addressed paths, text sidecar, sha256, and (D1b) the opt-in content-
+addressed BLOB store + the extension sanitization that guards the blob filename
+(the only agent-controlled path component — D1a composed no path from agent input,
+the sidecar name is the server-generated sha). Stdlib-only — the agent extracts
+document text, so the server never parses binaries (zero new deps).
 """
 
+import contextlib
 import hashlib
+import os
+import re
+import shutil
+import tempfile
 from pathlib import Path
 
 _DOC_REF_PREFIX = "doc:"
 _DOC_REF_SHA_LEN = 12
 _READ_CHUNK = 1 << 20  # 1 MiB
+_GITIGNORE_SELF = ".gitignore"  # the documents/.gitignore ignores itself (per-machine)
+_MIB = 1 << 20
+# Size policy for committed copy-mode blobs (§9 S1). No HARD cap (§8(b)) — these
+# only flip git policy: ≥ WARN auto-local_only + warn; ≥ REFUSE default-commit
+# refused (forced local_only) so a huge blob can't brick every later push of main.
+BLOB_WARN_BYTES = 50 * _MIB
+BLOB_REFUSE_BYTES = 95 * _MIB
+# Whitelist-or-DROP: a leading-dot alnum run, <=10 chars. The ONLY agent-controlled
+# path component; anything else (traversal, separators, reserved, over-long) drops to "".
+_EXT_RE = re.compile(r"^\.[A-Za-z0-9]{1,10}$")
 
 
 def documents_dir(cognition_dir: Path) -> Path:
@@ -65,3 +79,113 @@ def remove_text_sidecar(cognition_dir: Path, sha: str) -> bool:
         return True
     except FileNotFoundError:
         return False
+
+
+# ── Opt-in content-addressed BLOB store (D1b, copy mode) ──────────────────────
+
+def sanitize_extension(ext: str) -> str:
+    """Whitelist-or-DROP the agent-supplied extension. Keep only a leading-dot
+    alnum run (<=10 chars); anything else (path traversal, separators, reserved
+    names, over-long) drops to "" — NEVER fail the store on a hostile/odd ext.
+    This is the sole agent-controlled component of the blob path."""
+    return ext if _EXT_RE.match(ext) else ""
+
+
+def blob_rel_path(sha: str, ext: str) -> str:
+    """The blob's path RELATIVE to the documents dir: ``<sha[:2]>/<sha><ext>``.
+    This exact string is the key for both the blob file and its .gitignore line."""
+    return f"{sha[:2]}/{sha}{sanitize_extension(ext)}"
+
+
+def blob_path(cognition_dir: Path, sha: str, ext: str) -> Path:
+    return documents_dir(cognition_dir) / blob_rel_path(sha, ext)
+
+
+def write_blob(
+    cognition_dir: Path, sha: str, ext: str, *,
+    data: bytes | None = None, src_path: Path | None = None,
+) -> Path:
+    """Write the content-addressed blob, write-once + atomic. Returns its path.
+
+    Write-once: if the blob already exists, skip (content-addressed → identical
+    bytes by construction; dedup/integrity-free). Atomic: write to a temp file IN
+    THE SAME DIRECTORY (same filesystem, or os.replace can fail cross-device) then
+    os.replace onto the final name, so a crash never leaves a half-written blob
+    under the sha name. Two concurrent writers of identical bytes both replacing is
+    harmless. The exists-check TOCTOU is the accepted non-transactional model.
+    Streams from ``src_path`` (uncapped files never fully read into memory) or
+    writes ``data`` bytes. Binary mode throughout (WP-4 Windows TEXT-mode lesson)."""
+    path = blob_path(cognition_dir, sha, ext)
+    if path.exists():
+        return path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            if data is not None:
+                f.write(data)
+            elif src_path is not None:
+                with open(src_path, "rb") as src:
+                    shutil.copyfileobj(src, f, _READ_CHUNK)
+            else:
+                raise ValueError("write_blob needs data or src_path")
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
+        raise
+    return path
+
+
+def remove_blob_rel(cognition_dir: Path, rel_path: str) -> bool:
+    """Unlink a blob by its relative path; True if it existed. Managed-artifact
+    only — never the referenced original file."""
+    try:
+        (documents_dir(cognition_dir) / rel_path).unlink()
+        return True
+    except FileNotFoundError:
+        return False
+
+
+# ── Local, self-ignoring documents/.gitignore (per-machine local_only set) ────
+
+def documents_gitignore_path(cognition_dir: Path) -> Path:
+    return documents_dir(cognition_dir) / _GITIGNORE_SELF
+
+
+def _gitignore_lines(cognition_dir: Path) -> list[str]:
+    try:
+        return documents_gitignore_path(cognition_dir).read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+
+
+def gitignore_has_entry(cognition_dir: Path, rel_path: str) -> bool:
+    return rel_path in _gitignore_lines(cognition_dir)
+
+
+def add_gitignore_entry(cognition_dir: Path, rel_path: str) -> None:
+    """Idempotently add ``rel_path`` to the LOCAL ``documents/.gitignore`` (which
+    also ignores itself, so the local_only set + S3 promote/demote stay per-machine
+    — a committed shared list would force a teammate's default store of the same sha
+    to fight machine A's local_only line). One line per blob, never per-shard."""
+    lines = _gitignore_lines(cognition_dir)
+    additions = [e for e in (_GITIGNORE_SELF, rel_path) if e not in lines]
+    if not additions:
+        return
+    path = documents_gitignore_path(cognition_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines + additions) + "\n", encoding="utf-8")
+
+
+def remove_gitignore_entry(cognition_dir: Path, rel_path: str) -> bool:
+    """Remove ``rel_path``'s line (keeps the self-ignoring ``.gitignore`` line).
+    True if the entry existed."""
+    lines = _gitignore_lines(cognition_dir)
+    if rel_path not in lines:
+        return False
+    kept = [ln for ln in lines if ln != rel_path]
+    documents_gitignore_path(cognition_dir).write_text(
+        ("\n".join(kept) + "\n") if kept else "", encoding="utf-8"
+    )
+    return True

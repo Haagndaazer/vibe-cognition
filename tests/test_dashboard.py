@@ -41,6 +41,9 @@ class _FakeEmbeddingStorage:
         self._deleted.append(entity_id)
         return True
 
+    def delete_by_node_id(self, node_id: str) -> None:
+        pass
+
     def vector_search(self, query_embedding, limit, entity_type=None):
         return self._search_results[:limit]
 
