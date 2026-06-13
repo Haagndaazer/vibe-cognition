@@ -122,4 +122,4 @@ After all subagents finish, report:
 - Look at the diff content and commit message to determine what entities to extract
 - Keep entity summaries under 250 chars — concise, scannable facts
 - Binary assets should still be mentioned in episode details even though their diffs are skipped
-- After backfill completes, consider running `/vibe-curate` to create semantic edges between the new nodes
+- After backfill completes, you MUST run `/vibe-curate` to create semantic edges between the new nodes — backfill creates many episodes carrying only their deterministic `part_of` edges, and high-volume new nodes is the curate skill's first-named trigger. Do not skip it.

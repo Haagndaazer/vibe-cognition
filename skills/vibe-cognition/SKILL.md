@@ -18,8 +18,32 @@ description: You MUST use this skill any time you need to retrieve information a
 | `cognition_get_neighbors` | Get all connections to a node (all edge types) |
 | `cognition_remove_edge` | Remove a specific edge between two nodes |
 | `cognition_remove_node` | Delete a node and all its attached edges (destructive — for junk/test/duplicate nodes) |
+| `cognition_get_uncurated_nodes` | List nodes not yet processed by `/vibe-curate` |
+| `cognition_mark_curated` | Mark nodes as curated (used by `/vibe-curate`) |
+| `cognition_reload` | Force a full re-hydrate of the graph from the journal |
+| `cognition_store_document` | Store a document as a first-class node (see `/vibe-document`) |
+| `cognition_get_document` | Retrieve a stored document: metadata + text + freshness |
 
-Deterministic `part_of` edges are created automatically when nodes share references (commit hashes, issue/PR numbers). For semantic edges (led_to, resolved_by, supersedes), use the `/vibe-curate` skill or create them manually with `cognition_add_edge`.
+| Service / dashboard tool | Purpose |
+|------|---------|
+| `get_status` | Server status: graph stats + embedding readiness + counts |
+| `cognition_dashboard` | Start/stop the local graph dashboard |
+
+**Documents:** to store a document (client doc, PDF, spec) as project memory, use the
+**`/vibe-document`** skill — it makes the load-bearing workflow the default (store the
+document, then record its facts as descriptor nodes citing the returned `doc:<hash>` in
+THEIR `references` so they auto-link, then curate).
+
+### Edges
+
+Deterministic edges are created automatically on record when nodes share references:
+`part_of` (entity↔episode on any shared ref; entity→document on a shared `doc:` ref) and
+`relates_to` (document→episode on a shared `doc:` ref). For the semantic edges
+(`led_to`, `resolved_by`, `supersedes`, `contradicts`, `relates_to`), use the
+`/vibe-curate` skill or create them manually with `cognition_add_edge`. Note `relates_to`
+has three provenances — deterministic (document→episode), curator-proposed, and manual —
+so it is NOT "semantic only." `duplicate_of` is reserved and not supported by
+`cognition_add_edge`.
 
 Deletion is destructive and not undoable: `cognition_remove_node` cascades to every edge attached to the node. Use it to prune junk, test, or duplicate nodes. For a node that is outdated but historically real, prefer recording the correction and adding a `supersedes` edge rather than deleting the history.
 
@@ -130,9 +154,10 @@ step users most often have to remind you about; own it yourself, every time.
 - Skip it **only** if you recorded nothing this turn, or `get_status` shows 0 uncurated nodes.
 - This is for **recording** sessions only — if you only queried/retrieved (no new nodes), there is nothing to curate.
 
-Deterministic `part_of` edges are the *only* edges created automatically (on record).
-This step adds the **semantic** relationships (led_to, resolved_by, supersedes,
-contradicts) that make the graph navigable — and only the agent can do it.
+Deterministic edges (`part_of`, and `relates_to` for document→episode) are the *only*
+edges created automatically (on record). This step adds the **semantic** relationships
+(`led_to`, `resolved_by`, `supersedes`, `contradicts`, `relates_to`) that make the graph
+navigable — and only the agent can do it.
 
 ## Examples
 
