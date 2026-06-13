@@ -2,6 +2,7 @@
 
 import logging
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from fastmcp import Context
@@ -17,8 +18,15 @@ from ..cognition import (
     get_history_for_context,
     get_reasoning_chain,
 )
+from ..cognition.documents import (
+    doc_ref,
+    read_text_sidecar,
+    sha256_bytes,
+    sha256_file,
+    write_text_sidecar,
+)
 from ..embeddings import ChromaDBStorage, EmbeddingGenerator
-from .utils import require_embeddings
+from .utils import get_lifespan, require_embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +100,161 @@ def _record_node(
     if det_edges:
         result["deterministic_edges_created"] = det_edges
     return result
+
+
+def _store_document(
+    storage: CognitionStorage,
+    title: str,
+    document_text: str,
+    context: str,
+    author: str,
+    file_path: str | None = None,
+    content_text: str | None = None,
+    references: str | None = None,
+    mime: str | None = None,
+    force_new: bool = False,
+) -> dict[str, Any]:
+    """Reference-mode document store (testable core of cognition_store_document)."""
+    cognition_dir = storage.cognition_dir
+
+    if file_path and content_text is not None:
+        return {"error": "provide file_path OR content_text, not both"}
+    if file_path:
+        p = Path(file_path)
+        if not p.is_file():
+            return {"error": f"file_path not found: {file_path}"}
+        sha = sha256_file(p)
+        size = p.stat().st_size
+        filename = p.name
+        source_path: str | None = str(p.resolve())
+    elif content_text is not None:
+        data = content_text.encode("utf-8")
+        sha = sha256_bytes(data)
+        size = len(data)
+        filename = title
+        source_path = None
+    else:
+        return {"error": "provide file_path or content_text"}
+
+    ref = doc_ref(sha)
+
+    # Dedup: O(1) via the doc: ref index, CONFIRMED by full sha (a 12-char prefix
+    # collision is astronomically unlikely, but the confirm is cheap insurance).
+    if not force_new:
+        for nid in storage.find_nodes_by_ref(ref):
+            existing = storage.get_node(nid)
+            if (existing
+                    and existing.get("type") == CognitionNodeType.DOCUMENT.value
+                    and existing.get("metadata", {}).get("sha256") == sha):
+                meta = existing.get("metadata", {})
+                return {
+                    "node_id": nid,
+                    "doc_ref": ref,
+                    "mode": "reference",
+                    "size": meta.get("size", size),
+                    "indexed_text_chars": meta.get("indexed_text_chars", 0),
+                    "already_stored": True,
+                }
+
+    indexed_chars = write_text_sidecar(cognition_dir, sha, document_text)
+
+    context_list = [c.strip() for c in context.split(",") if c.strip()] if context else []
+    # S4/N3: agent-supplied refs go to CONTEXT; the document node's OWN references
+    # are restricted to its doc: key so old plugin versions can't link it on a
+    # shared issue:/commit: ref and the matcher gates on doc:.
+    if references:
+        context_list += [r.strip() for r in references.split(",") if r.strip()]
+
+    timestamp = datetime.now(UTC).isoformat()
+    node_id = generate_node_id(CognitionNodeType.DOCUMENT.value, title, timestamp)
+    metadata: dict[str, Any] = {
+        "filename": filename,
+        "mime": mime or "",
+        "size": size,
+        "sha256": sha,
+        "mode": "reference",
+        "indexed_text_chars": indexed_chars,
+    }
+    if source_path:
+        metadata["path"] = source_path
+
+    node = CognitionNode(
+        id=node_id,
+        type=CognitionNodeType.DOCUMENT,
+        summary=title,
+        detail=document_text[:2000],  # bounded abstract; full text lives in the sidecar
+        context=context_list,
+        references=[ref],
+        severity=None,
+        timestamp=timestamp,
+        author=author,
+        metadata=metadata,
+    )
+    storage.add_node(node)
+    # NOT embedded into ChromaDB in this version (document search lands later);
+    # create_deterministic_edges is graph-inert for documents until the pair rules ship.
+    storage.create_deterministic_edges(node_id)
+
+    return {
+        "node_id": node_id,
+        "doc_ref": ref,
+        "mode": "reference",
+        "size": size,
+        "indexed_text_chars": indexed_chars,
+    }
+
+
+def _get_document(
+    storage: CognitionStorage,
+    node_id: str | None = None,
+    doc_ref_arg: str | None = None,
+) -> dict[str, Any]:
+    """Retrieve a document + freshness (testable core of cognition_get_document)."""
+    cognition_dir = storage.cognition_dir
+
+    resolved_id: str | None = None
+    if node_id:
+        resolved_id = node_id
+    elif doc_ref_arg:
+        for cand in storage.find_nodes_by_ref(doc_ref_arg):
+            cdata = storage.get_node(cand)
+            if cdata and cdata.get("type") == CognitionNodeType.DOCUMENT.value:
+                resolved_id = cand
+                break
+    else:
+        return {"error": "provide node_id or doc_ref_arg"}
+
+    node = storage.get_node(resolved_id) if resolved_id else None
+    if not node or node.get("type") != CognitionNodeType.DOCUMENT.value:
+        return {"error": "document not found"}
+
+    meta = node.get("metadata", {})
+    sha = meta.get("sha256", "")
+    text = read_text_sidecar(cognition_dir, sha)
+
+    # Freshness (reference mode): re-hash the referenced original. A missing /
+    # unreadable path returns "missing" — never raises. (Re-hash reads the full
+    # file; that cost scales with the referenced document's size.)
+    freshness = "unchanged"
+    path = meta.get("path")
+    if path:
+        fp = Path(path)
+        if not fp.is_file():
+            freshness = "missing"
+        else:
+            try:
+                freshness = "unchanged" if sha256_file(fp) == sha else "modified"
+            except OSError:
+                freshness = "missing"
+
+    return {
+        "node_id": resolved_id,
+        "doc_ref": doc_ref(sha) if sha else None,
+        "metadata": meta,
+        "text": text,
+        "path": path,
+        "freshness": freshness,
+    }
 
 
 def register_cognition_tools(mcp) -> None:
@@ -177,6 +340,72 @@ def register_cognition_tools(mcp) -> None:
             ctx, nt, summary, detail, context, author,
             severity, references,
         )
+
+    @mcp.tool()
+    def cognition_store_document(
+        ctx: Context,
+        title: str,
+        document_text: str,
+        context: str,
+        author: str,
+        file_path: str | None = None,
+        content_text: str | None = None,
+        references: str | None = None,
+        mime: str | None = None,
+        force_new: bool = False,
+    ) -> dict[str, Any]:
+        """Store a document as a first-class DOCUMENT node (reference mode).
+
+        The node records the document's PATH + metadata + content sha256 — the
+        bytes STAY WHERE THEY LIVE (reference mode). Your extracted `document_text`
+        goes into a text sidecar (kept small out of the node so journal lines stay
+        small; it powers document search in a later version). To capture what's
+        INSIDE the document, record its facts as separate entity nodes with
+        cognition_record, citing this document's returned `doc_ref` in THEIR
+        `references` — they auto-link to the document.
+
+        Provide EITHER `file_path` (a document on disk) OR `content_text` (inline).
+
+        Args:
+            title: Short title for the document node (its summary).
+            document_text: The full extracted text (you extract it; stored in the sidecar).
+            context: Comma-separated topical terms / related areas.
+            author: The current git user name.
+            file_path: Absolute path to the document on disk (reference mode).
+            content_text: Inline text instead of a file (hashed directly).
+            references: Optional extra refs — these go to CONTEXT (the node's own
+                references are restricted to its doc: key by design).
+            mime: Optional MIME type (metadata only).
+            force_new: Store even if a document with the same content already exists.
+
+        Returns:
+            {node_id, doc_ref, mode, size, indexed_text_chars, already_stored?}
+        """
+        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
+        return _store_document(
+            storage, title, document_text, context, author,
+            file_path=file_path, content_text=content_text,
+            references=references, mime=mime, force_new=force_new,
+        )
+
+    @mcp.tool()
+    def cognition_get_document(
+        ctx: Context,
+        node_id: str | None = None,
+        doc_ref_arg: str | None = None,
+    ) -> dict[str, Any]:
+        """Retrieve a stored document: metadata + full sidecar text + path, with a
+        freshness check.
+
+        Resolve by `node_id` or by `doc_ref_arg` (the `doc:<hash>` returned at
+        store time). In reference mode the original file is re-hashed: `freshness`
+        is `unchanged | modified | missing`.
+
+        Returns:
+            {node_id, doc_ref, metadata, text, path, freshness} or {"error": ...}
+        """
+        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
+        return _get_document(storage, node_id=node_id, doc_ref_arg=doc_ref_arg)
 
     @mcp.tool()
     def cognition_search(

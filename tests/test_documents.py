@@ -2,6 +2,7 @@
 
 from vibe_cognition.cognition.models import CognitionEdgeType, CognitionNode, CognitionNodeType
 from vibe_cognition.cognition.storage import CognitionStorage
+from vibe_cognition.tools.cognition_tools import _get_document, _store_document
 
 
 def _node(node_id, node_type, refs=None, summary="s", detail="d"):
@@ -42,3 +43,73 @@ def test_entity_episode_matcher_still_links(tmp_path):
     g = s.graph
     assert g.has_edge("dec00001", "ep000002"), "entity→episode part_of missing (guard over-reached)"
     assert CognitionEdgeType.PART_OF.value in g["dec00001"]["ep000002"]
+
+
+def test_store_reference_and_get_roundtrip(tmp_path):
+    """Reference mode stores path+metadata+sha; get returns sidecar text + unchanged."""
+    s = CognitionStorage(tmp_path / "cog")
+    doc = tmp_path / "client.txt"
+    doc.write_bytes(b"raw document bytes")
+    res = _store_document(
+        s, title="Client spec", document_text="extracted text here",
+        context="legal, contract", author="t", file_path=str(doc),
+    )
+    assert res["mode"] == "reference", f"expected reference mode, got {res!r}"
+    assert res["indexed_text_chars"] == len("extracted text here"), "indexed_chars not reported (S5)"
+    assert res["doc_ref"].startswith("doc:")
+
+    got = _get_document(s, node_id=res["node_id"])
+    assert got["text"] == "extracted text here", "sidecar text not returned"
+    assert got["metadata"]["sha256"] == got["metadata"]["sha256"]
+    assert got["freshness"] == "unchanged", f"freshness should be unchanged, got {got['freshness']}"
+    assert got["metadata"]["mode"] == "reference"
+
+
+def test_store_content_text_and_get_by_doc_ref(tmp_path):
+    """content_text path: hashed directly; resolvable by doc_ref."""
+    s = CognitionStorage(tmp_path / "cog")
+    res = _store_document(s, title="Inline note", document_text="the note body",
+                          context="", author="t", content_text="the note body")
+    got = _get_document(s, doc_ref_arg=res["doc_ref"])
+    assert got["node_id"] == res["node_id"], "doc_ref did not resolve to the stored node"
+    assert got["text"] == "the note body"
+
+
+def test_dedup_returns_existing_unless_force_new(tmp_path):
+    """Same content stored twice returns the SAME node (already_stored), not a twin;
+    force_new overrides."""
+    s = CognitionStorage(tmp_path / "cog")
+    a = _store_document(s, title="d", document_text="x", context="", author="t", content_text="same bytes")
+    b = _store_document(s, title="d", document_text="x", context="", author="t", content_text="same bytes")
+    assert b.get("already_stored") is True, "dedup did not trigger (would create a twin)"
+    assert b["node_id"] == a["node_id"], "dedup returned a different node id"
+    c = _store_document(s, title="d", document_text="x", context="", author="t",
+                        content_text="same bytes", force_new=True)
+    assert c["node_id"] != a["node_id"], "force_new did not create a new node"
+
+
+def test_agent_refs_go_to_context_not_node_references(tmp_path):
+    """S4/N3: the document node's OWN references are restricted to doc:<hash>;
+    agent-supplied refs land in context (so old matchers can't link on issue:/commit:)."""
+    s = CognitionStorage(tmp_path / "cog")
+    res = _store_document(s, title="d", document_text="x", context="topic",
+                          author="t", content_text="bytes", references="issue:LL-1,commit:abc123")
+    node = s.get_node(res["node_id"])
+    assert node is not None
+    assert node["references"] == [res["doc_ref"]], (
+        f"document references must be ONLY its doc: key, got {node['references']}"
+    )
+    assert "issue:LL-1" in node["context"], "agent ref not redirected to context"
+
+
+def test_get_document_freshness_modified_and_missing(tmp_path):
+    """Reference-mode re-hash reports modified when the file changes and missing
+    when it's gone — and never raises on a missing path."""
+    s = CognitionStorage(tmp_path / "cog")
+    doc = tmp_path / "f.txt"
+    doc.write_bytes(b"original")
+    res = _store_document(s, title="d", document_text="t", context="", author="t", file_path=str(doc))
+    doc.write_bytes(b"changed contents")
+    assert _get_document(s, node_id=res["node_id"])["freshness"] == "modified", "modified not detected"
+    doc.unlink()
+    assert _get_document(s, node_id=res["node_id"])["freshness"] == "missing", "missing not detected"

@@ -77,6 +77,24 @@ class CognitionStorage:
         """
         return self._graph
 
+    @property
+    def cognition_dir(self) -> Path:
+        """The .cognition/ directory backing this store (for sidecar/blob paths)."""
+        return self._dir
+
+    def find_nodes_by_ref(self, ref: str) -> list[str]:
+        """Node IDs whose (normalized) references include ``ref`` — O(1) lookup via
+        the reference index. Used for dedup-by-doc-ref. Synced so cross-process
+        writes are visible.
+        """
+        with self._synced():
+            out: list[str] = []
+            for key in self._normalize_refs([ref]):
+                for nid in self._reference_index.get(key, []):
+                    if nid not in out:
+                        out.append(nid)
+            return out
+
     @contextmanager
     def _synced(self):
         """Acquire the lock and catch up on the journal before the operation.
@@ -114,6 +132,7 @@ class CognitionStorage:
                 severity=node.severity,
                 timestamp=node.timestamp,
                 author=node.author,
+                metadata=node.metadata,
             )
             self._index_node_refs(node.id, node.references)
             self._append_journal("add_node", node.model_dump(mode="json"))
@@ -799,6 +818,7 @@ class CognitionStorage:
                 severity=data.get("severity"),
                 timestamp=data["timestamp"],
                 author=data["author"],
+                metadata=data.get("metadata", {}),
             )
             self._index_node_refs(node_id, references)
         elif action == "add_edge":
