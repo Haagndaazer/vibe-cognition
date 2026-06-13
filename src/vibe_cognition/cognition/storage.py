@@ -567,6 +567,16 @@ class CognitionStorage:
                     other_type = other_data.get("type", "")
                     other_is_episode = other_type == CognitionNodeType.EPISODE.value
 
+                    # D1a: documents are graph-inert until D1b adds the real pair
+                    # rules. Skip ANY pair involving a document — the wrong edge
+                    # would otherwise fire from the OTHER node's record call (e.g.
+                    # an episode citing doc:<hash> makes this matcher treat the
+                    # document as an entity and mint a part_of). Pair-level guard,
+                    # not a guard on the recorded node, because either side may be
+                    # the document. D1b replaces this with entity↔doc / doc↔episode.
+                    if CognitionNodeType.DOCUMENT.value in (node_type, other_type):
+                        continue
+
                     # One must be episode, other must be entity
                     if is_episode == other_is_episode:
                         continue

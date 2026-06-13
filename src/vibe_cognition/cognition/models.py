@@ -21,6 +21,9 @@ class CognitionNodeType(str, Enum):  # noqa: UP042
     INCIDENT = "incident"
     PATTERN = "pattern"
     EPISODE = "episode"
+    # A stored document (client doc, spec, etc.) — episode-like in the matcher
+    # (a hub for part_of links), with reference/blob storage + a text sidecar.
+    DOCUMENT = "document"
 
 
 class CognitionEdgeType(str, Enum):  # noqa: UP042  (see CognitionNodeType above)
