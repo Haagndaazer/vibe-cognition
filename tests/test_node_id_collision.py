@@ -115,6 +115,25 @@ def test_replay_converges_without_resalting(tmp_path, monkeypatch):
     assert len(ids2) == 2, "replay duplicated or dropped a node"
 
 
+def test_cross_process_mint_sees_caught_up_node(tmp_path, monkeypatch):
+    """Composition / TOCTOU-shrink: the mint runs under _synced (catch-up first), so a
+    second process that already journaled a same-summary node in the same tick is VISIBLE
+    when this process mints → it salts to a distinct id. Both survive a third fresh replay.
+    Fails-before (no mint): B writes A's id, and the replay collapses them to one node."""
+    monkeypatch.setattr(ct, "datetime", _FrozenClock)
+    cog = tmp_path / ".cognition"
+    s_a = CognitionStorage(cog)
+    r_a = _record_node(_ctx(s_a, ready=False), CognitionNodeType.DECISION, "dup", "A", "c", "t")
+
+    s_b = CognitionStorage(cog)  # hydrates A's journaled node
+    r_b = _record_node(_ctx(s_b, ready=False), CognitionNodeType.DECISION, "dup", "B", "c", "t")
+    assert r_a["id"] != r_b["id"], "B's mint did not see A's journaled node (cross-process collision)"
+
+    s_c = CognitionStorage(cog)  # third instance replays both
+    ids = {n["id"] for n in s_c.get_all_nodes()}
+    assert {r_a["id"], r_b["id"]} <= ids and len(ids) == 2, "cross-process nodes collapsed on replay"
+
+
 def test_add_node_default_preserves_exact_id_and_overwrites(tmp_path):
     """Opt-out default (mint_unique_id=False) is non-breaking: the exact id is kept and
     a repeated id overwrites (the prior contract), so hand-chosen-id callers are safe."""
