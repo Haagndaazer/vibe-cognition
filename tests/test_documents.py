@@ -262,42 +262,53 @@ def test_agent_refs_go_to_context_not_node_references(tmp_path):
     assert "issue:LL-1" in node["context"], "agent ref not redirected to context"
 
 
-class _FakeCollection:
-    def get(self, ids):
-        return {"ids": []}  # nothing synced yet -> everything looks "missing"
+# WP-D2 REPLACES D1a's test_sync_skips_document_nodes_never_embeds_them: documents
+# are no longer skipped — the sync backfills documents stored without embeddings
+# (the D1a/D1b interim, or a model-not-ready defer) as node vector + sidecar chunks.
 
 
-class _FakeEmbeddingStorage:
-    def __init__(self):
-        self._collection = _FakeCollection()
-        self.upserted: list[str] = []
-
-    def upsert_embedding(self, entity_id, embedding, metadata):
-        self.upserted.append(entity_id)
-
-
-class _FakeGenerator:
-    def generate_query_embedding(self, text):
-        return [0.0, 0.1, 0.2]
-
-
-def test_sync_skips_document_nodes_never_embeds_them(tmp_path):
-    """N1-class guard: _sync_cognition_embeddings is the cross-process path that
-    re-embeds JSONL nodes ChromaDB is missing. A document node must be SKIPPED
-    there — otherwise every server start would re-embed documents into semantic
-    search. Asserts the document id is never upserted while a normal node is
-    (fails-before: without the type filter the document id appears in .upserted)."""
+def test_sync_backfills_document_node_and_chunks(tmp_path):
+    """_sync embeds documents that were stored without embeddings (deferred): node
+    vector + sidecar chunks. Idempotent — a second sync does ZERO embedding work."""
     s = CognitionStorage(tmp_path / "cog")
-    s.add_node(_node("doc00009", CognitionNodeType.DOCUMENT, refs=["doc:abc123abc123"]))
-    s.add_node(_node("dec00009", CognitionNodeType.DECISION, refs=["commit:abc123abc123"]))
+    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    gen_obj = _FixedGen([0.1, 0.2, 0.3])
+    gen = cast(EmbeddingGenerator, gen_obj)
+    text = " ".join(str(i) for i in range(1500))  # multi-chunk
+    res = _store_document(s, title="d", document_text=text, context="", author="t",
+                          content_text=text)  # no embedding deps -> deferred
+    assert embed._collection.get()["ids"] == [], "precondition: deferred (no vectors yet)"
+    nid = res["node_id"]
 
-    embed = _FakeEmbeddingStorage()
-    _sync_cognition_embeddings(
-        s, cast(ChromaDBStorage, embed), cast(EmbeddingGenerator, _FakeGenerator())
-    )
+    _sync_cognition_embeddings(s, embed, gen)
+    ids = set(embed._collection.get()["ids"])
+    assert nid in ids, "document node not backfilled by sync"
+    assert any(i.startswith(f"{nid}#chunk-") for i in ids), "document chunks not backfilled"
 
-    assert "doc00009" not in embed.upserted, "document node was embedded (N1 sync guard failed)"
-    assert "dec00009" in embed.upserted, "non-document node was not embedded (guard over-reached)"
+    gen_obj.calls = 0
+    _sync_cognition_embeddings(s, embed, gen)
+    assert gen_obj.calls == 0, "already-synced document re-embedded (not idempotent — re-embed loop)"
+
+
+def test_sync_does_not_re_embed_empty_text_document(tmp_path):
+    """A4 loop guard: a text-less document (empty sidecar) is fully synced after its
+    NODE vector lands — no chunks, and NOT re-embedded every boot."""
+    s = CognitionStorage(tmp_path / "cog")
+    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    gen_obj = _FixedGen([0.1, 0.2, 0.3])
+    gen = cast(EmbeddingGenerator, gen_obj)
+    res = _store_document(s, title="empty", document_text="", context="", author="t",
+                          content_text="x")  # empty sidecar text
+    nid = res["node_id"]
+
+    _sync_cognition_embeddings(s, embed, gen)
+    ids = set(embed._collection.get()["ids"])
+    assert nid in ids, "empty-text document node not embedded"
+    assert not any(i.startswith(f"{nid}#chunk-") for i in ids), "empty-text doc should have no chunks"
+
+    gen_obj.calls = 0
+    _sync_cognition_embeddings(s, embed, gen)
+    assert gen_obj.calls == 0, "empty-text document re-embedded every sync (A4 loop)"
 
 
 def test_get_document_freshness_modified_and_missing(tmp_path):
@@ -655,12 +666,15 @@ def test_all_artifact_classes_share_one_delete_path(tmp_path):
 
 class _FixedGen:
     """Generator stub returning a fixed query embedding (so a real ChromaDB
-    vector_search deterministically returns the seeded vector)."""
+    vector_search deterministically returns the seeded vector). Counts calls so a
+    test can prove re-sync is idempotent (no re-embedding work)."""
 
     def __init__(self, vec):
         self._vec = vec
+        self.calls = 0
 
     def generate_query_embedding(self, text):
+        self.calls += 1
         return self._vec
 
 
