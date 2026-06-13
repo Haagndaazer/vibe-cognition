@@ -19,9 +19,11 @@ from starlette.staticfiles import StaticFiles
 
 from .api import (
     delete_node,
+    download_document,
     get_graph,
     get_node,
     get_stats,
+    list_documents,
     search,
 )
 from .middleware import build_middleware
@@ -57,6 +59,8 @@ def build_app(lifespan_ctx: dict[str, Any], token: str) -> tuple[Starlette, Exit
         Route("/api/node/{node_id}", endpoint=get_node, methods=["GET"]),
         Route("/api/node/{node_id}", endpoint=delete_node, methods=["DELETE"]),
         Route("/api/search", endpoint=search, methods=["POST"]),
+        Route("/api/documents", endpoint=list_documents, methods=["GET"]),
+        Route("/api/document/{node_id}/download", endpoint=download_document, methods=["GET"]),
         Route("/api/stats", endpoint=get_stats, methods=["GET"]),
         Mount("/static", app=StaticFiles(directory=static_dir), name="static"),
     ]
@@ -132,6 +136,7 @@ def start_dashboard(
     Idempotent — repeat calls return the existing URL.
     Stores `{thread, server, url, token, stack}` in lifespan_ctx["dashboard"].
     """
+    import time
     import webbrowser
 
     existing = lifespan_ctx.get("dashboard")
@@ -161,6 +166,23 @@ def start_dashboard(
 
     thread = threading.Thread(target=server.run, daemon=True, name="dashboard-uvicorn")
     thread.start()
+
+    # D-1: verify the server actually came up before reporting a live URL. uvicorn
+    # sets server.started once it's serving; if the bind failed the daemon thread
+    # dies silently and we must NOT report (and cache) a dead URL for the session.
+    for _ in range(40):  # bounded ~2s poll, no hang
+        if getattr(server, "started", False) or not thread.is_alive():
+            break
+        time.sleep(0.05)
+    if not getattr(server, "started", False):
+        stack.close()
+        return {
+            "url": None,
+            "status": "failed",
+            "error": "dashboard server did not start (port bind failed?)",
+            "embedding_ready": _embedding_ready(lifespan_ctx),
+            "embedding_error": lifespan_ctx.get("embedding_error"),
+        }
 
     lifespan_ctx["dashboard"] = {
         "thread": thread,

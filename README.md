@@ -151,17 +151,17 @@ Either route invokes the `cognition_dashboard` MCP tool, which boots a local HTT
 
 ### Launch from the CLI
 
-For browsing without an active Claude Code session, run from your project directory:
+The recommended route is the MCP tool / natural language above — it just works for
+plugin users. The standalone CLI below requires a checkout of THIS repository (the
+package is not a dependency of your project, and as a plugin it lives in plugin-data,
+not your project venv). From a clone of this repo:
 
 ```bash
-uv run vibe-cognition-dashboard
+uv run --directory /path/to/vibe-cognition vibe-cognition-dashboard --repo-path /path/to/your/project
 ```
 
-Or point at any project from anywhere:
-
-```bash
-uv run vibe-cognition-dashboard --repo-path /path/to/your/project
-```
+(`--repo-path` defaults to the current directory, so from your own project you would
+still need the package available — hence `--directory` pointing at this repo's checkout.)
 
 Useful flags:
 

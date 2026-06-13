@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from datetime import UTC, datetime
@@ -18,6 +19,11 @@ from vibe_cognition.cognition import (
     CognitionNodeType,
     CognitionStorage,
     generate_node_id,
+)
+from vibe_cognition.cognition.documents import (
+    blob_rel_path,
+    documents_dir,
+    text_sidecar_path,
 )
 from vibe_cognition.dashboard.server import (
     build_app,
@@ -45,6 +51,7 @@ class _FakeEmbeddingStorage:
         pass
 
     def vector_search(self, query_embedding, limit, entity_type=None):
+        self.last_limit = limit
         return self._search_results[:limit]
 
 
@@ -119,6 +126,21 @@ class TestPackaging:
             assert (path / "index.html").exists()
             assert (path / "app.js").exists()
             assert (path / "styles.css").exists()
+
+    def test_dashboard_libs_vendored_not_cdn(self):
+        """D-4: the cytoscape/fcose stack is self-hosted (no CDN <script>, no SRI gap,
+        works offline). The 4 pinned files ship and index.html references no jsdelivr."""
+        traversable = resources.files("vibe_cognition.dashboard") / "static"
+        with resources.as_file(traversable) as path:
+            for f in ("cytoscape.min.js", "layout-base.js", "cose-base.js", "cytoscape-fcose.js"):
+                assert (path / "vendor" / f).exists(), f"vendored lib missing: {f}"
+            html = (path / "index.html").read_text(encoding="utf-8")
+            assert "cdn.jsdelivr.net" not in html, "index.html still loads a CDN script"
+            assert "/static/vendor/cytoscape.min.js" in html, "index.html not pointed at vendored libs"
+
+    def test_stop_dashboard_exported_from_package(self):
+        """D-5h: stop_dashboard is importable from the package root."""
+        from vibe_cognition.dashboard import stop_dashboard  # noqa: F401
 
 
 class TestAuth:
@@ -237,10 +259,229 @@ class TestSearch:
         assert r.status_code == 200
         assert r.json()["results"] == [], "dashboard served a cross-process document-chunk ghost"
 
+    def test_search_dedupes_document_chunks_to_navigable_node(self, client):
+        """WP-D4 D-6: document chunk hits (<node>#chunk-N) collapse to ONE row keyed on
+        the navigable NODE id, hydrated with the node's summary, entity_type preserved
+        (so renderSearchResults navigates + labels with no JS change). Fails-before: raw
+        chunk rows with #chunk- ids that don't navigate."""
+        c, lc = client
+        lc["embedding_generator"] = _FakeEmbeddingGenerator()
+        lc["embedding_ready"].set()
+        lc["cognition_storage"].add_node(CognitionNode(
+            id="docx0001", type=CognitionNodeType.DOCUMENT, summary="Acme spec v2",
+            detail="d", context=[], references=["doc:abc123abc123"], severity=None,
+            timestamp=datetime.now(UTC).isoformat(), author="t",
+            metadata={"sha256": "abc123abc123def", "mode": "reference"},
+        ))
+        lc["cognition_embedding_storage"]._search_results = [
+            {"_id": "docx0001#chunk-0", "entity_type": "document", "score": 0.95,
+             "matched_text": "the matched chunk body"},
+            {"_id": "docx0001#chunk-1", "entity_type": "document", "score": 0.90,
+             "matched_text": "another chunk"},
+        ]
+        r = c.post("/api/search", json={"query": "residency"}, headers=_hdr())
+        assert r.status_code == 200
+        results = r.json()["results"]
+        assert len(results) == 1, f"chunks not deduped to one node: {results}"
+        row = results[0]
+        assert row["_id"] == "docx0001", "row not keyed on the navigable node id"
+        assert row["summary"] == "Acme spec v2", "summary not hydrated from the graph node"
+        assert row["entity_type"] == "document", "entity_type not preserved (label would blank)"
+        assert row["matched_excerpt"] == "the matched chunk body", "best-chunk excerpt not carried"
+        assert "#chunk-" not in row["_id"], "non-navigable chunk id leaked"
+
     def test_search_missing_query(self, client):
         c, _ = client
         r = c.post("/api/search", json={"query": ""}, headers=_hdr())
         assert r.status_code == 400
+
+    def test_search_malformed_body_is_400_not_500(self, client):
+        """D-5a: a malformed JSON body returns a clean 400, not a 500 traceback."""
+        c, _ = client
+        r = c.post("/api/search", content=b"{not json", headers=_hdr())
+        assert r.status_code == 400
+
+    def test_search_limit_is_clamped(self, client):
+        """D-5b: an absurd limit is clamped (no unbounded fan-out into ChromaDB)."""
+        c, lc = client
+        lc["embedding_generator"] = _FakeEmbeddingGenerator()
+        lc["embedding_ready"].set()
+        r = c.post("/api/search", json={"query": "x", "limit": 999999}, headers=_hdr())
+        assert r.status_code == 200
+        # over-query is limit*5; the clamp caps limit at 100 → vector_search sees <= 500.
+        assert lc["cognition_embedding_storage"].last_limit <= 500, "limit not clamped"
+
+
+def _doc_node(node_id, summary, metadata, doc_ref):
+    return CognitionNode(
+        id=node_id, type=CognitionNodeType.DOCUMENT, summary=summary, detail="d",
+        context=[], references=[doc_ref], severity=None,
+        timestamp=datetime.now(UTC).isoformat(), author="t", metadata=metadata,
+    )
+
+
+class TestDocuments:
+    def test_list_documents(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(_doc_node("docref01", "Ref doc", {
+            "mode": "reference", "size": 10, "mime": "text/plain", "filename": "a.txt",
+            "sha256": "a" * 64, "indexed_text_chars": 5}, "doc:aaaaaaaaaaaa"))
+        s.add_node(_doc_node("doccopy1", "Copy doc", {
+            "mode": "copy", "blob_path": "bb/" + "b" * 64 + ".pdf", "size": 20,
+            "mime": "application/pdf", "filename": "b.pdf", "sha256": "b" * 64,
+            "indexed_text_chars": 8}, "doc:bbbbbbbbbbbb"))
+
+        r = c.get("/api/documents", headers=_hdr())
+        assert r.status_code == 200
+        docs = {d["node_id"]: d for d in r.json()["documents"]}
+        assert set(docs) == {"docref01", "doccopy1"}, "did not list exactly the document nodes"
+        assert docs["docref01"]["has_blob"] is False and docs["docref01"]["mode"] == "reference"
+        assert docs["doccopy1"]["has_blob"] is True and docs["doccopy1"]["mode"] == "copy"
+        assert docs["docref01"]["doc_ref"] == "doc:aaaaaaaaaaaa"
+        assert docs["docref01"]["summary"] == "Ref doc" and docs["docref01"]["filename"] == "a.txt"
+
+    def test_list_documents_empty_when_none(self, client):
+        c, _ = client  # fixture graph has only a decision + a discovery, no documents
+        r = c.get("/api/documents", headers=_hdr())
+        assert r.status_code == 200
+        assert r.json()["documents"] == []
+
+    def test_list_documents_requires_token(self, client):
+        c, _ = client
+        assert c.get("/api/documents").status_code == 403
+
+    def test_download_copy_mode_blob(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        sha = "c" * 64
+        rel = blob_rel_path(sha, ".pdf")
+        blob = documents_dir(s.cognition_dir) / rel
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(b"PDF-BYTES-HERE")
+        s.add_node(_doc_node("dlcopy01", "Copy DL", {
+            "mode": "copy", "blob_path": rel, "sha256": sha,
+            "mime": "application/pdf", "filename": "c.pdf", "size": 14}, "doc:cccccccccccc"))
+
+        r = c.get("/api/document/dlcopy01/download?token=testtok")
+        assert r.status_code == 200
+        assert r.content == b"PDF-BYTES-HERE", "blob bytes not served"
+
+    def test_download_reference_mode_serves_sidecar(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        sha = "d" * 64
+        sidecar = text_sidecar_path(s.cognition_dir, sha)
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text("extracted text body", encoding="utf-8")
+        s.add_node(_doc_node("dlref01", "Ref DL", {
+            "mode": "reference", "sha256": sha}, "doc:dddddddddddd"))
+
+        r = c.get("/api/document/dlref01/download?token=testtok")
+        assert r.status_code == 200
+        assert r.text == "extracted text body", "reference mode should serve the sidecar text"
+
+    def test_download_rejects_blob_path_escaping_documents_dir(self, client):
+        """Path-safety: a tampered blob_path that resolves OUTSIDE documents_dir must
+        be rejected (404), not served — a REAL escaping path to a real file, not a
+        string check. Fails-before without the is_relative_to(documents_dir) guard."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        secret = s.cognition_dir.parent / "secret.txt"  # outside .cognition/documents
+        secret.write_text("TOP SECRET", encoding="utf-8")
+        s.add_node(_doc_node("dlevil01", "Evil", {
+            "mode": "copy", "blob_path": "../../secret.txt", "sha256": "e" * 64,
+            "filename": "x"}, "doc:eeeeeeeeeeee"))
+
+        r = c.get("/api/document/dlevil01/download?token=testtok")
+        assert r.status_code == 404, "path-escaping blob_path was served"
+        assert "TOP SECRET" not in r.text
+
+    def test_download_non_document_is_404(self, client):
+        c, lc = client
+        # n1/n2 are decision/discovery, not documents
+        any_node = next(iter(lc["cognition_storage"].get_all_nodes()))["id"]
+        r = c.get(f"/api/document/{any_node}/download?token=testtok")
+        assert r.status_code == 404
+
+    def test_download_requires_token(self, client):
+        c, _ = client
+        assert c.get("/api/document/whatever/download").status_code == 403
+
+    def test_download_clamps_agent_controlled_mime(self, client):
+        """The mime is agent-controlled (cognition_store_document mime=) and flows into
+        Content-Type — clamp it like the filename. A CRLF-injection mime falls back to
+        application/octet-stream; a valid mime is preserved. (ledger 17: don't rely on
+        the HTTP parser to reject our own header injection.)"""
+        c, lc = client
+        s = lc["cognition_storage"]
+        sha = "f" * 64
+        rel = blob_rel_path(sha, ".bin")
+        blob = documents_dir(s.cognition_dir) / rel
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(b"data")
+        s.add_node(_doc_node("dlmime01", "Mime", {
+            "mode": "copy", "blob_path": rel, "sha256": sha,
+            "mime": "text/html\r\nX-Injected: evil", "filename": "m.bin"}, "doc:ffffffffffff"))
+
+        r = c.get("/api/document/dlmime01/download?token=testtok")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("application/octet-stream"), \
+            "injection-bearing mime not clamped"
+        assert "x-injected" not in {k.lower() for k in r.headers}, "header injected via mime"
+
+    def test_download_clamps_preserves_valid_mime(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        sha = "9" * 64
+        rel = blob_rel_path(sha, ".pdf")
+        blob = documents_dir(s.cognition_dir) / rel
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(b"%PDF")
+        s.add_node(_doc_node("dlmime02", "Mime2", {
+            "mode": "copy", "blob_path": rel, "sha256": sha,
+            "mime": "application/pdf", "filename": "m.pdf"}, "doc:999999999999"))
+
+        r = c.get("/api/document/dlmime02/download?token=testtok")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("application/pdf"), "valid mime not preserved"
+
+    def test_download_rejects_absolute_blob_path(self, client):
+        """Traversal vector: an ABSOLUTE blob_path (pathlib join drops the base) must
+        still be rejected by the resolved-under-documents_dir check."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        secret = s.cognition_dir.parent / "abs_secret.txt"
+        secret.write_text("ABS SECRET", encoding="utf-8")
+        s.add_node(_doc_node("dlabs01", "Abs", {
+            "mode": "copy", "blob_path": str(secret), "sha256": "1" * 64}, "doc:111111111111"))
+
+        r = c.get("/api/document/dlabs01/download?token=testtok")
+        assert r.status_code == 404, "absolute blob_path escaped documents_dir"
+        assert "ABS SECRET" not in r.text
+
+    def test_download_rejects_symlink_escaping_documents_dir(self, client):
+        """Traversal vector: a SYMLINK inside documents_dir pointing OUTSIDE must be
+        defeated — resolve() follows the link and the comparison is on the resolved
+        path. (Skipped where symlinks aren't permitted, e.g. unprivileged Windows.)"""
+        c, lc = client
+        s = lc["cognition_storage"]
+        secret = s.cognition_dir.parent / "link_secret.txt"
+        secret.write_text("LINK SECRET", encoding="utf-8")
+        docs = documents_dir(s.cognition_dir)
+        docs.mkdir(parents=True, exist_ok=True)
+        link = docs / "evil_link.bin"
+        try:
+            os.symlink(secret, link)
+        except (OSError, NotImplementedError):
+            import pytest
+            pytest.skip("symlinks not permitted on this platform")
+        s.add_node(_doc_node("dllink01", "Link", {
+            "mode": "copy", "blob_path": "evil_link.bin", "sha256": "2" * 64}, "doc:222222222222"))
+
+        r = c.get("/api/document/dllink01/download?token=testtok")
+        assert r.status_code == 404, "symlink escaping documents_dir was served"
+        assert "LINK SECRET" not in r.text
 
 
 class TestStats:
@@ -275,3 +516,15 @@ class TestLifecycle:
         stop_dashboard(lifespan_ctx, join_timeout=3.0)
         assert not thread.is_alive()
         assert "dashboard" not in lifespan_ctx
+
+    def test_start_dashboard_reports_failure_when_server_never_starts(self, lifespan_ctx, monkeypatch):
+        """D-1: if the server never comes up (e.g. bind fails → daemon thread dies),
+        start_dashboard returns an error status and does NOT cache a dead URL."""
+        import uvicorn
+
+        # Simulate a server that exits immediately without ever setting `started`.
+        monkeypatch.setattr(uvicorn.Server, "run", lambda self: None)
+        result = start_dashboard(lifespan_ctx, port=0, open_browser=False)
+        assert result["status"] == "failed", f"expected failed, got {result}"
+        assert result["url"] is None
+        assert "dashboard" not in lifespan_ctx, "a dead dashboard was cached"

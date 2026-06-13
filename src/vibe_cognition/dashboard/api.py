@@ -7,17 +7,66 @@ matches CognitionStorage's RLock-based threading model.
 from __future__ import annotations
 
 import logging
+import re
+from pathlib import Path
 from typing import Any
 
-from starlette.responses import JSONResponse
+from starlette.responses import FileResponse, JSONResponse
 
-from ..cognition import delete_cognition_node
+from ..cognition import CognitionNodeType, delete_cognition_node
+from ..cognition.documents import documents_dir, text_sidecar_path
+
+_UNSAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
+_SAFE_MEDIA_TYPE = re.compile(r"^[\w.+-]+/[\w.+-]+$")  # strict type/subtype, no params/CRLF
+
+
+def _safe_filename(name: str, fallback: str = "document") -> str:
+    """Sanitize a Content-Disposition filename: strip any path components, collapse
+    unsafe chars. The filename comes from stored metadata, but we never trust it as a
+    path or let it carry separators/control chars into the response header."""
+    base = Path(name).name
+    base = _UNSAFE_FILENAME.sub("_", base).strip("._")
+    return (base or fallback)[:120]
+
+
+def _safe_media_type(mime: str | None) -> str:
+    """Validate the AGENT-controlled mime before it becomes a Content-Type header.
+    Anything that isn't a strict ``type/subtype`` (no params, no CRLF/control chars)
+    falls back to a safe default — we never rely on the HTTP parser to reject our own
+    header injection (ledger 17), and this mirrors _safe_filename's discipline."""
+    if mime and _SAFE_MEDIA_TYPE.match(mime):
+        return mime
+    return "application/octet-stream"
 
 logger = logging.getLogger(__name__)
 
 
 def _ctx(request) -> dict[str, Any]:
     return request.app.state.lifespan_ctx
+
+
+def _document_has_blob(node: dict[str, Any]) -> bool:
+    """Whether a document node has a stored content-addressed blob (copy mode). THE
+    single source for the has-blob decision — both the list endpoint and the download
+    endpoint use it (ledger 11) so they can't disagree on what's downloadable."""
+    return (node.get("metadata") or {}).get("mode") == "copy"
+
+
+def _document_blob_path(cognition_dir: Path, node: dict[str, Any]) -> Path | None:
+    """Resolve a copy-mode document's on-disk blob path, VALIDATED to live under the
+    documents dir — None for reference mode, a missing blob_path, or any path that
+    resolves outside documents_dir (path-safety defense even though the path is
+    server-derived from the node's stored, sanitized metadata, never client input)."""
+    if not _document_has_blob(node):
+        return None
+    rel = (node.get("metadata") or {}).get("blob_path")
+    if not rel:
+        return None
+    docs = documents_dir(cognition_dir).resolve()
+    candidate = (docs / rel).resolve()
+    if not candidate.is_relative_to(docs):
+        return None
+    return candidate
 
 
 def _embedding_status(lc: dict[str, Any]) -> tuple[bool, str | None]:
@@ -123,9 +172,18 @@ async def search(request):
     from starlette.concurrency import run_in_threadpool
 
     lc = _ctx(request)
-    body = await request.json()
-    query = body.get("query", "").strip()
-    limit = int(body.get("limit", 20))
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "malformed JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    query = str(body.get("query", "")).strip()
+    try:
+        limit = int(body.get("limit", 20))
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(1, min(limit, 100))  # clamp: no 0/negative/huge fan-out
     entity_type = body.get("entity_type")
 
     if not query:
@@ -147,25 +205,44 @@ async def search(request):
 
     def _do_search():
         vector = generator.generate_query_embedding(query)
+        # Over-query so the many chunks of one document don't crowd out other nodes
+        # before dedupe (mirrors the MCP search rationale).
         hits = embed_storage.vector_search(
             query_embedding=vector,
-            limit=limit,
+            limit=limit * 5,
             entity_type=entity_type,
         )
-        # N1 ghost-search fix (WP-D2): drop hits whose node was deleted cross-process
-        # but never un-embedded — D2 makes documents searchable, so an un-filtered
-        # dashboard would serve verbatim deleted client-document chunk text. Same
-        # shared predicate the MCP search uses; raw {_id, **metadata, score} shape
-        # preserved (the dashboard JS consumes it, unlike the MCP formatter).
-        #
-        # SCOPE (deferred to WP-D4, not a silent regression): document hits surface
-        # here as un-deduped chunk rows (_id == "<node>#chunk-N"), so clicking one
-        # won't navigate (no graph node by that id) and the row lacks node metadata.
-        # SAFETY is intact (no deleted text served); only dashboard document-search
-        # NAVIGATION is incomplete. Dedupe-to-node + node hydration is WP-D4's cluster
-        # (the raw-shape contract here is deliberate); the MCP cognition_search surface
-        # IS deduped to nodes today.
-        return [h for h in hits if cognition_storage.search_hit_is_live(h.get("_id") or "")]
+        # N1 ghost-search SAFETY (WP-D2): drop hits whose node was deleted cross-process
+        # but never un-embedded (shared search_hit_is_live predicate, ledger 11) — else
+        # the dashboard would serve verbatim deleted client-document chunk text.
+        # D-6 NAVIGATION (WP-D4): dedupe document chunk hits (<node>#chunk-N) to the best
+        # (first, score-desc) hit PER NODE, rewrite _id to the navigable NODE id, and
+        # hydrate `summary` from the graph (chunk metadata has none). The raw
+        # {_id, **metadata, score} shape is preserved — entity_type stays as the hit
+        # carries it (NOT overwritten with the graph node's `type`), so renderSearchResults
+        # navigates and labels correctly with no JS change.
+        out: list[dict] = []
+        seen: set[str] = set()
+        for h in hits:
+            raw_id = h.get("_id") or ""
+            if not cognition_storage.search_hit_is_live(raw_id):
+                continue
+            node_id = raw_id.split("#chunk-")[0]
+            if node_id in seen:
+                continue
+            seen.add(node_id)
+            row = dict(h)
+            row["_id"] = node_id
+            node = cognition_storage.get_node(node_id)
+            if node:
+                row["summary"] = node.get("summary") or row.get("summary")
+            matched = h.get("matched_text")
+            if matched:
+                row["matched_excerpt"] = matched[:500]
+            out.append(row)
+            if len(out) >= limit:
+                break
+        return out
 
     results = await run_in_threadpool(_do_search)
     return JSONResponse({"results": results})
@@ -192,3 +269,67 @@ def get_stats(request):
         "embedding_error": lc.get("embedding_error"),
         "embedding_generator_loaded": lc.get("embedding_generator") is not None,
     })
+
+
+def list_documents(request):
+    """List stored document nodes (metadata only — never the text or blob bytes)."""
+    lc = _ctx(request)
+    storage = lc["cognition_storage"]
+    out = []
+    for n in storage.get_nodes_by_type(CognitionNodeType.DOCUMENT):
+        meta = n.get("metadata") or {}
+        refs = n.get("references") or []
+        out.append({
+            "node_id": n["id"],
+            "doc_ref": refs[0] if refs else None,
+            "summary": n.get("summary", ""),  # for documents the title IS the summary
+            "mode": meta.get("mode", "reference"),
+            "size": meta.get("size"),
+            "mime": meta.get("mime", ""),
+            "filename": meta.get("filename", ""),
+            "indexed_text_chars": meta.get("indexed_text_chars"),
+            "timestamp": n.get("timestamp", ""),
+            "has_blob": _document_has_blob(n),
+        })
+    out.sort(key=lambda d: d["timestamp"], reverse=True)  # newest first
+    return JSONResponse({"documents": out})
+
+
+def download_document(request):
+    """Download a stored document. Copy mode → the content-addressed blob; reference
+    mode → the agent-extracted text SIDECAR (NEVER the absolute original path — that
+    would be an arbitrary-local-file-read, and §9 N2 says reference mode never touches
+    the original). ``node_id`` is a graph KEY only (never a path segment); the blob
+    path is server-reconstructed + validated under documents_dir."""
+    lc = _ctx(request)
+    storage = lc["cognition_storage"]
+    node_id = request.path_params["node_id"]
+    node = storage.get_node(node_id)
+    if not node or node.get("type") != CognitionNodeType.DOCUMENT.value:
+        return JSONResponse({"error": "document not found"}, status_code=404)
+
+    meta = node.get("metadata") or {}
+    cognition_dir = storage.cognition_dir
+    title = node.get("summary") or node_id
+
+    if _document_has_blob(node):
+        blob = _document_blob_path(cognition_dir, node)  # validated under documents_dir
+        if blob is None or not blob.exists():
+            return JSONResponse({"error": "blob not found"}, status_code=404)
+        return FileResponse(
+            blob,
+            filename=_safe_filename(meta.get("filename") or title),
+            media_type=_safe_media_type(meta.get("mime")),
+        )
+
+    # Reference mode: serve the extracted-text sidecar (sha-named, server-derived).
+    sha = meta.get("sha256")
+    if sha:
+        sidecar = text_sidecar_path(cognition_dir, sha)
+        if sidecar.exists():
+            return FileResponse(
+                sidecar,
+                filename=_safe_filename(title) + ".txt",
+                media_type="text/plain",
+            )
+    return JSONResponse({"error": "no downloadable artifact"}, status_code=404)

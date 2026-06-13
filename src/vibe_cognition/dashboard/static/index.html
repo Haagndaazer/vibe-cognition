@@ -5,10 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Vibe Cognition Dashboard</title>
   <link rel="stylesheet" href="/static/styles.css" />
-  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/layout-base@2.0.1/layout-base.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2.2.0/cytoscape-fcose.js"></script>
+  <!-- Vendored (WP-D4 / audit D-4): self-hosted, not CDN — no SRI gap (a CDN
+       compromise could run arbitrary JS in a page that can DELETE nodes) and the
+       dashboard works offline. Pinned: cytoscape@3.30.2, layout-base@2.0.1,
+       cose-base@2.2.0, cytoscape-fcose@2.2.0. -->
+  <script src="/static/vendor/cytoscape.min.js"></script>
+  <script src="/static/vendor/layout-base.js"></script>
+  <script src="/static/vendor/cose-base.js"></script>
+  <script src="/static/vendor/cytoscape-fcose.js"></script>
 </head>
 <body>
   <header>
@@ -18,6 +22,7 @@
       <div id="search-results" hidden></div>
     </div>
     <div id="status-line">
+      <button id="refresh-btn" type="button" title="Reload the graph">↻ Refresh</button>
       <span id="stats"></span>
       <span id="banner" class="banner-loading">Loading embedding model…</span>
     </div>
@@ -27,6 +32,8 @@
     <aside id="episodes-panel">
       <div class="panel-header">Episodes <span id="episode-count" class="muted"></span></div>
       <ul id="episode-list"></ul>
+      <div class="panel-header">Documents <span id="document-count" class="muted"></span></div>
+      <ul id="document-list"></ul>
     </aside>
     <div id="cy"></div>
     <aside id="detail">

@@ -282,6 +282,38 @@ function removeEpisodeFromList(id) {
   if (countEl) countEl.textContent = `(${remaining})`;
 }
 
+async function loadDocuments() {
+  const list = document.getElementById("document-list");
+  const countEl = document.getElementById("document-count");
+  let docs = [];
+  try {
+    docs = (await api("/api/documents")).documents || [];
+  } catch {
+    return;  // non-fatal: the documents panel is supplementary to the graph
+  }
+  if (countEl) countEl.textContent = `(${docs.length})`;
+  if (!docs.length) {
+    list.innerHTML = '<li class="episode-empty">No documents yet</li>';
+    return;
+  }
+  list.innerHTML = docs.map(d => {
+    const kb = d.size != null ? ` · ${Math.max(1, Math.round(d.size / 1024))} KB` : "";
+    const label = d.has_blob ? "download" : "download text";
+    const href = `/api/document/${encodeURIComponent(d.node_id)}/download?token=${encodeURIComponent(TOKEN)}`;
+    return `<li class="episode-item" data-id="${escapeHTML(d.node_id)}">
+      <div class="episode-summary">${escapeHTML((d.summary || d.node_id).slice(0, 140))}</div>
+      <div class="episode-meta">${escapeHTML(d.mode)}${escapeHTML(kb)} ·
+        <a class="doc-download" href="${href}" download>${label}</a></div>
+    </li>`;
+  }).join("");
+  for (const li of list.querySelectorAll(".episode-item")) {
+    li.addEventListener("click", e => {
+      if (e.target.closest(".doc-download")) return;  // let the download link navigate
+      selectNode(li.dataset.id);
+    });
+  }
+}
+
 function formatTimestamp(ts) {
   if (!ts) return "";
   const d = new Date(ts);
@@ -436,6 +468,13 @@ async function pollEmbeddingReady() {
   }
 }
 
+async function loadGraph() {
+  const graph = await api("/api/graph");
+  buildCy([...graph.nodes, ...graph.edges]);
+  buildEpisodeList(graph.nodes);
+  loadDocuments();
+}
+
 async function init() {
   try {
     const stats = await refreshStats();
@@ -448,10 +487,12 @@ async function init() {
       pollEmbeddingReady();
     }
 
-    const graph = await api("/api/graph");
-    const elements = [...graph.nodes, ...graph.edges];
-    buildCy(elements);
-    buildEpisodeList(graph.nodes);
+    await loadGraph();
+
+    document.getElementById("refresh-btn").addEventListener("click", () => {
+      refreshStats();
+      loadGraph();
+    });
 
     const search = document.getElementById("search");
     search.addEventListener("input", debounce(e => runSearch(e.target.value.trim()), 220));
