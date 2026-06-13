@@ -699,6 +699,43 @@ def test_n1_cross_process_ghost_filtered_end_to_end(tmp_path):
     assert res["count"] == 0, "cross-process ghost served by the real search path (N1 fix not wired)"
 
 
+def test_store_document_embeds_node_and_chunks(tmp_path):
+    """WP-D2 Commit 3: storing a document (with embedding deps) writes ONE node
+    vector (no is_chunk) + N chunk vectors (is_chunk True, node_id set, chunk text
+    stored). The node-vs-chunk marker is the count-split discriminator (A1)."""
+    s = CognitionStorage(tmp_path / "cog")
+    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    gen = cast(EmbeddingGenerator, _FixedGen([0.1, 0.2, 0.3]))
+    text = " ".join(str(i) for i in range(2500))  # > 1000 words -> multiple chunks
+    res = _store_document(s, title="big doc", document_text=text, context="", author="t",
+                          content_text=text, embedding_storage=embed, generator=gen)
+    nid = res["node_id"]
+    ids = set(embed._collection.get()["ids"])
+    assert nid in ids, "document node vector not embedded"
+    chunk_ids = {i for i in ids if i.startswith(f"{nid}#chunk-")}
+    assert len(chunk_ids) >= 2, f"sidecar not chunked into multiple chunks: {chunk_ids}"
+
+    node_meta = (embed._collection.get(ids=[nid], include=["metadatas"])["metadatas"] or [{}])[0]
+    assert "is_chunk" not in node_meta, "node vector wrongly marked is_chunk"
+    chunk = embed._collection.get(ids=[f"{nid}#chunk-0"], include=["metadatas", "documents"])
+    cmeta = (chunk["metadatas"] or [{}])[0]
+    cdocs = chunk["documents"] or [""]
+    assert cmeta["is_chunk"] is True, "chunk missing is_chunk marker (count-split breaks)"
+    assert cmeta["node_id"] == nid
+    assert cdocs[0], "chunk text not stored as a Chroma document"
+
+
+def test_store_document_defers_embedding_when_deps_missing(tmp_path):
+    """The skip-if-None guard / deferred path: with a generator absent, the store
+    writes the node+sidecar but NO vectors (the next sync backfills) — never errors."""
+    s = CognitionStorage(tmp_path / "cog")
+    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    res = _store_document(s, title="d", document_text="body text", context="", author="t",
+                          content_text="body text", embedding_storage=embed, generator=None)
+    assert s.has_node(res["node_id"]), "node not stored"
+    assert embed._collection.get()["ids"] == [], "embedded despite missing generator (should defer)"
+
+
 def test_copy_blob_refcount_is_per_blob_path_not_per_sha(tmp_path):
     """The deviation's motivating case (Vince should-fix #3): two copy nodes with the
     SAME bytes but DIFFERENT ext own DIFFERENT blob files. Deleting one unlinks ITS
