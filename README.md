@@ -48,6 +48,7 @@ That's it. The plugin handles dependency installation, MCP server registration, 
 ## Features
 
 - **Project Knowledge Graph**: Capture decisions, failures, discoveries, assumptions, constraints, incidents, and patterns
+- **Document Storage**: Store client docs, PDFs, and specs as first-class `document` nodes (reference or copy mode) with agent-extracted, searchable text; descriptor nodes that cite the returned `doc:<hash>` auto-link to the document (see the `/vibe-document` skill)
 - **Semantic Search**: Find project history using natural language through local vector embeddings
 - **Deterministic Edge Creation**: `part_of` edges are created instantly via reference matching (shared commit/issue/PR refs) — no LLM needed
 - **Manual & Batch Edge Creation**: Create edges individually or in bulk via MCP tools, with provenance tracking
@@ -111,6 +112,8 @@ The embedding model (~250MB) also downloads on first use from Hugging Face. Afte
 | Tool | Purpose |
 |------|---------|
 | `cognition_record` | Record a knowledge node (decision, fail, discovery, pattern, episode, etc.) |
+| `cognition_store_document` | Store a document (reference or copy mode) + extracted text as a first-class node |
+| `cognition_get_document` | Retrieve a stored document: metadata + full text + freshness |
 | `cognition_search` | Search project history by natural language |
 | `cognition_get_chain` | Traverse causal reasoning chains (LED_TO edges) |
 | `cognition_get_history` | Browse nodes by context area, type, or recency |
@@ -209,7 +212,7 @@ The cognition graph captures project knowledge — decisions made, approaches th
 ### How It Works
 
 1. **Record nodes** during conversations via `cognition_record` (or automatically via the post-commit hook)
-2. **Deterministic matching** instantly creates `part_of` edges when nodes share references (commit hashes, issue/PR numbers) — the only automatic edges
+2. **Deterministic matching** instantly creates `part_of` edges (and `relates_to` for document→episode) when nodes share references (commit hashes, issue/PR numbers, `doc:` keys) — the only automatic edges
 3. **Semantic edges** (led_to, resolved_by, supersedes) are the agent's job: after recording, run the `/vibe-curate` skill (or add them with `cognition_add_edge`)
 4. **Query** with `cognition_search` (semantic) or `cognition_get_history` (by context/type)
 
@@ -230,12 +233,12 @@ The cognition graph captures project knowledge — decisions made, approaches th
 
 | Edge | Meaning | How Created |
 |------|---------|-------------|
-| `part_of` | Entity belongs to an episode | Deterministic (automatic via shared references) |
+| `part_of` | Entity belongs to an episode, or a descriptor to a document | Deterministic (entity↔episode on any shared ref; entity→document on a shared `doc:` ref) |
 | `led_to` | Causal chain — X led to Y | Semantic (via `/vibe-curate` skill or manual) |
 | `resolved_by` | Problem X was fixed by Y | Semantic |
 | `supersedes` | X replaces Y | Semantic |
 | `contradicts` | X conflicts with Y | Semantic |
-| `relates_to` | Same topic, no causal link | Semantic (use sparingly) |
+| `relates_to` | Same topic, no causal link | Deterministic (document→episode on a shared `doc:` ref) OR semantic (`/vibe-curate` or manual) |
 | `duplicate_of` | X is semantically identical to Y | Reserved for merge logic (not user-created) |
 
 The graph uses a **MultiDiGraph** — multiple edge types between the same pair of nodes are supported (e.g., A can be both `part_of` B and `led_to` B). Each (from, to, edge_type) triple is unique.
@@ -244,7 +247,7 @@ The graph uses a **MultiDiGraph** — multiple edge types between the same pair 
 
 Edges are created through two mechanisms:
 
-1. **Deterministic matching** (always on): `part_of` edges are created automatically when nodes share references. No setup needed. This is the *only* automatic edge creation.
+1. **Deterministic matching** (always on): `part_of` and (for document→episode) `relates_to` edges are created automatically when nodes share references. No setup needed. This is the *only* automatic edge creation.
 2. **`/vibe-curate` skill** (agent-driven): Curation is the agent's responsibility. After recording any nodes, the agent runs the `/vibe-curate` skill to create semantic edges (led_to, resolved_by, supersedes) and identify clusters via subagents. There is no automated background curator.
 
 ## Configuration
