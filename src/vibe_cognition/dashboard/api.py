@@ -7,17 +7,43 @@ matches CognitionStorage's RLock-based threading model.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from starlette.responses import JSONResponse
 
-from ..cognition import delete_cognition_node
+from ..cognition import CognitionNodeType, delete_cognition_node
+from ..cognition.documents import documents_dir
 
 logger = logging.getLogger(__name__)
 
 
 def _ctx(request) -> dict[str, Any]:
     return request.app.state.lifespan_ctx
+
+
+def _document_has_blob(node: dict[str, Any]) -> bool:
+    """Whether a document node has a stored content-addressed blob (copy mode). THE
+    single source for the has-blob decision — both the list endpoint and the download
+    endpoint use it (ledger 11) so they can't disagree on what's downloadable."""
+    return (node.get("metadata") or {}).get("mode") == "copy"
+
+
+def _document_blob_path(cognition_dir: Path, node: dict[str, Any]) -> Path | None:
+    """Resolve a copy-mode document's on-disk blob path, VALIDATED to live under the
+    documents dir — None for reference mode, a missing blob_path, or any path that
+    resolves outside documents_dir (path-safety defense even though the path is
+    server-derived from the node's stored, sanitized metadata, never client input)."""
+    if not _document_has_blob(node):
+        return None
+    rel = (node.get("metadata") or {}).get("blob_path")
+    if not rel:
+        return None
+    docs = documents_dir(cognition_dir).resolve()
+    candidate = (docs / rel).resolve()
+    if not candidate.is_relative_to(docs):
+        return None
+    return candidate
 
 
 def _embedding_status(lc: dict[str, Any]) -> tuple[bool, str | None]:
@@ -211,3 +237,27 @@ def get_stats(request):
         "embedding_error": lc.get("embedding_error"),
         "embedding_generator_loaded": lc.get("embedding_generator") is not None,
     })
+
+
+def list_documents(request):
+    """List stored document nodes (metadata only — never the text or blob bytes)."""
+    lc = _ctx(request)
+    storage = lc["cognition_storage"]
+    out = []
+    for n in storage.get_nodes_by_type(CognitionNodeType.DOCUMENT):
+        meta = n.get("metadata") or {}
+        refs = n.get("references") or []
+        out.append({
+            "node_id": n["id"],
+            "doc_ref": refs[0] if refs else None,
+            "summary": n.get("summary", ""),  # for documents the title IS the summary
+            "mode": meta.get("mode", "reference"),
+            "size": meta.get("size"),
+            "mime": meta.get("mime", ""),
+            "filename": meta.get("filename", ""),
+            "indexed_text_chars": meta.get("indexed_text_chars"),
+            "timestamp": n.get("timestamp", ""),
+            "has_blob": _document_has_blob(n),
+        })
+    out.sort(key=lambda d: d["timestamp"], reverse=True)  # newest first
+    return JSONResponse({"documents": out})

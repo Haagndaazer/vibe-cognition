@@ -22,6 +22,7 @@ from .api import (
     get_graph,
     get_node,
     get_stats,
+    list_documents,
     search,
 )
 from .middleware import build_middleware
@@ -57,6 +58,7 @@ def build_app(lifespan_ctx: dict[str, Any], token: str) -> tuple[Starlette, Exit
         Route("/api/node/{node_id}", endpoint=get_node, methods=["GET"]),
         Route("/api/node/{node_id}", endpoint=delete_node, methods=["DELETE"]),
         Route("/api/search", endpoint=search, methods=["POST"]),
+        Route("/api/documents", endpoint=list_documents, methods=["GET"]),
         Route("/api/stats", endpoint=get_stats, methods=["GET"]),
         Mount("/static", app=StaticFiles(directory=static_dir), name="static"),
     ]

@@ -274,6 +274,46 @@ class TestSearch:
         assert r.status_code == 400
 
 
+def _doc_node(node_id, summary, metadata, doc_ref):
+    return CognitionNode(
+        id=node_id, type=CognitionNodeType.DOCUMENT, summary=summary, detail="d",
+        context=[], references=[doc_ref], severity=None,
+        timestamp=datetime.now(UTC).isoformat(), author="t", metadata=metadata,
+    )
+
+
+class TestDocuments:
+    def test_list_documents(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(_doc_node("docref01", "Ref doc", {
+            "mode": "reference", "size": 10, "mime": "text/plain", "filename": "a.txt",
+            "sha256": "a" * 64, "indexed_text_chars": 5}, "doc:aaaaaaaaaaaa"))
+        s.add_node(_doc_node("doccopy1", "Copy doc", {
+            "mode": "copy", "blob_path": "bb/" + "b" * 64 + ".pdf", "size": 20,
+            "mime": "application/pdf", "filename": "b.pdf", "sha256": "b" * 64,
+            "indexed_text_chars": 8}, "doc:bbbbbbbbbbbb"))
+
+        r = c.get("/api/documents", headers=_hdr())
+        assert r.status_code == 200
+        docs = {d["node_id"]: d for d in r.json()["documents"]}
+        assert set(docs) == {"docref01", "doccopy1"}, "did not list exactly the document nodes"
+        assert docs["docref01"]["has_blob"] is False and docs["docref01"]["mode"] == "reference"
+        assert docs["doccopy1"]["has_blob"] is True and docs["doccopy1"]["mode"] == "copy"
+        assert docs["docref01"]["doc_ref"] == "doc:aaaaaaaaaaaa"
+        assert docs["docref01"]["summary"] == "Ref doc" and docs["docref01"]["filename"] == "a.txt"
+
+    def test_list_documents_empty_when_none(self, client):
+        c, _ = client  # fixture graph has only a decision + a discovery, no documents
+        r = c.get("/api/documents", headers=_hdr())
+        assert r.status_code == 200
+        assert r.json()["documents"] == []
+
+    def test_list_documents_requires_token(self, client):
+        c, _ = client
+        assert c.get("/api/documents").status_code == 403
+
+
 class TestStats:
     def test_stats_shape(self, client):
         c, _ = client
