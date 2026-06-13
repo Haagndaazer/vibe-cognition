@@ -135,6 +135,127 @@ def _validate_direction(direction: str, allowed: tuple[str, ...]) -> dict[str, A
     return None
 
 
+def _add_edge_core(
+    storage: CognitionStorage,
+    from_id: str,
+    to_id: str,
+    edge_type: str,
+    reason: str | None = None,
+    source: str = "manual",
+) -> dict[str, Any]:
+    """Validate + create one edge (testable core of cognition_add_edge)."""
+    try:
+        et = CognitionEdgeType(edge_type)
+    except ValueError:
+        valid = [e.value for e in CognitionEdgeType if e != CognitionEdgeType.DUPLICATE_OF]
+        return {"error": f"Invalid edge_type '{edge_type}'. Valid: {valid}"}
+    if et == CognitionEdgeType.DUPLICATE_OF:
+        return {"error": "duplicate_of edges require merge logic and are not supported here."}
+    if from_id == to_id:
+        return {"error": "Self-referencing edges are not allowed"}
+    if not storage.has_node(from_id):
+        return {"error": f"Source node '{from_id}' does not exist"}
+    if not storage.has_node(to_id):
+        return {"error": f"Target node '{to_id}' does not exist"}
+    if any(tid == to_id for tid, _ in storage.get_successors(from_id, et)):
+        return {"error": f"Edge already exists: {from_id} -[{edge_type}]-> {to_id}"}
+
+    timestamp = datetime.now(UTC).isoformat()
+    edge = CognitionEdge(
+        from_id=from_id, to_id=to_id, edge_type=et, timestamp=timestamp, source=source,
+    )
+    # C-5: add_edge returns False if a node vanished between the has_node check and
+    # the write (cross-process delete race) — surface it, don't report created:True.
+    if not storage.add_edge(edge):
+        return {"error": f"Edge not created: a node ('{from_id}' or '{to_id}') is missing"}
+    if reason:
+        logger.info(f"Edge created: {from_id} -[{edge_type}]-> {to_id} (reason: {reason})")
+    return {
+        "created": True,
+        "from_id": from_id,
+        "to_id": to_id,
+        "edge_type": edge_type,
+        "timestamp": timestamp,
+    }
+
+
+def _add_edges_batch_core(storage: CognitionStorage, edges: str) -> dict[str, Any]:
+    """Validate + create a batch of edges (testable core of cognition_add_edges_batch).
+    Every malformed input is skip-and-reported — no element can crash the batch after
+    earlier edges were already committed (T-3)."""
+    import json as _json
+    try:
+        edge_list = _json.loads(edges)
+    except _json.JSONDecodeError as e:
+        return {"error": f"Invalid JSON: {e}"}
+    if not isinstance(edge_list, list):
+        return {"error": "Expected a JSON array of edge objects"}
+    if len(edge_list) > 500:
+        return {"error": f"Max 500 edges per batch, got {len(edge_list)}"}
+
+    created = 0
+    skipped = 0
+    errors: list[str] = []
+    seen_triples: set[tuple[str, str, str]] = set()
+
+    for i, e in enumerate(edge_list):
+        # T-3: a non-dict element must be skipped-and-reported like every other
+        # malformed input — NOT crash on e.get(...) after earlier edges were journaled.
+        if not isinstance(e, dict):
+            errors.append(f"[{i}] Not an edge object (expected a JSON object)")
+            skipped += 1
+            continue
+        fid = e.get("from_id", "")
+        tid = e.get("to_id", "")
+        etype_str = e.get("edge_type", "")
+        src = e.get("source", "batch")
+        triple = (fid, tid, etype_str)
+
+        try:
+            et = CognitionEdgeType(etype_str)
+        except ValueError:
+            errors.append(f"[{i}] Invalid edge_type '{etype_str}'")
+            skipped += 1
+            continue
+        if et == CognitionEdgeType.DUPLICATE_OF:
+            errors.append(f"[{i}] duplicate_of not allowed in batch")
+            skipped += 1
+            continue
+        if fid == tid:
+            errors.append(f"[{i}] Self-reference: {fid}")
+            skipped += 1
+            continue
+        if not storage.has_node(fid):
+            errors.append(f"[{i}] Missing from_id: {fid}")
+            skipped += 1
+            continue
+        if not storage.has_node(tid):
+            errors.append(f"[{i}] Missing to_id: {tid}")
+            skipped += 1
+            continue
+        if triple in seen_triples:
+            errors.append(f"[{i}] Duplicate in batch: {fid} -[{etype_str}]-> {tid}")
+            skipped += 1
+            continue
+        if any(t == tid for t, _ in storage.get_successors(fid, et)):
+            errors.append(f"[{i}] Already exists: {fid} -[{etype_str}]-> {tid}")
+            skipped += 1
+            continue
+
+        seen_triples.add(triple)
+        timestamp = datetime.now(UTC).isoformat()
+        edge = CognitionEdge(
+            from_id=fid, to_id=tid, edge_type=et, timestamp=timestamp, source=src,
+        )
+        if not storage.add_edge(edge):  # C-5: surface a failed add, don't count it created
+            errors.append(f"[{i}] Not created: a node is missing ({fid} or {tid})")
+            skipped += 1
+            continue
+        created += 1
+
+    return {"created": created, "skipped": skipped, "errors": errors[:50]}
+
+
 _SEARCH_OVERQUERY_K = 5     # initial over-query factor (chunks of one doc crowd others)
 _SEARCH_OVERQUERY_CAP = 500  # hard ceiling on n_results when widening adaptively
 _MATCHED_EXCERPT_LEN = 500   # chars of chunk text returned as the match excerpt
@@ -840,49 +961,7 @@ def register_cognition_tools(mcp) -> None:
             {"created": true, ...} or {"error": "..."}
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
-
-        try:
-            et = CognitionEdgeType(edge_type)
-        except ValueError:
-            valid = [e.value for e in CognitionEdgeType if e != CognitionEdgeType.DUPLICATE_OF]
-            return {"error": f"Invalid edge_type '{edge_type}'. Valid: {valid}"}
-
-        if et == CognitionEdgeType.DUPLICATE_OF:
-            return {"error": "duplicate_of edges require merge logic and are not supported here."}
-
-        if from_id == to_id:
-            return {"error": "Self-referencing edges are not allowed"}
-
-        if not storage.has_node(from_id):
-            return {"error": f"Source node '{from_id}' does not exist"}
-        if not storage.has_node(to_id):
-            return {"error": f"Target node '{to_id}' does not exist"}
-
-        # Check if same triple already exists
-        existing = storage.get_successors(from_id, et)
-        if any(tid == to_id for tid, _ in existing):
-            return {"error": f"Edge already exists: {from_id} -[{edge_type}]-> {to_id}"}
-
-        timestamp = datetime.now(UTC).isoformat()
-        edge = CognitionEdge(
-            from_id=from_id,
-            to_id=to_id,
-            edge_type=et,
-            timestamp=timestamp,
-            source=source,
-        )
-        storage.add_edge(edge)
-
-        if reason:
-            logger.info(f"Edge created: {from_id} -[{edge_type}]-> {to_id} (reason: {reason})")
-
-        return {
-            "created": True,
-            "from_id": from_id,
-            "to_id": to_id,
-            "edge_type": edge_type,
-            "timestamp": timestamp,
-        }
+        return _add_edge_core(storage, from_id, to_id, edge_type, reason, source)
 
     @mcp.tool()
     def cognition_add_edges_batch(
@@ -901,76 +980,8 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             {"created": N, "skipped": N, "errors": [...]}
         """
-        import json as _json
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
-
-        try:
-            edge_list = _json.loads(edges)
-        except _json.JSONDecodeError as e:
-            return {"error": f"Invalid JSON: {e}"}
-
-        if not isinstance(edge_list, list):
-            return {"error": "Expected a JSON array of edge objects"}
-
-        if len(edge_list) > 500:
-            return {"error": f"Max 500 edges per batch, got {len(edge_list)}"}
-
-        created = 0
-        skipped = 0
-        errors: list[str] = []
-        seen_triples: set[tuple[str, str, str]] = set()
-
-        for i, e in enumerate(edge_list):
-            fid = e.get("from_id", "")
-            tid = e.get("to_id", "")
-            etype_str = e.get("edge_type", "")
-            src = e.get("source", "batch")
-            triple = (fid, tid, etype_str)
-
-            try:
-                et = CognitionEdgeType(etype_str)
-            except ValueError:
-                errors.append(f"[{i}] Invalid edge_type '{etype_str}'")
-                skipped += 1
-                continue
-            if et == CognitionEdgeType.DUPLICATE_OF:
-                errors.append(f"[{i}] duplicate_of not allowed in batch")
-                skipped += 1
-                continue
-            if fid == tid:
-                errors.append(f"[{i}] Self-reference: {fid}")
-                skipped += 1
-                continue
-            if not storage.has_node(fid):
-                errors.append(f"[{i}] Missing from_id: {fid}")
-                skipped += 1
-                continue
-            if not storage.has_node(tid):
-                errors.append(f"[{i}] Missing to_id: {tid}")
-                skipped += 1
-                continue
-
-            # Check for duplicates (in batch and in graph)
-            if triple in seen_triples:
-                errors.append(f"[{i}] Duplicate in batch: {fid} -[{etype_str}]-> {tid}")
-                skipped += 1
-                continue
-            existing = storage.get_successors(fid, et)
-            if any(t == tid for t, _ in existing):
-                errors.append(f"[{i}] Already exists: {fid} -[{etype_str}]-> {tid}")
-                skipped += 1
-                continue
-
-            seen_triples.add(triple)
-            timestamp = datetime.now(UTC).isoformat()
-            edge = CognitionEdge(
-                from_id=fid, to_id=tid, edge_type=et,
-                timestamp=timestamp, source=src,
-            )
-            storage.add_edge(edge)
-            created += 1
-
-        return {"created": created, "skipped": skipped, "errors": errors[:50]}
+        return _add_edges_batch_core(storage, edges)
 
     @mcp.tool()
     def cognition_get_edgeless_nodes(
