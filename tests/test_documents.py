@@ -2,7 +2,7 @@
 
 from typing import cast
 
-from vibe_cognition.cognition.documents import text_sidecar_path
+from vibe_cognition.cognition.documents import sha256_bytes, text_sidecar_path
 from vibe_cognition.cognition.models import CognitionEdgeType, CognitionNode, CognitionNodeType
 from vibe_cognition.cognition.operations import delete_cognition_node
 from vibe_cognition.cognition.storage import CognitionStorage
@@ -71,7 +71,7 @@ def test_store_reference_and_get_roundtrip(tmp_path):
 
     got = _get_document(s, node_id=res["node_id"])
     assert got["text"] == "extracted text here", "sidecar text not returned"
-    assert got["metadata"]["sha256"] == got["metadata"]["sha256"]
+    assert got["metadata"]["sha256"] == sha256_bytes(b"raw document bytes"), "stored sha != file sha"
     assert got["freshness"] == "unchanged", f"freshness should be unchanged, got {got['freshness']}"
     assert got["metadata"]["mode"] == "reference"
 
@@ -225,3 +225,30 @@ def test_delete_one_twin_keeps_shared_sidecar_until_last_gone(tmp_path):
     assert sidecar.exists(), "shared sidecar purged while a twin still references it (orphaned the twin)"
     delete_cognition_node(s, _NoopEmbed(), b["node_id"])
     assert not sidecar.exists(), "sidecar not purged after the last twin was deleted"
+
+
+def test_delete_document_purges_sidecar_even_when_an_entity_cites_it(tmp_path):
+    """F1 regression: per DESIGN S4 a descriptor ENTITY cites the document's
+    doc:<hash> in its OWN references. Deleting the sole document node must still
+    purge the sidecar — a citing entity is NOT a twin (only another document with
+    the same sha is). The old twin-check used find_nodes_by_ref (any citer) and so
+    leaked the sidecar permanently: no document node remained to ever re-trigger
+    the purge. Asserts sidecar purged, original untouched, entity still present."""
+    s = CognitionStorage(tmp_path / "cog")
+    original = tmp_path / "spec.txt"
+    original.write_bytes(b"contract bytes")
+    res = _store_document(s, title="Spec", document_text="extracted spec text",
+                          context="", author="t", file_path=str(original))
+    doc_ref = res["doc_ref"]
+    # A descriptor entity that cites the document's doc: ref (the intended S4 pattern).
+    s.add_node(_node("dec00100", CognitionNodeType.DECISION, refs=[doc_ref]))
+
+    node = s.get_node(res["node_id"])
+    assert node is not None
+    sidecar = text_sidecar_path(s.cognition_dir, node["metadata"]["sha256"])
+    assert sidecar.exists()
+
+    delete_cognition_node(s, _NoopEmbed(), res["node_id"])
+    assert not sidecar.exists(), "sidecar leaked: a citing entity was wrongly treated as a twin (F1)"
+    assert original.exists(), "delete touched the referenced original file"
+    assert s.has_node("dec00100"), "deleting the document wrongly removed the citing entity"

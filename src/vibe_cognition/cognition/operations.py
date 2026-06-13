@@ -17,6 +17,19 @@ from .storage import CognitionStorage
 logger = logging.getLogger(__name__)
 
 
+def _other_document_has_sha(storage: CognitionStorage, ref: str, sha: str) -> bool:
+    """True if a remaining DOCUMENT node carries ``sha`` (a force_new twin sharing
+    the content-addressed sidecar). Entity/episode nodes that merely cite the
+    doc: ref do NOT count — only another document keeps the sidecar alive."""
+    for nid in storage.find_nodes_by_ref(ref):
+        node = storage.get_node(nid)
+        if (node
+                and node.get("type") == CognitionNodeType.DOCUMENT.value
+                and node.get("metadata", {}).get("sha256") == sha):
+            return True
+    return False
+
+
 def delete_cognition_node(
     storage: CognitionStorage,
     embed_storage: Any,
@@ -71,10 +84,17 @@ def delete_cognition_node(
     except Exception as e:
         logger.warning(f"ChromaDB delete failed for {node_id}: {e}")
 
-    # Purge the text sidecar (a managed artifact) iff no remaining node references
-    # the same content. NEVER touches the referenced original file — reference-mode
-    # deletion only reclaims what the server itself wrote.
-    if doc_sha and not storage.find_nodes_by_ref(doc_ref(doc_sha)):
+    # Purge the text sidecar (a managed artifact) iff no OTHER document node still
+    # carries the same content. A "twin" is specifically another DOCUMENT node with
+    # the same sha256 (force_new can mint these) — NOT any node merely citing the
+    # doc: ref: per DESIGN §1/§9 S4 the intended pattern is descriptor ENTITIES
+    # citing doc:<hash> in their references, and counting those as twins would leak
+    # the sidecar forever (no document node remains to ever re-trigger the purge).
+    # This mirrors the dedup filter in _store_document (type==document AND sha
+    # match); the just-deleted id returns None from get_node, so it self-excludes.
+    # NEVER touches the referenced original file — deletion reclaims only what the
+    # server itself wrote.
+    if doc_sha and not _other_document_has_sha(storage, doc_ref(doc_sha), doc_sha):
         try:
             remove_text_sidecar(storage.cognition_dir, doc_sha)
         except OSError as e:
