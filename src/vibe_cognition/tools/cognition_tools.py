@@ -75,7 +75,11 @@ def _record_node(
         timestamp=timestamp,
         author=author,
     )
-    storage.add_node(node)
+    # WP-ID: mint a collision-free id under the lock (global fix). Rebind node_id to
+    # the returned id BEFORE the embedding upsert + edges + result — else a salted node
+    # lands in the graph under the minted id while its vector lands under the stale id,
+    # leaving it silently unsearchable (A1).
+    node_id = storage.add_node(node, mint_unique_id=True)
 
     # Embed and upsert to ChromaDB (skip if model not loaded yet — startup sync catches it later)
     embedding_ready = lc.get("embedding_ready")
@@ -545,19 +549,9 @@ def _store_document(
         context_list += [r.strip() for r in references.split(",") if r.strip()]
 
     timestamp = datetime.now(UTC).isoformat()
-    # generate_node_id hashes type:summary:timestamp. The Windows clock resolution
-    # is ~15 ms, so two stores of the same title within one tick (the force_new
-    # twin case, or just two docs sharing a title) hash to the SAME id — and
-    # add_node would then silently OVERWRITE the first node. Salt the summary until
-    # the id is free so each store gets a distinct node (the salt only feeds the id
-    # hash; the stored summary stays the title).
+    # WP-ID: id-collision minting is now unified into storage.add_node (mint_unique_id);
+    # the document-scoped salt loop here is removed (one mechanism — ledger 11).
     node_id = generate_node_id(CognitionNodeType.DOCUMENT.value, title, timestamp)
-    salt = 0
-    while storage.has_node(node_id):
-        salt += 1
-        node_id = generate_node_id(
-            CognitionNodeType.DOCUMENT.value, f"{title}#{salt}", timestamp
-        )
     metadata: dict[str, Any] = {
         "filename": filename,
         "mime": mime or "",
@@ -582,7 +576,10 @@ def _store_document(
         author=author,
         metadata=metadata,
     )
-    storage.add_node(node)
+    # WP-ID: mint a collision-free id under the lock. Rebind node_id to the return
+    # BEFORE edges + embedding — else the doc node vector and every <id>#chunk-N vector
+    # land under the stale id → unsearchable document + orphaned chunk vectors (A2).
+    node_id = storage.add_node(node, mint_unique_id=True)
     storage.create_deterministic_edges(node_id)
     # WP-D2: embed the document (node vector + sidecar chunks) so it's searchable.
     # Skipped if embedding deps absent (storage-only caller, or model still loading) —
