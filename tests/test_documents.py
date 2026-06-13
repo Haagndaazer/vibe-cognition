@@ -819,16 +819,18 @@ def test_search_dedupes_chunks_to_one_node_with_excerpt(tmp_path):
     assert doc_hit["matched_excerpt"] == "alpha chunk body", "best-chunk excerpt not carried"
 
 
-def test_overquery_k_returns_distinct_nodes_under_chunk_flood(tmp_path):
-    """Over-query k sufficiency (B3): a document with many chunks all out-ranking
-    other nodes must not starve the result set — limit=2 still returns 2 DISTINCT
-    nodes. Fails-before with k=1 (vector_search returns only same-doc chunks → 1)."""
+def test_adaptive_overquery_returns_distinct_nodes_past_starve_boundary(tmp_path):
+    """B3 at the REAL boundary: a document with MORE than limit*k chunks (12 > 2*5),
+    all out-ranking another live node, must STILL return 2 distinct nodes — the
+    adaptive widen keeps querying past the initial window. A fixed limit*k=10 window
+    would see only that doc's chunks and starve the second node (recall miss). The
+    prior 8-chunk test passed by luck (8 < 10); this exercises the starve threshold."""
     s = CognitionStorage(tmp_path / "cog")
     embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
     s.add_node(_node("docaaaa2", CognitionNodeType.DOCUMENT, summary="doc A"))
     s.add_node(_node("decbbbb2", CognitionNodeType.DECISION, summary="decision B"))
     q = [1.0, 0.0, 0.0]
-    for i in range(8):  # 8 chunks all at q, out-ranking decB
+    for i in range(12):  # 12 chunks (> limit*k = 10) all at q, out-ranking decB
         embed.upsert_embedding(f"docaaaa2#chunk-{i}", [1.0, 0.0, 0.0],
                                {"node_id": "docaaaa2", "entity_type": "document", "is_chunk": True},
                                document=f"chunk {i}")

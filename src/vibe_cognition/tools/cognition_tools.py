@@ -112,8 +112,9 @@ def _record_node(
     return result
 
 
-_SEARCH_OVERQUERY_K = 5   # over-query factor so chunks of one doc don't crowd others
-_MATCHED_EXCERPT_LEN = 500  # chars of chunk text returned as the match excerpt
+_SEARCH_OVERQUERY_K = 5     # initial over-query factor (chunks of one doc crowd others)
+_SEARCH_OVERQUERY_CAP = 500  # hard ceiling on n_results when widening adaptively
+_MATCHED_EXCERPT_LEN = 500   # chars of chunk text returned as the match excerpt
 
 
 def _format_search_results(
@@ -171,19 +172,34 @@ def _search_cognition(
 ) -> dict[str, Any]:
     """Semantic search core (testable; cognition_search is the thin ctx wrapper).
 
-    Embeds the query, OVER-queries Chroma (limit×k so multiple chunks of one document
-    don't crowd out other nodes), then dedupes-to-best-hit-per-node + drops graph-
-    absent ghosts (N1) via _format_search_results. Keeping vector_search + the filter
-    together here lets the cross-process ghost test exercise the REAL search path
-    end-to-end."""
+    Embeds the query, ADAPTIVELY over-queries Chroma, then dedupes-to-best-hit-per-
+    node + drops graph-absent ghosts (N1) via _format_search_results. Keeping
+    vector_search + the filter together here lets the cross-process ghost test
+    exercise the REAL search path end-to-end.
+
+    Adaptive over-query (peer-review B3): a FIXED limit×k cannot guarantee `limit`
+    distinct nodes — a single document can yield more than limit×k chunks and starve
+    other live nodes. So widen n_results (doubling) until we have `limit` distinct
+    live nodes, OR Chroma is exhausted (fewer hits than asked), OR a cap is hit.
+    Doubling keeps round-trips logarithmic. The single-document-with->cap-chunks case
+    is the only residual (capped), and only degrades recall (never serves a wrong or
+    deleted node — the dedupe + N1 filter are exact)."""
     limit = min(limit, 50)
     query_embedding = generator.generate_query_embedding(query)
-    results = embedding_storage.vector_search(
-        query_embedding=query_embedding,
-        limit=limit * _SEARCH_OVERQUERY_K,
-        entity_type=node_type,
-    )
-    formatted = _format_search_results(results, storage, limit)
+    n = max(limit * _SEARCH_OVERQUERY_K, limit, 1)
+    formatted: list[dict[str, Any]] = []
+    while True:
+        results = embedding_storage.vector_search(
+            query_embedding=query_embedding,
+            limit=n,
+            entity_type=node_type,
+        )
+        formatted = _format_search_results(results, storage, limit)
+        # Stop when we have enough distinct nodes, Chroma is exhausted (returned
+        # fewer than we asked), or we hit the widening cap.
+        if len(formatted) >= limit or len(results) < n or n >= _SEARCH_OVERQUERY_CAP:
+            break
+        n = min(n * 2, _SEARCH_OVERQUERY_CAP)
     return {"query": query, "results": formatted, "count": len(formatted)}
 
 

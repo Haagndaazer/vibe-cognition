@@ -157,6 +157,14 @@ async def search(request):
         # dashboard would serve verbatim deleted client-document chunk text. Same
         # shared predicate the MCP search uses; raw {_id, **metadata, score} shape
         # preserved (the dashboard JS consumes it, unlike the MCP formatter).
+        #
+        # SCOPE (deferred to WP-D4, not a silent regression): document hits surface
+        # here as un-deduped chunk rows (_id == "<node>#chunk-N"), so clicking one
+        # won't navigate (no graph node by that id) and the row lacks node metadata.
+        # SAFETY is intact (no deleted text served); only dashboard document-search
+        # NAVIGATION is incomplete. Dedupe-to-node + node hydration is WP-D4's cluster
+        # (the raw-shape contract here is deliberate); the MCP cognition_search surface
+        # IS deduped to nodes today.
         return [h for h in hits if cognition_storage.search_hit_is_live(h.get("_id") or "")]
 
     results = await run_in_threadpool(_do_search)
