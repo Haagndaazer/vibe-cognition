@@ -52,11 +52,10 @@ def _record_node(
     references: str | None = None,
 ) -> dict[str, Any]:
     """Shared logic for cognition_record tool."""
-    storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
-    embedding_storage: ChromaDBStorage = ctx.request_context.lifespan_context[
-        "cognition_embedding_storage"
-    ]
-    generator: EmbeddingGenerator = ctx.request_context.lifespan_context["embedding_generator"]
+    lc = get_lifespan(ctx)
+    storage: CognitionStorage = lc["cognition_storage"]
+    embedding_storage: ChromaDBStorage = lc["cognition_embedding_storage"]
+    generator: EmbeddingGenerator = lc["embedding_generator"]
 
     # Parse comma-separated strings into lists
     context_list = [c.strip() for c in context.split(",") if c.strip()] if context else []
@@ -79,8 +78,8 @@ def _record_node(
     storage.add_node(node)
 
     # Embed and upsert to ChromaDB (skip if model not loaded yet — startup sync catches it later)
-    embedding_ready = ctx.request_context.lifespan_context.get("embedding_ready")
-    if embedding_ready and embedding_ready.is_set() and not ctx.request_context.lifespan_context.get("embedding_error"):
+    embedding_ready = lc.get("embedding_ready")
+    if embedding_ready and embedding_ready.is_set() and not lc.get("embedding_error"):
         embed_text = f"{node_type.value}: {summary}\n{detail}"
         embedding = generator.generate_query_embedding(embed_text)
         metadata: dict[str, Any] = {
@@ -739,7 +738,7 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             Nested structure showing the reasoning chain
         """
-        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         return get_reasoning_chain(storage, node_id, max_depth, direction)
 
     @mcp.tool()
@@ -763,7 +762,7 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             Matching cognition nodes sorted by timestamp (newest first)
         """
-        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
 
         nt = None
         if node_type:
@@ -817,7 +816,7 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             {"created": true, ...} or {"error": "..."}
         """
-        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
 
         try:
             et = CognitionEdgeType(edge_type)
@@ -880,7 +879,7 @@ def register_cognition_tools(mcp) -> None:
             {"created": N, "skipped": N, "errors": [...]}
         """
         import json as _json
-        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
 
         try:
             edge_list = _json.loads(edges)
@@ -969,7 +968,7 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             {"nodes": [...], "count": N, "total_edgeless": N}
         """
-        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         all_nodes = storage.get_all_nodes()
 
         edgeless = []
@@ -1007,7 +1006,7 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             {"nodes": [...], "count": N, "total_uncurated": N}
         """
-        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         nt = CognitionNodeType(node_type) if node_type else None
         capped = min(limit, 500)
 
@@ -1038,7 +1037,7 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             {"marked": N, "not_found": [...]}
         """
-        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         ids = [nid.strip() for nid in node_ids.split(",") if nid.strip()]
 
         marked = 0
@@ -1071,7 +1070,7 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             {"node_id": "...", "incoming": [...], "outgoing": [...]}
         """
-        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
 
         if not storage.has_node(node_id):
             return {"error": f"Node '{node_id}' does not exist"}
@@ -1129,7 +1128,7 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             {"removed": true} or {"error": "..."}
         """
-        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
 
         try:
             et = CognitionEdgeType(edge_type)
@@ -1170,10 +1169,9 @@ def register_cognition_tools(mcp) -> None:
             on success, where removed_edges lists each orphaned edge
             ({"from", "to", "type"}); or {"error": "..."} if the node does not exist.
         """
-        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
-        embed_storage: ChromaDBStorage = ctx.request_context.lifespan_context[
-            "cognition_embedding_storage"
-        ]
+        lc = get_lifespan(ctx)
+        storage: CognitionStorage = lc["cognition_storage"]
+        embed_storage: ChromaDBStorage = lc["cognition_embedding_storage"]
 
         result = delete_cognition_node(storage, embed_storage, node_id)
         if result is None:
@@ -1195,6 +1193,6 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             {"nodes_before", "edges_before", "nodes_after", "edges_after"}
         """
-        storage: CognitionStorage = ctx.request_context.lifespan_context["cognition_storage"]
+        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         return storage.reload()
 

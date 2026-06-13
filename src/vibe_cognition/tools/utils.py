@@ -18,7 +18,7 @@ def get_lifespan(ctx: Context) -> dict[str, Any]:
 
 def require_embeddings(ctx: Context) -> dict[str, Any] | None:
     """Check if the embedding model is loaded. Returns error dict if not ready, None if ready."""
-    lc = ctx.request_context.lifespan_context
+    lc = get_lifespan(ctx)
     event = lc.get("embedding_ready")
     if event is None or not event.is_set():
         return {

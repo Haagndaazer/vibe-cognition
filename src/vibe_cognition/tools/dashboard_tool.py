@@ -8,6 +8,7 @@ from typing import Any
 from fastmcp import Context
 
 from ..dashboard.server import start_dashboard
+from .utils import get_lifespan
 
 logger = logging.getLogger(__name__)
 
@@ -37,5 +38,5 @@ def register_dashboard_tool(mcp) -> None:
             Dict with `url`, `status` ("running" or "already_running"),
             `embedding_ready` (bool), and `embedding_error` (string or null).
         """
-        lc = ctx.request_context.lifespan_context
+        lc = get_lifespan(ctx)
         return start_dashboard(lc, port=port, open_browser=open_browser)
