@@ -237,6 +237,37 @@ class TestSearch:
         assert r.status_code == 200
         assert r.json()["results"] == [], "dashboard served a cross-process document-chunk ghost"
 
+    def test_search_dedupes_document_chunks_to_navigable_node(self, client):
+        """WP-D4 D-6: document chunk hits (<node>#chunk-N) collapse to ONE row keyed on
+        the navigable NODE id, hydrated with the node's summary, entity_type preserved
+        (so renderSearchResults navigates + labels with no JS change). Fails-before: raw
+        chunk rows with #chunk- ids that don't navigate."""
+        c, lc = client
+        lc["embedding_generator"] = _FakeEmbeddingGenerator()
+        lc["embedding_ready"].set()
+        lc["cognition_storage"].add_node(CognitionNode(
+            id="docx0001", type=CognitionNodeType.DOCUMENT, summary="Acme spec v2",
+            detail="d", context=[], references=["doc:abc123abc123"], severity=None,
+            timestamp=datetime.now(UTC).isoformat(), author="t",
+            metadata={"sha256": "abc123abc123def", "mode": "reference"},
+        ))
+        lc["cognition_embedding_storage"]._search_results = [
+            {"_id": "docx0001#chunk-0", "entity_type": "document", "score": 0.95,
+             "matched_text": "the matched chunk body"},
+            {"_id": "docx0001#chunk-1", "entity_type": "document", "score": 0.90,
+             "matched_text": "another chunk"},
+        ]
+        r = c.post("/api/search", json={"query": "residency"}, headers=_hdr())
+        assert r.status_code == 200
+        results = r.json()["results"]
+        assert len(results) == 1, f"chunks not deduped to one node: {results}"
+        row = results[0]
+        assert row["_id"] == "docx0001", "row not keyed on the navigable node id"
+        assert row["summary"] == "Acme spec v2", "summary not hydrated from the graph node"
+        assert row["entity_type"] == "document", "entity_type not preserved (label would blank)"
+        assert row["matched_excerpt"] == "the matched chunk body", "best-chunk excerpt not carried"
+        assert "#chunk-" not in row["_id"], "non-navigable chunk id leaked"
+
     def test_search_missing_query(self, client):
         c, _ = client
         r = c.post("/api/search", json={"query": ""}, headers=_hdr())

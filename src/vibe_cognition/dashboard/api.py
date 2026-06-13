@@ -147,25 +147,44 @@ async def search(request):
 
     def _do_search():
         vector = generator.generate_query_embedding(query)
+        # Over-query so the many chunks of one document don't crowd out other nodes
+        # before dedupe (mirrors the MCP search rationale).
         hits = embed_storage.vector_search(
             query_embedding=vector,
-            limit=limit,
+            limit=limit * 5,
             entity_type=entity_type,
         )
-        # N1 ghost-search fix (WP-D2): drop hits whose node was deleted cross-process
-        # but never un-embedded — D2 makes documents searchable, so an un-filtered
-        # dashboard would serve verbatim deleted client-document chunk text. Same
-        # shared predicate the MCP search uses; raw {_id, **metadata, score} shape
-        # preserved (the dashboard JS consumes it, unlike the MCP formatter).
-        #
-        # SCOPE (deferred to WP-D4, not a silent regression): document hits surface
-        # here as un-deduped chunk rows (_id == "<node>#chunk-N"), so clicking one
-        # won't navigate (no graph node by that id) and the row lacks node metadata.
-        # SAFETY is intact (no deleted text served); only dashboard document-search
-        # NAVIGATION is incomplete. Dedupe-to-node + node hydration is WP-D4's cluster
-        # (the raw-shape contract here is deliberate); the MCP cognition_search surface
-        # IS deduped to nodes today.
-        return [h for h in hits if cognition_storage.search_hit_is_live(h.get("_id") or "")]
+        # N1 ghost-search SAFETY (WP-D2): drop hits whose node was deleted cross-process
+        # but never un-embedded (shared search_hit_is_live predicate, ledger 11) — else
+        # the dashboard would serve verbatim deleted client-document chunk text.
+        # D-6 NAVIGATION (WP-D4): dedupe document chunk hits (<node>#chunk-N) to the best
+        # (first, score-desc) hit PER NODE, rewrite _id to the navigable NODE id, and
+        # hydrate `summary` from the graph (chunk metadata has none). The raw
+        # {_id, **metadata, score} shape is preserved — entity_type stays as the hit
+        # carries it (NOT overwritten with the graph node's `type`), so renderSearchResults
+        # navigates and labels correctly with no JS change.
+        out: list[dict] = []
+        seen: set[str] = set()
+        for h in hits:
+            raw_id = h.get("_id") or ""
+            if not cognition_storage.search_hit_is_live(raw_id):
+                continue
+            node_id = raw_id.split("#chunk-")[0]
+            if node_id in seen:
+                continue
+            seen.add(node_id)
+            row = dict(h)
+            row["_id"] = node_id
+            node = cognition_storage.get_node(node_id)
+            if node:
+                row["summary"] = node.get("summary") or row.get("summary")
+            matched = h.get("matched_text")
+            if matched:
+                row["matched_excerpt"] = matched[:500]
+            out.append(row)
+            if len(out) >= limit:
+                break
+        return out
 
     results = await run_in_threadpool(_do_search)
     return JSONResponse({"results": results})
