@@ -194,7 +194,7 @@ def test_update_node_deferred_when_embeddings_not_ready(tmp_path):
 def test_update_node_whitelist_leaves_structural_fields_intact(tmp_path):
     """The whitelist: a narrative edit must NOT touch id/type/references/metadata
     /timestamp (editing those would corrupt a document's sha/mode ref or the part_of
-    index). A context-only edit needs no re-embed (text unchanged)."""
+    index)."""
     s = CognitionStorage(tmp_path / ".cognition")
     embed = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
     n = CognitionNode(
@@ -206,10 +206,41 @@ def test_update_node_whitelist_leaves_structural_fields_intact(tmp_path):
 
     out = _update_node(s, embed, _gen(), node_id="n1", embeddings_ready=True, context="new")
     assert out.get("context") == ["new"]
-    assert out.get("reembed") == "not_needed", "context-only edit must not re-embed"
     assert out.get("references") == ["commit:abc"], "references must be untouched"
     assert out.get("metadata") == {"sha256": "deadbeef"}, "metadata must be untouched"
     assert out.get("type") == CognitionNodeType.DECISION.value
+
+
+def test_update_node_reembeds_metadata_on_context_or_severity_edit(tmp_path):
+    """Vince's gap: context + severity are stored in the Chroma METADATA that
+    _format_search_results SURFACES in every hit — so a context/severity-only edit
+    must refresh that metadata, not just summary/detail. The match vector is unchanged
+    (same embed text) but the upsert refreshes the displayed metadata. Fails-before
+    (re-embed gated on summary/detail only): a context+severity edit leaves search
+    results showing the OLD values — the WP's own search-staleness, on the metadata."""
+    s = CognitionStorage(tmp_path / ".cognition")
+    embed = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
+    gen = _gen()
+    node = CognitionNode(
+        id="n1", type=CognitionNodeType.INCIDENT, summary="alpha incident", detail="body",
+        context=["ctx-old"], references=[], severity="low",
+        timestamp="2026-06-13T00:00:00+00:00", author="t",
+    )
+    s.add_node(node)
+    _embed_entity_node(embed, gen, node)
+
+    before = next(r for r in _search_cognition(s, embed, gen, "alpha")["results"] if r["id"] == "n1")
+    assert before["severity"] == "low"
+    assert "ctx-old" in (before.get("context") or "")
+
+    out = _update_node(
+        s, embed, gen, node_id="n1", embeddings_ready=True, severity="high", context="ctx-new"
+    )
+    assert out.get("reembed") == "done"
+
+    after = next(r for r in _search_cognition(s, embed, gen, "alpha")["results"] if r["id"] == "n1")
+    assert after["severity"] == "high", "stale severity surfaced after a severity edit"
+    assert "ctx-new" in (after.get("context") or ""), "stale context surfaced after a context edit"
 
 
 def test_update_node_missing_and_empty(tmp_path):

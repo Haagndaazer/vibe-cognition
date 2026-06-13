@@ -730,30 +730,34 @@ def _update_node(
 
     storage.update_node(node_id, **updates)
 
-    # Re-embed only when the SEARCHABLE text (summary/detail) changed — context and
-    # severity ride in metadata but don't alter the embed text, so they need no new
-    # vector. upsert overwrites by node_id, so the refreshed vector replaces the old.
-    reembed = "not_needed"
-    if "summary" in updates or "detail" in updates:
-        if embeddings_ready:
-            post = storage.get_node(node_id)
-            assert post is not None  # just updated it; cannot vanish under the lock
-            cnode = CognitionNode(
-                id=node_id,
-                type=CognitionNodeType(post["type"]),
-                summary=post["summary"],
-                detail=post["detail"],
-                context=post.get("context", []),
-                references=post.get("references", []),
-                severity=post.get("severity"),
-                timestamp=post["timestamp"],
-                author=post["author"],
-                metadata=post.get("metadata", {}),
-            )
-            _embed_entity_node(embedding_storage, generator, cnode)
-            reembed = "done"
-        else:
-            reembed = "deferred"
+    # Re-embed on ANY whitelisted change. summary/detail change the searchable VECTOR;
+    # context/severity don't, but they ARE stored in the Chroma metadata that
+    # _format_search_results surfaces in every hit — so a context/severity-only edit
+    # would otherwise leave search results DISPLAYING the old values (the same silent
+    # search-staleness this tool exists to kill). For such an edit _embed_entity_node
+    # regenerates an identical vector (the embed text is unchanged) but refreshes the
+    # metadata via the same upsert — negligible cost on a rare path. If the model isn't
+    # ready, defer (the vector/metadata stay stale until a future re-embed — rare, an
+    # edit needs a loaded model anyway).
+    if embeddings_ready:
+        post = storage.get_node(node_id)
+        assert post is not None  # just updated it; cannot vanish under the lock
+        cnode = CognitionNode(
+            id=node_id,
+            type=CognitionNodeType(post["type"]),
+            summary=post["summary"],
+            detail=post["detail"],
+            context=post.get("context", []),
+            references=post.get("references", []),
+            severity=post.get("severity"),
+            timestamp=post["timestamp"],
+            author=post["author"],
+            metadata=post.get("metadata", {}),
+        )
+        _embed_entity_node(embedding_storage, generator, cnode)
+        reembed = "done"
+    else:
+        reembed = "deferred"
 
     result = _get_node(storage, node_id)
     result["reembed"] = reembed
@@ -970,10 +974,11 @@ def register_cognition_tools(mcp) -> None:
         reference→part_of index, the minted id). To change those, the node should be
         re-created.
 
-        When `summary` or `detail` changes and the embedding model is loaded, the
-        node's search vector is RE-EMBEDDED so `cognition_search` reflects the edit
-        (otherwise search would keep serving the pre-edit text). The result carries
-        `reembed`: "done" | "deferred" (model still loading) | "not_needed".
+        When any editable field changes and the embedding model is loaded, the node
+        is RE-EMBEDDED so `cognition_search` reflects the edit — both the match vector
+        (summary/detail) and the result metadata it surfaces (context/severity).
+        Otherwise search would keep serving the pre-edit values. The result carries
+        `reembed`: "done" | "deferred" (model still loading).
 
         Note: re-embedding a DOCUMENT node refreshes its node-level vector (its chunk
         vectors, derived from the sidecar, are untouched); this is safe but means an
