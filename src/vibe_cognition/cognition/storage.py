@@ -444,6 +444,24 @@ class CognitionStorage:
         uncurated.sort(key=lambda n: n.get("timestamp", ""))
         return uncurated[:min(limit, 500)]
 
+    def count_uncurated_nodes(self, node_type: CognitionNodeType | None = None) -> int:
+        """Count uncurated nodes with NO cap — the honest backlog total.
+
+        ``get_uncurated_nodes`` caps the returned LIST at 500; callers that also
+        derived the total from that list under-reported any backlog over 500 (T-2).
+        Mirrors the get filter EXACTLY: uncurated == lacks ``curated_by_skill_at``,
+        with the same optional type filter.
+        """
+        with self._synced():
+            count = 0
+            for _node_id, data in self._graph.nodes(data=True):
+                if node_type and data.get("type") != node_type.value:
+                    continue
+                if data.get("curated_by_skill_at") is not None:
+                    continue
+                count += 1
+            return count
+
     def mark_curated_by_skill(self, node_id: str) -> bool:
         """Mark a node as reviewed by the curate skill.
 

@@ -5,6 +5,8 @@ from typing import Any
 
 from fastmcp import Context
 
+from .utils import get_lifespan
+
 logger = logging.getLogger(__name__)
 
 
@@ -24,7 +26,7 @@ def register_service_tools(mcp) -> None:
         Returns:
             Server status including graph stats and embedding readiness
         """
-        lc = ctx.request_context.lifespan_context
+        lc = get_lifespan(ctx)
         config = lc.get("config")
         cognition_storage = lc.get("cognition_storage")
         cognition_embedding_storage = lc.get("cognition_embedding_storage")
