@@ -26,9 +26,16 @@ def get_reasoning_chain(
     Returns:
         Nested dictionary representing the reasoning tree
     """
-    visited: set[str] = set()
-
-    def traverse(nid: str, depth: int) -> dict[str, Any]:
+    def traverse(nid: str, depth: int, path: set[str]) -> dict[str, Any]:
+        # C-7: cycle detection is PATH-based — `path` is the set of ancestors on the
+        # current root→node path, not a traversal-global visited set. A node is a
+        # cycle only if it is one of its own ancestors (`nid in path`). A global
+        # visited set (never popped) wrongly flagged a re-convergent DAG node (a
+        # diamond A→B→D, A→C→D) as a cycle on the second arm. Each recursion passes a
+        # fresh `path | {nid}`, so siblings don't see each other's nodes and no pop is
+        # needed. Trade-off: a re-convergent node is now fully re-expanded once per
+        # path — worst case O(b^max_depth) tree nodes (b = avg LED_TO out-degree),
+        # bounded by max_depth (default 5; the tool exposes it to callers).
         node_data = storage.get_node(nid)
         result: dict[str, Any] = {
             "id": nid,
@@ -38,28 +45,28 @@ def get_reasoning_chain(
             "timestamp": node_data.get("timestamp", "") if node_data else "",
         }
 
-        if depth > max_depth or nid in visited:
+        if depth > max_depth or nid in path:
             result["truncated"] = depth > max_depth
-            result["cycle"] = nid in visited
+            result["cycle"] = nid in path
             result["chain"] = []
             return result
 
-        visited.add(nid)
         result["truncated"] = False
         result["cycle"] = False
+        next_path = path | {nid}
 
         chain = []
         if direction == "outgoing":
             for target_id, _ in storage.get_successors(nid, CognitionEdgeType.LED_TO):
-                chain.append(traverse(target_id, depth + 1))
+                chain.append(traverse(target_id, depth + 1, next_path))
         else:
             for source_id, _ in storage.get_predecessors(nid, CognitionEdgeType.LED_TO):
-                chain.append(traverse(source_id, depth + 1))
+                chain.append(traverse(source_id, depth + 1, next_path))
 
         result["chain"] = chain
         return result
 
-    return traverse(node_id, 0)
+    return traverse(node_id, 0, set())
 
 
 def get_superseded_chain(

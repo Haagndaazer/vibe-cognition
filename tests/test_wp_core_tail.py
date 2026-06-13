@@ -12,6 +12,7 @@ from vibe_cognition.cognition import (
     CognitionNode,
     CognitionNodeType,
     CognitionStorage,
+    get_reasoning_chain,
 )
 
 
@@ -159,3 +160,69 @@ def test_c6_steady_state_self_replay_no_false_rehydrate(tmp_path):
     assert s._offset == len(data), "offset did not reach EOF after steady-state self-replay"
     assert s._journal_hasher.digest() == hashlib.sha256(data).digest(), "C-3 prefix-hash diverged"
     assert s.graph.number_of_nodes() == 2, "self-replay duplicated or dropped a node"
+
+
+# --- C-7: get_reasoning_chain — diamonds are not cycles ----------------------
+
+def _child(node, child_id):
+    for c in node.get("chain", []):
+        if c["id"] == child_id:
+            return c
+    return None
+
+
+def test_c7_diamond_reconvergence_not_flagged_as_cycle(tmp_path):
+    """A diamond A→B→D and A→C→D is a re-convergent DAG, NOT a cycle. With path-based
+    detection both arms' D must be expanded with cycle=False. Fails-before (global
+    `visited`, never popped): whichever arm is traversed second sees D already visited
+    and flags it cycle=true."""
+    s = CognitionStorage(tmp_path / ".cognition")
+    for nid in ("A", "B", "C", "D"):
+        s.add_node(_node(nid))
+    s.add_edge(_edge("A", "B"))
+    s.add_edge(_edge("A", "C"))
+    s.add_edge(_edge("B", "D"))
+    s.add_edge(_edge("C", "D"))
+
+    tree = get_reasoning_chain(s, "A", max_depth=5, direction="outgoing")
+    b, c = _child(tree, "B"), _child(tree, "C")
+    assert b is not None and c is not None
+    d_under_b, d_under_c = _child(b, "D"), _child(c, "D")
+    assert d_under_b is not None and d_under_c is not None, "D missing on a diamond arm"
+    assert d_under_b["cycle"] is False and d_under_c["cycle"] is False, (
+        "diamond reconvergence falsely flagged as a cycle"
+    )
+
+
+def test_c7_true_cycle_still_flagged(tmp_path):
+    """A→B→A is a real cycle — the A reached under B (an ancestor on the path) must
+    still be cycle=true. Regression guard (green before and after the fix)."""
+    s = CognitionStorage(tmp_path / ".cognition")
+    for nid in ("A", "B"):
+        s.add_node(_node(nid))
+    s.add_edge(_edge("A", "B"))
+    s.add_edge(_edge("B", "A"))
+
+    tree = get_reasoning_chain(s, "A", max_depth=5, direction="outgoing")
+    b = _child(tree, "B")
+    assert b is not None
+    a_under_b = _child(b, "A")
+    assert a_under_b is not None and a_under_b["cycle"] is True, "true cycle no longer flagged"
+
+
+def test_c7_truncation_past_max_depth(tmp_path):
+    """Depth truncation is independent of cycle detection — a chain deeper than
+    max_depth still truncates. Regression guard."""
+    s = CognitionStorage(tmp_path / ".cognition")
+    ids = ["A", "B", "C", "D"]
+    for nid in ids:
+        s.add_node(_node(nid))
+    for a, b in zip(ids, ids[1:], strict=False):
+        s.add_edge(_edge(a, b))
+
+    tree = get_reasoning_chain(s, "A", max_depth=2, direction="outgoing")
+    node = tree
+    for _ in range(3):  # A(0) → B(1) → C(2) → D(3, beyond max_depth)
+        assert node.get("chain"), f"chain ended early at {node['id']}"
+        node = node["chain"][0]
+    assert node["id"] == "D" and node["truncated"] is True, "deep node not truncated past max_depth"
