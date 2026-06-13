@@ -773,6 +773,22 @@ class CognitionStorage:
     def _append_journal(self, action: str, data: dict[str, Any]) -> None:
         """Append a single JSON line to the journal file.
 
+        C-6 — DELIBERATELY does NOT advance ``self._offset`` / ``self._journal_hasher``
+        for the bytes it writes. This process re-reads its own appended line on the
+        next ``_catch_up`` and replays it idempotently. That self-replay is the source
+        of the "+N entries" catch-up log (reworded to not imply a remote write), but
+        re-reading from disk is what keeps the byte-offset/prefix-hash invariant (C-3)
+        correct WITHOUT this process having to know where its bytes landed — and it
+        cannot know: the in-process RLock and the journal_io append lock are DIFFERENT
+        locks, so another process can append between this op's ``_catch_up`` and this
+        ``append_journal_line``. Our bytes therefore need not land at ``self._offset``
+        (un-replayed remote bytes may sit in front), so advancing the offset by
+        ``len(our_blob)`` would point it into the wrong place and corrupt the prefix
+        hash → a spurious full re-hydrate. (A ``_pending_self_appends`` counter to
+        suppress the log was considered and rejected: it would mis-attribute under the
+        very same interleave, so it is no safer.) Idempotent replay makes the re-read a
+        no-op convergence either way.
+
         Args:
             action: The action type (add_node, add_edge, update_node)
             data: The action payload
@@ -879,8 +895,12 @@ class CognitionStorage:
                 logger.warning(f"Skipping malformed journal line: {e}")
 
         if count:
+            # C-6: +N includes THIS process's own just-appended lines re-read from
+            # disk (appends don't advance the offset — see _append_journal), not only
+            # other processes' writes. Worded neutrally so it doesn't imply remote origin.
             logger.info(
-                f"Cognition graph caught up: +{count} entries, "
+                f"Cognition graph replayed +{count} journal entries "
+                f"(includes this process's own appends): "
                 f"{self._graph.number_of_nodes()} nodes, "
                 f"{self._graph.number_of_edges()} edges"
             )

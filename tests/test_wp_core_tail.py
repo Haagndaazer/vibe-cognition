@@ -130,3 +130,32 @@ def test_remove_node_journal_first_replay_does_not_resurrect(tmp_path):
 
     s2 = CognitionStorage(cog)
     assert not s2.has_node("n1"), "fresh replay disagrees on the removal"
+
+
+# --- C-6: self-replay is stable; appends deliberately don't advance the offset ---
+
+def test_c6_steady_state_self_replay_no_false_rehydrate(tmp_path):
+    """C-6 (guard, no behavioral delta): because appends don't advance the offset, a
+    write + forced self-catch_up re-reads our own line idempotently. In STEADY STATE
+    (offset > 0) this must NOT trigger a spurious re-hydrate, must land the offset at
+    EOF, must keep the C-3 prefix-hash matching the whole file, and must not dup nodes.
+
+    SINGLE-PROCESS ONLY: `_offset == file size` holds because there is no concurrent
+    appender. Do NOT strengthen this into a cross-process test — the whole C-6 point
+    is that offset != our-bytes under concurrency."""
+    import hashlib
+
+    cog = tmp_path / ".cognition"
+    s = CognitionStorage(cog)
+    s.add_node(_node("n1"))
+    s.get_all_nodes()  # first catch_up from offset 0 (rehydrate-from-top) → offset = EOF
+
+    graph_obj = s.graph  # identity sentinel: _rehydrate_reset() would replace it
+    s.add_node(_node("n2"))  # second append; offset now behind this line
+    s.get_all_nodes()  # STEADY-STATE self-replay (offset > 0, prefix-hash path)
+
+    assert s.graph is graph_obj, "steady-state self-replay triggered a spurious re-hydrate"
+    data = s._journal_path.read_bytes()
+    assert s._offset == len(data), "offset did not reach EOF after steady-state self-replay"
+    assert s._journal_hasher.digest() == hashlib.sha256(data).digest(), "C-3 prefix-hash diverged"
+    assert s.graph.number_of_nodes() == 2, "self-replay duplicated or dropped a node"
