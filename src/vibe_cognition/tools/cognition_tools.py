@@ -166,7 +166,19 @@ def _store_document(
         context_list += [r.strip() for r in references.split(",") if r.strip()]
 
     timestamp = datetime.now(UTC).isoformat()
+    # generate_node_id hashes type:summary:timestamp. The Windows clock resolution
+    # is ~15 ms, so two stores of the same title within one tick (the force_new
+    # twin case, or just two docs sharing a title) hash to the SAME id — and
+    # add_node would then silently OVERWRITE the first node. Salt the summary until
+    # the id is free so each store gets a distinct node (the salt only feeds the id
+    # hash; the stored summary stays the title).
     node_id = generate_node_id(CognitionNodeType.DOCUMENT.value, title, timestamp)
+    salt = 0
+    while storage.has_node(node_id):
+        salt += 1
+        node_id = generate_node_id(
+            CognitionNodeType.DOCUMENT.value, f"{title}#{salt}", timestamp
+        )
     metadata: dict[str, Any] = {
         "filename": filename,
         "mime": mime or "",

@@ -1,5 +1,6 @@
 """WP-D1a: DOCUMENT node type, graph-inert guard, store/get tools, sidecar, sync guard."""
 
+from datetime import UTC, datetime
 from typing import cast
 
 from vibe_cognition.cognition.documents import sha256_bytes, text_sidecar_path
@@ -97,6 +98,33 @@ def test_dedup_returns_existing_unless_force_new(tmp_path):
     c = _store_document(s, title="d", document_text="x", context="", author="t",
                         content_text="same bytes", force_new=True)
     assert c["node_id"] != a["node_id"], "force_new did not create a new node"
+
+
+def test_distinct_docs_get_distinct_ids_under_a_frozen_clock(tmp_path, monkeypatch):
+    """Windows-surfaced (CI flake), real-everywhere bug: node ids hash
+    type:summary:timestamp, and the Windows clock is ~15 ms coarse, so two stores
+    of the same title in one tick hashed to the SAME id and add_node SILENTLY
+    OVERWROTE the first. Freeze the clock to make the collision deterministic:
+    two DIFFERENT documents sharing a title must still get distinct ids (and both
+    must survive). This also covers the force_new twin case that flaked CI."""
+    import vibe_cognition.tools.cognition_tools as ct
+
+    frozen = datetime(2026, 6, 13, 0, 0, 0, tzinfo=UTC)
+
+    class _FrozenClock:
+        @staticmethod
+        def now(tz=None):
+            return frozen
+
+    monkeypatch.setattr(ct, "datetime", _FrozenClock)
+
+    s = CognitionStorage(tmp_path / "cog")
+    a = _store_document(s, title="same title", document_text="x", context="",
+                        author="t", content_text="bytes A")
+    b = _store_document(s, title="same title", document_text="y", context="",
+                        author="t", content_text="bytes B")
+    assert a["node_id"] != b["node_id"], "two distinct docs collided on one id (silent overwrite)"
+    assert s.has_node(a["node_id"]) and s.has_node(b["node_id"]), "a colliding store overwrote the other"
 
 
 def test_agent_refs_go_to_context_not_node_references(tmp_path):
