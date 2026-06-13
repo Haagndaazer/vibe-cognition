@@ -298,13 +298,19 @@ async function loadDocuments() {
   }
   list.innerHTML = docs.map(d => {
     const kb = d.size != null ? ` · ${Math.max(1, Math.round(d.size / 1024))} KB` : "";
+    const label = d.has_blob ? "download" : "download text";
+    const href = `/api/document/${encodeURIComponent(d.node_id)}/download?token=${encodeURIComponent(TOKEN)}`;
     return `<li class="episode-item" data-id="${escapeHTML(d.node_id)}">
       <div class="episode-summary">${escapeHTML((d.summary || d.node_id).slice(0, 140))}</div>
-      <div class="episode-meta">${escapeHTML(d.mode)}${escapeHTML(kb)}</div>
+      <div class="episode-meta">${escapeHTML(d.mode)}${escapeHTML(kb)} ·
+        <a class="doc-download" href="${href}" download>${label}</a></div>
     </li>`;
   }).join("");
   for (const li of list.querySelectorAll(".episode-item")) {
-    li.addEventListener("click", () => selectNode(li.dataset.id));
+    li.addEventListener("click", e => {
+      if (e.target.closest(".doc-download")) return;  // let the download link navigate
+      selectNode(li.dataset.id);
+    });
   }
 }
 

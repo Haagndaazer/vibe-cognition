@@ -19,6 +19,7 @@ from starlette.staticfiles import StaticFiles
 
 from .api import (
     delete_node,
+    download_document,
     get_graph,
     get_node,
     get_stats,
@@ -59,6 +60,7 @@ def build_app(lifespan_ctx: dict[str, Any], token: str) -> tuple[Starlette, Exit
         Route("/api/node/{node_id}", endpoint=delete_node, methods=["DELETE"]),
         Route("/api/search", endpoint=search, methods=["POST"]),
         Route("/api/documents", endpoint=list_documents, methods=["GET"]),
+        Route("/api/document/{node_id}/download", endpoint=download_document, methods=["GET"]),
         Route("/api/stats", endpoint=get_stats, methods=["GET"]),
         Mount("/static", app=StaticFiles(directory=static_dir), name="static"),
     ]

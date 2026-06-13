@@ -19,6 +19,11 @@ from vibe_cognition.cognition import (
     CognitionStorage,
     generate_node_id,
 )
+from vibe_cognition.cognition.documents import (
+    blob_rel_path,
+    documents_dir,
+    text_sidecar_path,
+)
 from vibe_cognition.dashboard.server import (
     build_app,
     start_dashboard,
@@ -312,6 +317,63 @@ class TestDocuments:
     def test_list_documents_requires_token(self, client):
         c, _ = client
         assert c.get("/api/documents").status_code == 403
+
+    def test_download_copy_mode_blob(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        sha = "c" * 64
+        rel = blob_rel_path(sha, ".pdf")
+        blob = documents_dir(s.cognition_dir) / rel
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(b"PDF-BYTES-HERE")
+        s.add_node(_doc_node("dlcopy01", "Copy DL", {
+            "mode": "copy", "blob_path": rel, "sha256": sha,
+            "mime": "application/pdf", "filename": "c.pdf", "size": 14}, "doc:cccccccccccc"))
+
+        r = c.get("/api/document/dlcopy01/download?token=testtok")
+        assert r.status_code == 200
+        assert r.content == b"PDF-BYTES-HERE", "blob bytes not served"
+
+    def test_download_reference_mode_serves_sidecar(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        sha = "d" * 64
+        sidecar = text_sidecar_path(s.cognition_dir, sha)
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text("extracted text body", encoding="utf-8")
+        s.add_node(_doc_node("dlref01", "Ref DL", {
+            "mode": "reference", "sha256": sha}, "doc:dddddddddddd"))
+
+        r = c.get("/api/document/dlref01/download?token=testtok")
+        assert r.status_code == 200
+        assert r.text == "extracted text body", "reference mode should serve the sidecar text"
+
+    def test_download_rejects_blob_path_escaping_documents_dir(self, client):
+        """Path-safety: a tampered blob_path that resolves OUTSIDE documents_dir must
+        be rejected (404), not served — a REAL escaping path to a real file, not a
+        string check. Fails-before without the is_relative_to(documents_dir) guard."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        secret = s.cognition_dir.parent / "secret.txt"  # outside .cognition/documents
+        secret.write_text("TOP SECRET", encoding="utf-8")
+        s.add_node(_doc_node("dlevil01", "Evil", {
+            "mode": "copy", "blob_path": "../../secret.txt", "sha256": "e" * 64,
+            "filename": "x"}, "doc:eeeeeeeeeeee"))
+
+        r = c.get("/api/document/dlevil01/download?token=testtok")
+        assert r.status_code == 404, "path-escaping blob_path was served"
+        assert "TOP SECRET" not in r.text
+
+    def test_download_non_document_is_404(self, client):
+        c, lc = client
+        # n1/n2 are decision/discovery, not documents
+        any_node = next(iter(lc["cognition_storage"].get_all_nodes()))["id"]
+        r = c.get(f"/api/document/{any_node}/download?token=testtok")
+        assert r.status_code == 404
+
+    def test_download_requires_token(self, client):
+        c, _ = client
+        assert c.get("/api/document/whatever/download").status_code == 403
 
 
 class TestStats:

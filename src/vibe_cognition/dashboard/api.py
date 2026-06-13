@@ -7,13 +7,25 @@ matches CognitionStorage's RLock-based threading model.
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
-from starlette.responses import JSONResponse
+from starlette.responses import FileResponse, JSONResponse
 
 from ..cognition import CognitionNodeType, delete_cognition_node
-from ..cognition.documents import documents_dir
+from ..cognition.documents import documents_dir, text_sidecar_path
+
+_UNSAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _safe_filename(name: str, fallback: str = "document") -> str:
+    """Sanitize a Content-Disposition filename: strip any path components, collapse
+    unsafe chars. The filename comes from stored metadata, but we never trust it as a
+    path or let it carry separators/control chars into the response header."""
+    base = Path(name).name
+    base = _UNSAFE_FILENAME.sub("_", base).strip("._")
+    return (base or fallback)[:120]
 
 logger = logging.getLogger(__name__)
 
@@ -261,3 +273,43 @@ def list_documents(request):
         })
     out.sort(key=lambda d: d["timestamp"], reverse=True)  # newest first
     return JSONResponse({"documents": out})
+
+
+def download_document(request):
+    """Download a stored document. Copy mode → the content-addressed blob; reference
+    mode → the agent-extracted text SIDECAR (NEVER the absolute original path — that
+    would be an arbitrary-local-file-read, and §9 N2 says reference mode never touches
+    the original). ``node_id`` is a graph KEY only (never a path segment); the blob
+    path is server-reconstructed + validated under documents_dir."""
+    lc = _ctx(request)
+    storage = lc["cognition_storage"]
+    node_id = request.path_params["node_id"]
+    node = storage.get_node(node_id)
+    if not node or node.get("type") != CognitionNodeType.DOCUMENT.value:
+        return JSONResponse({"error": "document not found"}, status_code=404)
+
+    meta = node.get("metadata") or {}
+    cognition_dir = storage.cognition_dir
+    title = node.get("summary") or node_id
+
+    if _document_has_blob(node):
+        blob = _document_blob_path(cognition_dir, node)  # validated under documents_dir
+        if blob is None or not blob.exists():
+            return JSONResponse({"error": "blob not found"}, status_code=404)
+        return FileResponse(
+            blob,
+            filename=_safe_filename(meta.get("filename") or title),
+            media_type=meta.get("mime") or "application/octet-stream",
+        )
+
+    # Reference mode: serve the extracted-text sidecar (sha-named, server-derived).
+    sha = meta.get("sha256")
+    if sha:
+        sidecar = text_sidecar_path(cognition_dir, sha)
+        if sidecar.exists():
+            return FileResponse(
+                sidecar,
+                filename=_safe_filename(title) + ".txt",
+                media_type="text/plain",
+            )
+    return JSONResponse({"error": "no downloadable artifact"}, status_code=404)

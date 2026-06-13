@@ -11,8 +11,9 @@ from starlette.types import ASGIApp
 class TokenMiddleware(BaseHTTPMiddleware):
     """Reject requests without a matching token.
 
-    - GET /: requires ?token= query param.
-    - /api/*: requires X-Dashboard-Token header.
+    - GET / and document download links: require ?token= query param (browser
+      navigations / <a download> can't set a header).
+    - other /api/*: require X-Dashboard-Token header.
     - /static/*: no token check (assets are not sensitive).
 
     Also enforces Host header is a 127.0.0.1 loopback to mitigate
@@ -30,7 +31,13 @@ class TokenMiddleware(BaseHTTPMiddleware):
 
         path = request.url.path
 
-        if path == "/":
+        # Browser-navigated GETs (index + document download links) authenticate via
+        # ?token= since an <a> can't send the header; the token is already in the
+        # page URL. All other /api/* require the X-Dashboard-Token header.
+        query_token_path = path == "/" or (
+            path.startswith("/api/document/") and path.endswith("/download")
+        )
+        if query_token_path:
             if request.query_params.get("token") != self._token:
                 return JSONResponse({"error": "missing or invalid token"}, status_code=403)
         elif (
