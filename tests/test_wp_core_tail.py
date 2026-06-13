@@ -226,3 +226,35 @@ def test_c7_truncation_past_max_depth(tmp_path):
         assert node.get("chain"), f"chain ended early at {node['id']}"
         node = node["chain"][0]
     assert node["id"] == "D" and node["truncated"] is True, "deep node not truncated past max_depth"
+
+
+# --- Composition: the whole reordered write surface round-trips through replay ---
+
+def test_composition_all_reordered_writes_round_trip_through_replay(tmp_path):
+    """Exercise every journal-first write path on one instance, then rebuild a second
+    instance from the same journal — nodes and edge-keys must match exactly, and the
+    update must survive. Proves the C-4 reorder preserved replay-equivalence across the
+    whole write surface (add_node, add_edge, update_node, remove_edge single, redirect
+    _edges, remove_node) — not just per-op in isolation."""
+    cog = tmp_path / ".cognition"
+    s1 = CognitionStorage(cog)
+    s1.add_node(_node("a"))
+    s1.add_node(_node("b"))
+    s1.add_node(_node("c"))
+    s1.add_edge(_edge("a", "b"))
+    s1.add_edge(_edge("a", "c"))
+    s1.update_node("a", summary="updated")
+    s1.remove_edge("a", "c", CognitionEdgeType.LED_TO)  # single-edge removal
+    s1.redirect_edges("b", "c")  # move b's edges onto c
+    s1.remove_node("b")
+
+    s2 = CognitionStorage(cog)  # fresh replay of the same journal
+
+    assert {n["id"] for n in s1.get_all_nodes()} == {n["id"] for n in s2.get_all_nodes()}, (
+        "replay diverged on nodes"
+    )
+    assert set(s1.graph.edges(keys=True)) == set(s2.graph.edges(keys=True)), (
+        "replay diverged on edges"
+    )
+    a = s2.get_node("a")
+    assert a is not None and a["summary"] == "updated", "update_node did not survive replay"
