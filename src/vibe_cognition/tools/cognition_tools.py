@@ -1008,16 +1008,16 @@ def register_cognition_tools(mcp) -> None:
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         nt = CognitionNodeType(node_type) if node_type else None
-        capped = min(limit, 500)
 
-        # Get total count (uncapped) for reporting
-        all_uncurated = storage.get_uncurated_nodes(limit=999999, node_type=nt)
-        nodes = all_uncurated[:capped]
+        # The returned list is capped (storage caps at 500); the TOTAL is an honest,
+        # uncapped count (T-2 — deriving the total from the capped list under-reported
+        # any backlog over 500).
+        nodes = storage.get_uncurated_nodes(limit=min(limit, 500), node_type=nt)
 
         return {
             "nodes": nodes,
             "count": len(nodes),
-            "total_uncurated": len(all_uncurated),
+            "total_uncurated": storage.count_uncurated_nodes(node_type=nt),
         }
 
     @mcp.tool()

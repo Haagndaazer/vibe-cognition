@@ -843,6 +843,26 @@ class TestUncuratedTracking:
         uncurated = storage.get_uncurated_nodes()
         assert len(uncurated) == 2
 
+    def test_count_uncurated_is_honest_past_the_500_cap(self, storage):
+        """T-2: the returned LIST caps at 500, but count_uncurated_nodes is the honest
+        uncapped total — so total_uncurated can exceed 500. Fails-before is built in:
+        deriving the total from the capped list would assert 500, not 501."""
+        for i in range(501):
+            storage.add_node(self._make_node(f"u{i:04d}"))
+        assert len(storage.get_uncurated_nodes(limit=999999)) == 500, "list cap moved"
+        assert storage.count_uncurated_nodes() == 501, "count must NOT inherit the 500 list cap"
+
+    def test_count_uncurated_respects_type_filter(self, storage):
+        """The count mirrors get's filter exactly — type filter included."""
+        storage.add_node(self._make_node("d1", node_type=CognitionNodeType.DECISION))
+        storage.add_node(self._make_node("d2", node_type=CognitionNodeType.DECISION))
+        storage.add_node(self._make_node("f1", node_type=CognitionNodeType.FAIL))
+        assert storage.count_uncurated_nodes() == 3
+        assert storage.count_uncurated_nodes(node_type=CognitionNodeType.DECISION) == 2
+        # A marked node drops out of the count (mirrors the get filter).
+        storage.mark_curated_by_skill("d1")
+        assert storage.count_uncurated_nodes(node_type=CognitionNodeType.DECISION) == 1
+
     def test_mark_curated_persists_through_hydration(self, tmp_path):
         """curated_by_skill_at survives journal replay."""
         cog_dir = tmp_path / ".cognition"
@@ -860,6 +880,7 @@ class TestUncuratedTracking:
 
         # Marked node has the attribute
         marked = storage2.get_node("n1")
+        assert marked is not None
         assert marked["curated_by_skill_at"] is not None
 
     def test_mark_curated_nonexistent_node(self, storage):
