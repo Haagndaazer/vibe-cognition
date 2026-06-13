@@ -1,9 +1,18 @@
-"""WP-D1a: DOCUMENT node type, graph-inert guard, store/get tools, sidecar, sync guard."""
+"""WP-D1a/D1b: DOCUMENT type, matcher pair rules, store/get, sidecar, copy mode."""
 
 from datetime import UTC, datetime
 from typing import cast
 
-from vibe_cognition.cognition.documents import sha256_bytes, text_sidecar_path
+import vibe_cognition.tools.cognition_tools as ct
+from vibe_cognition.cognition.documents import (
+    blob_path,
+    blob_rel_path,
+    documents_dir,
+    gitignore_has_entry,
+    sanitize_extension,
+    sha256_bytes,
+    text_sidecar_path,
+)
 from vibe_cognition.cognition.models import (
     CognitionEdge,
     CognitionEdgeType,
@@ -21,6 +30,9 @@ class _NoopEmbed:
     def delete_embedding(self, node_id):
         return True
 
+    def delete_by_node_id(self, node_id):
+        pass
+
 
 def _node(node_id, node_type, refs=None, summary="s", detail="d"):
     return CognitionNode(
@@ -28,6 +40,12 @@ def _node(node_id, node_type, refs=None, summary="s", detail="d"):
         context=[], references=refs or [], severity=None,
         timestamp="2026-06-13T00:00:00+00:00", author="t",
     )
+
+
+def _meta_sha(s, node_id):
+    node = s.get_node(node_id)
+    assert node is not None
+    return node["metadata"]["sha256"]
 
 
 # --- WP-D1b matcher pair rules (supersede D1a's inert guard) -----------------
@@ -378,3 +396,145 @@ def test_delete_document_purges_sidecar_even_when_an_entity_cites_it(tmp_path):
     assert not sidecar.exists(), "sidecar leaked: a citing entity was wrongly treated as a twin (F1)"
     assert original.exists(), "delete touched the referenced original file"
     assert s.has_node("dec00100"), "deleting the document wrongly removed the citing entity"
+
+
+# --- WP-D1b copy mode: blob store, sanitization, size policy, .gitignore, delete -
+
+
+def test_sanitize_extension_whitelist_or_drop():
+    """The sole agent-controlled path component: keep a leading-dot alnum run
+    (<=10), DROP everything else (never fail the store)."""
+    assert sanitize_extension(".pdf") == ".pdf"
+    assert sanitize_extension(".TXT") == ".TXT"
+    assert sanitize_extension(".tar3") == ".tar3"
+    for bad in ["", ".", "noleadingdot", ".a/b", "../x", ".has.dot", ".pdf.exe",
+                ".with space", ".toolongextension", ".x\\y"]:
+        assert sanitize_extension(bad) == "", f"{bad!r} not dropped"
+    # blob_rel_path applies it: a hostile ext collapses to a bare-sha name.
+    assert blob_rel_path("a" * 64, "../evil") == f"aa/{'a' * 64}"
+
+
+def test_copy_mode_writes_blob_and_reports(tmp_path):
+    """store_copy=True writes the content-addressed blob and reports mode/bytes/path;
+    committed by default (no .gitignore line)."""
+    s = CognitionStorage(tmp_path / "cog")
+    res = _store_document(s, title="c.txt", document_text="x", context="", author="t",
+                          content_text="blob bytes here", store_copy=True)
+    assert res["mode"] == "copy", f"expected copy mode, got {res!r}"
+    assert res["blob_bytes"] == len(b"blob bytes here")
+    assert res["local_only"] is False
+    bp = documents_dir(s.cognition_dir) / res["blob_path"]
+    assert bp.exists() and bp.read_bytes() == b"blob bytes here", "blob not written with exact bytes"
+    assert bp.name.endswith(".txt"), "sanitized .txt ext not carried into the blob name"
+    assert not gitignore_has_entry(s.cognition_dir, res["blob_path"]), "committed blob wrongly gitignored"
+
+
+def test_copy_mode_blob_write_once(tmp_path):
+    """force_new copy twins over identical bytes share ONE blob file (write-once)."""
+    s = CognitionStorage(tmp_path / "cog")
+    a = _store_document(s, title="d", document_text="x", context="", author="t",
+                        content_text="same", store_copy=True)
+    b = _store_document(s, title="d", document_text="x", context="", author="t",
+                        content_text="same", store_copy=True, force_new=True)
+    assert a["node_id"] != b["node_id"], "force_new did not create a twin"
+    assert a["blob_path"] == b["blob_path"], "same content produced different blob paths"
+    bp = blob_path(s.cognition_dir, _meta_sha(s, a["node_id"]), "")
+    assert bp.exists()
+
+
+def test_copy_mode_local_only_writes_gitignore(tmp_path):
+    """local_only=True ignores the blob via the LOCAL self-ignoring documents/.gitignore."""
+    s = CognitionStorage(tmp_path / "cog")
+    res = _store_document(s, title="d", document_text="x", context="", author="t",
+                          content_text="secret", store_copy=True, local_only=True)
+    assert res["local_only"] is True
+    assert gitignore_has_entry(s.cognition_dir, res["blob_path"]), "local_only blob not gitignored"
+    assert gitignore_has_entry(s.cognition_dir, ".gitignore"), ".gitignore is not self-ignoring"
+
+
+def test_copy_mode_size_policy_forces_local_only(tmp_path, monkeypatch):
+    """§9 S1: a blob >= the WARN threshold is auto-forced to local_only with a
+    warning (no hard cap). Thresholds monkeypatched small to avoid a 50MB fixture."""
+    monkeypatch.setattr(ct, "BLOB_WARN_BYTES", 4)
+    monkeypatch.setattr(ct, "BLOB_REFUSE_BYTES", 1000)
+    s = CognitionStorage(tmp_path / "cog")
+    res = _store_document(s, title="d", document_text="x", context="", author="t",
+                          content_text="way over four bytes", store_copy=True)  # default commit
+    assert res["local_only"] is True, "large blob not auto-forced to local_only"
+    assert any("local_only" in w for w in res.get("warnings", [])), "no size warning reported"
+    assert gitignore_has_entry(s.cognition_dir, res["blob_path"])
+
+
+def test_copy_mode_s3_promote_local_only_to_default(tmp_path):
+    """S3: re-storing a local_only blob as default PROMOTES it (removes the
+    .gitignore line, reports promoted)."""
+    s = CognitionStorage(tmp_path / "cog")
+    a = _store_document(s, title="d", document_text="x", context="", author="t",
+                        content_text="same", store_copy=True, local_only=True)
+    assert gitignore_has_entry(s.cognition_dir, a["blob_path"])
+    b = _store_document(s, title="d", document_text="x", context="", author="t",
+                        content_text="same", store_copy=True, local_only=False)
+    assert b.get("already_stored") is True and b["node_id"] == a["node_id"], "dedup did not hit"
+    assert b.get("promoted") is True, "local_only->default did not report promoted"
+    assert not gitignore_has_entry(s.cognition_dir, a["blob_path"]), "promote did not de-gitignore"
+
+
+def test_copy_mode_s3_demote_default_to_local_only_cannot_unpublish(tmp_path):
+    """S3: re-storing a committed blob as local_only cannot un-publish it — reports
+    already_committed (git history retains it)."""
+    s = CognitionStorage(tmp_path / "cog")
+    a = _store_document(s, title="d", document_text="x", context="", author="t",
+                        content_text="same", store_copy=True)  # committed
+    b = _store_document(s, title="d", document_text="x", context="", author="t",
+                        content_text="same", store_copy=True, local_only=True)
+    assert b["node_id"] == a["node_id"], "dedup did not hit"
+    assert b.get("already_committed") is True, "default->local_only did not warn already_committed"
+
+
+def test_copy_blob_refcount_delete_uses_shared_predicate(tmp_path):
+    """Blob refcount delete: two copy twins share one blob -> delete one keeps it,
+    delete the last unlinks it + its .gitignore line. The 'still referenced?' check
+    asserts via storage.documents_with_sha (the SAME predicate the code uses) — not
+    a re-encoded inline filter (Vince/ledger 11: a 4th drifting reader = F1 reborn)."""
+    s = CognitionStorage(tmp_path / "cog")
+    a = _store_document(s, title="d", document_text="x", context="", author="t",
+                        content_text="dup", store_copy=True, local_only=True)
+    b = _store_document(s, title="d", document_text="x", context="", author="t",
+                        content_text="dup", store_copy=True, local_only=True, force_new=True)
+    sha = _meta_sha(s, a["node_id"])
+    bp = blob_path(s.cognition_dir, sha, "")
+    rel = a["blob_path"]
+    assert bp.exists() and gitignore_has_entry(s.cognition_dir, rel)
+    assert len(s.documents_with_sha(sha)) == 2  # shared-predicate assertion (not inline)
+
+    delete_cognition_node(s, _NoopEmbed(), a["node_id"])
+    assert s.documents_with_sha(sha) == [b["node_id"]], "predicate should report the surviving twin"
+    assert bp.exists(), "blob unlinked while a copy twin still owns it"
+    assert gitignore_has_entry(s.cognition_dir, rel), ".gitignore line removed prematurely"
+
+    out = delete_cognition_node(s, _NoopEmbed(), b["node_id"])
+    assert out is not None
+    assert s.documents_with_sha(sha) == [], "predicate should report no documents left"
+    assert not bp.exists(), "blob not unlinked after the last copy twin deleted"
+    assert not gitignore_has_entry(s.cognition_dir, rel), ".gitignore line not reclaimed"
+    assert rel in out.get("unlinked_artifacts", []), "unlinked blob not reported"
+
+
+def test_reference_twin_has_no_blob_stake(tmp_path):
+    """B3: a reference-mode twin shares the sha but NOT the blob — deleting the
+    copy-mode node unlinks the blob even though the reference twin remains (blob
+    refcount filters the sha cohort to mode=='copy', sidecar refcount does not)."""
+    s = CognitionStorage(tmp_path / "cog")
+    ref_node = _store_document(s, title="d", document_text="x", context="", author="t",
+                               content_text="shared")  # reference mode
+    copy_node = _store_document(s, title="d", document_text="x", context="", author="t",
+                                content_text="shared", store_copy=True, force_new=True)
+    sha = _meta_sha(s, copy_node["node_id"])
+    bp = blob_path(s.cognition_dir, sha, "")
+    sidecar = text_sidecar_path(s.cognition_dir, sha)
+    assert bp.exists() and sidecar.exists()
+
+    delete_cognition_node(s, _NoopEmbed(), copy_node["node_id"])
+    assert not bp.exists(), "blob not unlinked: a reference twin (no blob stake) wrongly blocked it"
+    assert sidecar.exists(), "sidecar wrongly purged while the reference twin still holds the sha"
+    assert s.has_node(ref_node["node_id"]), "reference twin wrongly removed"

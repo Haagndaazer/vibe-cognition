@@ -137,6 +137,20 @@ class ChromaDBStorage:
         except Exception:
             return False
 
+    def delete_by_node_id(self, node_id: str) -> None:
+        """Delete all chunk embeddings tagged with ``node_id`` metadata.
+
+        Uses ``delete(where=...)`` DIRECTLY — NOT the ``get(where=)``-then-
+        ``delete(ids=)`` shape of ``delete_by_file`` (a `get` with an empty match
+        then `delete(ids=[])` would raise on an empty list). The direct where-delete
+        is no-op-safe on an empty collection and on docs lacking a ``node_id`` field.
+        Forward-compatible: D1b writes no chunks yet (chunk-embedding is D2), so this
+        is a no-op today, present so document deletion inherits a clean chunk purge."""
+        try:
+            self._collection.delete(where={"node_id": node_id})
+        except Exception as e:
+            logger.warning(f"Chunk purge failed for {node_id}: {e}")
+
     def delete_by_file(self, repo: str, file_path: str) -> int:
         """Delete all embeddings for a specific file.
 
