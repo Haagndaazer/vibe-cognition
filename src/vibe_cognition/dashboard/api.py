@@ -17,6 +17,7 @@ from ..cognition import CognitionNodeType, delete_cognition_node
 from ..cognition.documents import documents_dir, text_sidecar_path
 
 _UNSAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
+_SAFE_MEDIA_TYPE = re.compile(r"^[\w.+-]+/[\w.+-]+$")  # strict type/subtype, no params/CRLF
 
 
 def _safe_filename(name: str, fallback: str = "document") -> str:
@@ -26,6 +27,16 @@ def _safe_filename(name: str, fallback: str = "document") -> str:
     base = Path(name).name
     base = _UNSAFE_FILENAME.sub("_", base).strip("._")
     return (base or fallback)[:120]
+
+
+def _safe_media_type(mime: str | None) -> str:
+    """Validate the AGENT-controlled mime before it becomes a Content-Type header.
+    Anything that isn't a strict ``type/subtype`` (no params, no CRLF/control chars)
+    falls back to a safe default — we never rely on the HTTP parser to reject our own
+    header injection (ledger 17), and this mirrors _safe_filename's discipline."""
+    if mime and _SAFE_MEDIA_TYPE.match(mime):
+        return mime
+    return "application/octet-stream"
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +319,7 @@ def download_document(request):
         return FileResponse(
             blob,
             filename=_safe_filename(meta.get("filename") or title),
-            media_type=meta.get("mime") or "application/octet-stream",
+            media_type=_safe_media_type(meta.get("mime")),
         )
 
     # Reference mode: serve the extracted-text sidecar (sha-named, server-derived).

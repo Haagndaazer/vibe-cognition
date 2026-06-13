@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from datetime import UTC, datetime
@@ -406,6 +407,81 @@ class TestDocuments:
     def test_download_requires_token(self, client):
         c, _ = client
         assert c.get("/api/document/whatever/download").status_code == 403
+
+    def test_download_clamps_agent_controlled_mime(self, client):
+        """The mime is agent-controlled (cognition_store_document mime=) and flows into
+        Content-Type — clamp it like the filename. A CRLF-injection mime falls back to
+        application/octet-stream; a valid mime is preserved. (ledger 17: don't rely on
+        the HTTP parser to reject our own header injection.)"""
+        c, lc = client
+        s = lc["cognition_storage"]
+        sha = "f" * 64
+        rel = blob_rel_path(sha, ".bin")
+        blob = documents_dir(s.cognition_dir) / rel
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(b"data")
+        s.add_node(_doc_node("dlmime01", "Mime", {
+            "mode": "copy", "blob_path": rel, "sha256": sha,
+            "mime": "text/html\r\nX-Injected: evil", "filename": "m.bin"}, "doc:ffffffffffff"))
+
+        r = c.get("/api/document/dlmime01/download?token=testtok")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("application/octet-stream"), \
+            "injection-bearing mime not clamped"
+        assert "x-injected" not in {k.lower() for k in r.headers}, "header injected via mime"
+
+    def test_download_clamps_preserves_valid_mime(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        sha = "9" * 64
+        rel = blob_rel_path(sha, ".pdf")
+        blob = documents_dir(s.cognition_dir) / rel
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(b"%PDF")
+        s.add_node(_doc_node("dlmime02", "Mime2", {
+            "mode": "copy", "blob_path": rel, "sha256": sha,
+            "mime": "application/pdf", "filename": "m.pdf"}, "doc:999999999999"))
+
+        r = c.get("/api/document/dlmime02/download?token=testtok")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("application/pdf"), "valid mime not preserved"
+
+    def test_download_rejects_absolute_blob_path(self, client):
+        """Traversal vector: an ABSOLUTE blob_path (pathlib join drops the base) must
+        still be rejected by the resolved-under-documents_dir check."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        secret = s.cognition_dir.parent / "abs_secret.txt"
+        secret.write_text("ABS SECRET", encoding="utf-8")
+        s.add_node(_doc_node("dlabs01", "Abs", {
+            "mode": "copy", "blob_path": str(secret), "sha256": "1" * 64}, "doc:111111111111"))
+
+        r = c.get("/api/document/dlabs01/download?token=testtok")
+        assert r.status_code == 404, "absolute blob_path escaped documents_dir"
+        assert "ABS SECRET" not in r.text
+
+    def test_download_rejects_symlink_escaping_documents_dir(self, client):
+        """Traversal vector: a SYMLINK inside documents_dir pointing OUTSIDE must be
+        defeated — resolve() follows the link and the comparison is on the resolved
+        path. (Skipped where symlinks aren't permitted, e.g. unprivileged Windows.)"""
+        c, lc = client
+        s = lc["cognition_storage"]
+        secret = s.cognition_dir.parent / "link_secret.txt"
+        secret.write_text("LINK SECRET", encoding="utf-8")
+        docs = documents_dir(s.cognition_dir)
+        docs.mkdir(parents=True, exist_ok=True)
+        link = docs / "evil_link.bin"
+        try:
+            os.symlink(secret, link)
+        except (OSError, NotImplementedError):
+            import pytest
+            pytest.skip("symlinks not permitted on this platform")
+        s.add_node(_doc_node("dllink01", "Link", {
+            "mode": "copy", "blob_path": "evil_link.bin", "sha256": "2" * 64}, "doc:222222222222"))
+
+        r = c.get("/api/document/dllink01/download?token=testtok")
+        assert r.status_code == 404, "symlink escaping documents_dir was served"
+        assert "LINK SECRET" not in r.text
 
 
 class TestStats:
