@@ -164,6 +164,27 @@ def test_get_document_freshness_modified_and_missing(tmp_path):
     assert _get_document(s, node_id=res["node_id"])["freshness"] == "missing", "missing not detected"
 
 
+def test_document_metadata_survives_journal_replay(tmp_path):
+    """Cross-process seam: the metadata dict (sha256, path, mode) must round-trip
+    through the JSONL journal — a SECOND storage instance replaying the same
+    journal must see it, or freshness re-hash and sidecar deletion break for any
+    teammate who didn't create the node. Asserts sha256 specifically (not just
+    'metadata is non-empty')."""
+    cog = tmp_path / "cog"
+    s1 = CognitionStorage(cog)
+    res = _store_document(s1, title="d", document_text="t", context="", author="t",
+                          content_text="round-trip me")
+    n1 = s1.get_node(res["node_id"])
+    assert n1 is not None
+    sha1 = n1["metadata"]["sha256"]
+
+    s2 = CognitionStorage(cog)  # fresh instance -> replays the journal from disk
+    replayed = s2.get_node(res["node_id"])
+    assert replayed is not None, "node did not replay"
+    assert replayed["metadata"].get("sha256") == sha1, "sha256 lost across journal replay"
+    assert replayed["metadata"].get("mode") == "reference", "mode lost across journal replay"
+
+
 def test_delete_document_removes_sidecar_not_the_original(tmp_path):
     """Deleting a reference-mode document purges its managed text sidecar but
     NEVER the referenced original file (reference-mode deletion reclaims only what
