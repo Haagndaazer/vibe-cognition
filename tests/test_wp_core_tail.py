@@ -98,6 +98,59 @@ def test_remove_node_append_failure_leaves_node_present(tmp_path, monkeypatch):
     assert "n1" in s._reference_index.get("commit:abc", []), "ref index dropped despite a failed append"
 
 
+def test_remove_edge_single_append_failure_leaves_edge_present(tmp_path, monkeypatch):
+    """remove_edge (single, keyed) must not phantom-remove on a failed append — the
+    edge stays in the raw graph. Fails-before (mutate-first): the edge is removed
+    before the append raises."""
+    s = CognitionStorage(tmp_path / ".cognition")
+    s.add_node(_node("a"))
+    s.add_node(_node("b"))
+    s.add_edge(_edge("a", "b"))
+    monkeypatch.setattr(s, "_append_journal", _raise)
+
+    with pytest.raises(_BoomError):
+        s.remove_edge("a", "b", CognitionEdgeType.LED_TO)
+
+    assert s.graph.has_edge("a", "b"), "phantom edge removal survived a failed append"
+
+
+def test_remove_edge_remove_all_append_failure_on_first_leaves_all(tmp_path, monkeypatch):
+    """remove_edge (remove-ALL loop, edge_type=None) with the append raising on the
+    FIRST iteration must remove NOTHING — both edges between the pair stay. Fails-before
+    (mutate-first): the first edge is removed before its append raises, so one is gone."""
+    s = CognitionStorage(tmp_path / ".cognition")
+    s.add_node(_node("a"))
+    s.add_node(_node("b"))
+    s.add_edge(_edge("a", "b", CognitionEdgeType.LED_TO))
+    s.add_edge(_edge("a", "b", CognitionEdgeType.RELATES_TO))
+    monkeypatch.setattr(s, "_append_journal", _raise)  # raises on the first iteration
+
+    with pytest.raises(_BoomError):
+        s.remove_edge("a", "b")  # no edge_type → remove-all loop
+
+    assert s.graph.has_edge("a", "b", key=CognitionEdgeType.LED_TO.value), "first edge phantom-removed"
+    assert s.graph.has_edge("a", "b", key=CognitionEdgeType.RELATES_TO.value), "second edge phantom-removed"
+
+
+def test_redirect_edges_append_failure_leaves_no_phantom_redirect(tmp_path, monkeypatch):
+    """redirect_edges must not leave a phantom redirected edge on new_node when the
+    append raises. Fails-before (mutate-first): the first redirected edge is added to
+    new_node before its append raises."""
+    s = CognitionStorage(tmp_path / ".cognition")
+    for nid in ("X", "Y", "S", "T"):
+        s.add_node(_node(nid))
+    s.add_edge(_edge("X", "T"))  # out-edge on old_node
+    s.add_edge(_edge("S", "X"))  # in-edge on old_node
+    monkeypatch.setattr(s, "_append_journal", _raise)
+
+    with pytest.raises(_BoomError):
+        s.redirect_edges("X", "Y")
+
+    assert s.graph.out_degree("Y") == 0 and s.graph.in_degree("Y") == 0, (
+        "phantom redirected edge appeared on new_node after a failed append"
+    )
+
+
 # --- C-4: journal-first still replays + converges, idempotently --------------
 
 def test_add_node_journal_first_visible_to_replay_and_idempotent(tmp_path):
