@@ -7,7 +7,7 @@ and `docs/DESIGN-document-storage.md` (the v0.8.0 feature spine).
 **Convention:** the proposed WP groupings below are a *triage inventory*, not briefs. Each WP
 gets a peer-reviewed execution plan (a `docs/wp-*-plan.md`) before it's assigned to Vorpid, and
 each ships through the standard gate (SHA-pinned merge, fix+proof same commit, voiding clause,
-journal-flush-via-worktree). Last updated 2026-06-13 (document-storage feature COMPLETE D1a→D4; WP-R3 release commit in flight, then the Colton-gated v0.8.0 pin).
+journal-flush-via-worktree). Last updated 2026-06-13 (v0.8.0 PINNED LIVE; document-storage + WP-T shipped; WP-ID node-id-collision fix in flight).
 
 ---
 
@@ -15,7 +15,7 @@ journal-flush-via-worktree). Last updated 2026-06-13 (document-storage feature C
 
 | WP | Scope | State |
 |----|-------|-------|
-| **WP-R3** | v0.8.0 RELEASE commit: bump `pyproject.toml` + `.claude-plugin/plugin.json` to 0.8.0, cut CHANGELOG `[0.8.0]` (the document-storage feature), align uv.lock (4-file, no code). | **Assigned to Vorpid** — plan + light decorrelated review. Branch off post-flush origin/main (vince aligns). I gate + merge; the **PIN waits for Colton** (see release gate below). |
+| **WP-ID** | GLOBAL node-id collision (data loss): hoist the uniqueness loop INTO `add_node`'s locked block (or a shared `storage.mint_unique_id`) so ALL writers benefit + the `has_node`→`add_node` TOCTOU shrinks; UNIFY (remove the D1a document-scoped salt-retry); cross-writer review incl the post-commit hook's hand-rolled id; **the replay seam** (uniqueness-on-mint must NOT break idempotent replay of an already-journaled add_node). | **Next for Vorpid** — plan + decorrelated peer-review (treat like core/journal work, not a quick fix). Branch off `cc9cd73` (vince aligns). |
 
 **Document-storage feature COMPLETE (D1a → D4) — stored, searchable, deletable, documented, dashboard:**
 - **WP-D1a** (PR #8 → `870ff09`): DOCUMENT type + reference mode + sidecar (+deletion) + store/get + dedup + pair-level graph-inert matcher guard + sync-path embed guard.
@@ -26,8 +26,11 @@ journal-flush-via-worktree). Last updated 2026-06-13 (document-storage feature C
 
 Seam principle held all five PRs: each creates nothing it can't delete. Six gate holds across the run, all resolved.
 
-## Release gate → v0.8.0 (WP-R3 + Colton-gated pin)
-Code is on main at `6939c99`. WP-R3 lands the version bump + CHANGELOG (vince gates + merges → main at 0.8.0, un-pinned = publishes nothing). The **marketplace PIN waits for Colton** — v0.8.0 is a FEATURE release, NOT the patch-pin authority he delegated for v0.7.4. **Two human-gated checks must clear on his machine BEFORE the pin** (install-mechanics constraint `b8ec24fe9107`): (1) the owed v0.7.4 non-ASCII-commit journal test; (2) the **D-4 vendored-libs RENDER check** — the dashboard must visually render with the vendored cytoscape/fcose (can't be self-verified headless; file-existence + no-jsdelivr is asserted by test, the render is not). Then vince queues the pin at Loki with the v0.8.0 SHA on Colton's go.
+## v0.8.0 — ✅ RELEASED & PINNED LIVE
+WP-R3 (PR #13 → `8f3079f`) cut the version bump + CHANGELOG; Colton cleared both human checks (vendored-libs render ✓, owed v0.7.4 non-ASCII journal test ✓) and gave the go; **Loki pinned the marketplace to `6c2ce12`** (real ls-remote HEAD; marketplace commit `09e6ab0`; teammate-comms `53827f8` untouched). Rollback if needed = re-pin v0.7.4 `20519b9`. Document storage is live to users. (H-6 also resolved: `.cognition/journal.jsonl` committed, `.cognition/chromadb/` gitignored.)
+
+## Post-v0.8.0 audit-remainder — shipped
+- **WP-T** (PR #14 → `cc9cd73`): tool-layer correctness + pyright ratchet — T-9 (lifespan accessor, baseline **29→8**), T-2 (honest uncurated count), T-3 (batch partial-commit guard), T-6 (unified node_type/direction error contract), C-5 (surface add_edge False). First tests for the previously-untested MCP tool layer.
 
 ## Tracked follow-ups (from the document-storage run)
 - **Dashboard search over-query** (recall, LOW): the dashboard `search()` uses a FIXED `limit*5` over-query while the MCP `_search_cognition` is ADAPTIVE (the D2 B3 fix). Same starve class, far more remote at the dashboard default limit=20 (~100-chunk single-doc domination needed), recall-only, secondary surface. Unify the over-query logic (ledger 11) or document as accepted residual.
@@ -39,14 +42,13 @@ Code is on main at `6939c99`. WP-R3 lands the version bump + CHANGELOG (vince ga
 
 Priorities: **P1** ship-soon / high leverage · **P2** real correctness, lower urgency · **P3** polish/dead-code.
 
-### WP-T · tool-layer correctness + pyright ratchet — **P1**
-Tight cluster, all in `tools/`, composes cleanly, and **lands a big CI win**: T-9 alone removes 22 of
-the 31 pyright baseline errors, dropping the ratchet toward strict.
-- **T-9** (MED, improvement): one `lifespan_context` accessor in `tools/utils.py` (raise if `request_context` is None) routed through ~22 sites — kills 22 pyright errors and dedupes the pattern. *Lower `.github/pyright-baseline.txt` in the same PR.*
-- **T-2** (MED, bug): `total_uncurated` silently caps at 500 (`storage.py:382` hard-cap vs the tool asking for 999999) — reported backlog can never exceed 500.
-- **T-3** (MED, bug): `add_edges_batch` crashes mid-batch on a non-dict element *after* earlier edges are journaled (partial commit). Needs `isinstance(e, dict)` guard.
-- **T-6** (MED, inconsistency): error-contract split — error-dicts vs raised exceptions vs silent wrong answers across tools; `node_type` validated three ways. One shared `_parse_node_type` helper fixes most.
-- **C-5** (LOW, bug): tool-level TOCTOU — `add_edge` return ignored, reports `{"created": True}` even when storage declined.
+### WP-T · tool-layer correctness + pyright ratchet — ✅ SHIPPED (PR #14 → `cc9cd73`)
+All five landed; pyright baseline **29 → 8**; the previously-untested MCP tool layer got its first tests.
+- **T-9** ✅ `get_lifespan` accessor routed through all ~20 raw sites (baseline 29→9).
+- **T-2** ✅ `storage.count_uncurated_nodes` (uncapped, mirrors the get-filter) → honest `total_uncurated`; free B2 test fix → baseline 8.
+- **T-3** ✅ `isinstance(e, dict)` guard in the batch core — no more partial-commit crash.
+- **T-6** ✅ one `_parse_node_type` + `_validate_direction`, unified `{"error": str}` shape (get_neighbors direction now an explicit error — intentional contract change).
+- **C-5** ✅ `_add_edge_core`/batch surface `add_edge`'s False return.
 
 ### WP-ID · global node-id collision (data loss) — **P1** (surfaced by WP-D1a)
 `generate_node_id` hashes `type:summary:timestamp`. Under a coarse clock (Windows ~15 ms),
@@ -131,4 +133,6 @@ it isn't mistaken for intent.
 | WP-D1b document storage (matcher pair rules, shared identity predicate, copy mode + size/git policy, per-blob-path refcounted deletion, N1 ghost-search fix) | main `0faf302` (PR #9, pinned `3f6cdf5`) — ships in v0.8.0 |
 | WP-D2 chunked document search (chunk embeddings + is_chunk count-split, adaptive over-query + dedupe + matched_excerpt, re-sync/backfill, dashboard N1 safety filter) | main `dd11cd2` (PR #10, pinned `63f2246`) — ships in v0.8.0 |
 | WP-D3 /vibe-document skill (S4/N3 link-by-doc_ref workflow) + doc-surface fixes (all 17 tools, edge-type accuracy, relates_to 3-provenance) + doc-drift guard test | main `9afc538` (PR #11, pinned `c3b1bbf`) — ships in v0.8.0 |
-| WP-D4 dashboard document list + token-gated path-safe download (traversal+header-injection hardened) + D-6 nav + D-1 liveness + D-4 vendored libs + D-5 security | main `6939c99` (PR #12, pinned `7f07dea`) — ships in v0.8.0 |
+| WP-D4 dashboard document list + token-gated path-safe download (traversal+header-injection hardened) + D-6 nav + D-1 liveness + D-4 vendored libs + D-5 security | main `6939c99` (PR #12, pinned `7f07dea`) — in v0.8.0 |
+| WP-R3 v0.8.0 release commit (4-file version bump + CHANGELOG) | main `8f3079f` (PR #13) — **v0.8.0 PINNED LIVE at `6c2ce12`, marketplace `09e6ab0`** |
+| WP-T tool-layer correctness + pyright ratchet (T-9/T-2/T-3/T-6/C-5; pyright 29→8; first tool tests) | main `cc9cd73` (PR #14, pinned `7e090ae`) |
