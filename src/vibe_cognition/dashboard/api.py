@@ -161,9 +161,18 @@ async def search(request):
     from starlette.concurrency import run_in_threadpool
 
     lc = _ctx(request)
-    body = await request.json()
-    query = body.get("query", "").strip()
-    limit = int(body.get("limit", 20))
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "malformed JSON body"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    query = str(body.get("query", "")).strip()
+    try:
+        limit = int(body.get("limit", 20))
+    except (TypeError, ValueError):
+        limit = 20
+    limit = max(1, min(limit, 100))  # clamp: no 0/negative/huge fan-out
     entity_type = body.get("entity_type")
 
     if not query:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import secrets
+
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
@@ -38,15 +40,18 @@ class TokenMiddleware(BaseHTTPMiddleware):
             path.startswith("/api/document/") and path.endswith("/download")
         )
         if query_token_path:
-            if request.query_params.get("token") != self._token:
+            if not self._token_ok(request.query_params.get("token")):
                 return JSONResponse({"error": "missing or invalid token"}, status_code=403)
-        elif (
-            path.startswith("/api/")
-            and request.headers.get("x-dashboard-token") != self._token
+        elif path.startswith("/api/") and not self._token_ok(
+            request.headers.get("x-dashboard-token")
         ):
             return JSONResponse({"error": "missing or invalid token"}, status_code=403)
 
         return await call_next(request)
+
+    def _token_ok(self, provided: str | None) -> bool:
+        # Constant-time compare to avoid leaking the token via timing.
+        return provided is not None and secrets.compare_digest(provided, self._token)
 
 
 def build_middleware(token: str) -> list[Middleware]:

@@ -50,6 +50,7 @@ class _FakeEmbeddingStorage:
         pass
 
     def vector_search(self, query_embedding, limit, entity_type=None):
+        self.last_limit = limit
         return self._search_results[:limit]
 
 
@@ -124,6 +125,21 @@ class TestPackaging:
             assert (path / "index.html").exists()
             assert (path / "app.js").exists()
             assert (path / "styles.css").exists()
+
+    def test_dashboard_libs_vendored_not_cdn(self):
+        """D-4: the cytoscape/fcose stack is self-hosted (no CDN <script>, no SRI gap,
+        works offline). The 4 pinned files ship and index.html references no jsdelivr."""
+        traversable = resources.files("vibe_cognition.dashboard") / "static"
+        with resources.as_file(traversable) as path:
+            for f in ("cytoscape.min.js", "layout-base.js", "cose-base.js", "cytoscape-fcose.js"):
+                assert (path / "vendor" / f).exists(), f"vendored lib missing: {f}"
+            html = (path / "index.html").read_text(encoding="utf-8")
+            assert "cdn.jsdelivr.net" not in html, "index.html still loads a CDN script"
+            assert "/static/vendor/cytoscape.min.js" in html, "index.html not pointed at vendored libs"
+
+    def test_stop_dashboard_exported_from_package(self):
+        """D-5h: stop_dashboard is importable from the package root."""
+        from vibe_cognition.dashboard import stop_dashboard  # noqa: F401
 
 
 class TestAuth:
@@ -278,6 +294,22 @@ class TestSearch:
         r = c.post("/api/search", json={"query": ""}, headers=_hdr())
         assert r.status_code == 400
 
+    def test_search_malformed_body_is_400_not_500(self, client):
+        """D-5a: a malformed JSON body returns a clean 400, not a 500 traceback."""
+        c, _ = client
+        r = c.post("/api/search", content=b"{not json", headers=_hdr())
+        assert r.status_code == 400
+
+    def test_search_limit_is_clamped(self, client):
+        """D-5b: an absurd limit is clamped (no unbounded fan-out into ChromaDB)."""
+        c, lc = client
+        lc["embedding_generator"] = _FakeEmbeddingGenerator()
+        lc["embedding_ready"].set()
+        r = c.post("/api/search", json={"query": "x", "limit": 999999}, headers=_hdr())
+        assert r.status_code == 200
+        # over-query is limit*5; the clamp caps limit at 100 → vector_search sees <= 500.
+        assert lc["cognition_embedding_storage"].last_limit <= 500, "limit not clamped"
+
 
 def _doc_node(node_id, summary, metadata, doc_ref):
     return CognitionNode(
@@ -408,3 +440,15 @@ class TestLifecycle:
         stop_dashboard(lifespan_ctx, join_timeout=3.0)
         assert not thread.is_alive()
         assert "dashboard" not in lifespan_ctx
+
+    def test_start_dashboard_reports_failure_when_server_never_starts(self, lifespan_ctx, monkeypatch):
+        """D-1: if the server never comes up (e.g. bind fails → daemon thread dies),
+        start_dashboard returns an error status and does NOT cache a dead URL."""
+        import uvicorn
+
+        # Simulate a server that exits immediately without ever setting `started`.
+        monkeypatch.setattr(uvicorn.Server, "run", lambda self: None)
+        result = start_dashboard(lifespan_ctx, port=0, open_browser=False)
+        assert result["status"] == "failed", f"expected failed, got {result}"
+        assert result["url"] is None
+        assert "dashboard" not in lifespan_ctx, "a dead dashboard was cached"

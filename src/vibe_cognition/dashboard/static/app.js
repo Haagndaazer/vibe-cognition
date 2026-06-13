@@ -468,6 +468,13 @@ async function pollEmbeddingReady() {
   }
 }
 
+async function loadGraph() {
+  const graph = await api("/api/graph");
+  buildCy([...graph.nodes, ...graph.edges]);
+  buildEpisodeList(graph.nodes);
+  loadDocuments();
+}
+
 async function init() {
   try {
     const stats = await refreshStats();
@@ -480,11 +487,12 @@ async function init() {
       pollEmbeddingReady();
     }
 
-    const graph = await api("/api/graph");
-    const elements = [...graph.nodes, ...graph.edges];
-    buildCy(elements);
-    buildEpisodeList(graph.nodes);
-    loadDocuments();
+    await loadGraph();
+
+    document.getElementById("refresh-btn").addEventListener("click", () => {
+      refreshStats();
+      loadGraph();
+    });
 
     const search = document.getElementById("search");
     search.addEventListener("input", debounce(e => runSearch(e.target.value.trim()), 220));
