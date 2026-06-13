@@ -115,6 +115,7 @@ The embedding model (~250MB) also downloads on first use from Hugging Face. Afte
 | `cognition_store_document` | Store a document (reference or copy mode) + extracted text as a first-class node |
 | `cognition_get_document` | Retrieve a stored document: metadata + full text + freshness |
 | `cognition_get_node` | Read a single node's full narrative (incl. `detail`) by id |
+| `cognition_update_node` | Edit a node's narrative (summary/detail/context/severity) in place; re-embeds on text change |
 | `cognition_search` | Search project history by natural language |
 | `cognition_get_chain` | Traverse causal reasoning chains (LED_TO edges) |
 | `cognition_get_history` | Browse nodes by context area, type, or recency |

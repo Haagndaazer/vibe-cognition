@@ -41,6 +41,41 @@ from .utils import get_lifespan, require_embeddings
 logger = logging.getLogger(__name__)
 
 
+def _embeddings_ready(lc: dict[str, Any]) -> bool:
+    """True when the embedding model is loaded and didn't error — the boolean form
+    of require_embeddings (which returns a tool error dict). Used by the internal
+    record/update paths to decide whether to embed inline or defer to the sync."""
+    event = lc.get("embedding_ready")
+    return bool(event and event.is_set() and not lc.get("embedding_error"))
+
+
+def _embed_entity_node(
+    embedding_storage: "ChromaDBStorage",
+    generator: "EmbeddingGenerator",
+    node: CognitionNode,
+) -> None:
+    """THE single node-vector embed path (ledger 11) — used by both _record_node and
+    cognition_update_node. Builds the embed text + metadata from the node and upserts
+    under ``node.id``. Because upsert overwrites by id, calling this again after an
+    edit REFRESHES the searchable vector (this is what makes update_node's re-embed
+    correct — no stale vector, no ghost/duplicate). The caller must pass a node whose
+    ``id`` is the FINAL (post-mint) id, else the vector lands under a stale id (A1)."""
+    embed_text = f"{node.type.value}: {node.summary}\n{node.detail}"
+    embedding = generator.generate_query_embedding(embed_text)
+    metadata: dict[str, Any] = {
+        "entity_type": node.type.value,
+        "summary": node.summary,
+        "author": node.author,
+        "timestamp": node.timestamp,
+        "context": ",".join(node.context),
+    }
+    if node.severity:
+        metadata["severity"] = node.severity
+    if node.references:
+        metadata["references"] = ",".join(node.references)
+    embedding_storage.upsert_embedding(node.id, embedding, metadata)
+
+
 def _record_node(
     ctx: Context,
     node_type: CognitionNodeType,
@@ -78,26 +113,14 @@ def _record_node(
     # WP-ID: mint a collision-free id under the lock (global fix). Rebind node_id to
     # the returned id BEFORE the embedding upsert + edges + result — else a salted node
     # lands in the graph under the minted id while its vector lands under the stale id,
-    # leaving it silently unsearchable (A1).
+    # leaving it silently unsearchable (A1). Carry the minted id into the node copy so
+    # the shared embed path upserts under the FINAL id.
     node_id = storage.add_node(node, mint_unique_id=True)
+    node = node.model_copy(update={"id": node_id})
 
     # Embed and upsert to ChromaDB (skip if model not loaded yet — startup sync catches it later)
-    embedding_ready = lc.get("embedding_ready")
-    if embedding_ready and embedding_ready.is_set() and not lc.get("embedding_error"):
-        embed_text = f"{node_type.value}: {summary}\n{detail}"
-        embedding = generator.generate_query_embedding(embed_text)
-        metadata: dict[str, Any] = {
-            "entity_type": node_type.value,
-            "summary": summary,
-            "author": author,
-            "timestamp": timestamp,
-            "context": ",".join(context_list),
-        }
-        if severity:
-            metadata["severity"] = severity
-        if references_list:
-            metadata["references"] = ",".join(references_list)
-        embedding_storage.upsert_embedding(node_id, embedding, metadata)
+    if _embeddings_ready(lc):
+        _embed_entity_node(embedding_storage, generator, node)
 
     # Create deterministic part_of edges via reference matching. This is the ONLY
     # automatic edge creation — semantic curation (led_to, supersedes, contradicts,
@@ -665,6 +688,76 @@ def _get_node(storage: CognitionStorage, node_id: str) -> dict[str, Any]:
     return {"id": node_id, **node}
 
 
+def _update_node(
+    storage: CognitionStorage,
+    embedding_storage: "ChromaDBStorage",
+    generator: "EmbeddingGenerator",
+    *,
+    node_id: str,
+    embeddings_ready: bool,
+    summary: str | None = None,
+    detail: str | None = None,
+    context: str | None = None,
+    severity: str | None = None,
+) -> dict[str, Any]:
+    """Edit a node's narrative fields in place (testable core of cognition_update_node).
+
+    WHITELIST: only summary/detail/context/severity. Structural fields (id, type,
+    references, metadata, timestamp) are NOT editable here — editing them would
+    corrupt invariants (a document's sha/mode/doc: ref, the part_of edge index, the
+    minted id). RE-EMBEDS the node vector when summary or detail changed and the model
+    is ready, so cognition_search reflects the edit instead of serving the stale vector
+    (the silent-staleness failure mode); if the model isn't ready it reports
+    reembed="deferred" (the vector stays stale until a future re-embed — rare, an edit
+    needs a loaded model anyway)."""
+    if storage.get_node(node_id) is None:
+        return {"error": f"Node '{node_id}' does not exist"}
+
+    updates: dict[str, Any] = {}
+    if summary is not None:
+        updates["summary"] = summary
+    if detail is not None:
+        updates["detail"] = detail
+    if context is not None:
+        updates["context"] = [c.strip() for c in context.split(",") if c.strip()]
+    if severity is not None:
+        updates["severity"] = severity
+
+    if not updates:
+        return {"error": "No updatable fields provided (summary, detail, context, severity)"}
+
+    storage.update_node(node_id, **updates)
+
+    # Re-embed only when the SEARCHABLE text (summary/detail) changed — context and
+    # severity ride in metadata but don't alter the embed text, so they need no new
+    # vector. upsert overwrites by node_id, so the refreshed vector replaces the old.
+    reembed = "not_needed"
+    if "summary" in updates or "detail" in updates:
+        if embeddings_ready:
+            post = storage.get_node(node_id)
+            assert post is not None  # just updated it; cannot vanish under the lock
+            cnode = CognitionNode(
+                id=node_id,
+                type=CognitionNodeType(post["type"]),
+                summary=post["summary"],
+                detail=post["detail"],
+                context=post.get("context", []),
+                references=post.get("references", []),
+                severity=post.get("severity"),
+                timestamp=post["timestamp"],
+                author=post["author"],
+                metadata=post.get("metadata", {}),
+            )
+            _embed_entity_node(embedding_storage, generator, cnode)
+            reembed = "done"
+        else:
+            reembed = "deferred"
+
+    result = _get_node(storage, node_id)
+    result["reembed"] = reembed
+    return result
+
+
 def register_cognition_tools(mcp) -> None:
     """Register cognition graph tools with the MCP server.
 
@@ -855,6 +948,59 @@ def register_cognition_tools(mcp) -> None:
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         return _get_node(storage, node_id)
+
+    @mcp.tool()
+    def cognition_update_node(
+        ctx: Context,
+        node_id: str,
+        summary: str | None = None,
+        detail: str | None = None,
+        context: str | None = None,
+        severity: str | None = None,
+    ) -> dict[str, Any]:
+        """Edit a node's narrative in place — fix a typo or refine wording WITHOUT
+        delete+re-record (which would lose the id, its edges, and its curation marker).
+
+        Only these narrative fields are editable: `summary`, `detail`,
+        `context` (comma-separated), `severity`. Structural fields (id, type,
+        references, metadata, timestamp) are intentionally NOT editable — changing
+        them would corrupt invariants (a document node's sha/mode/`doc:` ref, the
+        reference→part_of index, the minted id). To change those, the node should be
+        re-created.
+
+        When `summary` or `detail` changes and the embedding model is loaded, the
+        node's search vector is RE-EMBEDDED so `cognition_search` reflects the edit
+        (otherwise search would keep serving the pre-edit text). The result carries
+        `reembed`: "done" | "deferred" (model still loading) | "not_needed".
+
+        Note: re-embedding a DOCUMENT node refreshes its node-level vector (its chunk
+        vectors, derived from the sidecar, are untouched); this is safe but means an
+        edited document node's vector metadata takes the entity shape rather than the
+        as-stored document shape.
+
+        Args:
+            node_id: The node to edit.
+            summary: New summary, if changing.
+            detail: New detail body, if changing.
+            context: New comma-separated context tags, if changing.
+            severity: New severity, if changing.
+
+        Returns:
+            The updated node dict (as cognition_get_node) plus `reembed`, or
+            {"error": ...} if the node is absent or no editable field was given.
+        """
+        lc = get_lifespan(ctx)
+        return _update_node(
+            lc["cognition_storage"],
+            lc["cognition_embedding_storage"],
+            lc["embedding_generator"],
+            node_id=node_id,
+            embeddings_ready=_embeddings_ready(lc),
+            summary=summary,
+            detail=detail,
+            context=context,
+            severity=severity,
+        )
 
     @mcp.tool()
     def cognition_search(

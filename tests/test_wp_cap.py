@@ -4,6 +4,8 @@ cognition_update_node + re-embed, and the exposed superseded/incident queries.
 Each test names the specific failure mode it guards (rule 20) and is written to
 fail before its fix exists (rule 12)."""
 
+from typing import cast
+
 from vibe_cognition.cognition import (
     CognitionEdge,
     CognitionEdgeType,
@@ -11,10 +13,14 @@ from vibe_cognition.cognition import (
     CognitionNodeType,
     CognitionStorage,
 )
+from vibe_cognition.embeddings import ChromaDBStorage, EmbeddingGenerator
 from vibe_cognition.tools.cognition_tools import (
     _add_edge_core,
     _add_edges_batch_core,
+    _embed_entity_node,
     _get_node,
+    _search_cognition,
+    _update_node,
 )
 
 
@@ -102,3 +108,113 @@ def test_add_edges_batch_persists_reason(tmp_path):
     )
     assert out["created"] == 1, out
     assert _edge_reason(s, "a", "b") == "batch why"
+
+
+# --- Commit 3: cognition_update_node + re-embed (the gate-hard one) ----------
+
+class _TextKeyedGen:
+    """A text-KEYED fake embedder (NOT a constant): distinct marker words map to
+    distinct ORTHOGONAL unit vectors, so a re-embed genuinely MOVES the stored vector
+    and search can tell the new text from the old. A constant-vector fake literally
+    can't distinguish 're-embedded' from 'stale' — the re-embed proof would be
+    tautological with one (Vince's B4)."""
+
+    _MARKERS = {
+        "alpha": [1.0, 0.0, 0.0],
+        "beta": [0.0, 1.0, 0.0],
+        "gamma": [0.0, 0.0, 1.0],
+    }
+
+    def generate_query_embedding(self, text):
+        low = text.lower()
+        for marker, vec in self._MARKERS.items():
+            if marker in low:
+                return list(vec)
+        return [0.0, 0.0, 1.0]  # never used here; all test texts carry a marker
+
+
+def _gen() -> EmbeddingGenerator:
+    return cast(EmbeddingGenerator, _TextKeyedGen())
+
+
+def _score_for(results, node_id):
+    return next((r["score"] for r in results if r["id"] == node_id), None)
+
+
+def test_update_node_reembeds_so_search_finds_new_text(tmp_path):
+    """THE crux (rule 12, fails-before): a summary edit must REFRESH the search vector,
+    not just the graph. With a text-keyed embedder, the node's vector starts on ALPHA;
+    after update_node(summary=beta) + re-embed it must move to BETA — so a BETA search
+    scores ~1.0 and an ALPHA search collapses to ~0. Fails-before (no re-embed): the
+    vector stays on ALPHA, BETA search scores ~0 — silent search-staleness."""
+    s = CognitionStorage(tmp_path / ".cognition")
+    embed = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
+    gen = _gen()
+
+    node = CognitionNode(
+        id="n1", type=CognitionNodeType.DECISION, summary="alpha plan", detail="body",
+        context=[], references=[], timestamp="2026-06-13T00:00:00+00:00", author="t",
+    )
+    s.add_node(node)
+    _embed_entity_node(embed, gen, node)
+
+    # baseline: the node sits on the ALPHA vector
+    before = _score_for(_search_cognition(s, embed, gen, "alpha")["results"], "n1")
+    assert before is not None and before > 0.99
+
+    out = _update_node(s, embed, gen, node_id="n1", embeddings_ready=True, summary="beta plan")
+    assert out.get("reembed") == "done", out
+    assert out.get("summary") == "beta plan"
+
+    # the vector moved to BETA — a BETA query now matches it strongly
+    after_beta = _score_for(_search_cognition(s, embed, gen, "beta")["results"], "n1")
+    assert after_beta is not None and after_beta > 0.99, (
+        "node vector was not refreshed to the new text (stale search vector)"
+    )
+    # and the OLD text no longer matches the node's vector
+    after_alpha = _score_for(_search_cognition(s, embed, gen, "alpha")["results"], "n1")
+    assert after_alpha is not None and after_alpha < 0.01, (
+        "stale ALPHA vector still served after the edit"
+    )
+
+
+def test_update_node_deferred_when_embeddings_not_ready(tmp_path):
+    """If the model isn't ready, the edit still applies but the re-embed is deferred
+    (reported), not silently skipped as 'done'."""
+    s = CognitionStorage(tmp_path / ".cognition")
+    embed = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
+    s.add_node(_node("n1", summary="alpha"))
+    out = _update_node(s, embed, _gen(), node_id="n1", embeddings_ready=False, summary="beta")
+    assert out.get("reembed") == "deferred", out
+    assert out.get("summary") == "beta"
+
+
+def test_update_node_whitelist_leaves_structural_fields_intact(tmp_path):
+    """The whitelist: a narrative edit must NOT touch id/type/references/metadata
+    /timestamp (editing those would corrupt a document's sha/mode ref or the part_of
+    index). A context-only edit needs no re-embed (text unchanged)."""
+    s = CognitionStorage(tmp_path / ".cognition")
+    embed = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
+    n = CognitionNode(
+        id="n1", type=CognitionNodeType.DECISION, summary="s", detail="d",
+        context=["old"], references=["commit:abc"], severity=None,
+        timestamp="2026-06-13T00:00:00+00:00", author="t", metadata={"sha256": "deadbeef"},
+    )
+    s.add_node(n)
+
+    out = _update_node(s, embed, _gen(), node_id="n1", embeddings_ready=True, context="new")
+    assert out.get("context") == ["new"]
+    assert out.get("reembed") == "not_needed", "context-only edit must not re-embed"
+    assert out.get("references") == ["commit:abc"], "references must be untouched"
+    assert out.get("metadata") == {"sha256": "deadbeef"}, "metadata must be untouched"
+    assert out.get("type") == CognitionNodeType.DECISION.value
+
+
+def test_update_node_missing_and_empty(tmp_path):
+    """A missing node errors; an existing node with no editable field errors (no
+    silent no-op success)."""
+    s = CognitionStorage(tmp_path / ".cognition")
+    embed = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
+    assert "error" in _update_node(s, embed, _gen(), node_id="nope", embeddings_ready=False, summary="x")
+    s.add_node(_node("n1"))
+    assert "error" in _update_node(s, embed, _gen(), node_id="n1", embeddings_ready=False)
