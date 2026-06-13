@@ -12,6 +12,7 @@ from typing import Any
 
 import networkx as nx
 
+from .documents import doc_ref
 from .journal_io import append_journal_line
 from .models import CognitionEdge, CognitionEdgeType, CognitionNode, CognitionNodeType
 
@@ -94,6 +95,28 @@ class CognitionStorage:
                     if nid not in out:
                         out.append(nid)
             return out
+
+    def documents_with_sha(self, sha: str) -> list[str]:
+        """Node IDs of DOCUMENT nodes whose content ``sha256 == sha``.
+
+        THE single document-identity predicate. dedup (store), sidecar reclaim and
+        blob reclaim (delete), AND their guarding tests all call this — so retain
+        and reclaim are the SAME expression and cannot drift (the asymmetry that
+        caused the F1 sidecar leak: two filters trusted to agree by reading). With
+        no FK to enforce it (JSONL + networkx + filesystem), this function IS the
+        structural binding. Mode refinement (reference vs copy) is caller-side: the
+        sidecar reclaim purges when this returns empty (any mode); the blob reclaim
+        filters to ``mode=="copy"`` (a reference twin has no blob stake). Confirms
+        the full sha (the doc: ref index key is only a 12-char prefix)."""
+        out: list[str] = []
+        with self._synced():
+            for nid in self.find_nodes_by_ref(doc_ref(sha)):
+                node = self.get_node(nid)
+                if (node
+                        and node.get("type") == CognitionNodeType.DOCUMENT.value
+                        and node.get("metadata", {}).get("sha256") == sha):
+                    out.append(nid)
+        return out
 
     @contextmanager
     def _synced(self):

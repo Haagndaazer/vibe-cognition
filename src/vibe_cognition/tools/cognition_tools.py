@@ -138,23 +138,21 @@ def _store_document(
 
     ref = doc_ref(sha)
 
-    # Dedup: O(1) via the doc: ref index, CONFIRMED by full sha (a 12-char prefix
-    # collision is astronomically unlikely, but the confirm is cheap insurance).
+    # Dedup via the ONE shared document-identity predicate (storage.documents_with_sha
+    # confirms type==document AND full sha — the same expression sidecar/blob reclaim
+    # use, so dedup and delete cannot drift; F1 root cause).
     if not force_new:
-        for nid in storage.find_nodes_by_ref(ref):
+        for nid in storage.documents_with_sha(sha):
             existing = storage.get_node(nid)
-            if (existing
-                    and existing.get("type") == CognitionNodeType.DOCUMENT.value
-                    and existing.get("metadata", {}).get("sha256") == sha):
-                meta = existing.get("metadata", {})
-                return {
-                    "node_id": nid,
-                    "doc_ref": ref,
-                    "mode": "reference",
-                    "size": meta.get("size", size),
-                    "indexed_text_chars": meta.get("indexed_text_chars", 0),
-                    "already_stored": True,
-                }
+            meta = existing.get("metadata", {}) if existing else {}
+            return {
+                "node_id": nid,
+                "doc_ref": ref,
+                "mode": "reference",
+                "size": meta.get("size", size),
+                "indexed_text_chars": meta.get("indexed_text_chars", 0),
+                "already_stored": True,
+            }
 
     indexed_chars = write_text_sidecar(cognition_dir, sha, document_text)
 
