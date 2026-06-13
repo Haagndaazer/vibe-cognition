@@ -111,6 +111,37 @@ def _record_node(
     return result
 
 
+def _format_search_results(
+    results: list[dict[str, Any]], storage: CognitionStorage
+) -> list[dict[str, Any]]:
+    """Format vector-search hits, DROPPING any whose (chunk-stripped) node id is
+    absent from the graph — the N1 ghost-search fix (§9 N1).
+
+    A cross-process remove_node replays into the graph but never un-embeds (replay
+    touches only the graph; the embedding sync only ADDS), so Chroma serves hits for
+    nodes deleted on another machine — escalated by documents to verbatim deleted
+    client text. Filtering on graph presence is the CORRECTNESS guarantee (it never
+    deletes; the startup sweep is best-effort reclamation). The ``#chunk-`` strip is
+    forward-compatible with D2 chunk ids (``<node_id>#chunk-N``)."""
+    formatted: list[dict[str, Any]] = []
+    for r in results:
+        raw_id = r.get("_id") or ""
+        node_id = raw_id.split("#chunk-")[0]
+        if not storage.has_node(node_id):
+            continue
+        formatted.append({
+            "id": raw_id,
+            "node_type": r.get("entity_type"),
+            "summary": r.get("summary") or r.get("name"),
+            "author": r.get("author"),
+            "timestamp": r.get("timestamp"),
+            "severity": r.get("severity"),
+            "context": r.get("context", ""),
+            "score": r.get("score"),
+        })
+    return formatted
+
+
 def _materialize_blob(
     cognition_dir: Path, sha: str, ext: str, blob_rel: str, size: int,
     local_only: bool | None, *, data: bytes | None, src: Path | None,
@@ -554,10 +585,10 @@ def register_cognition_tools(mcp) -> None:
         if err:
             return err
 
-        embedding_storage: ChromaDBStorage = ctx.request_context.lifespan_context[
-            "cognition_embedding_storage"
-        ]
-        generator: EmbeddingGenerator = ctx.request_context.lifespan_context["embedding_generator"]
+        lifespan = get_lifespan(ctx)
+        embedding_storage: ChromaDBStorage = lifespan["cognition_embedding_storage"]
+        generator: EmbeddingGenerator = lifespan["embedding_generator"]
+        storage: CognitionStorage = lifespan["cognition_storage"]
 
         limit = min(limit, 50)
         query_embedding = generator.generate_query_embedding(query)
@@ -568,19 +599,7 @@ def register_cognition_tools(mcp) -> None:
             entity_type=node_type,
         )
 
-        formatted = []
-        for r in results:
-            formatted.append({
-                "id": r.get("_id"),
-                "node_type": r.get("entity_type"),
-                "summary": r.get("summary") or r.get("name"),
-                "author": r.get("author"),
-                "timestamp": r.get("timestamp"),
-                "severity": r.get("severity"),
-                "context": r.get("context", ""),
-                "score": r.get("score"),
-            })
-
+        formatted = _format_search_results(results, storage)
         return {
             "query": query,
             "results": formatted,

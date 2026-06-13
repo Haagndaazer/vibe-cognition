@@ -22,8 +22,12 @@ from vibe_cognition.cognition.models import (
 from vibe_cognition.cognition.operations import delete_cognition_node
 from vibe_cognition.cognition.storage import CognitionStorage
 from vibe_cognition.embeddings import ChromaDBStorage, EmbeddingGenerator
-from vibe_cognition.server import _sync_cognition_embeddings
-from vibe_cognition.tools.cognition_tools import _get_document, _store_document
+from vibe_cognition.server import _reconcile_orphan_embeddings, _sync_cognition_embeddings
+from vibe_cognition.tools.cognition_tools import (
+    _format_search_results,
+    _get_document,
+    _store_document,
+)
 
 
 class _NoopEmbed:
@@ -538,3 +542,49 @@ def test_reference_twin_has_no_blob_stake(tmp_path):
     assert not bp.exists(), "blob not unlinked: a reference twin (no blob stake) wrongly blocked it"
     assert sidecar.exists(), "sidecar wrongly purged while the reference twin still holds the sha"
     assert s.has_node(ref_node["node_id"]), "reference twin wrongly removed"
+
+
+# --- WP-D1b N1 ghost-search fix (general; pre-dates documents) -----------------
+
+
+def test_search_drops_hits_for_graph_absent_nodes(tmp_path):
+    """N1 (§9): cognition_search must drop a Chroma hit whose node was deleted
+    cross-process (replayed remove_node tombstone never un-embeds). A present node
+    and its #chunk- hit are kept; a ghost id is dropped. Fails-before: without the
+    has_node filter the ghost is served (verbatim deleted content)."""
+    s = CognitionStorage(tmp_path / "cog")
+    s.add_node(_node("live0001", CognitionNodeType.DECISION))
+    hits = [
+        {"_id": "live0001", "entity_type": "decision", "summary": "kept"},
+        {"_id": "ghost001", "entity_type": "decision", "summary": "DELETED — must not surface"},
+        {"_id": "live0001#chunk-3", "entity_type": "decision", "summary": "chunk of a live node"},
+    ]
+    out = _format_search_results(hits, s)
+    ids = [h["id"] for h in out]
+    assert "live0001" in ids, "present node dropped"
+    assert "live0001#chunk-3" in ids, "chunk of a present node dropped (chunk-strip wrong)"
+    assert "ghost001" not in ids, "ghost (graph-absent) hit served — N1 fix failed"
+
+
+def test_reconcile_orphan_sweep_removes_only_graph_absent(tmp_path):
+    """N1 startup reclamation (§9 N1b): the sweep deletes Chroma ids absent from the
+    graph (incl. #chunk-*), KEEPS present ones (the ordering guard — a present node
+    is never swept), and is a no-op on an empty collection (the ids=[] raise guard)."""
+    s = CognitionStorage(tmp_path / "cog")
+    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+
+    # No-op safe on an empty collection (the all_ids guard; never raises).
+    _reconcile_orphan_embeddings(s, embed)
+
+    s.add_node(_node("live0002", CognitionNodeType.DECISION))
+    embed.upsert_embedding("live0002", [0.1, 0.2, 0.3], {"entity_type": "decision"})
+    embed.upsert_embedding("live0002#chunk-0", [0.4, 0.5, 0.6], {"node_id": "live0002"})
+    embed.upsert_embedding("ghost002", [0.7, 0.8, 0.9], {"entity_type": "decision"})
+
+    _reconcile_orphan_embeddings(s, embed)
+
+    remaining = set(embed._collection.get()["ids"])
+    assert "ghost002" not in remaining, "orphan vector not swept"
+    assert remaining == {"live0002", "live0002#chunk-0"}, (
+        f"sweep removed a present node or its chunk (ordering guard failed): {remaining}"
+    )

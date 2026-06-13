@@ -78,28 +78,65 @@ def _sync_cognition_embeddings(
         if n["id"] not in existing_ids and n.get("type") != CognitionNodeType.DOCUMENT.value
     ]
 
-    if not missing:
+    if missing:
+        logger.info(f"Syncing {len(missing)} cognition nodes to ChromaDB...")
+        for node in missing:
+            embed_text = f"{node.get('type', '')}: {node.get('summary', '')}\n{node.get('detail', '')}"
+            embedding = generator.generate_query_embedding(embed_text)
+            metadata = {
+                "entity_type": node.get("type", ""),
+                "summary": node.get("summary", ""),
+                "author": node.get("author", ""),
+                "timestamp": node.get("timestamp", ""),
+                "context": ",".join(node.get("context", [])),
+            }
+            if node.get("severity"):
+                metadata["severity"] = node["severity"]
+            if node.get("references"):
+                metadata["references"] = ",".join(node["references"])
+            embedding_storage.upsert_embedding(node["id"], embedding, metadata)
+        logger.info(f"Cognition embedding sync complete: {len(missing)} nodes added")
+    else:
         logger.info("Cognition embeddings: all nodes already synced")
+
+    # Always reconcile orphans (independent of the add-missing pass above).
+    _reconcile_orphan_embeddings(cognition_storage, embedding_storage)
+
+
+def _reconcile_orphan_embeddings(
+    cognition_storage: CognitionStorage,
+    embedding_storage: ChromaDBStorage,
+) -> None:
+    """N1 startup reclamation (§9 N1b): delete Chroma ids (incl. ``#chunk-*``) whose
+    node is absent from the graph. A node deleted on another machine replays as a
+    remove_node tombstone (graph-only) and is NEVER un-embedded (the sync only ADDS),
+    so its vector lingers and would surface in search.
+
+    Best-effort RECLAMATION only — the query-time has_node filter in cognition_search
+    is the correctness guarantee (it never returns a ghost regardless of this sweep).
+    Ordering-hardened (peer review): the graph snapshot is freshly caught-up
+    (get_all_nodes -> _synced), orphans are computed against it, enumeration uses the
+    no-arg get() (a get/delete with ids=[] RAISES on an empty list), and delete is
+    skipped on an empty orphan set. A residual cross-process TOCTOU remains (a write
+    landing between catch-up and delete) — accepted under the non-transactional model;
+    it can cause only a transiently-late reclamation, never a wrong search result.
+    """
+    try:
+        all_ids = embedding_storage._collection.get()["ids"]
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"Orphan-embedding sweep: enumerate failed: {e}")
         return
-
-    logger.info(f"Syncing {len(missing)} cognition nodes to ChromaDB...")
-    for node in missing:
-        embed_text = f"{node.get('type', '')}: {node.get('summary', '')}\n{node.get('detail', '')}"
-        embedding = generator.generate_query_embedding(embed_text)
-        metadata = {
-            "entity_type": node.get("type", ""),
-            "summary": node.get("summary", ""),
-            "author": node.get("author", ""),
-            "timestamp": node.get("timestamp", ""),
-            "context": ",".join(node.get("context", [])),
-        }
-        if node.get("severity"):
-            metadata["severity"] = node["severity"]
-        if node.get("references"):
-            metadata["references"] = ",".join(node["references"])
-        embedding_storage.upsert_embedding(node["id"], embedding, metadata)
-
-    logger.info(f"Cognition embedding sync complete: {len(missing)} nodes added")
+    if not all_ids:
+        return
+    graph_ids = {n["id"] for n in cognition_storage.get_all_nodes()}
+    orphans = [cid for cid in all_ids if cid.split("#chunk-")[0] not in graph_ids]
+    if not orphans:
+        return
+    try:
+        embedding_storage._collection.delete(ids=orphans)
+        logger.info(f"Orphan-embedding sweep: removed {len(orphans)} stale vector(s)")
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning(f"Orphan-embedding sweep: delete failed: {e}")
 
 
 def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None:
