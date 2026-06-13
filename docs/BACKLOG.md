@@ -7,17 +7,19 @@ and `docs/DESIGN-document-storage.md` (the v0.8.0 feature spine).
 **Convention:** the proposed WP groupings below are a *triage inventory*, not briefs. Each WP
 gets a peer-reviewed execution plan (a `docs/wp-*-plan.md`) before it's assigned to Vorpid, and
 each ships through the standard gate (SHA-pinned merge, fix+proof same commit, voiding clause,
-journal-flush-via-worktree). Last updated 2026-06-13 (v0.8.0 LIVE; all P1+P2 audit-remainder done — WP-T/WP-ID/WP-Cap; pipeline PAUSED, audit tail is P3, awaiting Colton's pause/continue call).
+journal-flush-via-worktree). Last updated 2026-06-13 (v0.8.0 LIVE; P1+P2 + WP-Core-tail done; ledger now global; WP-Dash-tail in flight; only WP-Emb-non-E-3 + parked E-3 remain).
 
 ---
 
-## In flight — PAUSED (value inflection; awaiting Colton's pause/continue call)
-All P1 + P2 audit-remainder work is done. The remaining audit tail is **P3 cleanup** — pipeline paused pending Colton's decision: ship/announce v0.8.0 and stop here, or keep burning down the P3 tail. (One P3 item, **E-3 query-prefix re-embed**, needs Colton's explicit go regardless — it invalidates all existing vectors via a one-time re-embed.)
+## In flight (Colton: continue the P3 tail)
 
-### P3 tail — triaged, ready if Colton says continue
-- **WP-Core-tail** (recommended next if continuing): C-4 (mutate-then-journal rollback — phantom in-memory write if the append raises; journal-before-mutate; **note: composes with WP-ID's add_node mint loop — review together**), C-6 (self-replay log noise), C-7 (get_reasoning_chain diamonds-as-cycles). Core robustness, no coordination needed.
-- **WP-Emb**: E-3 (query-prefix → document-prefix re-embed — **NEEDS COLTON'S GO**, one-time full re-embed invalidates existing vectors), E-4 (concurrent PersistentClients), E-6 (code-search dead-code prune), E-5/E-7/E-8 (model-mismatch detect, `revision=` pin, datetime.utcnow).
-- **Dashboard cosmetics** (D-3 rest: auto-poll, --no-embeddings banner; D-5: IPv6 host, dup keys, port dedup) + the dashboard fixed-over-query consistency (LOW, recall-only).
+| WP | Scope | State |
+|----|-------|-------|
+| **WP-Dash-tail** | Dashboard P3 cleanup (LOW/cosmetic, tiered): the dashboard over-query consistency (unify the fixed `limit*5` with the MCP adaptive widen, ledger 11); D-3 rest (auto-poll, `--no-embeddings` disabled state, search-wiring robustness); D-5 cosmetics (IPv6 `[::1]` host-check, dup neighbor-payload keys, drop unused context/severity from graph payload, port-constant dedup, ExitStack-on-timeout). | **Next for Vorpid** — plan + decorrelated peer-review. Branch off `3961f32` (vince aligns). |
+
+### P3 tail remaining after WP-Dash-tail (near the bottom of the barrel)
+- **WP-Emb (non-E-3)**: E-4 (concurrent PersistentClients), E-6 (code-search dead-code prune), E-7 (`revision=` pin on trust_remote_code, datetime.utcnow), E-8 (slow startup sync / dead generate_batch). Likely the last cluster.
+- **E-3 query-prefix re-embed** — **PARKED, needs Colton's explicit go** (one-time full re-embed invalidates all existing vectors).
 
 **Document-storage feature COMPLETE (D1a → D4) — stored, searchable, deletable, documented, dashboard:**
 - **WP-D1a** (PR #8 → `870ff09`): DOCUMENT type + reference mode + sidecar (+deletion) + store/get + dedup + pair-level graph-inert matcher guard + sync-path embed guard.
@@ -35,6 +37,7 @@ WP-R3 (PR #13 → `8f3079f`) cut the version bump + CHANGELOG; Colton cleared bo
 - **WP-T** (PR #14 → `cc9cd73`): tool-layer correctness + pyright ratchet — T-9 (lifespan accessor, baseline **29→8**), T-2 (honest uncurated count), T-3 (batch partial-commit guard), T-6 (unified node_type/direction error contract), C-5 (surface add_edge False). First tests for the previously-untested MCP tool layer.
 - **WP-ID** (PR #15 → `d585a22`): GLOBAL node-id-collision data-loss fix (P1) — mint-on-collision in `add_node`'s locked block (replay-safe by construction, documented), unified out the D1a document salt-retry, post-commit hook commit-hash discriminator, embedding-id rebind closes the orphan-vector. TOCTOU **shrunk** (backlog #2 residual documented, not eliminated). Closes the last P1 audit item.
 - **WP-Cap** (PR #16 → `9876b43`, P2): `cognition_get_node`, persisted edge `reason` (replayed), `cognition_update_node` with re-embed-on-any-whitelisted-change (closes search-staleness for both the match vector AND the displayed context/severity metadata), exposed `get_superseded_chain`/`get_incident_resolution`. Held once on the context/severity metadata re-embed gap; fixed.
+- **WP-Core-tail** (PR #17 → `3961f32`, P3): C-4 journal-FIRST-then-mutate on all 8 write paths (a failing append leaves no phantom in-memory write; all 8 sites guarded by fails-before append-failure tests asserting the raw graph), C-6 (documented why appends don't advance the offset — would corrupt the C-3 prefix-hash; log reworded), C-7 (path-based cycle detection — diamonds no longer mislabeled). Composes with WP-ID's add_node mint. Held once to complete the regression-guard set.
 
 ## Tracked follow-ups (from the document-storage run)
 - **Dashboard search over-query** (recall, LOW): the dashboard `search()` uses a FIXED `limit*5` over-query while the MCP `_search_cognition` is ADAPTIVE (the D2 B3 fix). Same starve class, far more remote at the dashboard default limit=20 (~100-chunk single-doc domination needed), recall-only, secondary surface. Unify the over-query logic (ledger 11) or document as accepted residual.
@@ -142,3 +145,4 @@ it isn't mistaken for intent.
 | WP-T tool-layer correctness + pyright ratchet (T-9/T-2/T-3/T-6/C-5; pyright 29→8; first tool tests) | main `cc9cd73` (PR #14, pinned `7e090ae`) |
 | WP-ID global node-id-collision data-loss fix (mint-in-add_node, replay-safe, hook discriminator, embedding-id rebind) | main `d585a22` (PR #15, pinned `1494a9c`) — last P1 closed |
 | WP-Cap capability gaps (get_node, edge reason persist, update_node+re-embed, expose superseded/incident queries) | main `9876b43` (PR #16, pinned `9d8a8f8`) — last P2 |
+| WP-Core-tail core robustness (C-4 journal-first all write paths, C-6 offset-noise documented, C-7 path-based cycle detection) | main `3961f32` (PR #17, pinned `c4b4aa1`) — P3 |
