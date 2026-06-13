@@ -184,6 +184,13 @@ class CognitionStorage:
                     node = node.model_copy(update={
                         "id": generate_node_id(node.type.value, f"{node.summary}#{salt}", node.timestamp),
                     })
+            # C-4 journal-FIRST: the (validated, minted) node is durably recorded
+            # BEFORE any in-memory mutation, so a failing append leaves NOTHING
+            # mutated — no phantom node the journal never recorded (invisible to other
+            # processes, lost on the next re-hydrate). The mint above stays first: it
+            # needs the caught-up in-memory graph to detect collisions, and it never
+            # runs on replay (_replay_entry writes self._graph directly).
+            self._append_journal("add_node", node.model_dump(mode="json"))
             self._graph.add_node(
                 node.id,
                 type=node.type.value,
@@ -197,7 +204,6 @@ class CognitionStorage:
                 metadata=node.metadata,
             )
             self._index_node_refs(node.id, node.references)
-            self._append_journal("add_node", node.model_dump(mode="json"))
             return node.id
 
     def add_edge(self, edge: CognitionEdge) -> bool:
@@ -221,6 +227,8 @@ class CognitionStorage:
                 )
                 return False
 
+            # C-4 journal-FIRST (see add_node): record before mutating the graph.
+            self._append_journal("add_edge", edge.model_dump(mode="json"))
             self._graph.add_edge(
                 edge.from_id,
                 edge.to_id,
@@ -230,7 +238,6 @@ class CognitionStorage:
                 source=edge.source,
                 reason=edge.reason,
             )
-            self._append_journal("add_edge", edge.model_dump(mode="json"))
             return True
 
     def update_node(self, node_id: str, **kwargs: Any) -> bool:
@@ -247,11 +254,11 @@ class CognitionStorage:
             if node_id not in self._graph:
                 return False
 
-            for key, value in kwargs.items():
-                self._graph.nodes[node_id][key] = value
-
+            # C-4 journal-FIRST (see add_node): record before mutating the graph.
             data = {"id": node_id, **kwargs}
             self._append_journal("update_node", data)
+            for key, value in kwargs.items():
+                self._graph.nodes[node_id][key] = value
             return True
 
     def remove_node(self, node_id: str) -> bool:
@@ -267,9 +274,10 @@ class CognitionStorage:
             if node_id not in self._graph:
                 return False
 
+            # C-4 journal-FIRST (see add_node): record before mutating the graph.
+            self._append_journal("remove_node", {"id": node_id})
             self._unindex_node_refs(node_id)
             self._graph.remove_node(node_id)
-            self._append_journal("remove_node", {"id": node_id})
             return True
 
     def remove_edge(
@@ -300,23 +308,26 @@ class CognitionStorage:
                 key = edge_type.value
                 if key not in self._graph[from_id][to_id]:
                     return False
-                self._graph.remove_edge(from_id, to_id, key=key)
+                # C-4 journal-FIRST (see add_node): record before mutating the graph.
                 self._append_journal("remove_edge", {
                     "from_id": from_id,
                     "to_id": to_id,
                     "edge_type": edge_type.value,
                 })
+                self._graph.remove_edge(from_id, to_id, key=key)
                 return True
             else:
                 # Remove all edges between the pair
                 keys = list(self._graph[from_id][to_id].keys())
                 for key in keys:
-                    self._graph.remove_edge(from_id, to_id, key=key)
+                    # C-4 journal-FIRST per edge: a mid-loop append failure leaves a
+                    # clean journaled+mutated prefix (no phantom removal).
                     self._append_journal("remove_edge", {
                         "from_id": from_id,
                         "to_id": to_id,
                         "edge_type": key,
                     })
+                    self._graph.remove_edge(from_id, to_id, key=key)
                 return len(keys) > 0
 
     def redirect_edges(self, old_node_id: str, new_node_id: str) -> int:
@@ -339,34 +350,36 @@ class CognitionStorage:
             for _, target_id, key, edge_data in list(
                 self._graph.out_edges(old_node_id, data=True, keys=True)
             ):
-                if target_id != new_node_id:  # Avoid self-loops
+                if target_id != new_node_id:  # Avoid self-loops (validation: stays before the append)
                     edge_type = edge_data.get("type", key)
-                    self._graph.add_edge(
-                        new_node_id, target_id, key=edge_type, **edge_data
-                    )
+                    # C-4 journal-FIRST per edge: record before mutating the graph.
                     self._append_journal("add_edge", {
                         "from_id": new_node_id, "to_id": target_id,
                         "edge_type": edge_type,
                         "timestamp": edge_data.get("timestamp", ""),
                         "source": edge_data.get("source", "curator"),
                     })
+                    self._graph.add_edge(
+                        new_node_id, target_id, key=edge_type, **edge_data
+                    )
                     redirected += 1
 
             # Redirect incoming edges
             for source_id, _, key, edge_data in list(
                 self._graph.in_edges(old_node_id, data=True, keys=True)
             ):
-                if source_id != new_node_id:  # Avoid self-loops
+                if source_id != new_node_id:  # Avoid self-loops (validation: stays before the append)
                     edge_type = edge_data.get("type", key)
-                    self._graph.add_edge(
-                        source_id, new_node_id, key=edge_type, **edge_data
-                    )
+                    # C-4 journal-FIRST per edge: record before mutating the graph.
                     self._append_journal("add_edge", {
                         "from_id": source_id, "to_id": new_node_id,
                         "edge_type": edge_type,
                         "timestamp": edge_data.get("timestamp", ""),
                         "source": edge_data.get("source", "curator"),
                     })
+                    self._graph.add_edge(
+                        source_id, new_node_id, key=edge_type, **edge_data
+                    )
                     redirected += 1
 
             return redirected
