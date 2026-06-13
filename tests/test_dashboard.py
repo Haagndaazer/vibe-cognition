@@ -34,7 +34,7 @@ class _FakeEmbeddingStorage:
         self._search_results: list[dict] = []
         self._count = 0
 
-    def count_documents(self) -> int:
+    def count_documents(self, filter=None) -> int:
         return self._count
 
     def delete_embedding(self, entity_id: str) -> bool:
@@ -203,6 +203,11 @@ class TestSearch:
         c, lc = client
         lc["embedding_generator"] = _FakeEmbeddingGenerator()
         lc["embedding_ready"].set()
+        # The hit's node must be live in the graph (WP-D2 N1 filter); seed it.
+        lc["cognition_storage"].add_node(CognitionNode(
+            id="x1", type=CognitionNodeType.DECISION, summary="result 1", detail="d",
+            context=[], references=[], timestamp=datetime.now(UTC).isoformat(), author="t",
+        ))
         lc["cognition_embedding_storage"]._search_results = [
             {"_id": "x1", "summary": "result 1", "score": 0.9, "entity_type": "decision"},
         ]
@@ -215,6 +220,22 @@ class TestSearch:
         results = r.json()["results"]
         assert len(results) == 1
         assert results[0]["_id"] == "x1"
+
+    def test_search_drops_cross_process_ghost(self, client):
+        """WP-D2 N1: a hit whose node was deleted on another machine (absent from the
+        graph) must NOT be served by the dashboard — D2 makes documents searchable, so
+        an un-filtered dashboard would leak verbatim deleted client-document text."""
+        c, lc = client
+        lc["embedding_generator"] = _FakeEmbeddingGenerator()
+        lc["embedding_ready"].set()
+        # A document-chunk hit whose node is NOT in the graph (cross-process delete).
+        lc["cognition_embedding_storage"]._search_results = [
+            {"_id": "ghostdoc#chunk-0", "summary": "DELETED client doc", "score": 0.99,
+             "entity_type": "document"},
+        ]
+        r = c.post("/api/search", json={"query": "secret"}, headers=_hdr())
+        assert r.status_code == 200
+        assert r.json()["results"] == [], "dashboard served a cross-process document-chunk ghost"
 
     def test_search_missing_query(self, client):
         c, _ = client

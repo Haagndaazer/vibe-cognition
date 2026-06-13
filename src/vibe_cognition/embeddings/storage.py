@@ -46,6 +46,7 @@ class ChromaDBStorage:
         entity_id: str,
         embedding: list[float],
         metadata: dict[str, Any],
+        document: str | None = None,
     ) -> None:
         """Insert or update an embedding.
 
@@ -53,13 +54,20 @@ class ChromaDBStorage:
             entity_id: Unique entity ID
             embedding: Embedding vector
             metadata: Entity metadata (content_hash, entity_type, file_path, etc.)
+            document: Optional source text for the entry (WP-D2: a document chunk's
+                text, stored as the Chroma ``documents`` field so search can return a
+                matched excerpt). Omitted when None — a collection may mix text-bearing
+                chunks and text-less node vectors (no all-or-none requirement).
         """
         flat_metadata = self._flatten_metadata(metadata)
-        self._collection.upsert(
-            ids=[entity_id],
-            embeddings=[embedding],
-            metadatas=[flat_metadata],
-        )
+        kwargs: dict[str, Any] = {
+            "ids": [entity_id],
+            "embeddings": [embedding],
+            "metadatas": [flat_metadata],
+        }
+        if document is not None:
+            kwargs["documents"] = [document]
+        self._collection.upsert(**kwargs)
 
     def bulk_upsert(
         self,
@@ -275,7 +283,7 @@ class ChromaDBStorage:
                 query_embeddings=[query_embedding],
                 n_results=query_limit,
                 where=where_filter,
-                include=["metadatas", "distances"],
+                include=["metadatas", "distances", "documents"],
             )
         except Exception as e:
             logger.error(f"Vector search failed: {e}")
@@ -286,6 +294,9 @@ class ChromaDBStorage:
         ids = results["ids"][0] if results["ids"] else []
         metadatas = results["metadatas"][0] if results["metadatas"] else []
         distances = results["distances"][0] if results["distances"] else []
+        # documents is None for text-less entries (node vectors); surfaced as matched_text.
+        documents = results.get("documents") or []
+        documents = documents[0] if documents else []
 
         for i, entity_id in enumerate(ids):
             metadata = metadatas[i] if i < len(metadatas) else {}
@@ -299,11 +310,15 @@ class ChromaDBStorage:
             # Convert distance to similarity score (cosine: score = 1 - distance)
             score = 1.0 - distance
 
-            output.append({
+            hit: dict[str, Any] = {
                 "_id": entity_id,
                 **metadata,
                 "score": score,
-            })
+            }
+            matched_text = documents[i] if i < len(documents) else None
+            if matched_text is not None:
+                hit["matched_text"] = matched_text
+            output.append(hit)
 
             if len(output) >= limit:
                 break

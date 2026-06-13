@@ -8,10 +8,12 @@ from typing import Any
 from fastmcp import FastMCP
 
 from .cognition import CognitionNodeType, CognitionStorage
+from .cognition.documents import read_text_sidecar
 from .config import Settings, setup_logging
 from .embeddings import ChromaDBStorage, EmbeddingGenerator
 from .instructions import SERVER_INSTRUCTIONS
 from .tools import register_all_tools
+from .tools.cognition_tools import _embed_document
 
 logger = logging.getLogger(__name__)
 
@@ -68,19 +70,43 @@ def _sync_cognition_embeddings(
     except Exception:
         pass  # If collection is empty or IDs not found, treat all as missing
 
-    # Documents are graph-inert and intentionally NOT embedded (their searchable
-    # text lives in the sidecar, chunked separately in D1b). Skip them here too —
-    # otherwise this cross-process sync would re-embed every document node on the
-    # next server start, re-introducing them into semantic search (N1 class).
-    missing = [
-        n
-        for n in all_nodes
-        if n["id"] not in existing_ids and n.get("type") != CognitionNodeType.DOCUMENT.value
+    doc_type = CognitionNodeType.DOCUMENT.value
+    cognition_dir = cognition_storage.cognition_dir
+    doc_nodes = [n for n in all_nodes if n.get("type") == doc_type]
+
+    # Probe chunk-0 presence for document nodes (un-chunked detection, one batch get).
+    chunk0_present: set[str] = set()
+    if doc_nodes:
+        try:
+            probe = embedding_storage._collection.get(ids=[f"{n['id']}#chunk-0" for n in doc_nodes])
+            chunk0_present = set(probe["ids"])
+        except Exception:
+            pass
+
+    # Non-document nodes: embed node-level if missing (unchanged path).
+    non_doc_missing = [
+        n for n in all_nodes
+        if n.get("type") != doc_type and n["id"] not in existing_ids
     ]
 
-    if missing:
-        logger.info(f"Syncing {len(missing)} cognition nodes to ChromaDB...")
-        for node in missing:
+    # Documents (WP-D2): a document is fully synced iff its NODE vector exists AND
+    # (its sidecar is empty/absent OR its chunk-0 exists). The "empty sidecar" branch
+    # is load-bearing — without it a text-less document looks "missing" forever and
+    # re-embeds every boot. This replaces D1a's blanket document-skip and backfills
+    # documents created in the D1a/D1b interim (deliberately never embedded then).
+    docs_to_embed: list[tuple[dict[str, Any], str]] = []
+    for n in doc_nodes:
+        node_present = n["id"] in existing_ids
+        sha = n.get("metadata", {}).get("sha256")
+        sidecar = read_text_sidecar(cognition_dir, sha) if sha else None
+        has_text = bool(sidecar and sidecar.strip())
+        chunked = f"{n['id']}#chunk-0" in chunk0_present
+        if not (node_present and (not has_text or chunked)):
+            docs_to_embed.append((n, sidecar or ""))
+
+    if non_doc_missing:
+        logger.info(f"Syncing {len(non_doc_missing)} cognition nodes to ChromaDB...")
+        for node in non_doc_missing:
             embed_text = f"{node.get('type', '')}: {node.get('summary', '')}\n{node.get('detail', '')}"
             embedding = generator.generate_query_embedding(embed_text)
             metadata = {
@@ -95,11 +121,26 @@ def _sync_cognition_embeddings(
             if node.get("references"):
                 metadata["references"] = ",".join(node["references"])
             embedding_storage.upsert_embedding(node["id"], embedding, metadata)
-        logger.info(f"Cognition embedding sync complete: {len(missing)} nodes added")
+
+    # Documents: node vector + sidecar chunks via the shared _embed_document (the same
+    # delete-then-write path store-time uses — no chunk-contract drift). A sidecar-less
+    # reference doc (teammate pulled the journal but not the sidecar) embeds the node
+    # only (sidecar_text == "" -> zero chunks); not an error.
+    for node, sidecar_text in docs_to_embed:
+        _embed_document(
+            embedding_storage, generator, node["id"],
+            node.get("summary", ""), node.get("detail", ""), sidecar_text,
+        )
+
+    if non_doc_missing or docs_to_embed:
+        logger.info(
+            f"Cognition embedding sync: {len(non_doc_missing)} nodes + "
+            f"{len(docs_to_embed)} documents (re)embedded"
+        )
     else:
         logger.info("Cognition embeddings: all nodes already synced")
 
-    # Always reconcile orphans (independent of the add-missing pass above).
+    # Always reconcile orphans (independent of the add passes above).
     _reconcile_orphan_embeddings(cognition_storage, embedding_storage)
 
 

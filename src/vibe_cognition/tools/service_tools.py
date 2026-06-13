@@ -40,10 +40,19 @@ def register_service_tools(mcp) -> None:
         else:
             result["cognition_graph"] = {"error": "not initialized"}
 
-        # Cognition embedding count
+        # Cognition embedding count — split node vectors vs document chunk vectors
+        # (WP-D2: chunks carry is_chunk=True; don't let them silently inflate the
+        # single count). The public param is filter=, not where= (it maps to the
+        # internal _collection.get(where=)).
         if cognition_embedding_storage:
             try:
-                result["cognition_embeddings"] = cognition_embedding_storage.count_documents()
+                total = cognition_embedding_storage.count_documents()
+                chunks = cognition_embedding_storage.count_documents(filter={"is_chunk": True})
+                result["cognition_embeddings"] = {
+                    "nodes": total - chunks,
+                    "chunks": chunks,
+                    "total": total,
+                }
             except Exception as e:
                 result["cognition_embeddings"] = {"error": str(e)}
         else:

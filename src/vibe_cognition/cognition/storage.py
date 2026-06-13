@@ -96,6 +96,17 @@ class CognitionStorage:
                         out.append(nid)
             return out
 
+    def search_hit_is_live(self, raw_id: str) -> bool:
+        """True if a search hit's node is still in the graph — the N1 drop predicate.
+
+        Strips a ``#chunk-N`` suffix to the node id, then checks ``has_node``. THE
+        single "is this search hit's node still live?" expression: BOTH search
+        surfaces (the MCP ``cognition_search`` formatter and the dashboard search)
+        call it, so the chunk-id format and the cross-process-ghost drop live in ONE
+        place and can't drift (ledger 11, same discipline as ``documents_with_sha``).
+        """
+        return self.has_node(raw_id.split("#chunk-")[0])
+
     def documents_with_sha(self, sha: str) -> list[str]:
         """Node IDs of DOCUMENT nodes whose content ``sha256 == sha``.
 

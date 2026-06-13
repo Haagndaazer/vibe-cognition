@@ -18,6 +18,7 @@ from ..cognition import (
     get_history_for_context,
     get_reasoning_chain,
 )
+from ..cognition.chunking import chunk_text
 from ..cognition.documents import (
     BLOB_REFUSE_BYTES,
     BLOB_WARN_BYTES,
@@ -111,32 +112,39 @@ def _record_node(
     return result
 
 
+_SEARCH_OVERQUERY_K = 5     # initial over-query factor (chunks of one doc crowd others)
+_SEARCH_OVERQUERY_CAP = 500  # hard ceiling on n_results when widening adaptively
+_MATCHED_EXCERPT_LEN = 500   # chars of chunk text returned as the match excerpt
+
+
 def _format_search_results(
-    results: list[dict[str, Any]], storage: CognitionStorage
+    results: list[dict[str, Any]], storage: CognitionStorage, limit: int
 ) -> list[dict[str, Any]]:
-    """Format vector-search hits, DROPPING any whose (chunk-stripped) node id is
-    absent from the graph — the N1 ghost-search fix (§9 N1).
+    """Dedupe over-queried hits to the BEST hit per node, dropping graph-absent
+    nodes, and carry a ``matched_excerpt`` for chunk hits — the N1 fix + D2 dedupe.
 
-    A cross-process remove_node replays into the graph but never un-embeds (replay
-    touches only the graph; the embedding sync only ADDS), so Chroma serves hits for
-    nodes deleted on another machine — escalated by documents to verbatim deleted
-    client text. Filtering on graph presence is the CORRECTNESS guarantee (it never
-    deletes; the startup sweep is best-effort reclamation). The ``#chunk-`` strip is
-    forward-compatible with D2 chunk ids (``<node_id>#chunk-N``).
+    N1 (§9): a cross-process remove_node replays into the graph but never un-embeds,
+    so Chroma serves hits for nodes deleted on another machine — escalated by
+    documents to verbatim deleted client text. Dropping hits whose (chunk-stripped)
+    node id is absent from the graph is the CORRECTNESS guarantee (it never deletes;
+    the startup sweep is best-effort reclamation).
 
-    SCOPE: this fixes the MCP ``cognition_search`` surface. The dashboard search
-    surface (``dashboard/api.py`` ``search()`` -> ``vector_search`` raw) has NO such
-    filter and still serves cross-process ghosts — pre-existing, out of D1b scope
-    (dashboard is the WP-D4 cluster), harmless while documents aren't embedded.
-    Tracked in BACKLOG under WP-D4."""
+    D2 dedupe: a document yields many ``<node_id>#chunk-N`` hits; collapse them to one
+    result keyed on the NODE id (results arrive score-desc from vector_search, so the
+    FIRST hit per node is the best), carrying its chunk text as ``matched_excerpt``.
+    Returns at most ``limit`` deduped nodes."""
     formatted: list[dict[str, Any]] = []
+    seen_nodes: set[str] = set()
     for r in results:
         raw_id = r.get("_id") or ""
-        node_id = raw_id.split("#chunk-")[0]
-        if not storage.has_node(node_id):
+        if not storage.search_hit_is_live(raw_id):  # N1 drop (shared predicate)
             continue
-        formatted.append({
-            "id": raw_id,
+        node_id = raw_id.split("#chunk-")[0]
+        if node_id in seen_nodes:  # keep only the best (first) hit per node
+            continue
+        seen_nodes.add(node_id)
+        entry: dict[str, Any] = {
+            "id": node_id,  # the NODE id, never the chunk id
             "node_type": r.get("entity_type"),
             "summary": r.get("summary") or r.get("name"),
             "author": r.get("author"),
@@ -144,7 +152,13 @@ def _format_search_results(
             "severity": r.get("severity"),
             "context": r.get("context", ""),
             "score": r.get("score"),
-        })
+        }
+        matched = r.get("matched_text")
+        if matched:
+            entry["matched_excerpt"] = matched[:_MATCHED_EXCERPT_LEN]
+        formatted.append(entry)
+        if len(formatted) >= limit:
+            break
     return formatted
 
 
@@ -158,19 +172,34 @@ def _search_cognition(
 ) -> dict[str, Any]:
     """Semantic search core (testable; cognition_search is the thin ctx wrapper).
 
-    Embeds the query, vector-searches Chroma, then applies the N1 graph-presence
-    filter (_format_search_results) so a node deleted on another machine is never
-    served. Keeping vector_search + filter together here is what lets the
-    cross-process ghost test exercise the REAL search path end-to-end (not just the
-    filter function)."""
+    Embeds the query, ADAPTIVELY over-queries Chroma, then dedupes-to-best-hit-per-
+    node + drops graph-absent ghosts (N1) via _format_search_results. Keeping
+    vector_search + the filter together here lets the cross-process ghost test
+    exercise the REAL search path end-to-end.
+
+    Adaptive over-query (peer-review B3): a FIXED limit×k cannot guarantee `limit`
+    distinct nodes — a single document can yield more than limit×k chunks and starve
+    other live nodes. So widen n_results (doubling) until we have `limit` distinct
+    live nodes, OR Chroma is exhausted (fewer hits than asked), OR a cap is hit.
+    Doubling keeps round-trips logarithmic. The single-document-with->cap-chunks case
+    is the only residual (capped), and only degrades recall (never serves a wrong or
+    deleted node — the dedupe + N1 filter are exact)."""
     limit = min(limit, 50)
     query_embedding = generator.generate_query_embedding(query)
-    results = embedding_storage.vector_search(
-        query_embedding=query_embedding,
-        limit=limit,
-        entity_type=node_type,
-    )
-    formatted = _format_search_results(results, storage)
+    n = max(limit * _SEARCH_OVERQUERY_K, limit, 1)
+    formatted: list[dict[str, Any]] = []
+    while True:
+        results = embedding_storage.vector_search(
+            query_embedding=query_embedding,
+            limit=n,
+            entity_type=node_type,
+        )
+        formatted = _format_search_results(results, storage, limit)
+        # Stop when we have enough distinct nodes, Chroma is exhausted (returned
+        # fewer than we asked), or we hit the widening cap.
+        if len(formatted) >= limit or len(results) < n or n >= _SEARCH_OVERQUERY_CAP:
+            break
+        n = min(n * 2, _SEARCH_OVERQUERY_CAP)
     return {"query": query, "results": formatted, "count": len(formatted)}
 
 
@@ -220,6 +249,43 @@ def _materialize_blob(
     return eff_local, status, warnings
 
 
+def _embed_document(
+    embedding_storage: ChromaDBStorage,
+    generator: EmbeddingGenerator,
+    node_id: str,
+    summary: str,
+    detail: str,
+    sidecar_text: str,
+) -> int:
+    """Embed a document: ONE node-level vector (so it shows in node search) + its
+    sidecar text chunked into ``<node_id>#chunk-N`` vectors (each carrying its chunk
+    text + ``is_chunk: True``). THE single chunk-write path — store-time (D2 c3) and
+    re-sync (c4) both call it, so the chunk-metadata contract can't drift.
+
+    Delete-then-write (peer-review A5): purge this node's existing chunks BEFORE
+    writing the fresh set, so a re-chunk that yields FEWER chunks can't orphan stale
+    high-N chunks under the live node_id (which would surface as ghost excerpts of
+    deleted text). Returns the chunk count written."""
+    doc_type = CognitionNodeType.DOCUMENT.value
+    node_text = f"{doc_type}: {summary}\n{detail}"
+    embedding_storage.upsert_embedding(
+        node_id,
+        generator.generate_query_embedding(node_text),
+        {"entity_type": doc_type, "summary": summary},
+    )
+    # Delete-then-write the chunk set (idempotent regardless of count change).
+    embedding_storage.delete_by_node_id(node_id)
+    chunks = chunk_text(sidecar_text)
+    for i, chunk in enumerate(chunks):
+        embedding_storage.upsert_embedding(
+            f"{node_id}#chunk-{i}",
+            generator.generate_query_embedding(chunk),
+            {"node_id": node_id, "entity_type": doc_type, "is_chunk": True},
+            document=chunk,
+        )
+    return len(chunks)
+
+
 def _store_document(
     storage: CognitionStorage,
     title: str,
@@ -233,11 +299,18 @@ def _store_document(
     force_new: bool = False,
     store_copy: bool = False,
     local_only: bool | None = None,
+    embedding_storage: "ChromaDBStorage | None" = None,
+    generator: "EmbeddingGenerator | None" = None,
 ) -> dict[str, Any]:
     """Document store, reference (default) or opt-in copy mode (testable core of
     cognition_store_document). ``store_copy`` copies the bytes into a content-
     addressed blob; ``local_only`` keeps that blob out of git (else committed,
-    subject to the size policy)."""
+    subject to the size policy).
+
+    If ``embedding_storage`` AND ``generator`` are both provided, the new document is
+    embedded (node vector + sidecar chunks) for search. Both default to None — the
+    embedding is SKIPPED then (storage-only callers, or the model still loading), and
+    the next ``_sync`` backfills it. Never blocks/fails the store on embedding."""
     cognition_dir = storage.cognition_dir
 
     if file_path and content_text is not None:
@@ -366,9 +439,13 @@ def _store_document(
         metadata=metadata,
     )
     storage.add_node(node)
-    # NOT embedded into ChromaDB in this version (document search lands later);
-    # create_deterministic_edges is graph-inert for documents until the pair rules ship.
     storage.create_deterministic_edges(node_id)
+    # WP-D2: embed the document (node vector + sidecar chunks) so it's searchable.
+    # Skipped if embedding deps absent (storage-only caller, or model still loading) —
+    # the next _sync backfills it. Never block/fail the store on embedding.
+    if embedding_storage is not None and generator is not None:
+        _embed_document(embedding_storage, generator, node_id, title,
+                        document_text[:2000], document_text)
 
     return {
         "node_id": node_id,
@@ -571,12 +648,19 @@ def register_cognition_tools(mcp) -> None:
             {node_id, doc_ref, mode, size, indexed_text_chars, already_stored?,
              blob_bytes?, blob_path?, local_only?, promoted?, already_committed?, warnings?}
         """
-        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
+        lifespan = get_lifespan(ctx)
+        storage: CognitionStorage = lifespan["cognition_storage"]
+        # Embed at store time only if the model is ready; else defer to the next sync
+        # (require_embeddings returns an error dict when not ready). Never error here.
+        ready = require_embeddings(ctx) is None
+        embedding_storage = lifespan["cognition_embedding_storage"] if ready else None
+        generator = lifespan["embedding_generator"] if ready else None
         return _store_document(
             storage, title, document_text, context, author,
             file_path=file_path, content_text=content_text,
             references=references, mime=mime, force_new=force_new,
             store_copy=store_copy, local_only=local_only,
+            embedding_storage=embedding_storage, generator=generator,
         )
 
     @mcp.tool()
