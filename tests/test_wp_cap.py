@@ -12,6 +12,8 @@ from vibe_cognition.cognition import (
     CognitionNode,
     CognitionNodeType,
     CognitionStorage,
+    get_incident_resolution,
+    get_superseded_chain,
 )
 from vibe_cognition.embeddings import ChromaDBStorage, EmbeddingGenerator
 from vibe_cognition.tools.cognition_tools import (
@@ -218,3 +220,57 @@ def test_update_node_missing_and_empty(tmp_path):
     assert "error" in _update_node(s, embed, _gen(), node_id="nope", embeddings_ready=False, summary="x")
     s.add_node(_node("n1"))
     assert "error" in _update_node(s, embed, _gen(), node_id="n1", embeddings_ready=False)
+
+
+# --- Commit 4: expose superseded-chain + incident-resolution queries ---------
+
+def _typed_node(node_id, ntype):
+    return CognitionNode(
+        id=node_id, type=ntype, summary=node_id, detail="d", context=[], references=[],
+        severity=None, timestamp="2026-06-13T00:00:00+00:00", author="t",
+    )
+
+
+def _edge(s, a, b, et):
+    s.add_edge(CognitionEdge(
+        from_id=a, to_id=b, edge_type=et, timestamp="2026-06-13T00:00:00+00:00", source="manual",
+    ))
+
+
+def test_superseded_chain_newest_first(tmp_path):
+    """A supersedes B supersedes C -> the chain walks SUPERSEDES from the newest node
+    and returns [A, B, C] newest-first."""
+    s = CognitionStorage(tmp_path / ".cognition")
+    for nid in ("A", "B", "C"):
+        s.add_node(_typed_node(nid, CognitionNodeType.DECISION))
+    _edge(s, "A", "B", CognitionEdgeType.SUPERSEDES)
+    _edge(s, "B", "C", CognitionEdgeType.SUPERSEDES)
+
+    chain = get_superseded_chain(s, "A")
+    assert [n["id"] for n in chain] == ["A", "B", "C"]
+
+
+def test_incident_resolution_includes_resolutions_and_all_led_to(tmp_path):
+    """An incident's RESOLVED_BY target lands in `resolutions`; its LED_TO targets all
+    land in `discoveries` — INCLUDING non-discovery follow-ons. This guards the
+    collapsed branch (the former DISCOVERY if/else appended identically; collapsing it
+    must keep including non-discovery led_to targets — otherwise a decision the
+    incident produced would silently vanish from the result)."""
+    s = CognitionStorage(tmp_path / ".cognition")
+    s.add_node(_typed_node("I", CognitionNodeType.INCIDENT))
+    s.add_node(_typed_node("FIX", CognitionNodeType.DECISION))
+    s.add_node(_typed_node("DISC", CognitionNodeType.DISCOVERY))
+    s.add_node(_typed_node("DEC", CognitionNodeType.DECISION))
+    _edge(s, "I", "FIX", CognitionEdgeType.RESOLVED_BY)
+    _edge(s, "I", "DISC", CognitionEdgeType.LED_TO)
+    _edge(s, "I", "DEC", CognitionEdgeType.LED_TO)
+
+    out = get_incident_resolution(s, "I")
+    assert [r["id"] for r in out["resolutions"]] == ["FIX"]
+    led_to_ids = {d["id"] for d in out["discoveries"]}
+    assert led_to_ids == {"DISC", "DEC"}, "a non-discovery led_to follow-on was dropped"
+
+
+def test_incident_resolution_missing_node_errors(tmp_path):
+    s = CognitionStorage(tmp_path / ".cognition")
+    assert "error" in get_incident_resolution(s, "nope")

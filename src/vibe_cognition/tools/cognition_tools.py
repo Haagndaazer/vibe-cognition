@@ -16,7 +16,9 @@ from ..cognition import (
     delete_cognition_node,
     generate_node_id,
     get_history_for_context,
+    get_incident_resolution,
     get_reasoning_chain,
+    get_superseded_chain,
 )
 from ..cognition.chunking import chunk_text
 from ..cognition.documents import (
@@ -1064,6 +1066,41 @@ def register_cognition_tools(mcp) -> None:
         if err:
             return err
         return get_reasoning_chain(storage, node_id, max_depth, direction)
+
+    @mcp.tool()
+    def cognition_get_superseded_chain(ctx: Context, node_id: str) -> dict[str, Any]:
+        """Get a node's version history by following SUPERSEDES edges, newest first.
+
+        When a decision is revised, the new node SUPERSEDES the old one; this walks
+        that chain so you can see how the current version came to be (the chain
+        `cognition_remove_node` recommends building but no tool could traverse).
+
+        Args:
+            node_id: The node to start from (typically the newest version).
+
+        Returns:
+            {"node_id": ..., "chain": [ {id, type, summary, ...}, ... ]} newest->oldest.
+        """
+        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
+        return {"node_id": node_id, "chain": get_superseded_chain(storage, node_id)}
+
+    @mcp.tool()
+    def cognition_get_incident_resolution(ctx: Context, node_id: str) -> dict[str, Any]:
+        """Get an incident node plus everything that resolved or relates to it.
+
+        Follows RESOLVED_BY edges to the fixes, LED_TO edges to follow-on nodes
+        (discoveries/decisions the incident produced), and incoming CONTRADICTS
+        edges, so the full story of an incident is one call.
+
+        Args:
+            node_id: The incident node.
+
+        Returns:
+            {id, ...incident fields, resolutions: [...], discoveries: [...],
+            contradictions: [...]} or {"error": ...} if the node is absent.
+        """
+        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
+        return get_incident_resolution(storage, node_id)
 
     @mcp.tool()
     def cognition_get_history(

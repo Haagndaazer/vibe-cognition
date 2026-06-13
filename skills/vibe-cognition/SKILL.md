@@ -13,6 +13,8 @@ description: You MUST use this skill any time you need to retrieve information a
 | `cognition_get_node` | Read a single node's full narrative (incl. `detail`) by id |
 | `cognition_update_node` | Edit a node's narrative (summary/detail/context/severity) in place; re-embeds on text change |
 | `cognition_get_chain` | Traverse reasoning chains (LED_TO edges) from a node |
+| `cognition_get_superseded_chain` | Walk a node's version history via SUPERSEDES (newest first) |
+| `cognition_get_incident_resolution` | Get an incident + its resolutions, follow-ons, and contradictions |
 | `cognition_get_history` | Browse nodes by context area, type, or recency |
 | `cognition_add_edge` | Manually create an edge between two nodes |
 | `cognition_add_edges_batch` | Create multiple edges in one call (max 500) |

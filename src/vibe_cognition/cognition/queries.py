@@ -176,10 +176,11 @@ def get_incident_resolution(
         if edge_type == CognitionEdgeType.RESOLVED_BY.value:
             result["resolutions"].append(entry)
         elif edge_type == CognitionEdgeType.LED_TO.value:
-            if target_node.get("type") == CognitionNodeType.DISCOVERY.value:
-                result["discoveries"].append(entry)
-            else:
-                result["discoveries"].append(entry)
+            # Every LED_TO target is a follow-on the incident produced. Both arms of
+            # the former DISCOVERY if/else appended here identically (the type check
+            # was inert) — collapsed to one append. Filtering to DISCOVERY-only would
+            # be a behavior change with nowhere for non-discovery led_to targets to go.
+            result["discoveries"].append(entry)
 
     # Check for contradictions (incoming CONTRADICTS edges)
     for source_id, edge_data in storage.get_predecessors(node_id):
