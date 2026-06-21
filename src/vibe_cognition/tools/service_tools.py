@@ -21,10 +21,19 @@ def register_service_tools(mcp) -> None:
     def get_status(ctx: Context) -> dict[str, Any]:
         """Get the current status of the Vibe Cognition server.
 
-        Returns cognition graph statistics and embedding model status.
+        Returns cognition graph statistics, embedding model status, and cross-project
+        registry state.
 
         Returns:
-            Server status including graph stats and embedding readiness
+            {
+              repo_name, repo_path,
+              cognition_graph: {node_count, edge_count, …},
+              cognition_embeddings: {nodes, chunks, total},
+              embedding_model: str,
+              embedding_ready: bool,
+              loaded_foreign_projects: int,   # count of loaded foreign projects
+                                              # (use cognition_list_projects for details)
+            }
         """
         lc = get_lifespan(ctx)
         config = lc.get("config")
