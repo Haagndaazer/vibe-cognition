@@ -72,7 +72,7 @@ def test_flatten_metadata_updated_at_is_timezone_aware(tmp_path):
     """
     storage = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
     flat = storage._flatten_metadata({"x": "y"})
-    updated_at = flat["updated_at"]
+    updated_at = str(flat["updated_at"])
     assert "+00:00" in updated_at, (
         f"updated_at is not timezone-aware; got {updated_at!r} (expected '+00:00' suffix)"
     )
