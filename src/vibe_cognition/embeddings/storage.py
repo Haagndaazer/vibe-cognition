@@ -18,12 +18,20 @@ class ChromaDBStorage:
         self,
         persist_directory: Path,
         collection_name: str = "cognition_embeddings",
+        embedding_model: str | None = None,
+        embedding_dimensions: int | None = None,
     ):
         """Initialize ChromaDB connection.
 
         Args:
             persist_directory: Directory for persistent storage
             collection_name: Collection name for embeddings
+            embedding_model: Model name to stamp into NEW collection metadata for the
+                model-identity guard (XP1). Ignored on existing collections — chromadb
+                1.5.5 silently drops new keys on get_or_create and collection.modify
+                drops hnsw:space, so stamping existing collections is unsafe. Absent
+                on pre-stamp collections → model_guard="unknown" (warn-and-allow).
+            embedding_dimensions: Dimension count to stamp alongside embedding_model.
         """
         persist_directory.mkdir(parents=True, exist_ok=True)
         # anonymized_telemetry=False: defense-in-depth against ChromaDB's
@@ -35,9 +43,14 @@ class ChromaDBStorage:
             path=str(persist_directory),
             settings=Settings(anonymized_telemetry=False),
         )
+        collection_meta: dict[str, Any] = {"hnsw:space": "cosine"}
+        if embedding_model is not None:
+            collection_meta["embedding_model"] = embedding_model
+        if embedding_dimensions is not None:
+            collection_meta["embedding_dimensions"] = embedding_dimensions
         self._collection = self._client.get_or_create_collection(
             name=collection_name,
-            metadata={"hnsw:space": "cosine"},
+            metadata=collection_meta,
         )
         logger.info(f"ChromaDB initialized at {persist_directory}")
 
@@ -197,9 +210,39 @@ class ChromaDBStorage:
             return len(results["ids"])
         return self._collection.count()
 
+    @classmethod
+    def open_existing(
+        cls,
+        persist_directory: Path,
+        collection_name: str = "cognition_embeddings",
+    ) -> "ChromaDBStorage | None":
+        """Open an existing ChromaDB collection read-only; return None if absent.
+
+        Used for foreign-project attach (XP1). Never calls get_or_create — will NOT
+        create chroma.sqlite3 or the collection if B has no vector index. Returns None
+        when the directory or collection is absent → caller degrades to structural-only.
+
+        The home project always uses __init__ (which creates the collection on first
+        run). This method is for foreign reads only.
+        """
+        if not persist_directory.exists():
+            return None
+        try:
+            client = chromadb.PersistentClient(
+                path=str(persist_directory),
+                settings=Settings(anonymized_telemetry=False),
+            )
+            collection = client.get_collection(name=collection_name)
+        except Exception:
+            return None
+        instance = object.__new__(cls)
+        instance._client = client
+        instance._collection = collection
+        return instance
+
     def close(self) -> None:
-        """Close the ChromaDB connection (no-op for PersistentClient)."""
-        pass
+        """Close the ChromaDB connection and release the Windows file handle."""
+        self._client.close()  # type: ignore[attr-defined]
 
 
 _SEARCH_OVERQUERY_K = 5

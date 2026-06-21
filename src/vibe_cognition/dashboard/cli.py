@@ -31,6 +31,8 @@ def _build_lifespan_ctx(repo_path: Path, load_embeddings: bool) -> dict[str, Any
     cognition_embedding_storage = ChromaDBStorage(
         persist_directory=config.cognition_chromadb_path,
         collection_name="cognition_embeddings",
+        embedding_model=config.embedding_model,
+        embedding_dimensions=config.embedding_dimensions,
     )
 
     ready_event = threading.Event()
