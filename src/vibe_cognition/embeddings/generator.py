@@ -37,16 +37,18 @@ class SentenceTransformersBackend(EmbeddingBackend):
     DOCUMENT_PREFIX = "search_document: "
     QUERY_PREFIX = "search_query: "
 
-    def __init__(self, model_name: str, dimensions: int | None = None):
+    def __init__(self, model_name: str, dimensions: int | None = None, revision: str | None = None):
         """Initialize the sentence-transformers backend.
 
         Args:
             model_name: Name of the model to use (e.g., 'nomic-ai/nomic-embed-text-v1.5')
             dimensions: Optional dimension truncation
+            revision: HuggingFace Hub revision (branch, tag, or full commit SHA) to pin
+                the remote code loaded via trust_remote_code=True. None = hub HEAD.
         """
         t0 = time.monotonic()
         logger.info(f"Loading model: {model_name}")
-        self._model = SentenceTransformer(model_name, trust_remote_code=True)
+        self._model = SentenceTransformer(model_name, trust_remote_code=True, revision=revision)
         elapsed = time.monotonic() - t0
         self._dimensions = dimensions
         self._lock = threading.Lock()
@@ -149,6 +151,7 @@ class EmbeddingGenerator:
             backend = SentenceTransformersBackend(
                 model_name=config.embedding_model,
                 dimensions=config.embedding_dimensions,
+                revision=config.embedding_revision,
             )
 
         return cls(backend)

@@ -1,7 +1,7 @@
 """ChromaDB storage for vector embeddings."""
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +17,7 @@ class ChromaDBStorage:
     def __init__(
         self,
         persist_directory: Path,
-        collection_name: str = "code_embeddings",
+        collection_name: str = "cognition_embeddings",
     ):
         """Initialize ChromaDB connection.
 
@@ -69,38 +69,6 @@ class ChromaDBStorage:
             kwargs["documents"] = [document]
         self._collection.upsert(**kwargs)
 
-    def bulk_upsert(
-        self,
-        items: list[tuple[str, list[float], dict[str, Any]]],
-    ) -> int:
-        """Bulk upsert multiple embeddings.
-
-        Args:
-            items: List of (entity_id, embedding, metadata) tuples
-
-        Returns:
-            Number of items processed
-        """
-        if not items:
-            return 0
-
-        ids = []
-        embeddings = []
-        metadatas = []
-
-        for entity_id, embedding, metadata in items:
-            ids.append(entity_id)
-            embeddings.append(embedding)
-            metadatas.append(self._flatten_metadata(metadata))
-
-        self._collection.upsert(
-            ids=ids,
-            embeddings=embeddings,
-            metadatas=metadatas,
-        )
-
-        return len(items)
-
     def _flatten_metadata(self, metadata: dict[str, Any]) -> dict[str, str | int | float | bool]:
         """Flatten metadata to ChromaDB-compatible types.
 
@@ -113,7 +81,7 @@ class ChromaDBStorage:
             Flattened metadata with only primitive types
         """
         flat: dict[str, str | int | float | bool] = {}
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(UTC).isoformat()
 
         for key, value in metadata.items():
             if value is None:
@@ -148,140 +116,37 @@ class ChromaDBStorage:
     def delete_by_node_id(self, node_id: str) -> None:
         """Delete all chunk embeddings tagged with ``node_id`` metadata.
 
-        Uses ``delete(where=...)`` DIRECTLY — NOT the ``get(where=)``-then-
-        ``delete(ids=)`` shape of ``delete_by_file`` (a `get` with an empty match
-        then `delete(ids=[])` would raise on an empty list). The direct where-delete
-        is no-op-safe on an empty collection and on docs lacking a ``node_id`` field.
-        Forward-compatible: D1b writes no chunks yet (chunk-embedding is D2), so this
-        is a no-op today, present so document deletion inherits a clean chunk purge."""
+        Uses ``delete(where=...)`` directly — no-op-safe on an empty collection
+        and on docs lacking a ``node_id`` field. Forward-compatible: D1b writes no
+        chunks yet (chunk-embedding is D2), so this is a no-op today, present so
+        document deletion inherits a clean chunk purge."""
         try:
             self._collection.delete(where={"node_id": node_id})
         except Exception as e:
             logger.warning(f"Chunk purge failed for {node_id}: {e}")
 
-    def delete_by_file(self, repo: str, file_path: str) -> int:
-        """Delete all embeddings for a specific file.
-
-        Args:
-            repo: Repository name
-            file_path: File path
-
-        Returns:
-            Number of deleted documents
-        """
-        # Get all IDs matching the file
-        results = self._collection.get(
-            where={"$and": [{"repo": repo}, {"file_path": file_path}]},
-        )
-
-        if results["ids"]:
-            self._collection.delete(ids=results["ids"])
-            return len(results["ids"])
-
-        return 0
-
-    def delete_by_repo(self, repo: str) -> int:
-        """Delete all embeddings for a repository.
-
-        Args:
-            repo: Repository name
-
-        Returns:
-            Number of deleted documents
-        """
-        results = self._collection.get(where={"repo": repo})
-
-        if results["ids"]:
-            self._collection.delete(ids=results["ids"])
-            return len(results["ids"])
-
-        return 0
-
-    def get_by_id(self, entity_id: str) -> dict[str, Any] | None:
-        """Get an embedding document by ID.
-
-        Args:
-            entity_id: Entity ID
-
-        Returns:
-            Document or None if not found
-        """
-        results = self._collection.get(
-            ids=[entity_id],
-            include=["metadatas", "embeddings"],
-        )
-
-        if results["ids"]:
-            return {
-                "_id": results["ids"][0],
-                "metadata": results["metadatas"][0] if results["metadatas"] else {},
-                "embedding": results["embeddings"][0] if results["embeddings"] else None,
-            }
-
-        return None
-
-    def get_content_hashes(self, repo: str) -> dict[str, str]:
-        """Get all entity IDs and their content hashes for a repository.
-
-        Args:
-            repo: Repository name
-
-        Returns:
-            Dictionary mapping entity_id to content_hash
-        """
-        results = self._collection.get(
-            where={"repo": repo},
-            include=["metadatas"],
-        )
-
-        hashes: dict[str, str] = {}
-        for i, entity_id in enumerate(results["ids"]):
-            metadata = results["metadatas"][i] if results["metadatas"] else {}
-            content_hash = metadata.get("content_hash", "")
-            hashes[entity_id] = content_hash if isinstance(content_hash, str) else ""
-
-        return hashes
-
     def vector_search(
         self,
         query_embedding: list[float],
         limit: int = 10,
-        repo: str | None = None,
         entity_type: str | None = None,
-        file_path_prefix: str | None = None,
     ) -> list[dict[str, Any]]:
         """Perform vector similarity search.
 
         Args:
             query_embedding: Query embedding vector
             limit: Maximum number of results
-            repo: Filter by repository name
             entity_type: Filter by entity type
-            file_path_prefix: Filter by file path prefix
 
         Returns:
             List of matching documents with similarity scores
         """
-        # Build where filter
-        where_conditions = []
-        if repo:
-            where_conditions.append({"repo": repo})
-        if entity_type:
-            where_conditions.append({"entity_type": entity_type})
-
-        where_filter = None
-        if len(where_conditions) == 1:
-            where_filter = where_conditions[0]
-        elif len(where_conditions) > 1:
-            where_filter = {"$and": where_conditions}
-
-        # Query more results if we need to filter by prefix
-        query_limit = limit * 3 if file_path_prefix else limit
+        where_filter: Any = {"entity_type": entity_type} if entity_type else None
 
         try:
             results = self._collection.query(
                 query_embeddings=[query_embedding],
-                n_results=query_limit,
+                n_results=limit,
                 where=where_filter,
                 include=["metadatas", "distances", "documents"],
             )
@@ -301,13 +166,6 @@ class ChromaDBStorage:
         for i, entity_id in enumerate(ids):
             metadata = metadatas[i] if i < len(metadatas) else {}
             distance = distances[i] if i < len(distances) else 1.0
-
-            # Apply file_path_prefix filter
-            file_path = metadata.get("file_path", "")
-            if file_path_prefix and not file_path.startswith(file_path_prefix):
-                continue
-
-            # Convert distance to similarity score (cosine: score = 1 - distance)
             score = 1.0 - distance
 
             hit: dict[str, Any] = {
