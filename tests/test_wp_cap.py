@@ -127,12 +127,15 @@ class _TextKeyedGen:
         "gamma": [0.0, 0.0, 1.0],
     }
 
-    def generate_query_embedding(self, text):
+    def generate(self, text, input_type="document"):
         low = text.lower()
         for marker, vec in self._MARKERS.items():
             if marker in low:
                 return list(vec)
         return [0.0, 0.0, 1.0]  # never used here; all test texts carry a marker
+
+    def generate_query_embedding(self, text):
+        return self.generate(text, input_type="query")
 
 
 def _gen() -> EmbeddingGenerator:

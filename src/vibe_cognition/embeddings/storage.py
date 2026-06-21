@@ -48,11 +48,34 @@ class ChromaDBStorage:
             collection_meta["embedding_model"] = embedding_model
         if embedding_dimensions is not None:
             collection_meta["embedding_dimensions"] = embedding_dimensions
+        self._collection_name = collection_name
+        self._base_meta = collection_meta
         self._collection = self._client.get_or_create_collection(
             name=collection_name,
             metadata=collection_meta,
         )
         logger.info(f"ChromaDB initialized at {persist_directory}")
+
+    def recreate_collection(self) -> None:
+        """Drop and recreate the collection, stamping embed_scheme=doc-prefix-v1.
+
+        Used by the E-3 one-time migration: deletes all stale query-prefixed
+        vectors so the startup sync can rebuild them document-prefixed.  The
+        try/except on delete is defensive (collection may be absent on a brand-new
+        install — not an error).  After recreate the stamp is permanent; the
+        server bg-thread checks for it before calling this method so it only ever
+        runs once per data directory.
+        """
+        try:
+            self._client.delete_collection(self._collection_name)
+        except Exception:
+            pass
+        stamp_meta = {**self._base_meta, "embed_scheme": "doc-prefix-v1"}
+        self._collection = self._client.get_or_create_collection(
+            name=self._collection_name,
+            metadata=stamp_meta,
+        )
+        logger.info("Collection recreated with doc-prefix-v1 stamp")
 
     def upsert_embedding(
         self,

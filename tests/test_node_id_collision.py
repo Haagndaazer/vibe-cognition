@@ -36,8 +36,11 @@ class _RecordingEmbed:
 
 
 class _Gen:
-    def generate_query_embedding(self, text):
+    def generate(self, text, input_type="document"):
         return [0.1, 0.2, 0.3]
+
+    def generate_query_embedding(self, text):
+        return self.generate(text, input_type="query")
 
 
 def _ctx(storage, *, ready):
