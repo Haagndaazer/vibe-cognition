@@ -45,6 +45,12 @@ WP-R3 (PR #13 → `8f3079f`) cut the version bump + CHANGELOG; Colton cleared bo
 
 ---
 
+## New feature ideas (parking lot)
+
+- **Doc-serving tools for the LLM/user — esp. gated on empty-graph detection** (Colton, 2026-06-21): vibe-memory pioneered a pattern of MCP tools that exist specifically to SERVE DOCUMENTATION to the LLM (and through it, the user), most valuable when the server can DETECT the project has no memories/graph stored yet and proactively surface "here's what this is / how to begin recording." Adapt for vibe-cognition: an onboarding/explainer surface (a dedicated tool, or a `get_status` / `prime` path) that, on an empty or near-empty graph, serves start-here docs to the agent so it knows to begin capturing cognition rather than running blind. **Reference point: Reginald + the vibe-memory project** — that's where the pattern lives; ask Reginald / look at vibe-memory for the implementation. _(Meta: once the cross-project XP feature lands, this context becomes retrievable directly from vibe-memory's own graph without going through Reginald.)_
+
+---
+
 ## Audit remainder — proposed WP groupings (not yet briefed)
 
 Priorities: **P1** ship-soon / high leverage · **P2** real correctness, lower urgency · **P3** polish/dead-code.
