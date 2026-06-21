@@ -6,7 +6,7 @@ from .generator import (
     OllamaBackend,
     SentenceTransformersBackend,
 )
-from .storage import ChromaDBStorage
+from .storage import ChromaDBStorage, adaptive_vector_search
 
 __all__ = [
     "ChromaDBStorage",
@@ -14,4 +14,5 @@ __all__ = [
     "EmbeddingGenerator",
     "OllamaBackend",
     "SentenceTransformersBackend",
+    "adaptive_vector_search",
 ]

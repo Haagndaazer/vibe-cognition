@@ -15,6 +15,7 @@ from starlette.responses import FileResponse, JSONResponse
 
 from ..cognition import CognitionNodeType, delete_cognition_node
 from ..cognition.documents import documents_dir, text_sidecar_path
+from ..embeddings import adaptive_vector_search
 
 _UNSAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 _SAFE_MEDIA_TYPE = re.compile(r"^[\w.+-]+/[\w.+-]+$")  # strict type/subtype, no params/CRLF
@@ -71,6 +72,8 @@ def _document_blob_path(cognition_dir: Path, node: dict[str, Any]) -> Path | Non
 
 def _embedding_status(lc: dict[str, Any]) -> tuple[bool, str | None]:
     """Return (ready, error_or_loading_status)."""
+    if lc.get("embeddings_disabled"):
+        return False, "disabled"
     error = lc.get("embedding_error")
     if error:
         return False, "error"
@@ -100,8 +103,6 @@ def get_graph(request):
                 "type": n.get("type", ""),
                 "summary": n.get("summary", ""),
                 "timestamp": n.get("timestamp", ""),
-                "context": n.get("context", []),
-                "severity": n.get("severity"),
             }
         }
         for n in snap["nodes"]
@@ -133,11 +134,11 @@ def get_node(request):
         return JSONResponse({"error": "not found"}, status_code=404)
 
     successors = [
-        {"id": tid, "type": ed.get("type", ""), "edge_type": ed.get("type", "")}
+        {"id": tid, "edge_type": ed.get("type", "")}
         for tid, ed in storage.get_successors(node_id)
     ]
     predecessors = [
-        {"id": sid, "type": ed.get("type", ""), "edge_type": ed.get("type", "")}
+        {"id": sid, "edge_type": ed.get("type", "")}
         for sid, ed in storage.get_predecessors(node_id)
     ]
 
@@ -205,44 +206,39 @@ async def search(request):
 
     def _do_search():
         vector = generator.generate_query_embedding(query)
-        # Over-query so the many chunks of one document don't crowd out other nodes
-        # before dedupe (mirrors the MCP search rationale).
-        hits = embed_storage.vector_search(
-            query_embedding=vector,
-            limit=limit * 5,
-            entity_type=entity_type,
+
+        def _dedupe(hits: list[dict], lim: int) -> list[dict]:
+            # N1 ghost-search SAFETY (WP-D2): drop hits whose node was deleted cross-process
+            # but never un-embedded — else the dashboard would serve verbatim deleted client
+            # document chunk text.
+            # D-6 NAVIGATION (WP-D4): dedupe chunk hits to best hit per node, rewrite _id
+            # to the navigable node id, hydrate summary from the graph.
+            out: list[dict] = []
+            seen: set[str] = set()
+            for h in hits:
+                raw_id = h.get("_id") or ""
+                if not cognition_storage.search_hit_is_live(raw_id):
+                    continue
+                node_id = raw_id.split("#chunk-")[0]
+                if node_id in seen:
+                    continue
+                seen.add(node_id)
+                row = dict(h)
+                row["_id"] = node_id
+                node = cognition_storage.get_node(node_id)
+                if node:
+                    row["summary"] = node.get("summary") or row.get("summary")
+                matched = h.get("matched_text")
+                if matched:
+                    row["matched_excerpt"] = matched[:500]
+                out.append(row)
+                if len(out) >= lim:
+                    break
+            return out
+
+        return adaptive_vector_search(
+            embed_storage, vector, entity_type=entity_type, limit=limit, dedupe=_dedupe
         )
-        # N1 ghost-search SAFETY (WP-D2): drop hits whose node was deleted cross-process
-        # but never un-embedded (shared search_hit_is_live predicate, ledger 11) — else
-        # the dashboard would serve verbatim deleted client-document chunk text.
-        # D-6 NAVIGATION (WP-D4): dedupe document chunk hits (<node>#chunk-N) to the best
-        # (first, score-desc) hit PER NODE, rewrite _id to the navigable NODE id, and
-        # hydrate `summary` from the graph (chunk metadata has none). The raw
-        # {_id, **metadata, score} shape is preserved — entity_type stays as the hit
-        # carries it (NOT overwritten with the graph node's `type`), so renderSearchResults
-        # navigates and labels correctly with no JS change.
-        out: list[dict] = []
-        seen: set[str] = set()
-        for h in hits:
-            raw_id = h.get("_id") or ""
-            if not cognition_storage.search_hit_is_live(raw_id):
-                continue
-            node_id = raw_id.split("#chunk-")[0]
-            if node_id in seen:
-                continue
-            seen.add(node_id)
-            row = dict(h)
-            row["_id"] = node_id
-            node = cognition_storage.get_node(node_id)
-            if node:
-                row["summary"] = node.get("summary") or row.get("summary")
-            matched = h.get("matched_text")
-            if matched:
-                row["matched_excerpt"] = matched[:500]
-            out.append(row)
-            if len(out) >= limit:
-                break
-        return out
 
     results = await run_in_threadpool(_do_search)
     return JSONResponse({"results": results})

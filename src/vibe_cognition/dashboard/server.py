@@ -30,6 +30,8 @@ from .middleware import build_middleware
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_PORT = 7842
+
 
 def _resolve_static_dir(stack: ExitStack) -> Path:
     """Resolve the packaged static directory to a real filesystem path.
@@ -94,7 +96,7 @@ def _make_url(port: int, token: str) -> str:
 
 def run_dashboard_blocking(
     lifespan_ctx: dict[str, Any],
-    port: int = 7842,
+    port: int = DEFAULT_PORT,
     open_browser: bool = True,
 ) -> None:
     """Run the dashboard in the foreground (CLI/dev path).
@@ -128,7 +130,7 @@ def run_dashboard_blocking(
 
 def start_dashboard(
     lifespan_ctx: dict[str, Any],
-    port: int = 7842,
+    port: int = DEFAULT_PORT,
     open_browser: bool = True,
 ) -> dict[str, Any]:
     """Launch the dashboard in a background daemon thread (MCP path).
@@ -213,7 +215,13 @@ def stop_dashboard(lifespan_ctx: dict[str, Any], join_timeout: float = 3.0) -> N
         return
     state["server"].should_exit = True
     state["thread"].join(timeout=join_timeout)
-    state["stack"].close()
+    if not state["thread"].is_alive():
+        state["stack"].close()
+    else:
+        logger.warning(
+            "dashboard thread did not stop within timeout; "
+            "stack left open (daemon thread exits with process)"
+        )
 
 
 def _embedding_ready(lifespan_ctx: dict[str, Any]) -> bool:

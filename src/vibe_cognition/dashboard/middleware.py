@@ -28,7 +28,7 @@ class TokenMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request, call_next):
         host = request.headers.get("host", "")
-        if not (host.startswith("127.0.0.1:") or host.startswith("localhost:")):
+        if not (host.startswith("127.0.0.1:") or host.startswith("localhost:") or host.startswith("[::1]:")):
             return JSONResponse({"error": "invalid host"}, status_code=403)
 
         path = request.url.path

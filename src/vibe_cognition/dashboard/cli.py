@@ -55,6 +55,8 @@ def _build_lifespan_ctx(repo_path: Path, load_embeddings: bool) -> dict[str, Any
             logger.error(f"Failed to load embedding model: {e}")
             ctx["embedding_error"] = str(e)
             ready_event.set()
+    else:
+        ctx["embeddings_disabled"] = True
 
     return ctx
 
@@ -70,7 +72,7 @@ def main() -> int:
         default=None,
         help="Path to the project repo (default: $REPO_PATH or CWD)",
     )
-    parser.add_argument("--port", type=int, default=7842)
+    parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument(
         "--no-embeddings",
@@ -101,12 +103,12 @@ def main() -> int:
     logger.info(f"Repo path: {repo_path}")
     ctx = _build_lifespan_ctx(repo_path, load_embeddings=not args.no_embeddings)
 
-    from .server import run_dashboard_blocking
+    from .server import DEFAULT_PORT, run_dashboard_blocking
 
     try:
         run_dashboard_blocking(
             ctx,
-            port=args.port,
+            port=args.port if args.port is not None else DEFAULT_PORT,
             open_browser=not args.no_browser,
         )
     except KeyboardInterrupt:
