@@ -463,6 +463,11 @@ async function pollEmbeddingReady() {
       document.getElementById("banner").className = "banner-error";
       return;
     }
+    if (data && data.embedding_status === "disabled") {
+      setSearchEnabled(false, "Search disabled (embeddings off)");
+      document.getElementById("banner").className = "";
+      return;
+    }
     await new Promise(r => setTimeout(r, delays[Math.min(i, delays.length - 1)]));
     i++;
   }
@@ -470,12 +475,42 @@ async function pollEmbeddingReady() {
 
 async function loadGraph() {
   const graph = await api("/api/graph");
+  const prev = currentNodeId;
   buildCy([...graph.nodes, ...graph.edges]);
   buildEpisodeList(graph.nodes);
   loadDocuments();
+  if (prev && cy.$id(prev).length) {
+    highlightNeighborhood(prev);
+  }
+}
+
+let _refreshInFlight = false;
+function autoRefresh() {
+  if (_refreshInFlight) return;
+  _refreshInFlight = true;
+  Promise.all([refreshStats(), loadGraph()]).finally(() => { _refreshInFlight = false; });
 }
 
 async function init() {
+  // Wire all event listeners FIRST — they have no dependency on graph data.
+  // If the initial loadGraph() throws, listeners still attach and search still works.
+  document.getElementById("refresh-btn").addEventListener("click", () => {
+    refreshStats();
+    loadGraph();
+  });
+  const search = document.getElementById("search");
+  search.addEventListener("input", debounce(e => runSearch(e.target.value.trim()), 220));
+  search.addEventListener("focus", () => {
+    const r = document.getElementById("search-results");
+    if (r.innerHTML) r.hidden = false;
+  });
+  document.addEventListener("click", e => {
+    const wrap = document.getElementById("search-wrap");
+    if (!wrap.contains(e.target)) {
+      document.getElementById("search-results").hidden = true;
+    }
+  });
+
   try {
     const stats = await refreshStats();
     if (stats && stats.embedding_ready) {
@@ -483,32 +518,23 @@ async function init() {
     } else if (stats && stats.embedding_error) {
       setSearchEnabled(false, `Embedding error: ${stats.embedding_error}`);
       document.getElementById("banner").className = "banner-error";
+    } else if (stats && stats.embedding_status === "disabled") {
+      setSearchEnabled(false, "Search disabled (embeddings off)");
+      document.getElementById("banner").className = "";
     } else {
       pollEmbeddingReady();
     }
-
-    await loadGraph();
-
-    document.getElementById("refresh-btn").addEventListener("click", () => {
-      refreshStats();
-      loadGraph();
-    });
-
-    const search = document.getElementById("search");
-    search.addEventListener("input", debounce(e => runSearch(e.target.value.trim()), 220));
-    search.addEventListener("focus", () => {
-      const r = document.getElementById("search-results");
-      if (r.innerHTML) r.hidden = false;
-    });
-    document.addEventListener("click", e => {
-      const wrap = document.getElementById("search-wrap");
-      if (!wrap.contains(e.target)) {
-        document.getElementById("search-results").hidden = true;
-      }
-    });
   } catch (err) {
     toast(`Init failed: ${err.message}`, "error");
   }
+
+  try {
+    await loadGraph();
+  } catch (err) {
+    toast(`Graph load failed: ${err.message}`, "error");
+  }
+
+  setInterval(autoRefresh, 30000);
 }
 
 init();

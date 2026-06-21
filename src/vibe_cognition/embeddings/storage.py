@@ -342,3 +342,29 @@ class ChromaDBStorage:
     def close(self) -> None:
         """Close the ChromaDB connection (no-op for PersistentClient)."""
         pass
+
+
+_SEARCH_OVERQUERY_K = 5
+_SEARCH_OVERQUERY_CAP = 500
+
+
+def adaptive_vector_search(
+    embedding_storage: Any,
+    query_embedding: list[float],
+    *,
+    entity_type: str | None = None,
+    limit: int,
+    dedupe: Any,
+) -> list[dict[str, Any]]:
+    """Widen n_results (doubling) until `limit` distinct deduped results, Chroma
+    exhausted, or the cap. `dedupe(results, limit) -> list` owns N1-drop + chunk-
+    dedupe per surface (MCP and dashboard use different result shapes)."""
+    n = max(limit * _SEARCH_OVERQUERY_K, limit, 1)
+    while True:
+        results = embedding_storage.vector_search(
+            query_embedding=query_embedding, limit=n, entity_type=entity_type
+        )
+        formatted = dedupe(results, limit)
+        if len(formatted) >= limit or len(results) < n or n >= _SEARCH_OVERQUERY_CAP:
+            return formatted
+        n = min(n * 2, _SEARCH_OVERQUERY_CAP)

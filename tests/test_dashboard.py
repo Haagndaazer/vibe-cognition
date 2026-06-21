@@ -161,6 +161,15 @@ class TestAuth:
         r = c.get("/?token=testtok")
         assert r.status_code == 200
 
+    def test_ipv6_loopback_host_accepted(self, client):
+        """T3: Host: [::1]:<port> is a valid loopback host; must not be 403.
+        Note: this is middleware-layer only — uvicorn binds AF_INET 127.0.0.1, so
+        a real [::1] client would be refused at TCP before reaching the middleware."""
+        c, _ = client
+        r = c.get("/api/graph", headers={**_hdr(), "host": "[::1]:7842"})
+        assert r.status_code == 200, \
+            "IPv6 loopback host [::1]: should be accepted by middleware (was 403)"
+
 
 class TestGraphAPI:
     def test_graph_shape(self, client):
@@ -189,6 +198,31 @@ class TestGraphAPI:
         c, _ = client
         r = c.get("/api/node/does-not-exist", headers=_hdr())
         assert r.status_code == 404
+
+    def test_node_successor_has_edge_type_not_type(self, client, storage):
+        """D-5b: get_node neighbor dicts emit 'edge_type' only — 'type' key was a duplicate
+        that app.js (line 208) never reads. Fails-before: previously both keys were present."""
+        c, _ = client
+        node_id = next(iter(storage.graph.nodes))
+        r = c.get(f"/api/node/{node_id}", headers=_hdr())
+        assert r.status_code == 200
+        body = r.json()
+        for neighbor in body.get("successors", []) + body.get("predecessors", []):
+            assert "edge_type" in neighbor, "neighbor missing edge_type"
+            assert "type" not in neighbor, "neighbor still has redundant 'type' key"
+
+    def test_graph_excludes_context_severity(self, client):
+        """D-5c: graph node payloads must not include 'context' or 'severity' —
+        these are only needed on /api/node/{id}, not on the bulk graph payload.
+        Fails-before: previously both keys were present alongside the guarded 'detail'."""
+        c, _ = client
+        r = c.get("/api/graph", headers=_hdr())
+        assert r.status_code == 200
+        for node in r.json()["nodes"]:
+            data = node["data"]
+            assert "detail" not in data
+            assert "context" not in data, "graph node payload should not include 'context'"
+            assert "severity" not in data, "graph node payload should not include 'severity'"
 
     def test_delete_node(self, client, storage):
         c, lc = client
@@ -308,8 +342,70 @@ class TestSearch:
         lc["embedding_ready"].set()
         r = c.post("/api/search", json={"query": "x", "limit": 999999}, headers=_hdr())
         assert r.status_code == 200
-        # over-query is limit*5; the clamp caps limit at 100 → vector_search sees <= 500.
+        # adaptive_vector_search starts at limit*5; the clamp caps limit at 100 → n starts at 500 ≤ cap.
         assert lc["cognition_embedding_storage"].last_limit <= 500, "limit not clamped"
+
+    def test_search_adaptive_widens_past_single_doc_chunk_flood(self, client):
+        """T1: adaptive widen finds node B even when ≥11 docA chunks flood a fixed-10 slice.
+
+        Fails-before (Vince hunt #1): assert B ABSENT in a raw fixed-10 slice, so a
+        revert to limit*5=10 goes red. Fails-before assertion is on the raw result set,
+        not a synced accessor — a simulated fixed-10 call directly on the fake storage."""
+        c, lc = client
+        lc["embedding_generator"] = _FakeEmbeddingGenerator()
+        lc["embedding_ready"].set()
+
+        lc["cognition_storage"].add_node(CognitionNode(
+            id="docA", type=CognitionNodeType.DOCUMENT, summary="Doc A",
+            detail="d", context=[], references=[], severity=None,
+            timestamp=datetime.now(UTC).isoformat(), author="t",
+            metadata={"sha256": "a" * 64, "mode": "reference"},
+        ))
+        lc["cognition_storage"].add_node(CognitionNode(
+            id="nodeB", type=CognitionNodeType.DECISION, summary="Node B",
+            detail="d", context=[], references=[], severity=None,
+            timestamp=datetime.now(UTC).isoformat(), author="t",
+        ))
+
+        # 11 docA chunks then nodeB — B is position 12, beyond a fixed n=10 slice.
+        chunks = [
+            {"_id": f"docA#chunk-{i}", "entity_type": "document", "score": 0.9 - i * 0.01,
+             "matched_text": f"chunk {i}"}
+            for i in range(11)
+        ]
+        node_b_hit = {"_id": "nodeB", "entity_type": "decision", "score": 0.5}
+        lc["cognition_embedding_storage"]._search_results = chunks + [node_b_hit]
+
+        # Fails-before: the old fixed n=limit*5=10 slice returns only docA chunks — B is absent.
+        es = lc["cognition_embedding_storage"]
+        raw_10 = es.vector_search(query_embedding=[0.0, 0.1, 0.2], limit=10)
+        assert not any(h["_id"] == "nodeB" for h in raw_10), \
+            "B should be absent in the fixed-10 raw slice (old code would go red on revert)"
+
+        # Adaptive helper widens (10→20), 20-slice reaches nodeB → 2 distinct deduped nodes.
+        r = c.post("/api/search", json={"query": "anything", "limit": 2}, headers=_hdr())
+        assert r.status_code == 200
+        results = r.json()["results"]
+        assert len(results) == 2, f"adaptive widen should find both docA and nodeB: {results}"
+        ids = {row["_id"] for row in results}
+        assert "docA" in ids and "nodeB" in ids, f"expected both nodes; got: {ids}"
+
+    def test_embeddings_disabled_state(self, client):
+        """T2: --no-embeddings sets embeddings_disabled=True, status reports 'disabled' (not 'loading'),
+        and the search 503 body carries embedding_status='disabled'."""
+        c, lc = client
+        lc["embeddings_disabled"] = True
+
+        r = c.get("/api/stats", headers=_hdr())
+        assert r.status_code == 200
+        assert r.json()["embedding_status"] == "disabled", \
+            "stats should report 'disabled' when embeddings_disabled=True (was 'loading')"
+        assert r.json()["embedding_ready"] is False
+
+        r2 = c.post("/api/search", json={"query": "anything"}, headers=_hdr())
+        assert r2.status_code == 503
+        assert r2.json()["embedding_status"] == "disabled", \
+            "search 503 body should carry embedding_status='disabled'"
 
 
 def _doc_node(node_id, summary, metadata, doc_ref):
@@ -528,3 +624,46 @@ class TestLifecycle:
         assert result["status"] == "failed", f"expected failed, got {result}"
         assert result["url"] is None
         assert "dashboard" not in lifespan_ctx, "a dead dashboard was cached"
+
+    def test_stop_dashboard_does_not_close_stack_on_join_timeout(self, lifespan_ctx):
+        """D-5h(a): if the thread is still alive after join, stack.close() must NOT be called —
+        closing the static-files context under a live server thread is unsafe."""
+        closed = []
+
+        class _FakeStack:
+            def close(self): closed.append(True)
+
+        class _AliveThread:
+            def is_alive(self): return True
+            def join(self, timeout=None): pass
+
+        class _FakeServer:
+            should_exit = False
+
+        lifespan_ctx["dashboard"] = {
+            "thread": _AliveThread(), "server": _FakeServer(), "stack": _FakeStack(),
+            "url": "http://127.0.0.1:7842/", "token": "tok", "port": 7842,
+        }
+        stop_dashboard(lifespan_ctx, join_timeout=0.01)
+        assert not closed, "stack.close() called despite thread still alive after join"
+
+    def test_stop_dashboard_closes_stack_on_clean_join(self, lifespan_ctx):
+        """D-5h(b): if the thread stops cleanly, stack.close() MUST be called."""
+        closed = []
+
+        class _FakeStack:
+            def close(self): closed.append(True)
+
+        class _DeadThread:
+            def is_alive(self): return False
+            def join(self, timeout=None): pass
+
+        class _FakeServer:
+            should_exit = False
+
+        lifespan_ctx["dashboard"] = {
+            "thread": _DeadThread(), "server": _FakeServer(), "stack": _FakeStack(),
+            "url": "http://127.0.0.1:7842/", "token": "tok", "port": 7842,
+        }
+        stop_dashboard(lifespan_ctx, join_timeout=0.01)
+        assert closed, "stack.close() not called after clean join"

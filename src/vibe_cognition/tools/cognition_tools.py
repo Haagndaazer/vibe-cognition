@@ -37,7 +37,7 @@ from ..cognition.documents import (
     write_blob,
     write_text_sidecar,
 )
-from ..embeddings import ChromaDBStorage, EmbeddingGenerator
+from ..embeddings import ChromaDBStorage, EmbeddingGenerator, adaptive_vector_search
 from .utils import get_lifespan, require_embeddings
 
 logger = logging.getLogger(__name__)
@@ -287,8 +287,6 @@ def _add_edges_batch_core(storage: CognitionStorage, edges: str) -> dict[str, An
     return {"created": created, "skipped": skipped, "errors": errors[:50]}
 
 
-_SEARCH_OVERQUERY_K = 5     # initial over-query factor (chunks of one doc crowd others)
-_SEARCH_OVERQUERY_CAP = 500  # hard ceiling on n_results when widening adaptively
 _MATCHED_EXCERPT_LEN = 500   # chars of chunk text returned as the match excerpt
 
 
@@ -361,20 +359,13 @@ def _search_cognition(
     deleted node — the dedupe + N1 filter are exact)."""
     limit = min(limit, 50)
     query_embedding = generator.generate_query_embedding(query)
-    n = max(limit * _SEARCH_OVERQUERY_K, limit, 1)
-    formatted: list[dict[str, Any]] = []
-    while True:
-        results = embedding_storage.vector_search(
-            query_embedding=query_embedding,
-            limit=n,
-            entity_type=node_type,
-        )
-        formatted = _format_search_results(results, storage, limit)
-        # Stop when we have enough distinct nodes, Chroma is exhausted (returned
-        # fewer than we asked), or we hit the widening cap.
-        if len(formatted) >= limit or len(results) < n or n >= _SEARCH_OVERQUERY_CAP:
-            break
-        n = min(n * 2, _SEARCH_OVERQUERY_CAP)
+    formatted = adaptive_vector_search(
+        embedding_storage,
+        query_embedding,
+        entity_type=node_type,
+        limit=limit,
+        dedupe=lambda results, lim: _format_search_results(results, storage, lim),
+    )
     return {"query": query, "results": formatted, "count": len(formatted)}
 
 
