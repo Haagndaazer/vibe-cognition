@@ -1246,13 +1246,27 @@ def register_cognition_tools(mcp) -> None:
             node_type: Optional filter: decision, fail, discovery, assumption,
                        constraint, incident, pattern, episode
             limit: Max results (default: 10)
-            project: Optional project specifier — None (default, home only),
-                     a tag/path (specific foreign project), or "*" (all loaded
-                     projects). When not None, results carry a "project" tag and
-                     the response gains a "project_notes" map for guard caveats.
+            project: None (default, home only), a tag/path (one loaded foreign
+                     project), or "*" (all loaded projects — aggregate search).
+                     Single-node tools reject "*"; this aggregate tool accepts it.
 
         Returns:
-            Matching cognition nodes with similarity scores
+            {
+              query: str,
+              results: [                 # hits, sorted by score desc
+                {id, type, summary, score, …, project: tag}
+                                         # "project" present when project != None
+              ],
+              count: int,
+              project_notes: {           # omitted when empty
+                "<tag>": {semantic_unavailable: true, reason: "<model_guard>"}
+                          # or {confidence: "degraded (no model provenance for <tag>)"}
+              }
+            }
+            project_notes[tag].semantic_unavailable means the index is guarded off
+            for that project (no-index / dim-mismatch / model-mismatch) — that
+            project contributed no hits, but it is NOT "no history."  A confidence
+            caveat means search ran but the model provenance couldn't be verified.
         """
         err = require_embeddings(ctx)
         if err:
@@ -1329,10 +1343,12 @@ def register_cognition_tools(mcp) -> None:
             max_depth: Maximum depth to traverse (default: 5)
             direction: "outgoing" (what it led to) or "incoming" (what led to it)
             project: None (default, home) or tag/path for a loaded foreign project.
-                     "*" is rejected.
+                     "*" is rejected — node ids are not project-namespaced; use a
+                     specific tag.
 
         Returns:
-            Nested structure showing the reasoning chain
+            Nested structure showing the reasoning chain. When project is not None,
+            also includes "project": tag at the top level.
         """
         lc = get_lifespan(ctx)
         err = _validate_direction(direction, ("outgoing", "incoming"))
@@ -1360,10 +1376,11 @@ def register_cognition_tools(mcp) -> None:
         Args:
             node_id: The node to start from (typically the newest version).
             project: None (default, home) or tag/path for a loaded foreign project.
-                     "*" is rejected.
+                     "*" is rejected — node ids are not project-namespaced.
 
         Returns:
             {"node_id": ..., "chain": [ ... ]} newest->oldest.
+            When project is not None, also includes "project": tag.
         """
         lc = get_lifespan(ctx)
         if project is None:
@@ -1386,11 +1403,12 @@ def register_cognition_tools(mcp) -> None:
         Args:
             node_id: The incident node.
             project: None (default, home) or tag/path for a loaded foreign project.
-                     "*" is rejected.
+                     "*" is rejected — node ids are not project-namespaced.
 
         Returns:
             {id, ...incident fields, resolutions: [...], discoveries: [...],
             contradictions: [...]} or {"error": ...} if the node is absent.
+            When project is not None, also includes "project": tag.
         """
         lc = get_lifespan(ctx)
         if project is None:
@@ -1423,11 +1441,15 @@ def register_cognition_tools(mcp) -> None:
                        constraint, incident, pattern, episode
             limit: Max results (default: 20)
             project: None (default, home), tag/path, or "*" (all loaded projects).
-                     When not None, rows carry "project" tag and response gains
-                     "projects_queried".
+                     Aggregate tool: "*" fans across all loaded projects, merges and
+                     sorts rows, adds "projects_queried" to the envelope. Each row
+                     carries a "project" tag when project != None.
 
         Returns:
-            Matching cognition nodes sorted by timestamp (newest first)
+            {context_term, results: [...nodes], count}
+            When project != None also includes "projects_queried": [tag, …].
+            (Cross-project note: for semantic search over projects use
+            cognition_search with project=; get_history is structural only.)
         """
         lc = get_lifespan(ctx)
 
@@ -1541,10 +1563,12 @@ def register_cognition_tools(mcp) -> None:
                        constraint, incident, pattern, episode
             limit: Max results (default: 50, max: 500)
             project: None (default, home), tag/path, or "*" (all loaded projects).
+                     Aggregate tool: "*" fans across all loaded projects and merges.
+                     Each row carries a "project" tag when project != None.
 
         Returns:
             {"nodes": [...], "count": N, "total_edgeless": N}
-            When project not None also includes "projects_queried".
+            When project != None also includes "projects_queried": [tag, …].
         """
         lc = get_lifespan(ctx)
         nt, err = _parse_node_type(node_type)
@@ -1610,10 +1634,12 @@ def register_cognition_tools(mcp) -> None:
                        constraint, incident, pattern, episode
             limit: Max results (default: 50, max: 500)
             project: None (default, home), tag/path, or "*" (all loaded projects).
+                     Aggregate tool: "*" fans across all loaded projects and merges.
+                     Each row carries a "project" tag when project != None.
 
         Returns:
             {"nodes": [...], "count": N, "total_uncurated": N}
-            When project not None also includes "projects_queried".
+            When project != None also includes "projects_queried": [tag, …].
         """
         lc = get_lifespan(ctx)
         nt, err = _parse_node_type(node_type)
@@ -1702,10 +1728,12 @@ def register_cognition_tools(mcp) -> None:
             edge_type: Optional filter (led_to, supersedes, etc.)
             direction: "incoming", "outgoing", or "both"
             project: None (default, home) or tag/path for a loaded foreign project.
-                     "*" is rejected.
+                     "*" is rejected — node ids are not project-namespaced, so the
+                     same id can exist in two projects; use a specific tag.
 
         Returns:
             {"node_id": "...", "incoming": [...], "outgoing": [...]}
+            When project is not None, also includes "project": tag.
         """
         lc = get_lifespan(ctx)
 
@@ -1857,15 +1885,32 @@ def register_cognition_tools(mcp) -> None:
 
     @mcp.tool()
     def cognition_load_project(ctx: Context, path: str) -> dict[str, Any]:
-        """Load a foreign cognition project for cross-project structural reads.
+        """Load a foreign cognition project so all read tools can query it.
 
-        Attaches the project at <path> to this session. Structural reads (get_node,
-        get_neighbors, etc.) remain home-only until XP2 adds the project= arg.
-        Semantic search over B is also XP2. This registers the project and runs the
-        load-time embedding guard.
+        Attaches the project at <path> to this session and runs the embedding-model
+        guard. After loading, pass the returned `tag` (or the path) as the `project`
+        arg on any read tool to route that call to the foreign project:
+          - Structural reads (get_node, get_chain, get_neighbors, get_history, …)
+          - Semantic search (cognition_search) — availability depends on model_guard
 
-        The load is READ-ONLY: never writes to B's journal or chroma, never runs
-        sync/backfill against B, and never creates B's chroma if it doesn't exist.
+        The load is READ-ONLY: never writes to the foreign journal or chroma, never
+        runs sync/backfill, and never creates a chroma collection if one is absent.
+
+        Re-loading an already-loaded project (home or foreign) returns an error;
+        unload it first with cognition_unload_project if you need to reload.
+
+        model_guard values and what they mean for you:
+          match         — embedding model confirmed compatible; semantic search enabled
+          unknown       — pre-stamp collection (no model metadata); search runs with a
+                          degraded-confidence caveat in project_notes
+          no-index      — no chroma collection found; semantic search DISABLED for this
+                          project; structural reads still work
+          dim-mismatch  — vector dimensions differ from home; semantic DISABLED
+          model-mismatch — different embedding model; semantic DISABLED
+
+        For dim/model/no-index guard states, semantic search silently returns no hits
+        for that project (project_notes[tag].semantic_unavailable explains why); this
+        is not "no history" — it means the index is guarded off.
 
         Args:
             path: Absolute or relative path to the foreign project root (must contain
@@ -1873,6 +1918,7 @@ def register_cognition_tools(mcp) -> None:
 
         Returns:
             {tag, path, node_count, vector_count, model_guard, warning?}
+            vector_count is "n/a" when no chroma index exists for the project.
         """
         return _load_project_core(get_lifespan(ctx), path)
 
@@ -1895,8 +1941,28 @@ def register_cognition_tools(mcp) -> None:
     def cognition_list_projects(ctx: Context) -> dict[str, Any]:
         """List all loaded cognition projects (home + foreign).
 
+        Use this to see which projects are available for the `project` arg on read
+        tools, and to understand each project's semantic search availability.
+
+        model_guard values per entry:
+          match         — semantic search enabled for this project
+          unknown       — pre-stamp; search runs with degraded-confidence caveat
+          no-index      — no chroma collection; semantic DISABLED, structural only
+          dim-mismatch  — vector dimensions differ; semantic DISABLED
+          model-mismatch — different embedding model; semantic DISABLED
+
         Returns:
-            {projects: [{tag, path, node_count, vector_count, pinned, model_guard}]}
+            {
+              foreign_count: N,          # number of loaded foreign projects
+              projects: [{
+                tag,                     # short label used as the project= arg
+                path,
+                node_count,
+                vector_count,            # int, or "n/a" (no index), or -1 (stat failed)
+                pinned,                  # true for home (cannot be unloaded)
+                model_guard,
+              }]
+            }
         """
         return _list_projects_core(get_lifespan(ctx))
 
