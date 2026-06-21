@@ -14,6 +14,7 @@ from .embeddings import ChromaDBStorage, EmbeddingGenerator
 from .instructions import SERVER_INSTRUCTIONS
 from .tools import register_all_tools
 from .tools.cognition_tools import _embed_document
+from .tools.project_registry import build_registry
 
 logger = logging.getLogger(__name__)
 
@@ -253,6 +254,16 @@ async def lifespan(server: FastMCP):
     cognition_embedding_storage = ChromaDBStorage(
         persist_directory=config.cognition_chromadb_path,
         collection_name="cognition_embeddings",
+        embedding_model=config.embedding_model,
+        embedding_dimensions=config.embedding_dimensions,
+    )
+
+    # Build project registry — home is always pinned
+    loaded_projects = build_registry(
+        home_path=config.repo_path,
+        home_tag=config.effective_repo_name,
+        home_storage=cognition_storage,
+        home_embeddings=cognition_embedding_storage,
     )
 
     # Build context for tools
@@ -260,6 +271,7 @@ async def lifespan(server: FastMCP):
         "config": config,
         "cognition_storage": cognition_storage,
         "cognition_embedding_storage": cognition_embedding_storage,
+        "loaded_projects": loaded_projects,
         "embedding_generator": None,  # Set by background thread
         "embedding_ready": threading.Event(),
         "embedding_error": None,

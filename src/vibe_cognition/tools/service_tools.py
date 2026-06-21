@@ -30,6 +30,8 @@ def register_service_tools(mcp) -> None:
         config = lc.get("config")
         cognition_storage = lc.get("cognition_storage")
         cognition_embedding_storage = lc.get("cognition_embedding_storage")
+        from .project_registry import LoadedProjects
+        registry: LoadedProjects | None = lc.get("loaded_projects")
 
         result: dict[str, Any] = {
             "repo_name": config.effective_repo_name if config else "unknown",
@@ -69,6 +71,10 @@ def register_service_tools(mcp) -> None:
             result["embedding_status"] = "ready"
         else:
             result["embedding_status"] = "loading"
+
+        # Foreign project count (XP1)
+        if registry is not None:
+            result["loaded_foreign_projects"] = registry.foreign_count()
 
         # Curation is agent-driven: only deterministic part_of edges are automatic;
         # semantic edges are created by the agent via the /vibe-curate skill.

@@ -38,6 +38,7 @@ from ..cognition.documents import (
     write_text_sidecar,
 )
 from ..embeddings import ChromaDBStorage, EmbeddingGenerator, adaptive_vector_search
+from .project_registry import LoadedProjects, ProjectEntry, ModelGuard
 from .utils import get_lifespan, require_embeddings
 
 logger = logging.getLogger(__name__)
@@ -755,6 +756,177 @@ def _update_node(
     return result
 
 
+# ── XP1 core logic (module-level so tests can call without an MCP Context) ───
+
+
+def _load_project_core(lc: dict[str, Any], path: str) -> dict[str, Any]:
+    """Core logic for cognition_load_project — extracted for testability."""
+    registry: LoadedProjects = lc["loaded_projects"]
+    config = lc["config"]
+
+    # Resolve + normalize
+    try:
+        resolved = Path(path).resolve()
+    except Exception as e:
+        return {"error": f"invalid path: {e}"}
+
+    # Home-pin guard (resolve() normalises trailing slash / . / mixed sep)
+    if registry.is_home(resolved):
+        return {"error": "already loaded as home project"}
+
+    # Exact-path re-load guard
+    existing = registry.get(resolved)
+    if existing is not None:
+        return {"error": f"already loaded as '{existing.tag}'", "tag": existing.tag}
+
+    # Validate .cognition/journal.jsonl exists
+    journal_path = resolved / ".cognition" / "journal.jsonl"
+    if not journal_path.exists():
+        return {"error": f"no cognition graph at {resolved} (missing .cognition/journal.jsonl)"}
+
+    # Build CognitionStorage (read-only: only reads/stat the journal)
+    b_storage = CognitionStorage(resolved / ".cognition")
+    node_count = b_storage.get_statistics().get("nodes", 0)
+
+    # Open B's chroma — read-only path (never creates)
+    b_chroma_dir = resolved / ".cognition" / "chromadb"
+    b_embeddings = ChromaDBStorage.open_existing(b_chroma_dir)
+
+    # Load-time guard
+    model_guard: ModelGuard
+    warning: str | None = None
+    vector_count: int | str = 0
+
+    if b_embeddings is None:
+        model_guard = "no-index"
+        warning = f"semantic search unavailable for {resolved.name} (no vector index)"
+        vector_count = "n/a"
+    else:
+        # Probe stored dimension — metadata stamp is authoritative (available since C1);
+        # live vector probe is the fallback for pre-stamp collections only.
+        b_meta = b_embeddings._collection.metadata or {}
+        b_model = b_meta.get("embedding_model")
+        b_dims_meta = b_meta.get("embedding_dimensions")
+
+        if b_dims_meta is not None:
+            b_dim_actual: int | None = int(b_dims_meta)
+        else:
+            # Pre-stamp collection: fall back to probing a sample vector.
+            # len() works for both plain lists and numpy arrays (chromadb Rust backend
+            # may return either). Exception → None (unknown dim, skip dim check).
+            try:
+                probe = b_embeddings._collection.get(limit=1, include=["embeddings"])
+                embs = probe.get("embeddings") or []
+                b_dim_actual = int(len(embs[0])) if embs else None
+            except Exception:
+                b_dim_actual = None
+
+        a_dims = config.embedding_dimensions
+        a_model = config.embedding_model
+
+        if b_dim_actual is not None and b_dim_actual != a_dims:
+            b_embeddings.close()
+            b_embeddings = None
+            model_guard = "dim-mismatch"
+            warning = (
+                f"semantic search disabled for {resolved.name}: "
+                f"stored dim={b_dim_actual}, home dim={a_dims} (structural-only)"
+            )
+            vector_count = "n/a"
+        elif b_model is not None and b_model != a_model:
+            b_embeddings.close()
+            b_embeddings = None
+            model_guard = "model-mismatch"
+            warning = (
+                f"semantic search disabled for {resolved.name}: "
+                f"model '{b_model}' ≠ home '{a_model}' (structural-only)"
+            )
+            vector_count = "n/a"
+        elif b_model is not None and b_model == a_model:
+            model_guard = "match"
+            vector_count = b_embeddings.count_documents()
+        else:
+            # model absent (pre-stamp collection) OR empty collection
+            model_guard = "unknown"
+            warning = (
+                f"semantic search for {resolved.name} is degraded-confidence: "
+                f"no model provenance in collection metadata (pre-stamp)"
+            )
+            vector_count = b_embeddings.count_documents() if b_embeddings else 0
+
+    # Assign tag with collision suffix
+    base_tag = resolved.name
+    tag = registry.unique_tag(base_tag)
+
+    entry = ProjectEntry(
+        path=resolved,
+        tag=tag,
+        storage=b_storage,
+        embeddings=b_embeddings,
+        pinned=False,
+        model_guard=model_guard,
+    )
+    registry.add_foreign(entry)
+
+    result: dict[str, Any] = {
+        "tag": tag,
+        "path": str(resolved),
+        "node_count": node_count,
+        "vector_count": vector_count,
+        "model_guard": model_guard,
+    }
+    if warning:
+        result["warning"] = warning
+    return result
+
+
+def _unload_project_core(lc: dict[str, Any], project: str) -> dict[str, Any]:
+    """Core logic for cognition_unload_project — extracted for testability."""
+    registry: LoadedProjects = lc["loaded_projects"]
+
+    entry = registry.resolve_tag(project)
+    if entry is None:
+        return {"error": f"no loaded project matching '{project}'"}
+    if entry.pinned:
+        return {"error": f"'{entry.tag}' is the home project and cannot be unloaded"}
+
+    # Null-guard: structural-only entries have embeddings=None
+    if entry.embeddings is not None:
+        entry.embeddings.close()
+
+    registry.remove(entry.path)
+    return {"unloaded": entry.tag, "path": str(entry.path)}
+
+
+def _list_projects_core(lc: dict[str, Any]) -> dict[str, Any]:
+    """Core logic for cognition_list_projects — extracted for testability."""
+    registry: LoadedProjects = lc["loaded_projects"]
+
+    projects = []
+    for entry in registry.all_entries():
+        try:
+            node_count = entry.storage.get_statistics().get("nodes", 0)
+        except Exception:
+            node_count = -1
+        if entry.embeddings is not None:
+            try:
+                vector_count: int | str = entry.embeddings.count_documents()
+            except Exception:
+                vector_count = -1
+        else:
+            vector_count = "n/a"
+        projects.append({
+            "tag": entry.tag,
+            "path": str(entry.path),
+            "node_count": node_count,
+            "vector_count": vector_count,
+            "pinned": entry.pinned,
+            "model_guard": entry.model_guard,
+        })
+
+    return {"projects": projects, "foreign_count": registry.foreign_count()}
+
+
 def register_cognition_tools(mcp) -> None:
     """Register cognition graph tools with the MCP server.
 
@@ -1448,4 +1620,51 @@ def register_cognition_tools(mcp) -> None:
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         return storage.reload()
+
+    # ── Cross-project tools (XP1) ─────────────────────────────────
+
+    @mcp.tool()
+    def cognition_load_project(ctx: Context, path: str) -> dict[str, Any]:
+        """Load a foreign cognition project for cross-project structural reads.
+
+        Attaches the project at <path> to this session. Structural reads (get_node,
+        get_neighbors, etc.) remain home-only until XP2 adds the project= arg.
+        Semantic search over B is also XP2. This registers the project and runs the
+        load-time embedding guard.
+
+        The load is READ-ONLY: never writes to B's journal or chroma, never runs
+        sync/backfill against B, and never creates B's chroma if it doesn't exist.
+
+        Args:
+            path: Absolute or relative path to the foreign project root (must contain
+                  a .cognition/journal.jsonl).
+
+        Returns:
+            {tag, path, node_count, vector_count, model_guard, warning?}
+        """
+        return _load_project_core(get_lifespan(ctx), path)
+
+    @mcp.tool()
+    def cognition_unload_project(ctx: Context, project: str) -> dict[str, Any]:
+        """Unload a previously loaded foreign project.
+
+        Refuses to unload the home project (always pinned). Releases the chroma
+        client handle so B's directory is unlocked on Windows.
+
+        Args:
+            project: Tag or path of the foreign project to unload.
+
+        Returns:
+            {unloaded: tag, path} or {error: ...}
+        """
+        return _unload_project_core(get_lifespan(ctx), project)
+
+    @mcp.tool()
+    def cognition_list_projects(ctx: Context) -> dict[str, Any]:
+        """List all loaded cognition projects (home + foreign).
+
+        Returns:
+            {projects: [{tag, path, node_count, vector_count, pinned, model_guard}]}
+        """
+        return _list_projects_core(get_lifespan(ctx))
 
