@@ -51,6 +51,12 @@ WP-R3 (PR #13 → `8f3079f`) cut the version bump + CHANGELOG; Colton cleared bo
 
 ---
 
+## Standing audits (recurring)
+
+- **Tool-surface self-sufficiency audit** (Colton, 2026-06-21): every MCP tool and its description must let an LLM read it and know HOW to use it correctly **without any extra rules or prompting from the user** — the tool name, args, description, and return shape are the SOLE contract. **Re-run this audit every time a tool is added or changed** — it is not one-and-done; a new tool can quietly assume a convention the user would otherwise have to supply. Each pass: confirm every tool reads clearly in ISOLATION (no implicit user-supplied context required), args are unambiguous, return shapes are documented, and `"*"`/`project`/error semantics are stated. **Immediate scope:** the XP tools just shipped (`cognition_load_project` / `_unload_project` / `_list_projects`, and the new `project` arg on the read tools) — sweep those first. Pairs with the SKILL.md tool-table drift item (S-3).
+
+---
+
 ## Audit remainder — proposed WP groupings (not yet briefed)
 
 Priorities: **P1** ship-soon / high leverage · **P2** real correctness, lower urgency · **P3** polish/dead-code.
