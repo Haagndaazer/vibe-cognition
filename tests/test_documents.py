@@ -674,9 +674,12 @@ class _FixedGen:
         self._vec = vec
         self.calls = 0
 
-    def generate_query_embedding(self, text):
+    def generate(self, text, input_type="document"):
         self.calls += 1
         return self._vec
+
+    def generate_query_embedding(self, text):
+        return self.generate(text, input_type="query")
 
 
 def test_n1_cross_process_ghost_filtered_end_to_end(tmp_path):

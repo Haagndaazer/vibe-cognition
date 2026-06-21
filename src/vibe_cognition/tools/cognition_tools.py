@@ -64,7 +64,7 @@ def _embed_entity_node(
     correct — no stale vector, no ghost/duplicate). The caller must pass a node whose
     ``id`` is the FINAL (post-mint) id, else the vector lands under a stale id (A1)."""
     embed_text = f"{node.type.value}: {node.summary}\n{node.detail}"
-    embedding = generator.generate_query_embedding(embed_text)
+    embedding = generator.generate(embed_text, input_type="document")
     metadata: dict[str, Any] = {
         "entity_type": node.type.value,
         "summary": node.summary,
@@ -455,7 +455,7 @@ def _embed_document(
     node_text = f"{doc_type}: {summary}\n{detail}"
     embedding_storage.upsert_embedding(
         node_id,
-        generator.generate_query_embedding(node_text),
+        generator.generate(node_text, input_type="document"),
         {"entity_type": doc_type, "summary": summary},
     )
     # Delete-then-write the chunk set (idempotent regardless of count change).
@@ -464,7 +464,7 @@ def _embed_document(
     for i, chunk in enumerate(chunks):
         embedding_storage.upsert_embedding(
             f"{node_id}#chunk-{i}",
-            generator.generate_query_embedding(chunk),
+            generator.generate(chunk, input_type="document"),
             {"node_id": node_id, "entity_type": doc_type, "is_chunk": True},
             document=chunk,
         )

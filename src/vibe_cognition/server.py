@@ -109,7 +109,7 @@ def _sync_cognition_embeddings(
         logger.info(f"Syncing {len(non_doc_missing)} cognition nodes to ChromaDB...")
         for node in non_doc_missing:
             embed_text = f"{node.get('type', '')}: {node.get('summary', '')}\n{node.get('detail', '')}"
-            embedding = generator.generate_query_embedding(embed_text)
+            embedding = generator.generate(embed_text, input_type="document")
             metadata = {
                 "entity_type": node.get("type", ""),
                 "summary": node.get("summary", ""),
@@ -216,6 +216,14 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
         cognition_embedding_storage = context.get("cognition_embedding_storage")
 
         if cognition_storage and cognition_embedding_storage and embedding_generator:
+            # E-3 one-time migration: if the collection lacks the doc-prefix-v1 marker,
+            # drop and recreate it so the sync below rebuilds all vectors document-prefixed.
+            # Crash mid-rebuild self-heals: the additive sync re-adds only what's missing.
+            col_meta = cognition_embedding_storage._collection.metadata or {}
+            if col_meta.get("embed_scheme") != "doc-prefix-v1":
+                logger.info("E-3 migration: recreating collection with doc-prefix stamp")
+                cognition_embedding_storage.recreate_collection()
+
             logger.info("Syncing cognition embeddings...")
             _sync_cognition_embeddings(
                 cognition_storage, cognition_embedding_storage, embedding_generator
