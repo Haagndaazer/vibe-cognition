@@ -38,7 +38,7 @@ from ..cognition.documents import (
     write_text_sidecar,
 )
 from ..embeddings import ChromaDBStorage, EmbeddingGenerator, adaptive_vector_search
-from .project_registry import LoadedProjects, ProjectEntry, ModelGuard
+from .project_registry import LoadedProjects, ModelGuard, ProjectEntry, resolve_project, tag_results
 from .utils import get_lifespan, require_embeddings
 
 logger = logging.getLogger(__name__)
@@ -336,6 +336,30 @@ def _format_search_results(
     return formatted
 
 
+def _search_with_embedding(
+    storage: CognitionStorage,
+    embedding_storage: ChromaDBStorage,
+    query_embedding: list[float],
+    node_type: str | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Inner search: takes a pre-computed embedding, returns formatted result list.
+
+    Extracted so multi-project search can embed the query ONCE and fan over entries
+    without re-embedding per project. ``storage`` must be the storage for THIS
+    ``embedding_storage`` — the N1 ghost-filter (search_hit_is_live) in
+    _format_search_results uses it to check node presence; passing mismatched
+    storage silently drops all hits from the foreign graph (XP2 correctness trap).
+    """
+    return adaptive_vector_search(
+        embedding_storage,
+        query_embedding,
+        entity_type=node_type,
+        limit=limit,
+        dedupe=lambda results, lim: _format_search_results(results, storage, lim),
+    )
+
+
 def _search_cognition(
     storage: CognitionStorage,
     embedding_storage: ChromaDBStorage,
@@ -360,13 +384,7 @@ def _search_cognition(
     deleted node — the dedupe + N1 filter are exact)."""
     limit = min(limit, 50)
     query_embedding = generator.generate_query_embedding(query)
-    formatted = adaptive_vector_search(
-        embedding_storage,
-        query_embedding,
-        entity_type=node_type,
-        limit=limit,
-        dedupe=lambda results, lim: _format_search_results(results, storage, lim),
-    )
+    formatted = _search_with_embedding(storage, embedding_storage, query_embedding, node_type, limit)
     return {"query": query, "results": formatted, "count": len(formatted)}
 
 
@@ -1085,6 +1103,7 @@ def register_cognition_tools(mcp) -> None:
         ctx: Context,
         node_id: str | None = None,
         doc_ref_arg: str | None = None,
+        project: str | None = None,
     ) -> dict[str, Any]:
         """Retrieve a stored document: metadata + full sidecar text + path, with a
         freshness check.
@@ -1093,14 +1112,36 @@ def register_cognition_tools(mcp) -> None:
         store time). In reference mode the original file is re-hashed: `freshness`
         is `unchanged | modified | missing`.
 
+        Cross-project note: when project is a foreign tag/path, `freshness` is
+        always "cross-project: unavailable" — the path in the node is
+        foreign-machine-relative and a local re-hash would mislead.
+
+        Args:
+            node_id: Node id to retrieve.
+            doc_ref_arg: doc:<hash> ref returned at store time.
+            project: None (default, home) or tag/path for a loaded foreign project.
+                     "*" is rejected.
+
         Returns:
             {node_id, doc_ref, metadata, text, path, freshness} or {"error": ...}
+            When project is not None, also includes "project": tag.
         """
-        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
-        return _get_document(storage, node_id=node_id, doc_ref_arg=doc_ref_arg)
+        lc = get_lifespan(ctx)
+        if project is None:
+            return _get_document(lc["cognition_storage"], node_id=node_id, doc_ref_arg=doc_ref_arg)
+        if project == "*":
+            return {"error": 'project="*" is not supported for single-node tools'}
+        entries, err = resolve_project(lc, project)
+        if err:
+            return err
+        result = _get_document(entries[0].storage, node_id=node_id, doc_ref_arg=doc_ref_arg)
+        if "error" not in result:
+            result["project"] = entries[0].tag
+            result["freshness"] = "cross-project: unavailable"
+        return result
 
     @mcp.tool()
-    def cognition_get_node(ctx: Context, node_id: str) -> dict[str, Any]:
+    def cognition_get_node(ctx: Context, node_id: str, project: str | None = None) -> dict[str, Any]:
         """Read a single cognition node's FULL narrative by id.
 
         Search results and `cognition_get_neighbors` return summaries only (no
@@ -1110,13 +1151,25 @@ def register_cognition_tools(mcp) -> None:
 
         Args:
             node_id: The node to read.
+            project: None (default, home) or a tag/path for a loaded foreign
+                     project. "*" is rejected (node ids are not project-namespaced).
 
         Returns:
-            {id, type, summary, detail, context, references, severity, timestamp,
-            author, metadata} or {"error": ...} if the node is absent.
+            {id, type, summary, detail, ...} or {"error": ...} if absent.
+            When project is not None, also includes "project": tag.
         """
-        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
-        return _get_node(storage, node_id)
+        lc = get_lifespan(ctx)
+        if project is None:
+            return _get_node(lc["cognition_storage"], node_id)
+        if project == "*":
+            return {"error": 'project="*" is not supported for single-node tools; node ids are not project-namespaced'}
+        entries, err = resolve_project(lc, project)
+        if err:
+            return err
+        result = _get_node(entries[0].storage, node_id)
+        if "error" not in result:
+            result["project"] = entries[0].tag
+        return result
 
     @mcp.tool()
     def cognition_update_node(
@@ -1178,6 +1231,7 @@ def register_cognition_tools(mcp) -> None:
         query: str,
         node_type: str | None = None,
         limit: int = 10,
+        project: str | None = None,
     ) -> dict[str, Any]:
         """Search PROJECT HISTORY (decisions, failures, discoveries, patterns) by natural language.
 
@@ -1192,6 +1246,10 @@ def register_cognition_tools(mcp) -> None:
             node_type: Optional filter: decision, fail, discovery, assumption,
                        constraint, incident, pattern, episode
             limit: Max results (default: 10)
+            project: Optional project specifier — None (default, home only),
+                     a tag/path (specific foreign project), or "*" (all loaded
+                     projects). When not None, results carry a "project" tag and
+                     the response gains a "project_notes" map for guard caveats.
 
         Returns:
             Matching cognition nodes with similarity scores
@@ -1201,14 +1259,58 @@ def register_cognition_tools(mcp) -> None:
             return err
 
         lifespan = get_lifespan(ctx)
-        return _search_cognition(
-            lifespan["cognition_storage"],
-            lifespan["cognition_embedding_storage"],
-            lifespan["embedding_generator"],
-            query,
-            node_type=node_type,
-            limit=limit,
-        )
+
+        # Default (project=None): byte-identical to the pre-XP2 path.
+        if project is None:
+            return _search_cognition(
+                lifespan["cognition_storage"],
+                lifespan["cognition_embedding_storage"],
+                lifespan["embedding_generator"],
+                query,
+                node_type=node_type,
+                limit=limit,
+            )
+
+        # Multi-project path: resolve entries, embed once, fan out.
+        entries, err2 = resolve_project(lifespan, project)
+        if err2:
+            return err2
+
+        generator: EmbeddingGenerator = lifespan["embedding_generator"]
+        limit = min(limit, 50)
+        query_embedding = generator.generate_query_embedding(query)
+
+        all_results: list[dict[str, Any]] = []
+        project_notes: dict[str, Any] = {}
+
+        for entry in entries:
+            tag = entry.tag
+            if entry.embeddings is None:
+                project_notes[tag] = {
+                    "semantic_unavailable": True,
+                    "reason": entry.model_guard,
+                }
+                continue
+            results = _search_with_embedding(
+                entry.storage, entry.embeddings, query_embedding, node_type, limit
+            )
+            tag_results(results, tag)
+            all_results.extend(results)
+            if entry.model_guard == "unknown":
+                project_notes[tag] = {
+                    "confidence": "degraded — no model provenance in collection metadata (pre-stamp)"
+                }
+
+        # Sort merged results by score desc; no cross-project id-dedup —
+        # colliding ids across projects are two legitimately different nodes
+        # (ids are content-derived, not namespaced). The project tag disambiguates.
+        all_results.sort(key=lambda r: r.get("score") or 0.0, reverse=True)
+        all_results = all_results[:limit]
+
+        result: dict[str, Any] = {"query": query, "results": all_results, "count": len(all_results)}
+        if project_notes:
+            result["project_notes"] = project_notes
+        return result
 
     @mcp.tool()
     def cognition_get_chain(
@@ -1216,6 +1318,7 @@ def register_cognition_tools(mcp) -> None:
         node_id: str,
         max_depth: int = 5,
         direction: str = "outgoing",
+        project: str | None = None,
     ) -> dict[str, Any]:
         """Get the reasoning chain from/to a cognition node via LED_TO edges.
 
@@ -1225,18 +1328,29 @@ def register_cognition_tools(mcp) -> None:
             node_id: Starting node ID
             max_depth: Maximum depth to traverse (default: 5)
             direction: "outgoing" (what it led to) or "incoming" (what led to it)
+            project: None (default, home) or tag/path for a loaded foreign project.
+                     "*" is rejected.
 
         Returns:
             Nested structure showing the reasoning chain
         """
-        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
+        lc = get_lifespan(ctx)
         err = _validate_direction(direction, ("outgoing", "incoming"))
         if err:
             return err
-        return get_reasoning_chain(storage, node_id, max_depth, direction)
+        if project is None:
+            return get_reasoning_chain(lc["cognition_storage"], node_id, max_depth, direction)
+        if project == "*":
+            return {"error": 'project="*" is not supported for single-node tools'}
+        entries, err2 = resolve_project(lc, project)
+        if err2:
+            return err2
+        result = get_reasoning_chain(entries[0].storage, node_id, max_depth, direction)
+        result["project"] = entries[0].tag
+        return result
 
     @mcp.tool()
-    def cognition_get_superseded_chain(ctx: Context, node_id: str) -> dict[str, Any]:
+    def cognition_get_superseded_chain(ctx: Context, node_id: str, project: str | None = None) -> dict[str, Any]:
         """Get a node's version history by following SUPERSEDES edges, newest first.
 
         When a decision is revised, the new node SUPERSEDES the old one; this walks
@@ -1245,15 +1359,24 @@ def register_cognition_tools(mcp) -> None:
 
         Args:
             node_id: The node to start from (typically the newest version).
+            project: None (default, home) or tag/path for a loaded foreign project.
+                     "*" is rejected.
 
         Returns:
-            {"node_id": ..., "chain": [ {id, type, summary, ...}, ... ]} newest->oldest.
+            {"node_id": ..., "chain": [ ... ]} newest->oldest.
         """
-        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
-        return {"node_id": node_id, "chain": get_superseded_chain(storage, node_id)}
+        lc = get_lifespan(ctx)
+        if project is None:
+            return {"node_id": node_id, "chain": get_superseded_chain(lc["cognition_storage"], node_id)}
+        if project == "*":
+            return {"error": 'project="*" is not supported for single-node tools'}
+        entries, err = resolve_project(lc, project)
+        if err:
+            return err
+        return {"node_id": node_id, "chain": get_superseded_chain(entries[0].storage, node_id), "project": entries[0].tag}
 
     @mcp.tool()
-    def cognition_get_incident_resolution(ctx: Context, node_id: str) -> dict[str, Any]:
+    def cognition_get_incident_resolution(ctx: Context, node_id: str, project: str | None = None) -> dict[str, Any]:
         """Get an incident node plus everything that resolved or relates to it.
 
         Follows RESOLVED_BY edges to the fixes, LED_TO edges to follow-on nodes
@@ -1262,13 +1385,24 @@ def register_cognition_tools(mcp) -> None:
 
         Args:
             node_id: The incident node.
+            project: None (default, home) or tag/path for a loaded foreign project.
+                     "*" is rejected.
 
         Returns:
             {id, ...incident fields, resolutions: [...], discoveries: [...],
             contradictions: [...]} or {"error": ...} if the node is absent.
         """
-        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
-        return get_incident_resolution(storage, node_id)
+        lc = get_lifespan(ctx)
+        if project is None:
+            return get_incident_resolution(lc["cognition_storage"], node_id)
+        if project == "*":
+            return {"error": 'project="*" is not supported for single-node tools'}
+        entries, err = resolve_project(lc, project)
+        if err:
+            return err
+        result = get_incident_resolution(entries[0].storage, node_id)
+        result["project"] = entries[0].tag
+        return result
 
     @mcp.tool()
     def cognition_get_history(
@@ -1276,6 +1410,7 @@ def register_cognition_tools(mcp) -> None:
         context_term: str | None = None,
         node_type: str | None = None,
         limit: int = 20,
+        project: str | None = None,
     ) -> dict[str, Any]:
         """Get cognition nodes by context area, type, or recency.
 
@@ -1287,26 +1422,51 @@ def register_cognition_tools(mcp) -> None:
             node_type: Optional filter: decision, fail, discovery, assumption,
                        constraint, incident, pattern, episode
             limit: Max results (default: 20)
+            project: None (default, home), tag/path, or "*" (all loaded projects).
+                     When not None, rows carry "project" tag and response gains
+                     "projects_queried".
 
         Returns:
             Matching cognition nodes sorted by timestamp (newest first)
         """
-        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
+        lc = get_lifespan(ctx)
 
         nt, err = _parse_node_type(node_type)
         if err:
             return err
 
-        if context_term:
-            results = get_history_for_context(storage, context_term, nt)
-            results = results[:limit]
-        else:
-            results = storage.get_recent_nodes(limit=limit, node_type=nt)
+        # Default path: byte-identical to pre-XP2.
+        if project is None:
+            storage: CognitionStorage = lc["cognition_storage"]
+            if context_term:
+                results = get_history_for_context(storage, context_term, nt)
+                results = results[:limit]
+            else:
+                results = storage.get_recent_nodes(limit=limit, node_type=nt)
+            return {"context_term": context_term, "results": results, "count": len(results)}
+
+        # Multi-project path.
+        entries, err2 = resolve_project(lc, project)
+        if err2:
+            return err2
+
+        all_results: list[dict[str, Any]] = []
+        for entry in entries:
+            if context_term:
+                rows = get_history_for_context(entry.storage, context_term, nt)[:limit]
+            else:
+                rows = entry.storage.get_recent_nodes(limit=limit, node_type=nt)
+            tag_results(rows, entry.tag)
+            all_results.extend(rows)
+
+        all_results.sort(key=lambda n: n.get("timestamp") or "", reverse=True)
+        all_results = all_results[:limit]
 
         return {
             "context_term": context_term,
-            "results": results,
-            "count": len(results),
+            "results": all_results,
+            "count": len(all_results),
+            "projects_queried": [e.tag for e in entries],
         }
 
     @mcp.tool()
@@ -1369,6 +1529,7 @@ def register_cognition_tools(mcp) -> None:
         ctx: Context,
         node_type: str | None = None,
         limit: int = 50,
+        project: str | None = None,
     ) -> dict[str, Any]:
         """Get cognition nodes that have zero edges (no incoming or outgoing).
 
@@ -1379,35 +1540,63 @@ def register_cognition_tools(mcp) -> None:
             node_type: Optional filter: decision, fail, discovery, assumption,
                        constraint, incident, pattern, episode
             limit: Max results (default: 50, max: 500)
+            project: None (default, home), tag/path, or "*" (all loaded projects).
 
         Returns:
             {"nodes": [...], "count": N, "total_edgeless": N}
+            When project not None also includes "projects_queried".
         """
-        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
+        lc = get_lifespan(ctx)
         nt, err = _parse_node_type(node_type)
         if err:
             return err
-        all_nodes = storage.get_all_nodes()
 
-        edgeless = []
-        for node in all_nodes:
-            nid = node["id"]
-            if nt and node.get("type") != nt.value:
-                continue
-            if not storage.get_successors(nid) and not storage.get_predecessors(nid):
-                edgeless.append(node)
+        def _edgeless_for(storage: CognitionStorage) -> list[dict[str, Any]]:
+            all_nodes = storage.get_all_nodes()
+            edgeless = []
+            for node in all_nodes:
+                nid = node["id"]
+                if nt and node.get("type") != nt.value:
+                    continue
+                if not storage.get_successors(nid) and not storage.get_predecessors(nid):
+                    edgeless.append(node)
+            edgeless.sort(key=lambda n: n.get("timestamp") or "", reverse=True)
+            return edgeless
 
-        edgeless.sort(key=lambda n: n.get("timestamp", ""), reverse=True)
-        total = len(edgeless)
-        edgeless = edgeless[:min(limit, 500)]
+        # Default path: byte-identical to pre-XP2.
+        if project is None:
+            edgeless = _edgeless_for(lc["cognition_storage"])
+            total = len(edgeless)
+            edgeless = edgeless[:min(limit, 500)]
+            return {"nodes": edgeless, "count": len(edgeless), "total_edgeless": total}
 
-        return {"nodes": edgeless, "count": len(edgeless), "total_edgeless": total}
+        # Multi-project path.
+        entries, err2 = resolve_project(lc, project)
+        if err2:
+            return err2
+
+        all_edgeless: list[dict[str, Any]] = []
+        for entry in entries:
+            rows = _edgeless_for(entry.storage)
+            tag_results(rows, entry.tag)
+            all_edgeless.extend(rows)
+
+        all_edgeless.sort(key=lambda n: n.get("timestamp") or "", reverse=True)
+        total = len(all_edgeless)
+        all_edgeless = all_edgeless[:min(limit, 500)]
+        return {
+            "nodes": all_edgeless,
+            "count": len(all_edgeless),
+            "total_edgeless": total,
+            "projects_queried": [e.tag for e in entries],
+        }
 
     @mcp.tool()
     def cognition_get_uncurated_nodes(
         ctx: Context,
         node_type: str | None = None,
         limit: int = 50,
+        project: str | None = None,
     ) -> dict[str, Any]:
         """Get cognition nodes not yet reviewed by the curate skill.
 
@@ -1420,24 +1609,49 @@ def register_cognition_tools(mcp) -> None:
             node_type: Optional filter: decision, fail, discovery, assumption,
                        constraint, incident, pattern, episode
             limit: Max results (default: 50, max: 500)
+            project: None (default, home), tag/path, or "*" (all loaded projects).
 
         Returns:
             {"nodes": [...], "count": N, "total_uncurated": N}
+            When project not None also includes "projects_queried".
         """
-        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
+        lc = get_lifespan(ctx)
         nt, err = _parse_node_type(node_type)
         if err:
             return err
 
-        # The returned list is capped (storage caps at 500); the TOTAL is an honest,
-        # uncapped count (T-2 — deriving the total from the capped list under-reported
-        # any backlog over 500).
-        nodes = storage.get_uncurated_nodes(limit=min(limit, 500), node_type=nt)
+        # Default path: byte-identical to pre-XP2.
+        if project is None:
+            storage: CognitionStorage = lc["cognition_storage"]
+            # The returned list is capped (storage caps at 500); the TOTAL is an honest,
+            # uncapped count (T-2 — deriving the total from the capped list under-reported
+            # any backlog over 500).
+            nodes = storage.get_uncurated_nodes(limit=min(limit, 500), node_type=nt)
+            return {
+                "nodes": nodes,
+                "count": len(nodes),
+                "total_uncurated": storage.count_uncurated_nodes(node_type=nt),
+            }
 
+        # Multi-project path.
+        entries, err2 = resolve_project(lc, project)
+        if err2:
+            return err2
+
+        all_nodes: list[dict[str, Any]] = []
+        total_uncurated = 0
+        for entry in entries:
+            rows = entry.storage.get_uncurated_nodes(limit=min(limit, 500), node_type=nt)
+            tag_results(rows, entry.tag)
+            all_nodes.extend(rows)
+            total_uncurated += entry.storage.count_uncurated_nodes(node_type=nt)
+
+        all_nodes = all_nodes[:min(limit, 500)]
         return {
-            "nodes": nodes,
-            "count": len(nodes),
-            "total_uncurated": storage.count_uncurated_nodes(node_type=nt),
+            "nodes": all_nodes,
+            "count": len(all_nodes),
+            "total_uncurated": total_uncurated,
+            "projects_queried": [e.tag for e in entries],
         }
 
     @mcp.tool()
@@ -1476,6 +1690,7 @@ def register_cognition_tools(mcp) -> None:
         node_id: str,
         edge_type: str | None = None,
         direction: str = "both",
+        project: str | None = None,
     ) -> dict[str, Any]:
         """Get all nodes connected to a given node, optionally filtered by edge type.
 
@@ -1486,15 +1701,30 @@ def register_cognition_tools(mcp) -> None:
             node_id: The node to query
             edge_type: Optional filter (led_to, supersedes, etc.)
             direction: "incoming", "outgoing", or "both"
+            project: None (default, home) or tag/path for a loaded foreign project.
+                     "*" is rejected.
 
         Returns:
             {"node_id": "...", "incoming": [...], "outgoing": [...]}
         """
-        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
+        lc = get_lifespan(ctx)
 
         err = _validate_direction(direction, ("incoming", "outgoing", "both"))
         if err:
             return err
+
+        proj_tag: str | None = None
+        if project is None:
+            storage: CognitionStorage = lc["cognition_storage"]
+        elif project == "*":
+            return {"error": 'project="*" is not supported for single-node tools'}
+        else:
+            entries, err2 = resolve_project(lc, project)
+            if err2:
+                return err2
+            storage = entries[0].storage
+            proj_tag = entries[0].tag
+
         if not storage.has_node(node_id):
             return {"error": f"Node '{node_id}' does not exist"}
 
@@ -1507,6 +1737,8 @@ def register_cognition_tools(mcp) -> None:
                 return {"error": f"Invalid edge_type '{edge_type}'. Valid: {valid}"}
 
         result: dict[str, Any] = {"node_id": node_id}
+        if proj_tag is not None:
+            result["project"] = proj_tag
 
         if direction in ("outgoing", "both"):
             outgoing = []

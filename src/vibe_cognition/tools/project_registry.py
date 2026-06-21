@@ -112,7 +112,33 @@ def build_registry(
     return registry
 
 
-def resolve_project(lc: dict[str, Any]) -> ProjectEntry:
-    """Return the home project entry (XP2 extends this to accept a project arg)."""
+def resolve_project(
+    lc: dict[str, Any], project: "str | None" = None
+) -> "tuple[list[ProjectEntry], dict[str, Any] | None]":
+    """Resolve a project specifier to a list of entries.
+
+    Args:
+        lc: Lifespan context dict.
+        project: None → [home]; "*" → all entries; tag/path str → [matching entry].
+
+    Returns:
+        (entries, None) on success, ([], error_dict) on failure.
+    """
     registry: LoadedProjects = lc["loaded_projects"]
-    return registry.get(registry._home_path)  # type: ignore[return-value]
+    if project is None:
+        home = registry.get(registry._home_path)
+        assert home is not None
+        return ([home], None)
+    if project == "*":
+        return (registry.all_entries(), None)
+    entry = registry.resolve_tag(project)
+    if entry is None:
+        return ([], {"error": f"no loaded project matching '{project}'"})
+    return ([entry], None)
+
+
+def tag_results(results: "list[dict[str, Any]]", tag: str) -> "list[dict[str, Any]]":
+    """Add 'project': tag to each result dict in-place (additive — no copy)."""
+    for r in results:
+        r["project"] = tag
+    return results
