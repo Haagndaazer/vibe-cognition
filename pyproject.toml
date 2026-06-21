@@ -12,8 +12,11 @@ dependencies = [
     "chromadb>=0.5.0",
     "sentence-transformers>=3.0.0",
     # Required at runtime, not imported directly: nomic-embed-text-v1.5's
-    # trust_remote_code model code (loaded in embeddings/generator.py) imports
-    # einops. Removing it breaks embedding generation at model load.
+    # trust_remote_code model code (loaded in embeddings/generator.py via
+    # SentenceTransformer(..., trust_remote_code=True)) imports einops.
+    # Removing it breaks embedding generation at model load.
+    # Pin the remote code to a known-good revision via the EMBEDDING_REVISION
+    # env var (config.embedding_revision) to harden against upstream hub changes.
     "einops>=0.7.0",
     # torch is declared DIRECTLY (it's otherwise transitive via
     # sentence-transformers) because uv's [tool.uv.sources] index pinning is

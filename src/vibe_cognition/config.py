@@ -56,6 +56,15 @@ class Settings(BaseSettings):
         default=768,
         description="Embedding vector dimensions",
     )
+    embedding_revision: str | None = Field(
+        default=None,
+        description=(
+            "HuggingFace Hub revision (branch, tag, or full commit SHA) for the "
+            "sentence-transformers model. When set, pins the remote code loaded via "
+            "trust_remote_code=True to a specific commit — recommended for production. "
+            "Set via EMBEDDING_REVISION env var. Default None = use the model hub HEAD."
+        ),
+    )
 
     # Ollama settings (embeddings backend only)
     ollama_base_url: str = Field(
