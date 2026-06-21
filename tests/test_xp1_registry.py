@@ -6,6 +6,7 @@ from vibe_cognition.cognition import CognitionStorage
 from vibe_cognition.embeddings import ChromaDBStorage
 from vibe_cognition.tools.project_registry import (
     LoadedProjects,
+    ModelGuard,
     ProjectEntry,
     build_registry,
 )
@@ -70,9 +71,9 @@ def test_c2_close_calls_client_close(tmp_path):
     Passes after: _client.close called exactly once.
     """
     storage = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
-    storage._client.close = MagicMock()
+    storage._client.close = MagicMock()  # type: ignore[attr-defined]
     storage.close()
-    storage._client.close.assert_called_once()
+    storage._client.close.assert_called_once()  # type: ignore[attr-defined]
 
 
 def test_c2_close_integration_reopen(tmp_path):
@@ -135,7 +136,7 @@ def test_open_existing_absent_collection_returns_none(tmp_path):
     from chromadb.config import Settings as ChromaSettings
     client = PersistentClient(path=str(chroma_dir), settings=ChromaSettings(anonymized_telemetry=False))
     client.get_or_create_collection("some_other_collection")
-    client.close()
+    client.close()  # type: ignore[attr-defined]
 
     result = ChromaDBStorage.open_existing(chroma_dir, collection_name="cognition_embeddings")
     assert result is None
@@ -158,7 +159,7 @@ def test_open_existing_present_collection_returns_storage(tmp_path):
 # ── LoadedProjects registry ───────────────────────────────────────────────────
 
 
-def _make_entry(path, tag, pinned=False, model_guard="match"):
+def _make_entry(path, tag, pinned=False, model_guard: ModelGuard = "match"):
     """Build a minimal ProjectEntry without real storage (registry-only tests)."""
     return ProjectEntry(
         path=path,
@@ -263,3 +264,254 @@ def test_foreign_cognition_storage_init_does_not_write_journal(tmp_path):
         f"CognitionStorage.__init__ wrote to B's journal "
         f"(mtime changed: {before_mtime} → {after_mtime})"
     )
+
+
+# ── Acceptance-criteria proofs via _load_project_core / _unload_project_core / _list_projects_core ──
+
+
+from types import SimpleNamespace
+from typing import cast
+
+from fastmcp import Context
+
+from vibe_cognition.tools.cognition_tools import (
+    _load_project_core,
+    _unload_project_core,
+    _list_projects_core,
+)
+
+
+def _make_lc(tmp_path, home_tag="myproject", embedding_model="test-model", embedding_dimensions=3):
+    """Build a minimal lifespan context for the XP1 core functions."""
+    import threading
+    home_path = tmp_path / "home"
+    home_path.mkdir(parents=True, exist_ok=True)
+    home_cognition = CognitionStorage(home_path / ".cognition")
+    home_chroma = ChromaDBStorage(
+        persist_directory=home_path / ".cognition" / "chromadb",
+        embedding_model=embedding_model,
+        embedding_dimensions=embedding_dimensions,
+    )
+    config = SimpleNamespace(
+        embedding_model=embedding_model,
+        embedding_dimensions=embedding_dimensions,
+        repo_path=home_path,
+    )
+    registry = build_registry(
+        home_path=home_path,
+        home_tag=home_tag,
+        home_storage=home_cognition,
+        home_embeddings=home_chroma,
+    )
+    return {
+        "config": config,
+        "cognition_storage": home_cognition,
+        "cognition_embedding_storage": home_chroma,
+        "loaded_projects": registry,
+        "embedding_generator": None,
+        "embedding_ready": threading.Event(),
+        "embedding_error": None,
+    }
+
+
+def _make_foreign(tmp_path, name="B", with_journal=True):
+    """Create a minimal foreign project directory."""
+    b_path = tmp_path / name
+    cognition_dir = b_path / ".cognition"
+    cognition_dir.mkdir(parents=True)
+    if with_journal:
+        (cognition_dir / "journal.jsonl").write_text(
+            '{"id": "n1", "type": "decision", "summary": "s"}\n', encoding="utf-8"
+        )
+    return b_path
+
+
+# ── Home-pin guard with path variants ────────────────────────────────────────
+
+
+def test_load_project_refuses_home_by_exact_path(tmp_path):
+    """cognition_load_project refuses to load the home project by exact path.
+
+    The home-pin guard runs AFTER resolve(), so trailing slashes, . components,
+    and mixed separators all normalise to the same canonical path.
+
+    Fails-before: no home-pin check → home registered twice as foreign.
+    Passes after: {"error": "already loaded as home project"}.
+    """
+    lc = _make_lc(tmp_path)
+    home_path = lc["config"].repo_path
+
+    # Exact path
+    res = _load_project_core(lc, str(home_path))
+    assert "error" in res and "home" in res["error"], f"exact path not refused: {res}"
+
+    # Trailing slash variant
+    res2 = _load_project_core(lc, str(home_path) + "/")
+    assert "error" in res2 and "home" in res2["error"], f"trailing-slash path not refused: {res2}"
+
+    # Dot-join variant (path / "." resolves to same dir)
+    res3 = _load_project_core(lc, str(home_path / "."))
+    assert "error" in res3 and "home" in res3["error"], f"dot-join path not refused: {res3}"
+
+
+def test_unload_project_refuses_home_by_tag(tmp_path):
+    """cognition_unload_project refuses to unload home even by tag."""
+    lc = _make_lc(tmp_path)
+    res = _unload_project_core(lc, "myproject")
+    assert "error" in res and "home project" in res["error"], (
+        f"home unload by tag not refused: {res}"
+    )
+
+
+def test_unload_project_refuses_home_by_path(tmp_path):
+    """cognition_unload_project refuses to unload home by path string."""
+    lc = _make_lc(tmp_path)
+    home_path = lc["config"].repo_path
+    res = _unload_project_core(lc, str(home_path))
+    assert "error" in res and "home project" in res["error"], (
+        f"home unload by path not refused: {res}"
+    )
+
+
+# ── Structural-only degrade end-to-end ───────────────────────────────────────
+
+
+def test_structural_only_degrade_end_to_end(tmp_path):
+    """End-to-end: load a B that has journal.jsonl but NO chromadb dir.
+
+    Expected behaviour:
+    - Returns model_guard="no-index"
+    - Does NOT create B's chromadb directory
+    - list_projects shows B with model_guard="no-index" and vector_count="n/a"
+    - unload_project succeeds (null-guard: embeddings=None should not crash)
+
+    Fails-before: if _load_project_core called __init__ instead of open_existing
+    → chroma.sqlite3 would be created at B's chromadb dir.
+    """
+    lc = _make_lc(tmp_path)
+    b_path = _make_foreign(tmp_path, "B", with_journal=True)
+    b_chroma_dir = b_path / ".cognition" / "chromadb"
+
+    # Load
+    res = _load_project_core(lc, str(b_path))
+    assert res.get("model_guard") == "no-index", f"expected no-index, got: {res}"
+    assert "error" not in res, f"unexpected error on load: {res}"
+    assert not b_chroma_dir.exists(), (
+        f"load created B's chroma dir at {b_chroma_dir} (read-only violation)"
+    )
+
+    # list_projects shows B
+    listing = _list_projects_core(lc)
+    tags = [p["tag"] for p in listing["projects"]]
+    assert "B" in tags, f"B not in listing: {listing}"
+    b_entry = next(p for p in listing["projects"] if p["tag"] == "B")
+    assert b_entry["model_guard"] == "no-index"
+    assert b_entry["vector_count"] == "n/a"
+
+    # unload succeeds without crashing on null embeddings
+    res2 = _unload_project_core(lc, "B")
+    assert "unloaded" in res2, f"unload failed: {res2}"
+    assert _list_projects_core(lc)["foreign_count"] == 0
+
+
+# ── Write-isolation: tool-level ───────────────────────────────────────────────
+
+
+def test_load_project_does_not_write_b_journal(tmp_path):
+    """Full _load_project_core on a no-index B must not change B's journal mtime.
+
+    Fails-before: if core wrote a registration record, sync header, or anything
+    to B's journal.
+    """
+    lc = _make_lc(tmp_path)
+    b_path = _make_foreign(tmp_path, "B", with_journal=True)
+    journal = b_path / ".cognition" / "journal.jsonl"
+
+    before = journal.stat().st_mtime_ns
+    _load_project_core(lc, str(b_path))
+    after = journal.stat().st_mtime_ns
+
+    assert before == after, (
+        f"_load_project_core modified B's journal (mtime changed: {before} → {after})"
+    )
+
+
+# ── Dim-mismatch and model-mismatch branches ─────────────────────────────────
+
+
+def test_load_project_dim_mismatch_structural_only(tmp_path):
+    """A B whose stored dim differs from home dim → model_guard="dim-mismatch",
+    structural attach still succeeds (registered in registry), embeddings=None.
+
+    Fails-before: guard missing → model mismatch silently attaches wrong-dim collection.
+    """
+    lc = _make_lc(tmp_path, embedding_model="model-a", embedding_dimensions=3)
+    b_path = _make_foreign(tmp_path, "B", with_journal=True)
+
+    # Create B's chroma with DIM=6 (different from home's 3)
+    b_chroma = ChromaDBStorage(
+        persist_directory=b_path / ".cognition" / "chromadb",
+        embedding_model="model-a",
+        embedding_dimensions=6,
+    )
+    b_chroma.upsert_embedding("n1", [0.1, 0.2, 0.3, 0.4, 0.5, 0.6], {"entity_type": "decision"})
+    b_chroma.close()
+
+    res = _load_project_core(lc, str(b_path))
+    assert res.get("model_guard") == "dim-mismatch", f"expected dim-mismatch, got: {res}"
+    assert "warning" in res
+    assert res.get("vector_count") == "n/a"
+
+    # Registry holds the entry but with embeddings=None (structural-only)
+    registry = lc["loaded_projects"]
+    entry = registry.resolve_tag("B")
+    assert entry is not None
+    assert entry.embeddings is None
+    assert entry.model_guard == "dim-mismatch"
+
+
+def test_load_project_model_mismatch_structural_only(tmp_path):
+    """A B whose stored model differs from home model → model_guard="model-mismatch"."""
+    lc = _make_lc(tmp_path, embedding_model="model-a", embedding_dimensions=3)
+    b_path = _make_foreign(tmp_path, "B", with_journal=True)
+
+    # Create B's chroma with a DIFFERENT model stamp, same dim
+    b_chroma = ChromaDBStorage(
+        persist_directory=b_path / ".cognition" / "chromadb",
+        embedding_model="model-b",  # different
+        embedding_dimensions=3,
+    )
+    b_chroma.upsert_embedding("n1", [0.1, 0.2, 0.3], {"entity_type": "decision"})
+    b_chroma.close()
+
+    res = _load_project_core(lc, str(b_path))
+    assert res.get("model_guard") == "model-mismatch", f"expected model-mismatch, got: {res}"
+    assert "warning" in res
+    assert res.get("vector_count") == "n/a"
+
+    entry = lc["loaded_projects"].resolve_tag("B")
+    assert entry is not None and entry.embeddings is None
+
+
+def test_load_project_match_guard(tmp_path):
+    """A B whose stored model + dim match home → model_guard="match", semantic enabled."""
+    lc = _make_lc(tmp_path, embedding_model="model-a", embedding_dimensions=3)
+    b_path = _make_foreign(tmp_path, "B", with_journal=True)
+
+    # Create B's chroma matching home stamp
+    b_chroma = ChromaDBStorage(
+        persist_directory=b_path / ".cognition" / "chromadb",
+        embedding_model="model-a",
+        embedding_dimensions=3,
+    )
+    b_chroma.upsert_embedding("n1", [0.1, 0.2, 0.3], {"entity_type": "decision"})
+    b_chroma.close()
+
+    res = _load_project_core(lc, str(b_path))
+    assert res.get("model_guard") == "match", f"expected match, got: {res}"
+    assert "warning" not in res
+    assert res.get("vector_count") == 1
+
+    entry = lc["loaded_projects"].resolve_tag("B")
+    assert entry is not None and entry.embeddings is not None
+    entry.embeddings.close()
