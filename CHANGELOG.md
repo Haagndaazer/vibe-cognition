@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-06-22
+
+**Team git hygiene, readme tool, and Plan agent cross-project memory.**
+
+### Added
+- **`cognition_readme` tool** — returns the full orientation guide and getting-started
+  text directly from the MCP server. Empty-graph sessions inject an onboarding block via
+  the SessionStart hook, pointing users at `cognition_readme` and encouraging the first
+  record. (#24)
+- **Journal `merge=union` team guidance** — the `cognition_readme` guide now includes a
+  `## Team setup (git)` section explaining the one-line `.gitattributes` entry that makes
+  the append-only journal union-merge for teams using separate clones. Warning against
+  `-text` (the C-3 scar) and the shared-checkout exception are documented. (#26)
+- **Automatic git hygiene on startup** — on first use in a new project the server
+  automatically adds `.cognition/journal.jsonl merge=union` to the repo-root
+  `.gitattributes` and `chromadb/` to `.cognition/.gitignore`. One-time-ever per working
+  copy (content-versioned sidecar flag); idempotent, locked, crash-proof. Opt out with
+  `VIBE_COGNITION_NO_GIT_HYGIENE=1`. Re-arm by deleting
+  `.cognition/.git-hygiene-managed`. The SessionStart hook announces what was configured.
+  (#27)
+- **Plan agent cross-project memory** — the `vibe-cognition:Plan` agent can now discover
+  sibling projects via teammate-comms, resolve their paths on disk, attach their knowledge
+  graphs read-only, and search them during planning. Hard cap of 2 foreign graphs per
+  plan; unconditional unload before returning. (#28)
+
+### Fixed
+- **Plan agent broken tool names (S-2)** — all 5 cognition tool names in the Plan agent
+  frontmatter were using the old `.mcp.json` prefix (`mcp__vibe-cognition__*`) which does
+  not resolve for plugin-declared MCP servers. Corrected to
+  `mcp__plugin_vibe-cognition_vibe-cognition__*`. (#28)
+
 ## [0.9.0] — 2026-06-21
 
 **Cross-project cognition** — load another project's knowledge graph alongside your
