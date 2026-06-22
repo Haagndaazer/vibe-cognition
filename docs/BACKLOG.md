@@ -13,7 +13,12 @@ journal-flush-via-worktree). Last updated 2026-06-21 (**v0.9.0 LIVE** — cross-
 
 ## In flight
 
-Nothing actively in implementation. **WP-Readme + WP-Lint are merged to main awaiting the release cut** (Colton holds v0.10.0). Next candidates from the P3 tail below.
+- **WP-Readme-GitAttr** (Vorpid, dispatched 2026-06-22): teach users to set `.cognition/journal.jsonl merge=union` in repo-root `.gitattributes` so the append-only journal union-merges for teams (separate-clones topology). Content-only in `readme.py` (new "Team setup (git)" section in COGNITION_GUIDE + pointer in GETTING_STARTED + one ONBOARDING_BLOCK clause) + `test_readme.py`. Honors the C-3/duplication scar: ONLY `merge=union`, never `-text`; set early, never retrofit a grown journal in a shared checkout. Plan `docs/wp-readme-gitattr-plan.md` (sonnet peer-reviewed). Folds into the held v0.10.0.
+
+- **WP-Git-Hygiene-Auto** (Vorpid, IN IMPL on `fix/wp-git-hygiene-auto`; spec FINAL, 2 sonnet rounds / 6 blockers): server auto-configures git hygiene for `.cognition/` on startup, **one-time-ever** via a content-versioned, git-ignored `.cognition/.git-hygiene-managed` flag. Two writes: `.cognition/journal.jsonl merge=union` → git-root `.gitattributes` (never `-text`), and `chromadb/` + the flag → `.cognition/.gitignore` (scoped, not root). Flag written only after both writes resolve (partial-failure → retry). Default-on, `VIBE_COGNITION_NO_GIT_HYGIENE` opt-out; prime.py announces (read-only); README.md + readme.py notes + `rm flag` re-arm. New stdlib `cognition/git_hygiene.py`. Plan `docs/wp-gitattr-auto-plan.md`.
+- **WP-Plan-XP-Discovery** (Vorpid, QUEUED; spec FINAL, sonnet + claude-code-guide): teach the `vibe-cognition:Plan` agent (`agents/plan.md`) cross-project memory (load_project + `project=`) + teammate-comms sibling discovery (label→path via filesystem). **Also CLOSES S-2** — rewrites the broken `mcp__vibe-cognition__*` prefix to the correct plugin form `mcp__plugin_vibe-cognition_vibe-cognition__*` (the agent's cognition tools don't resolve today). Plan `docs/wp-plan-xp-discovery-plan.md`.
+
+**WP-Readme-GitAttr** (PR #26 → `c5af8a9`, merged main `7e95776`, verified in worktree) + **WP-Readme + WP-Lint** are merged to main awaiting the release cut (Colton holds v0.10.0). Next candidates from the P3 tail below.
 
 ### Merged to main, RELEASE HELD (Colton's v0.10.0 cut)
 - **WP-Readme** (PR #24 → `9b14d88`): `cognition_readme` tool ({guide, getting_started}, modeled on vibe-memory's `memory_readme`) + empty-graph onboarding via `prime.py` (fires when `.cognition/` absent or nodes==0; instructs the LLM to alert the user + call `cognition_readme`; no `session-start.sh` change). Canonical ASCII/stdlib `readme.py` constant. Plan: `docs/wp-readme-plan.md`.
@@ -22,7 +27,7 @@ Nothing actively in implementation. **WP-Readme + WP-Lint are merged to main awa
 ### P3 tail remaining (near the bottom of the barrel)
 - **WP-Doc/Skill** (S-2 plan-agent frontmatter, S-3 README/SKILL drift, H-5), **WP-Hooks-tail** (H-2 PowerShell commit matcher, H-3 stderr breadcrumbs, H-4 install race [human-gated], H-6 remainder), **WP-Test** (T-1 the MCP-tool-layer coverage hole — P1-infra). See the audit-remainder groupings below.
 - **E-8** (deferred): slow one-node-per-loop startup sync / dead `generate_batch` (last WP-Emb sliver).
-- **CI/process guards** (from the WP-Lint finding): add a `uv lock` step to the release runbook after the version bump; adopt a standing pre-gate `uv run ruff check .` (not bare `ruff`) alongside `uv run pyright`. Pairs with discovery `bfba9f13e0b1`.
+- **CI/process guards** (from the WP-Lint finding): add a `uv lock` step to the release runbook after the version bump; adopt a standing pre-gate `uv run ruff check .` (not bare `ruff`) alongside `uv run pyright`. Pairs with discovery `bfba9f13e0b1`. **Pin the pyright version** (PYRIGHT_PYTHON_FORCE_VERSION or pin in deps) so local == CI — surfaced in WP-Readme-GitAttr where local pyright 1.1.408 flagged a uvicorn `install_signal_handlers` stub diagnostic that CI's pinned pyright doesn't, briefly reading as a "pre-existing server.py error."
 
 **Document-storage feature COMPLETE (D1a → D4) — stored, searchable, deletable, documented, dashboard:**
 - **WP-D1a** (PR #8 → `870ff09`): DOCUMENT type + reference mode + sidecar (+deletion) + store/get + dedup + pair-level graph-inert matcher guard + sync-path embed guard.
