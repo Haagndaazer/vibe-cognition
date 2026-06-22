@@ -43,6 +43,18 @@ class Settings(BaseSettings):
         description="Logging level",
     )
 
+    # Git hygiene settings
+    vibe_cognition_no_git_hygiene: bool = Field(
+        default=False,
+        description=(
+            "Set to a truthy value to suppress the one-time git-hygiene pass "
+            "(disables auto-writing .gitattributes merge=union and "
+            ".cognition/.gitignore chromadb/ on startup). Use this in "
+            "single-shared-checkout repos where union-merge is the wrong "
+            "topology (worktree-flush protocol is used instead)."
+        ),
+    )
+
     # Embedding backend settings
     embedding_backend: Literal["sentence-transformers", "ollama"] = Field(
         default="sentence-transformers",

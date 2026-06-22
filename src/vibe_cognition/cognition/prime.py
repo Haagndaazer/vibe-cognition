@@ -6,6 +6,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from .git_hygiene import check_hygiene_state, format_hygiene_announce
 from .models import CognitionNodeType
 from .readme import ONBOARDING_BLOCK
 from .storage import CognitionStorage
@@ -115,6 +116,14 @@ def main():
     sections: list[str] = []
     if note:
         sections.append(note)
+
+    try:
+        hygiene_state = check_hygiene_state(repo_path, cognition_dir)
+        hygiene_line = format_hygiene_announce(hygiene_state)
+        if hygiene_line:
+            sections.append(hygiene_line)
+    except Exception:  # noqa: BLE001
+        pass
 
     storage: CognitionStorage | None = None
     if cognition_dir.exists():

@@ -82,6 +82,12 @@ concurrent appends from different branches/clones survive a merge instead of con
 setup uses the worktree-flush protocol and nobody commits the journal on branches. Set
 it **early**, before the journal grows; retrofitting it onto a large committed journal
 can duplicate entries across the rewrite boundary.
+
+**Auto-configuration:** On first startup in a separate-clones repo, the server
+automatically adds the union-merge line to `.gitattributes` and adds `chromadb/` to
+`.cognition/.gitignore` (one-time-ever, idempotent). Opt out with
+`VIBE_COGNITION_NO_GIT_HYGIENE=1`. To re-arm: delete `.cognition/.git-hygiene-managed`.
+For existing projects or non-standard topologies, use the manual line above.
 """
 
 COGNITION_GETTING_STARTED = """\

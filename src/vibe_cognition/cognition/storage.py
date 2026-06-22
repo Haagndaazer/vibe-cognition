@@ -13,6 +13,7 @@ from typing import Any
 import networkx as nx
 
 from .documents import doc_ref
+from .git_hygiene import ensure_git_hygiene
 from .journal_io import append_journal_line
 from .models import (
     CognitionEdge,
@@ -70,6 +71,11 @@ class CognitionStorage:
         self._sync_depth = 0
 
         self._dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            ensure_git_hygiene(cognition_dir.parent, cognition_dir)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("git-hygiene: unexpected error (swallowed): %s", exc)
 
         # Initial hydrate is just a catch-up from offset 0.
         self._catch_up()
