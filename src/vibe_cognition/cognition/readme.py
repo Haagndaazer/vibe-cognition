@@ -66,6 +66,22 @@ Load a foreign project with cognition_load_project, then pass project="<tag>" (o
 project="*" for fan-and-merge on aggregates) to cognition_search, cognition_get_history,
 cognition_get_edgeless_nodes, and cognition_get_uncurated_nodes. Single-node tools
 (get_node, get_chain, etc.) reject "*" -- node ids are not project-namespaced.
+
+## Team setup (git)
+
+If multiple people or agents share this repo as **separate clones**, add the following
+line to your **repo-root** `.gitattributes`:
+
+    .cognition/journal.jsonl merge=union
+
+`union` is a built-in git merge driver (git >= 1.7.x) -- no `[merge "union"]` stanza
+or extra git config is needed. This makes the append-only journal union-merge so
+concurrent appends from different branches/clones survive a merge instead of conflicting.
+
+**Warning:** Do NOT add this in a single shared checkout (everyone in one clone) -- that
+setup uses the worktree-flush protocol and nobody commits the journal on branches. Set
+it **early**, before the journal grows; retrofitting it onto a large committed journal
+can duplicate entries across the rewrite boundary.
 """
 
 COGNITION_GETTING_STARTED = """\
@@ -75,6 +91,11 @@ The graph for this project is empty. Here is the act-now procedure:
 
 1. Run /vibe-cognition to load the skill and read the full orientation guide, OR call
    cognition_readme for the guide and getting-started text directly.
+
+   If teammates will share this repo as separate clones, add
+   `.cognition/journal.jsonl merge=union` to your repo-root `.gitattributes` now,
+   before the journal grows. See the "Team setup (git)" section in the guide
+   (cognition_readme) for details.
 
 2. Record the first decision or constraint you are currently aware of for this project:
      cognition_record(type="decision", summary="<what was decided>",
@@ -100,5 +121,7 @@ vibe-cognition is installed and ready to use. Briefly explain: (a) what vibe-cog
 does (persistent project knowledge graph -- decisions, failures, patterns, discoveries),
 and (b) that they can call cognition_readme for the full orientation guide and
 getting-started procedure. Encourage them to record the first node when they make a
-decision or discovery.
+decision or discovery. If the user shares this repo with teammates, also mention there
+is a one-time `.gitattributes merge=union` setup for the journal -- point them at
+cognition_readme for details.
 """
