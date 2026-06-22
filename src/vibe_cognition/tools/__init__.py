@@ -2,6 +2,7 @@
 
 from .cognition_tools import register_cognition_tools
 from .dashboard_tool import register_dashboard_tool
+from .readme_tool import register_readme_tool
 from .service_tools import register_service_tools
 
 
@@ -14,11 +15,13 @@ def register_all_tools(mcp) -> None:
     register_cognition_tools(mcp)
     register_service_tools(mcp)
     register_dashboard_tool(mcp)
+    register_readme_tool(mcp)
 
 
 __all__ = [
     "register_all_tools",
     "register_cognition_tools",
     "register_dashboard_tool",
+    "register_readme_tool",
     "register_service_tools",
 ]
