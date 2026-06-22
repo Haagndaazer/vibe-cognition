@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-06-21
+
+**Cross-project cognition** — load another project's knowledge graph alongside your
+own, read-only, and query it; no second agent needed. Plus an embedding-quality fix.
+
+### Added
+- **Cross-project read access.** `cognition_load_project` attaches another project's
+  graph by path (read-only); `cognition_list_projects` / `cognition_unload_project`
+  manage what's loaded. Your home project is always loaded and cannot be unloaded.
+- **`project` arg on the read tools** — route a read (search, get_node, get_chain,
+  get_history, get_neighbors, …) to a loaded project by tag/path; `"*"` fans aggregate
+  queries (search, history, edgeless/uncurated) across all loaded projects. Results
+  carry a `project` provenance tag. Single-node lookups require a specific project
+  (node ids aren't project-namespaced).
+- **Semantic search over a loaded project**, gated by an embedding-model guard — a
+  project on a different embedding model/dimension has semantic search disabled
+  (structural reads still work) rather than returning silently-wrong rankings.
+- Writes are never cross-project — recording always targets your own project.
+
+### Fixed
+- **Embedding asymmetry (E-3).** Documents and nodes were embedded with the *query*
+  prefix instead of the *document* prefix, discarding nomic-embed-text-v1.5's
+  asymmetric-retrieval training (degraded ranking). All stored vectors now use the
+  document prefix; queries keep the query prefix. **One-time re-embed** on the first
+  server start after upgrading rebuilds the embedding collection (in the background;
+  search is briefly degraded; no data loss — the journal is the source of truth).
+  *(Ollama backend has no prefix distinction, so it is unaffected.)*
+
 ## [0.8.0] — 2026-06-13
 
 First-class **document storage**: keep client docs, PDFs, specs, and transcripts as
