@@ -35,6 +35,7 @@ description: You MUST use this skill any time you need to retrieve information a
 |------|---------|
 | `get_status` | Server status: graph stats + embedding readiness + foreign project count |
 | `cognition_dashboard` | Start/stop the local graph dashboard |
+| `cognition_readme` | Orientation guide + getting-started procedure (call on an empty graph or to explain vibe-cognition) |
 
 **Documents:** to store a document (client doc, PDF, spec) as project memory, use the
 **`/vibe-document`** skill — it makes the load-bearing workflow the default (store the

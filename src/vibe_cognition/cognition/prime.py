@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from .models import CognitionNodeType
+from .readme import ONBOARDING_BLOCK
 from .storage import CognitionStorage
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "normal": 2, "low": 3}
@@ -101,7 +102,11 @@ def main():
     migration note from VIBE_MIGRATION_NOTE (set by the SessionStart hook when
     it removes a stale per-project MCP entry), so that note is surfaced in the
     same hook output instead of suppressing project-context injection.
-    Exits silently only when there is neither a note nor a .cognition/ dir.
+
+    When the graph is empty (.cognition/ absent OR nodes == 0), injects an
+    onboarding block instructing the LLM to alert the user and call
+    cognition_readme. Migration note and onboarding are independent: both emit
+    if both conditions hold (note first, then onboarding).
     """
     note = os.environ.get("VIBE_MIGRATION_NOTE", "").strip()
     repo_path = Path(os.environ.get("REPO_PATH", Path.cwd()))
@@ -110,12 +115,17 @@ def main():
     sections: list[str] = []
     if note:
         sections.append(note)
-    if cognition_dir.exists():
-        sections.append(generate_prime(CognitionStorage(cognition_dir)))
 
-    if not sections:
-        # Nothing to inject (no migration note, not a cognition-enabled project)
-        sys.exit(0)
+    storage: CognitionStorage | None = None
+    if cognition_dir.exists():
+        storage = CognitionStorage(cognition_dir)
+
+    empty = storage is None or storage.get_statistics()["nodes"] == 0
+
+    if empty:
+        sections.append(ONBOARDING_BLOCK)
+    else:
+        sections.append(generate_prime(storage))  # type: ignore[arg-type]
 
     output = {
         "hookSpecificOutput": {
