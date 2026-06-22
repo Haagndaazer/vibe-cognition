@@ -7,22 +7,23 @@ and `docs/DESIGN-document-storage.md` (the v0.8.0 feature spine).
 **Convention:** the proposed WP groupings below are a *triage inventory*, not briefs. Each WP
 gets a peer-reviewed execution plan (a `docs/wp-*-plan.md`) before it's assigned to Vorpid, and
 each ships through the standard gate (SHA-pinned merge, fix+proof same commit, voiding clause,
-journal-flush-via-worktree). Last updated 2026-06-22 (**v0.9.0 LIVE**. Merged to main awaiting the **v0.10.0** cut [Colton holds it]: WP-Readme, WP-Lint, WP-Readme-GitAttr (#26), WP-Git-Hygiene-Auto (#27). **In flight:** WP-Plan-XP-Discovery (Plan agent cross-project + closes S-2). **New feature backlog:** `workflow` node type. Remaining = P3 doc/skill + hooks-tail + WP-Test coverage hole).
+journal-flush-via-worktree). Last updated 2026-06-22 (**v0.10.0 RELEASED & PINNED LIVE** — code `638e9cc`, marketplace `a4b2ee8`. Bundle: cognition_readme tool + onboarding (#24), CI heal (#25), journal merge=union team guidance (#26), auto git-hygiene (#27), Plan agent cross-project + S-2 close (#28). **Nothing in flight. New feature backlog:** `workflow` node type. Remaining = P3 doc/skill + hooks-tail + WP-Test coverage hole).
 
 ---
 
 ## In flight
 
-- **v0.10.0 release cut** (Colton authorized 2026-06-22, IN PROGRESS): version bump `0.9.0`→`0.10.0` in `pyproject.toml` + `.claude-plugin/plugin.json` **+ `uv lock`** (the v0.9.0 lesson — never bump without it, or CI dies at `uv sync --locked`) → verified PR (CI 3 legs) → merge to main → ping Loki to re-pin the marketplace SHA. Bundles PRs #24/#25/#26/#27/#28.
+Nothing actively in implementation — **v0.10.0 is RELEASED & PINNED LIVE**. Next candidates from the P3 tail / feature backlog below.
 
-**Merged to main, in the v0.10.0 cut:**
+## v0.10.0 — ✅ RELEASED & PINNED LIVE (2026-06-22)
+Code commit `638e9cc` (merge PR #29). **Loki re-pinned the marketplace** to `638e9cc` (marketplace commit `a4b2ee8`, clean FF off old pin `0c2c52f`, ahead 20). Version `0.10.0` in `pyproject.toml` + `.claude-plugin/plugin.json` + `uv.lock`; **CI green on all 3 legs incl. `uv sync --locked`** — the lockfile-drift trap that broke v0.9.0 CI is closed. Users update on next plugin update (kill the running cognition server on Windows first — EPERM cache-lock). Release episode `feea599ec17b`. Bundle:
 - **WP-Plan-XP-Discovery** (PR #28 → merge `5cece24`): Plan agent (`agents/plan.md`) cross-project memory (load_project + `project=`) + teammate-comms sibling discovery (label→path via filesystem). **CLOSED S-2** — rewrote the broken `mcp__vibe-cognition__*` prefix to the correct `mcp__plugin_vibe-cognition_vibe-cognition__*`. CI green 3 legs + my review (all 10 tool names verified vs runtime). Plan `docs/wp-plan-xp-discovery-plan.md`.
 - **WP-Git-Hygiene-Auto** (PR #27 → `70bda0f`, merge `775750d`): server auto-configures git hygiene for `.cognition/` on startup, **one-time-ever** via a content-versioned, git-ignored `.cognition/.git-hygiene-managed` flag. Two idempotent writes: `.cognition/journal.jsonl merge=union` → git-root `.gitattributes` (never `-text`), and `chromadb/` + flag + `*.lock` → `.cognition/.gitignore` (scoped, not root). Flag written only after both resolve (partial-failure → retry); locks under `.cognition/`, stale-break 60s, in-lock re-check. Default-on, `VIBE_COGNITION_NO_GIT_HYGIENE` opt-out (allowlist parse); prime.py read-only announce; README + readme notes + `rm flag` re-arm. 2 review rounds (6 spec blockers + 3 gate should-fixes). My worktree verify green (349 tests, 31 new). Plan `docs/wp-gitattr-auto-plan.md`. **NOTE: CI was disabled during this PR's gate — verified Windows-only; CI re-enabled after.**
 - **WP-Readme-GitAttr** (PR #26 → merge `7e95776`, verified in worktree) + **WP-Readme + WP-Lint** also in the cut.
 
 Next candidates from the P3 tail / feature backlog below.
 
-### Merged to main, RELEASE HELD (Colton's v0.10.0 cut)
+### v0.10.0 bundle detail (#24/#25)
 - **WP-Readme** (PR #24 → `9b14d88`): `cognition_readme` tool ({guide, getting_started}, modeled on vibe-memory's `memory_readme`) + empty-graph onboarding via `prime.py` (fires when `.cognition/` absent or nodes==0; instructs the LLM to alert the user + call `cognition_readme`; no `session-start.sh` change). Canonical ASCII/stdlib `readme.py` constant. Plan: `docs/wp-readme-plan.md`.
 - **WP-Lint** (PR #25 → `0be175a`): healed main after the v0.9.0 release left CI silently red — regen `uv.lock` for 0.9.0 (release bumped version without `uv lock`) + cleared 39 pre-existing ruff violations the lockfile drift had been masking at the sync step. Discovery `bfba9f13e0b1`.
 
