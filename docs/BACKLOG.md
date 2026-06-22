@@ -7,19 +7,22 @@ and `docs/DESIGN-document-storage.md` (the v0.8.0 feature spine).
 **Convention:** the proposed WP groupings below are a *triage inventory*, not briefs. Each WP
 gets a peer-reviewed execution plan (a `docs/wp-*-plan.md`) before it's assigned to Vorpid, and
 each ships through the standard gate (SHA-pinned merge, fix+proof same commit, voiding clause,
-journal-flush-via-worktree). Last updated 2026-06-13 (v0.8.0 LIVE; P1+P2 + WP-Core-tail done; ledger now global; WP-Dash-tail in flight; only WP-Emb-non-E-3 + parked E-3 remain).
+journal-flush-via-worktree). Last updated 2026-06-21 (**v0.9.0 LIVE** — cross-project cognition XP0→XP2 + E-3; WP-Dash-tail + WP-Emb-non-E-3 shipped. **WP-Readme + WP-Lint merged to main, release HELD** (no bump yet — Colton holds the v0.10.0 cut). Remaining = P3 doc/skill + hooks-tail + the WP-Test coverage hole).
 
 ---
 
-## In flight (Colton: continue the P3 tail)
+## In flight
 
-| WP | Scope | State |
-|----|-------|-------|
-| **WP-Dash-tail** | Dashboard P3 cleanup (LOW/cosmetic, tiered): the dashboard over-query consistency (unify the fixed `limit*5` with the MCP adaptive widen, ledger 11); D-3 rest (auto-poll, `--no-embeddings` disabled state, search-wiring robustness); D-5 cosmetics (IPv6 `[::1]` host-check, dup neighbor-payload keys, drop unused context/severity from graph payload, port-constant dedup, ExitStack-on-timeout). | **Next for Vorpid** — plan + decorrelated peer-review. Branch off `3961f32` (vince aligns). |
+Nothing actively in implementation. **WP-Readme + WP-Lint are merged to main awaiting the release cut** (Colton holds v0.10.0). Next candidates from the P3 tail below.
 
-### P3 tail remaining after WP-Dash-tail (near the bottom of the barrel)
-- **WP-Emb (non-E-3)**: E-4 (concurrent PersistentClients), E-6 (code-search dead-code prune), E-7 (`revision=` pin on trust_remote_code, datetime.utcnow), E-8 (slow startup sync / dead generate_batch). Likely the last cluster.
-- **E-3 query-prefix re-embed** — **PARKED, needs Colton's explicit go** (one-time full re-embed invalidates all existing vectors).
+### Merged to main, RELEASE HELD (Colton's v0.10.0 cut)
+- **WP-Readme** (PR #24 → `9b14d88`): `cognition_readme` tool ({guide, getting_started}, modeled on vibe-memory's `memory_readme`) + empty-graph onboarding via `prime.py` (fires when `.cognition/` absent or nodes==0; instructs the LLM to alert the user + call `cognition_readme`; no `session-start.sh` change). Canonical ASCII/stdlib `readme.py` constant. Plan: `docs/wp-readme-plan.md`.
+- **WP-Lint** (PR #25 → `0be175a`): healed main after the v0.9.0 release left CI silently red — regen `uv.lock` for 0.9.0 (release bumped version without `uv lock`) + cleared 39 pre-existing ruff violations the lockfile drift had been masking at the sync step. Discovery `bfba9f13e0b1`.
+
+### P3 tail remaining (near the bottom of the barrel)
+- **WP-Doc/Skill** (S-2 plan-agent frontmatter, S-3 README/SKILL drift, H-5), **WP-Hooks-tail** (H-2 PowerShell commit matcher, H-3 stderr breadcrumbs, H-4 install race [human-gated], H-6 remainder), **WP-Test** (T-1 the MCP-tool-layer coverage hole — P1-infra). See the audit-remainder groupings below.
+- **E-8** (deferred): slow one-node-per-loop startup sync / dead `generate_batch` (last WP-Emb sliver).
+- **CI/process guards** (from the WP-Lint finding): add a `uv lock` step to the release runbook after the version bump; adopt a standing pre-gate `uv run ruff check .` (not bare `ruff`) alongside `uv run pyright`. Pairs with discovery `bfba9f13e0b1`.
 
 **Document-storage feature COMPLETE (D1a → D4) — stored, searchable, deletable, documented, dashboard:**
 - **WP-D1a** (PR #8 → `870ff09`): DOCUMENT type + reference mode + sidecar (+deletion) + store/get + dedup + pair-level graph-inert matcher guard + sync-path embed guard.
@@ -29,6 +32,16 @@ journal-flush-via-worktree). Last updated 2026-06-13 (v0.8.0 LIVE; P1+P2 + WP-Co
 - **WP-D4** (PR #12 → `6939c99`): dashboard document list + **token-gated path-safe download** (traversal-hardened: ../-/absolute/symlink/null all rejected via `is_relative_to` on the resolved path; reference→sidecar never the original; mime+filename header-injection clamped) + D-6 nav (dedupe-to-node) + D-1 liveness + **D-4 vendored cytoscape/fcose (no-CDN/SRI, offline)** + D-5 security (compare_digest, 400, clamp).
 
 Seam principle held all five PRs: each creates nothing it can't delete. Six gate holds across the run, all resolved.
+
+## v0.9.0 — ✅ RELEASED & PINNED LIVE (cross-project cognition + E-3)
+Code SHA `0c2c52f`; **Loki pinned the marketplace** (commit `c563ff2`, byte-exact HEAD match, clean ff). Colton installed + verified on his machine (re-embed self-heals in bg via the E-3 marker-gated rebuild). Shipped:
+- **WP-Dash-tail** (PR #18 → `2c33f54`): adaptive over-query unify (`adaptive_vector_search`), `--no-embeddings` disabled state, IPv6 `[::1]` host-check, D-3/D-5 tidies.
+- **WP-Emb non-E-3** (PR #19 → `cd81769`): E-6 dead-code prune (pyright 7→0 in storage.py), E-7 `revision=` pin + `datetime.now(UTC)`. **E-4 DROPPED** — chromadb 1.5.5 Rust backend swallows SQLite locking internally (discovery `wp-emb-e4-discovery-chromadb-rust-lock`).
+- **WP-XP0 spike** (`d1576fe`): GO on Option A. 5 discoveries (`xp0-q1`…`q5`): coexistence, `close()` handle release, foreign-read safety, dim/model guard, journal catch-up cost.
+- **WP-XP1** (PR #20 → `05b0797`): registry plumbing — model/dim collection stamp, `close()` handle release, `open_existing()`, `LoadedProjects`, load/unload/list tools.
+- **WP-XP2** (PR #21 → `8a0a799`): cross-project READ routing — `project=` on search + read tools, `project_notes` provenance, write-isolation proof.
+- **WP-E-3** (PR #22 → `e679857`): doc embedding prefix QUERY→DOCUMENT (4 sites) + marker-gated one-time rebuild (self-heal + model_guard re-stamp).
+- **WP-XP-Docs** (PR #23 → `9384756`): LLM-self-sufficient docstrings for all XP tools (v0.9.0 gate).
 
 ## v0.8.0 — ✅ RELEASED & PINNED LIVE
 WP-R3 (PR #13 → `8f3079f`) cut the version bump + CHANGELOG; Colton cleared both human checks (vendored-libs render ✓, owed v0.7.4 non-ASCII journal test ✓) and gave the go; **Loki pinned the marketplace to `6c2ce12`** (real ls-remote HEAD; marketplace commit `09e6ab0`; teammate-comms `53827f8` untouched). Rollback if needed = re-pin v0.7.4 `20519b9`. Document storage is live to users. (H-6 also resolved: `.cognition/journal.jsonl` committed, `.cognition/chromadb/` gitignored.)
@@ -47,7 +60,7 @@ WP-R3 (PR #13 → `8f3079f`) cut the version bump + CHANGELOG; Colton cleared bo
 
 ## New feature ideas (parking lot)
 
-- **Doc-serving tools for the LLM/user — esp. gated on empty-graph detection** (Colton, 2026-06-21): vibe-memory pioneered a pattern of MCP tools that exist specifically to SERVE DOCUMENTATION to the LLM (and through it, the user), most valuable when the server can DETECT the project has no memories/graph stored yet and proactively surface "here's what this is / how to begin recording." Adapt for vibe-cognition: an onboarding/explainer surface (a dedicated tool, or a `get_status` / `prime` path) that, on an empty or near-empty graph, serves start-here docs to the agent so it knows to begin capturing cognition rather than running blind. **Reference point: Reginald + the vibe-memory project** — that's where the pattern lives; ask Reginald / look at vibe-memory for the implementation. _(Meta: once the cross-project XP feature lands, this context becomes retrievable directly from vibe-memory's own graph without going through Reginald.)_
+- **Doc-serving tools for the LLM/user — esp. gated on empty-graph detection** (Colton, 2026-06-21) — **✅ SHIPPED as WP-Readme** (PR #24, merged to main, release held): vibe-memory pioneered a pattern of MCP tools that exist specifically to SERVE DOCUMENTATION to the LLM (and through it, the user), most valuable when the server can DETECT the project has no memories/graph stored yet and proactively surface "here's what this is / how to begin recording." Adapt for vibe-cognition: an onboarding/explainer surface (a dedicated tool, or a `get_status` / `prime` path) that, on an empty or near-empty graph, serves start-here docs to the agent so it knows to begin capturing cognition rather than running blind. **Reference point: Reginald + the vibe-memory project** — that's where the pattern lives; ask Reginald / look at vibe-memory for the implementation. _(Meta: once the cross-project XP feature lands, this context becomes retrievable directly from vibe-memory's own graph without going through Reginald.)_
 
 ---
 
@@ -158,3 +171,13 @@ it isn't mistaken for intent.
 | WP-ID global node-id-collision data-loss fix (mint-in-add_node, replay-safe, hook discriminator, embedding-id rebind) | main `d585a22` (PR #15, pinned `1494a9c`) — last P1 closed |
 | WP-Cap capability gaps (get_node, edge reason persist, update_node+re-embed, expose superseded/incident queries) | main `9876b43` (PR #16, pinned `9d8a8f8`) — last P2 |
 | WP-Core-tail core robustness (C-4 journal-first all write paths, C-6 offset-noise documented, C-7 path-based cycle detection) | main `3961f32` (PR #17, pinned `c4b4aa1`) — P3 |
+| WP-Dash-tail (adaptive over-query unify, --no-embeddings disabled, IPv6 host-check, D-3/D-5 tidies) | main `2c33f54` (PR #18) — v0.9.0 |
+| WP-Emb non-E-3 (E-6 prune + pyright 7→0, E-7 revision-pin + datetime.now(UTC); E-4 dropped — Rust backend swallows locks) | main `cd81769` (PR #19) — v0.9.0 |
+| WP-XP0 spike (coexistence, handle release, foreign-read safety, dim/model guard, catch-up cost — GO Option A) | main `d1576fe` (+ docs `cbebd47`) |
+| WP-XP1 cross-project registry (model/dim stamp, close() handle release, open_existing, LoadedProjects, load/unload/list) | main `05b0797` (PR #20) — v0.9.0 |
+| WP-XP2 cross-project read routing (project= on search + read tools, project_notes provenance, write-isolation) | main `8a0a799` (PR #21) — v0.9.0 |
+| WP-E-3 doc embedding prefix QUERY→DOCUMENT + marker-gated one-time re-embed (self-heal + model_guard re-stamp) | main `e679857` (PR #22) — v0.9.0 |
+| WP-XP-Docs LLM-self-sufficient docstrings for all XP tools (v0.9.0 gate) | main `9384756` (PR #23) — v0.9.0 |
+| **v0.9.0 release** (cross-project cognition XP0→XP2 + E-3) | code `0c2c52f` — **PINNED LIVE, marketplace `c563ff2`**; installed + verified on Colton's machine |
+| WP-Lint (heal main: regen uv.lock for 0.9.0 + clear 39 masked ruff violations) | main `0be175a` (PR #25) — release held |
+| WP-Readme (cognition_readme tool + empty-graph onboarding via prime.py) | main `9b14d88` (PR #24) — release held |
