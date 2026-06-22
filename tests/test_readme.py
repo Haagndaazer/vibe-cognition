@@ -117,3 +117,18 @@ def test_readme_constants_are_ascii_clean():
     assert COGNITION_GUIDE.isascii(), "COGNITION_GUIDE contains non-ASCII characters"
     assert COGNITION_GETTING_STARTED.isascii(), "COGNITION_GETTING_STARTED contains non-ASCII"
     assert ONBOARDING_BLOCK.isascii(), "ONBOARDING_BLOCK contains non-ASCII characters"
+
+
+def test_gitattr_union_merge_present_in_guide():
+    """COGNITION_GUIDE must contain the union-merge gitattributes instruction."""
+    assert "merge=union" in COGNITION_GUIDE
+
+
+def test_gitattr_union_merge_present_in_getting_started():
+    """COGNITION_GETTING_STARTED must contain the union-merge gitattributes pointer."""
+    assert "merge=union" in COGNITION_GETTING_STARTED
+
+
+def test_gitattr_no_text_flag_in_guide():
+    """COGNITION_GUIDE must never recommend -text (scar: causes blob rewrite + duplication)."""
+    assert "-text" not in COGNITION_GUIDE
