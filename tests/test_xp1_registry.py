@@ -1,16 +1,21 @@
 """WP-XP1 tests: model stamp (C1), close (C2), open_existing, LoadedProjects registry."""
 
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from vibe_cognition.cognition import CognitionStorage
 from vibe_cognition.embeddings import ChromaDBStorage
+from vibe_cognition.tools.cognition_tools import (
+    _list_projects_core,
+    _load_project_core,
+    _unload_project_core,
+)
 from vibe_cognition.tools.project_registry import (
     LoadedProjects,
     ModelGuard,
     ProjectEntry,
     build_registry,
 )
-
 
 # ── C1: model stamp ──────────────────────────────────────────────────────────
 
@@ -267,18 +272,6 @@ def test_foreign_cognition_storage_init_does_not_write_journal(tmp_path):
 
 
 # ── Acceptance-criteria proofs via _load_project_core / _unload_project_core / _list_projects_core ──
-
-
-from types import SimpleNamespace
-from typing import cast
-
-from fastmcp import Context
-
-from vibe_cognition.tools.cognition_tools import (
-    _load_project_core,
-    _unload_project_core,
-    _list_projects_core,
-)
 
 
 def _make_lc(tmp_path, home_tag="myproject", embedding_model="test-model", embedding_dimensions=3):

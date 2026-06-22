@@ -1,5 +1,6 @@
 """ChromaDB storage for vector embeddings."""
 
+import contextlib
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -66,10 +67,8 @@ class ChromaDBStorage:
         server bg-thread checks for it before calling this method so it only ever
         runs once per data directory.
         """
-        try:
+        with contextlib.suppress(Exception):
             self._client.delete_collection(self._collection_name)
-        except Exception:
-            pass
         stamp_meta = {**self._base_meta, "embed_scheme": "doc-prefix-v1"}
         self._collection = self._client.get_or_create_collection(
             name=self._collection_name,

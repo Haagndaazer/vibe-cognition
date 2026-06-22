@@ -20,8 +20,8 @@ ModelGuard = Literal["match", "unknown", "no-index", "dim-mismatch", "model-mism
 class ProjectEntry:
     path: Path
     tag: str
-    storage: "CognitionStorage"
-    embeddings: "ChromaDBStorage | None"
+    storage: CognitionStorage
+    embeddings: ChromaDBStorage | None
     pinned: bool
     model_guard: ModelGuard
 
@@ -41,8 +41,8 @@ class LoadedProjects:
         self,
         path: Path,
         tag: str,
-        storage: "CognitionStorage",
-        embeddings: "ChromaDBStorage | None",
+        storage: CognitionStorage,
+        embeddings: ChromaDBStorage | None,
     ) -> None:
         """Register the home project (pinned, un-unloadable)."""
         self._entries[path] = ProjectEntry(
@@ -98,8 +98,8 @@ class LoadedProjects:
 def build_registry(
     home_path: Path,
     home_tag: str,
-    home_storage: "CognitionStorage",
-    home_embeddings: "ChromaDBStorage | None",
+    home_storage: CognitionStorage,
+    home_embeddings: ChromaDBStorage | None,
 ) -> LoadedProjects:
     """Build the registry and register the home project."""
     registry = LoadedProjects(_home_path=home_path)
@@ -113,8 +113,8 @@ def build_registry(
 
 
 def resolve_project(
-    lc: dict[str, Any], project: "str | None" = None
-) -> "tuple[list[ProjectEntry], dict[str, Any] | None]":
+    lc: dict[str, Any], project: str | None = None
+) -> tuple[list[ProjectEntry], dict[str, Any] | None]:
     """Resolve a project specifier to a list of entries.
 
     Args:
@@ -137,7 +137,7 @@ def resolve_project(
     return ([entry], None)
 
 
-def tag_results(results: "list[dict[str, Any]]", tag: str) -> "list[dict[str, Any]]":
+def tag_results(results: list[dict[str, Any]], tag: str) -> list[dict[str, Any]]:
     """Add 'project': tag to each result dict in-place (additive — no copy)."""
     for r in results:
         r["project"] = tag

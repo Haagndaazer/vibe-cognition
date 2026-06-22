@@ -1,29 +1,24 @@
 """WP-XP2 tests: project routing, N1 discriminating proof, write-isolation."""
 
 import inspect
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
-import threading
 
 from vibe_cognition.cognition import CognitionStorage
-from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType, generate_node_id
+from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
 from vibe_cognition.embeddings import ChromaDBStorage
 from vibe_cognition.tools.cognition_tools import (
-    _search_with_embedding,
-    _search_cognition,
     _load_project_core,
-    _list_projects_core,
+    _search_cognition,
+    _search_with_embedding,
     register_cognition_tools,
 )
 from vibe_cognition.tools.project_registry import (
-    LoadedProjects,
-    ProjectEntry,
-    ModelGuard,
     build_registry,
     resolve_project,
     tag_results,
 )
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -140,8 +135,8 @@ def test_n1_discriminating_storage_pairing(tmp_path):
     Passes after: _search_with_embedding(B.storage, B.embeddings) → live_node
     survives.
     """
-    VEC_LIVE = [0.9, 0.1, 0.1]
-    VEC_GHOST = [0.1, 0.9, 0.1]
+    VEC_LIVE = [0.9, 0.1, 0.1]  # noqa: N806  # local constant, uppercase for readability
+    VEC_GHOST = [0.1, 0.9, 0.1]  # noqa: N806  # local constant, uppercase for readability
 
     # Build B's cognition graph: live_node added, ghost_node NOT added (never in graph)
     b_path = tmp_path / "B"
@@ -227,8 +222,8 @@ def test_cross_project_id_collision_no_dedup(tmp_path):
     Fails-before: if code deduped by id across projects, one row would drop.
     Passes after: both rows appear, each tagged with their project.
     """
-    SHARED_ID = "shared_id_000"
-    VEC = [0.5, 0.5, 0.5]
+    SHARED_ID = "shared_id_000"  # noqa: N806  # local constant, uppercase for readability
+    VEC = [0.5, 0.5, 0.5]  # noqa: N806  # local constant, uppercase for readability
 
     # Home: add shared_id to graph + embed
     home_path = tmp_path / "home"
@@ -373,6 +368,7 @@ def _make_ctx(lc: dict) -> object:
     """Build a fake FastMCP Context carrying lc as lifespan_context."""
     from types import SimpleNamespace
     from typing import cast
+
     from fastmcp import Context
     return cast(Context, SimpleNamespace(request_context=SimpleNamespace(lifespan_context=lc)))
 
@@ -420,9 +416,10 @@ def test_get_document_cross_project_freshness(tmp_path):
     'missing' (path not found locally) — confusingly wrong.
     Passes after: freshness='cross-project: unavailable'.
     """
-    from vibe_cognition.tools.cognition_tools import _get_document
-    from vibe_cognition.cognition.models import CognitionNodeType
     from datetime import UTC, datetime
+
+    from vibe_cognition.cognition.models import CognitionNodeType
+    from vibe_cognition.tools.cognition_tools import _get_document
 
     # Build B's storage with a DOCUMENT node
     b_path = _make_foreign(tmp_path, "B")
@@ -444,11 +441,9 @@ def test_get_document_cross_project_freshness(tmp_path):
     # Build lc with B loaded
     lc = _make_lc(tmp_path)
     _load_project_core(lc, str(b_path))
-    ctx = _make_ctx(lc)
 
     mock = _MockMcp()
     register_cognition_tools(mock)
-    fn = mock.tools["cognition_get_document"]
 
     # Route to B's storage via project="B" (but node is in b_storage._graph, not via the tool's
     # registry — the tool resolves to entry.storage which is the CognitionStorage opened at load

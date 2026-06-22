@@ -10,22 +10,15 @@ rebuilds document-prefixed; marker-present → skip; idempotent; count preserved
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any
-
-import pytest
-
 from vibe_cognition.cognition import CognitionStorage
 from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType, generate_node_id
 from vibe_cognition.embeddings import ChromaDBStorage
-from vibe_cognition.embeddings.generator import EmbeddingGenerator
+from vibe_cognition.server import _sync_cognition_embeddings
 from vibe_cognition.tools.cognition_tools import (
     _embed_document,
     _embed_entity_node,
     _search_cognition,
 )
-from vibe_cognition.server import _sync_cognition_embeddings
-
 
 # ── Spy generator ─────────────────────────────────────────────────────────────
 
