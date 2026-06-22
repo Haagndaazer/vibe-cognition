@@ -209,6 +209,19 @@ Add to your project's `.gitignore`:
 echo '.cognition/chromadb/' >> .gitignore
 ```
 
+### Automatic Git Hygiene
+
+On first startup in a new project, vibe-cognition automatically configures two git hygiene rules for `.cognition/`:
+
+1. **`.gitattributes`** — adds `.cognition/journal.jsonl merge=union` so concurrent journal appends from different branches/clones union-merge cleanly instead of conflicting. (`merge=union` is a built-in git merge driver; it only affects 3-way merge resolution and never rewrites the journal blob.)
+2. **`.cognition/.gitignore`** — adds `chromadb/` so the regenerable vector cache is never accidentally committed.
+
+Both writes are **idempotent** (existing files are appended, never clobbered) and happen exactly once per working copy, tracked by a local flag file `.cognition/.git-hygiene-managed`. The committed rules (`.gitattributes`, `.cognition/.gitignore`) travel to teammates via git; the flag is git-ignored so every fresh clone self-heals with one pass on first startup.
+
+**Opt out:** set `VIBE_COGNITION_NO_GIT_HYGIENE=1` to suppress the entire pass (useful in single-shared-checkout repos that use the worktree-flush protocol instead of union-merge).
+
+**Re-arm:** delete `.cognition/.git-hygiene-managed` to make the pass re-run and re-add any rule you removed.
+
 ## Cognition History Graph
 
 The cognition graph captures project knowledge — decisions made, approaches that failed, non-obvious discoveries, constraints, incidents, and patterns — so future sessions have context on *why* the code is the way it is.
