@@ -15,9 +15,9 @@ is safe where -text (an EOL/filter attribute) is NOT: -text reactivates the C-3
 byte-rewrite + duplication scar (nodes 90ee3c1b968c, 54304ecf567c).  The writer
 emits ONLY merge=union, never -text.
 
-Opt-out: set VIBE_COGNITION_NO_GIT_HYGIENE to any truthy value to skip the whole
+Opt-out: set VIBE_COGNITION_NO_GIT_HYGIENE=1 (or true/yes/on) to skip the whole
 pass (the flag is not written; the pass retries on next start when the env is
-cleared).
+cleared).  "0", "false", and empty string do NOT suppress the pass.
 
 Re-arm: delete .cognition/.git-hygiene-managed to make the pass re-run (re-adds
 any rule that was removed).
@@ -26,6 +26,7 @@ any rule that was removed).
 import contextlib
 import logging
 import os
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,11 @@ _GITATTRIBUTES_MARKER = "# vibe-cognition: append-only journal union-merge (safe
 _GITATTRIBUTES_RULE = ".cognition/journal.jsonl merge=union"
 _GITIGNORE_CHROMADB = "chromadb/"
 _GITIGNORE_FLAG = ".git-hygiene-managed"
+_GITIGNORE_LOCKS = "*.lock"
 _FLAG_FILENAME = ".git-hygiene-managed"
+
+# A lock older than this is assumed stale (leftover from a hard-killed process).
+_LOCK_STALE_SECONDS = 60
 
 
 def _read_flag(cognition_dir: Path) -> int | None:
@@ -55,16 +60,27 @@ def _write_flag(cognition_dir: Path) -> None:
     flag_path.write_text(str(GIT_HYGIENE_VERSION), encoding="utf-8")
 
 
-def _lock_path(target: Path) -> Path:
-    return target.parent / (target.name + ".lock")
-
-
 def _acquire_lock(lock_path: Path) -> bool:
-    """Try to create the lock file exclusively. Returns True if acquired."""
+    """Try to create the lock file exclusively.  Returns True if acquired.
+
+    If the file exists but is older than _LOCK_STALE_SECONDS (a hard-kill
+    left it behind), remove it and retry once — otherwise a crashed startup
+    would make the write permanently silent until manual cleanup.
+    """
     try:
         lock_path.open("x").close()
         return True
-    except (FileExistsError, OSError):
+    except FileExistsError:
+        try:
+            age = time.time() - lock_path.stat().st_mtime
+            if age > _LOCK_STALE_SECONDS:
+                lock_path.unlink()
+                lock_path.open("x").close()
+                return True
+        except OSError:
+            pass
+        return False
+    except OSError:
         return False
 
 
@@ -95,12 +111,21 @@ def _needs_gitattributes(gitattributes_path: Path) -> bool:
     return True
 
 
-def _write_gitattributes(gitattributes_path: Path) -> bool:
-    """Append the marker + rule block to .gitattributes.  Returns True on success."""
-    lock = _lock_path(gitattributes_path)
+def _write_gitattributes(gitattributes_path: Path, cognition_dir: Path) -> bool:
+    """Append the marker + rule block to .gitattributes.  Returns True on success.
+
+    Lock file lives under .cognition/ (a dir we own) rather than next to
+    .gitattributes at the repo root, so it stays out of git status and
+    is already covered by the *.lock entry in .cognition/.gitignore.
+    """
+    lock = cognition_dir / ".gitattributes.lock"
     if not _acquire_lock(lock):
         return False
     try:
+        # Re-check inside the lock: a concurrent startup may have written it
+        # between our outer _needs_gitattributes check and lock acquisition.
+        if not _needs_gitattributes(gitattributes_path):
+            return True
         existing = ""
         if gitattributes_path.exists():
             try:
@@ -108,12 +133,10 @@ def _write_gitattributes(gitattributes_path: Path) -> bool:
             except OSError as exc:
                 logger.debug("git-hygiene: cannot read .gitattributes: %s", exc)
                 return False
-        prefix = ""
-        if existing and not existing.endswith("\n"):
-            prefix = "\n"
+        prefix = "" if (not existing or existing.endswith("\n")) else "\n"
         block = f"{prefix}{_GITATTRIBUTES_MARKER}\n{_GITATTRIBUTES_RULE}\n"
         try:
-            with gitattributes_path.open("a", encoding="utf-8") as fh:
+            with gitattributes_path.open("a", encoding="utf-8", newline="\n") as fh:
                 fh.write(block)
         except OSError as exc:
             logger.debug("git-hygiene: cannot write .gitattributes: %s", exc)
@@ -141,24 +164,27 @@ def _needs_gitignore_entry(gitignore_path: Path, entry: str, bare: str) -> bool:
 
 
 def _write_gitignore(cognition_dir: Path) -> bool:
-    """Ensure .cognition/.gitignore contains chromadb/ and .git-hygiene-managed.
+    """Ensure .cognition/.gitignore contains chromadb/, .git-hygiene-managed, and *.lock.
     Returns True if the file is correct after the call (success or already-present)."""
     gitignore_path = cognition_dir / ".gitignore"
-    lock = _lock_path(gitignore_path)
+    lock = cognition_dir / ".gitignore.lock"
     if not _acquire_lock(lock):
         return False
     try:
         need_chromadb = _needs_gitignore_entry(gitignore_path, _GITIGNORE_CHROMADB, "chromadb")
         need_flag = _needs_gitignore_entry(gitignore_path, _GITIGNORE_FLAG, _GITIGNORE_FLAG)
-        if not need_chromadb and not need_flag:
+        need_locks = _needs_gitignore_entry(gitignore_path, _GITIGNORE_LOCKS, _GITIGNORE_LOCKS)
+        if not need_chromadb and not need_flag and not need_locks:
             return True
 
         if not gitignore_path.exists():
-            lines_to_add = ["# vibe-cognition managed — do not remove"]
+            lines_to_add = ["# vibe-cognition managed - do not remove"]
             if need_chromadb:
                 lines_to_add.append(_GITIGNORE_CHROMADB)
             if need_flag:
                 lines_to_add.append(_GITIGNORE_FLAG)
+            if need_locks:
+                lines_to_add.append(_GITIGNORE_LOCKS)
             try:
                 gitignore_path.write_text("\n".join(lines_to_add) + "\n", encoding="utf-8")
             except OSError as exc:
@@ -177,13 +203,13 @@ def _write_gitignore(cognition_dir: Path) -> bool:
             lines_to_add.append(_GITIGNORE_CHROMADB)
         if need_flag:
             lines_to_add.append(_GITIGNORE_FLAG)
+        if need_locks:
+            lines_to_add.append(_GITIGNORE_LOCKS)
 
-        prefix = ""
-        if existing and not existing.endswith("\n"):
-            prefix = "\n"
+        prefix = "" if (not existing or existing.endswith("\n")) else "\n"
         addition = prefix + "\n".join(lines_to_add) + "\n"
         try:
-            with gitignore_path.open("a", encoding="utf-8") as fh:
+            with gitignore_path.open("a", encoding="utf-8", newline="\n") as fh:
                 fh.write(addition)
         except OSError as exc:
             logger.debug("git-hygiene: cannot append to .cognition/.gitignore: %s", exc)
@@ -193,6 +219,16 @@ def _write_gitignore(cognition_dir: Path) -> bool:
         _release_lock(lock)
 
 
+def _opt_out() -> bool:
+    """Return True if VIBE_COGNITION_NO_GIT_HYGIENE is set to a truthy value.
+
+    Only "1", "true", "yes", "on" (case-insensitive) suppress the pass.
+    "0", "false", "no", "off", and the empty string do NOT suppress it.
+    """
+    val = os.environ.get("VIBE_COGNITION_NO_GIT_HYGIENE", "").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
 def ensure_git_hygiene(repo_path: Path, cognition_dir: Path) -> None:
     """Run the one-time git hygiene pass.  Never raises — all failures are logged + swallowed.
 
@@ -200,7 +236,7 @@ def ensure_git_hygiene(repo_path: Path, cognition_dir: Path) -> None:
         repo_path: Repository root (must contain .git to be acted on).
         cognition_dir: .cognition/ directory (flag lives here).
     """
-    if os.environ.get("VIBE_COGNITION_NO_GIT_HYGIENE", "").strip():
+    if _opt_out():
         return
 
     git_root = repo_path / ".git"
@@ -216,7 +252,7 @@ def ensure_git_hygiene(repo_path: Path, cognition_dir: Path) -> None:
     gi_ok = True
 
     if _needs_gitattributes(gitattributes_path):
-        ga_ok = _write_gitattributes(gitattributes_path)
+        ga_ok = _write_gitattributes(gitattributes_path, cognition_dir)
     # else already present — counts as resolved
 
     gi_ok = _write_gitignore(cognition_dir)

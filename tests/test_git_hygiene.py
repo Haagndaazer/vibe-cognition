@@ -2,6 +2,7 @@
 
 import contextlib
 import os
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -237,13 +238,102 @@ def test_revocation_respected(tmp_path):
 
 
 def test_opt_out_skips_all(tmp_path):
-    """VIBE_COGNITION_NO_GIT_HYGIENE set → no write, flag not dropped."""
+    """VIBE_COGNITION_NO_GIT_HYGIENE=1 → no write, flag not dropped."""
     repo, cognition = _make_git_repo(tmp_path)
     _run(repo, cognition, env={"VIBE_COGNITION_NO_GIT_HYGIENE": "1"})
 
     assert not (repo / ".gitattributes").exists()
     assert not (cognition / ".gitignore").exists()
     assert not (cognition / _FLAG_FILENAME).exists()
+
+
+def test_opt_out_true_suppresses(tmp_path):
+    """VIBE_COGNITION_NO_GIT_HYGIENE=true → suppressed."""
+    repo, cognition = _make_git_repo(tmp_path)
+    _run(repo, cognition, env={"VIBE_COGNITION_NO_GIT_HYGIENE": "true"})
+    assert not (repo / ".gitattributes").exists()
+
+
+def test_opt_out_zero_does_not_suppress(tmp_path):
+    """VIBE_COGNITION_NO_GIT_HYGIENE=0 → hygiene RUNS (0 is not truthy)."""
+    repo, cognition = _make_git_repo(tmp_path)
+    _run(repo, cognition, env={"VIBE_COGNITION_NO_GIT_HYGIENE": "0"})
+    assert (repo / ".gitattributes").exists()
+
+
+def test_opt_out_false_does_not_suppress(tmp_path):
+    """VIBE_COGNITION_NO_GIT_HYGIENE=false → hygiene RUNS."""
+    repo, cognition = _make_git_repo(tmp_path)
+    _run(repo, cognition, env={"VIBE_COGNITION_NO_GIT_HYGIENE": "false"})
+    assert (repo / ".gitattributes").exists()
+
+
+def test_opt_out_empty_does_not_suppress(tmp_path):
+    """VIBE_COGNITION_NO_GIT_HYGIENE='' → hygiene RUNS."""
+    repo, cognition = _make_git_repo(tmp_path)
+    _run(repo, cognition, env={"VIBE_COGNITION_NO_GIT_HYGIENE": ""})
+    assert (repo / ".gitattributes").exists()
+
+
+def test_no_dup_on_concurrent_double_call(tmp_path):
+    """Simulates two startups both passing outer _needs_gitattributes check before either
+    acquires the lock — the re-check inside the lock must prevent a duplicate block."""
+
+    repo, cognition = _make_git_repo(tmp_path)
+
+    # Run once to establish the file; then manually clear the flag so a second
+    # call would re-enter the write path, but seed a merge= line directly so
+    # the inner re-check finds it already done.
+    _run(repo, cognition)
+    # Verify only one block was written
+    ga = (repo / ".gitattributes").read_text(encoding="utf-8")
+    assert ga.count(_GITATTRIBUTES_MARKER) == 1
+    assert ga.count("merge=union") == 1
+
+    # Now remove flag + re-run: re-check inside lock must detect existing merge= line
+    (cognition / _FLAG_FILENAME).unlink()
+    _run(repo, cognition)
+
+    ga2 = (repo / ".gitattributes").read_text(encoding="utf-8")
+    assert ga2.count(_GITATTRIBUTES_MARKER) == 1
+    assert ga2.count("merge=union") == 1
+
+
+def test_stale_lock_is_broken(tmp_path):
+    """A lock file older than _LOCK_STALE_SECONDS must be removed and reacquired."""
+
+    repo, cognition = _make_git_repo(tmp_path)
+
+    # Plant a stale .gitattributes.lock under .cognition/ (our new lock location)
+    stale_lock = cognition / ".gitattributes.lock"
+    stale_lock.write_text("stale", encoding="utf-8")
+    # Backdate the mtime by 120 seconds
+    old_time = time.time() - 120
+    os.utime(stale_lock, (old_time, old_time))
+
+    _run(repo, cognition)
+
+    # Hygiene should have run despite the stale lock
+    assert (repo / ".gitattributes").exists()
+    assert _GITATTRIBUTES_RULE in (repo / ".gitattributes").read_text(encoding="utf-8")
+
+
+def test_gitignore_contains_lock_glob(tmp_path):
+    """*.lock must be listed in .cognition/.gitignore (lock-file litter fix)."""
+    repo, cognition = _make_git_repo(tmp_path)
+    _run(repo, cognition)
+
+    gi = (cognition / ".gitignore").read_text(encoding="utf-8")
+    assert "*.lock" in gi
+
+
+def test_lock_files_placed_under_cognition(tmp_path):
+    """Lock files must not appear at the repo root — they live under .cognition/."""
+    repo, cognition = _make_git_repo(tmp_path)
+    _run(repo, cognition)
+
+    assert not (repo / ".gitattributes.lock").exists()
+    assert not (repo / ".gitignore.lock").exists()
 
 
 def test_partial_failure_no_flag(tmp_path, monkeypatch):
