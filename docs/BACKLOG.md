@@ -7,13 +7,19 @@ and `docs/DESIGN-document-storage.md` (the v0.8.0 feature spine).
 **Convention:** the proposed WP groupings below are a *triage inventory*, not briefs. Each WP
 gets a peer-reviewed execution plan (a `docs/wp-*-plan.md`) before it's assigned to Vorpid, and
 each ships through the standard gate (SHA-pinned merge, fix+proof same commit, voiding clause,
-journal-flush-via-worktree). Last updated 2026-06-22 (**v0.10.0 RELEASED & PINNED LIVE** — code `638e9cc`, marketplace `a4b2ee8`. Bundle: cognition_readme tool + onboarding (#24), CI heal (#25), journal merge=union team guidance (#26), auto git-hygiene (#27), Plan agent cross-project + S-2 close (#28). **Nothing in flight. New feature backlog:** `workflow` node type. Remaining = P3 doc/skill + hooks-tail + WP-Test coverage hole).
+journal-flush-via-worktree). Last updated 2026-06-23 (**v0.10.0 RELEASED & PINNED LIVE** — code `638e9cc`, marketplace `a4b2ee8`. Bundle: cognition_readme tool + onboarding (#24), CI heal (#25), journal merge=union team guidance (#26), auto git-hygiene (#27), Plan agent cross-project + S-2 close (#28). **Just shipped:** WP-Test/T-1 (PR #30, MCP tool-layer wrapper tests). **In flight:** WP-Workflow-Node. **New feature backlog:** `workflow` + `task` node types. Remaining = P3 doc/skill + hooks-tail).
 
 ---
 
 ## In flight
 
-Nothing actively in implementation — **v0.10.0 is RELEASED & PINNED LIVE**. Next candidates from the P3 tail / feature backlog below.
+- **WP-Workflow-Node** — the `workflow` first-class node type (see Feature backlog). Spec FINAL
+  (`docs/wp-workflow-node-plan.md`, sonnet-reviewed, 4 blockers folded). Dispatched to Vorpid 2026-06-23,
+  queued behind WP-Test/T-1 (now shipped). Branch `fix/wp-workflow-node`.
+
+**Just shipped:** WP-Test/T-1 (PR #30 → merge `46c8585`) — first end-to-end tests for the 25 MCP
+tool-layer wrappers + the support modules (prime/config/instructions/post-commit); new `tests/conftest.py`
+fixtures the workflow WP reuses. Test-only, +61 tests, zero `src/`. Episode `576f6ec798da`.
 
 ## v0.10.0 — ✅ RELEASED & PINNED LIVE (2026-06-22)
 Code commit `638e9cc` (merge PR #29). **Loki re-pinned the marketplace** to `638e9cc` (marketplace commit `a4b2ee8`, clean FF off old pin `0c2c52f`, ahead 20). Version `0.10.0` in `pyproject.toml` + `.claude-plugin/plugin.json` + `uv.lock`; **CI green on all 3 legs incl. `uv sync --locked`** — the lockfile-drift trap that broke v0.9.0 CI is closed. Users update on next plugin update (kill the running cognition server on Windows first — EPERM cache-lock). Release episode `feea599ec17b`. Bundle:
@@ -31,9 +37,14 @@ Next candidates from the P3 tail / feature backlog below.
 - **`workflow` node type** (Colton, 2026-06-22): a NEW first-class node type for storing step-by-step procedures as ONE cohesive, reliably-retrievable unit — so a how-to is fetched WHOLE, not reconstructed from scattered nodes. **Versioning by supersession:** an update is recorded as a NEW workflow node carrying the FULL updated procedure that `supersedes` the prior version (reuse the existing `supersedes` edge + `get_superseded_chain`; head = current authoritative version, chain = history). Distinct from `pattern` (general reusable approach) and `episode` (narrative of what happened) — `workflow` is prescriptive, ordered, current-version-authoritative.
   - Touch points: `models.py` `CognitionNodeType` enum + verbose-body schema (like episode/document, NOT the 250-char entity summary cap); the matcher (auto-edge behavior); embeddings (full procedure searchable); `cognition_record` docstring + SKILL.md + README.md + `readme.py` (doc-drift GUARD reads these); a retrieval path (reuse `get_node` + `get_superseded_chain` to the head, or a thin `cognition_get_workflow` by name/topic).
   - **Survival caveat** (per the node-type-survival pattern — `assumption` was retrieved 0× ever): land it WITH both a retrieval trigger ("how do I do X" → returns the head workflow) AND a write trigger (a codify-a-procedure prompt/skill), or it becomes a dead type.
+- **`task` node type — trackable open work, attributed by git user** (Colton, 2026-06-23): a NEW first-class node type for an actual trackable task/todo (open, actionable work), **auto-keyed by the current git user** (`git config user.name` / `user.email`) captured server-side at record time — so multiple humans sharing one project graph can see the OPEN tasks AND who created each. Distinct from `episode` (narrative of work already DONE) and `workflow` (a reusable procedure): a `task` is open, owned, and has a lifecycle (open → done/cancelled). Decision `d1192f7e7bf8`.
+  - Touch points: `models.py` `CognitionNodeType` enum + a server-populated `created_by` identity field (resolve git user at record time, NOT trusting a client-supplied value); a `status` field + transition path (open→done, likely via `supersedes` or `update_node`); `cognition_record` (or a dedicated `cognition_add_task`) that stamps the git identity; a list/retrieval path (open tasks, filterable by creator/status); `cognition_record` docstring + SKILL.md + README + `readme.py` (doc-drift GUARD).
+  - **Open design Qs:** `created_by` resolution when git user is unset (OS user? require?); status as a mutable field (re-embed on change per WP-Cap) vs supersession history; multi-graph attribution when a foreign project is attached.
+  - **Synergy with `workflow`:** both are net-new node types touching the same files. Consider a shared "new-node-type scaffolding" once both have a real implementation (the workflow WP recommends deferring the abstraction until then). **Survival caveat applies:** ship with both a write trigger ("track this task") and a retrieval trigger ("show open tasks").
 
 ### P3 tail remaining (near the bottom of the barrel)
-- **WP-Doc/Skill** (~~S-2 plan-agent frontmatter~~ → closing via WP-Plan-XP-Discovery, S-3 README/SKILL drift, H-5), **WP-Hooks-tail** (H-2 PowerShell commit matcher, H-3 stderr breadcrumbs, H-4 install race [human-gated], H-6 remainder), **WP-Test** (T-1 the MCP-tool-layer coverage hole — P1-infra). See the audit-remainder groupings below.
+- **WP-Test/T-1** (the MCP-tool-layer coverage hole, P1-infra) — ✅ **SHIPPED** (PR #30 → `46c8585`). What remains in this area is the deferred **T-1c**: cross-process shared-ChromaDB convergence test + `server.py` `_sync`/`_reconcile` direct tests (a follow-up WP-Test-2 candidate; the cross-process *journal* test already exists).
+- **WP-Doc/Skill** (~~S-2 plan-agent frontmatter~~ → closed via WP-Plan-XP-Discovery, S-3 README/SKILL drift, H-5), **WP-Hooks-tail** (H-2 PowerShell commit matcher, H-3 stderr breadcrumbs, H-4 install race [human-gated], H-6 remainder). See the audit-remainder groupings below.
 - **E-8** (deferred): slow one-node-per-loop startup sync / dead `generate_batch` (last WP-Emb sliver).
 - **CI/process guards** (from the WP-Lint finding): add a `uv lock` step to the release runbook after the version bump; adopt a standing pre-gate `uv run ruff check .` (not bare `ruff`) alongside `uv run pyright`. Pairs with discovery `bfba9f13e0b1`. **Pin the pyright version** (PYRIGHT_PYTHON_FORCE_VERSION or pin in deps) so local == CI — surfaced in WP-Readme-GitAttr where local pyright 1.1.408 flagged a uvicorn `install_signal_handlers` stub diagnostic that CI's pinned pyright doesn't, briefly reading as a "pre-existing server.py error."
 
@@ -145,22 +156,6 @@ it isn't mistaken for intent.
 
 ### WP-Test · the coverage hole — **P1-infra**
 - **T-1** (MED, gap): the entire 15-tool MCP layer has zero tests — every contract bug in WP-T/WP-Cap lives in that untested layer. Also untested: `prime.py` (its stdout *is* the hook payload), `post-commit.py` (journal format contract unpinned), `config.py` (the whole plugin-launch story), `instructions.py`, `server.py` lifespan. **Cross-process append test** (current `TestJournalCatchUp` is single-process) would shrink the human-machine gate. *Natural companion to WP-T — write the tool suite alongside the tool fixes.*
-
----
-
-## Decisions needed from Colton
-
-1. **H-6 — `.cognition/` commit-vs-ignore (chromadb).** The intent (commit the journal, gitignore
-   `chromadb/`) is half-implemented: `.gitignore` has **no `.cognition/chromadb/` line** and
-   `.cognition/` itself sits untracked, while `config.py:98/103` docstrings disagree (one says
-   "Git-committed", one says "gitignored"). Decide the policy, then align `.gitignore` +
-   docstrings + README in one pass. (Low effort; just needs the call.)
-
-## Owed / tracking
-
-- **v0.7.4 post-pin machine test** (Colton, AM): non-ASCII commit message → clean journal, on a
-  real Windows machine (install-mechanics gate `b8ec24fe9107`). Rollback if it fails = re-pin to
-  v0.7.3 SHA `d6c2f45`. Pin is **live** at `20519b9`.
 
 ---
 
