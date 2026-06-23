@@ -17,6 +17,7 @@ output, which re-renders the mangle identically to the correct glyph.
 """
 
 import importlib.util
+import json
 import shutil
 import subprocess
 from pathlib import Path
@@ -86,3 +87,174 @@ def test_generate_id_discriminates_by_commit_hash():
     assert id_a != id_b, "identical message+timestamp collided despite distinct commit hashes"
     # Same commit (same hash) is stable/idempotent.
     assert hook._generate_id("episode", msg, ts, "a" * 40) == id_a
+
+
+# ── T-1b extensions ───────────────────────────────────────────────────────────
+
+
+def _make_repo_with_commit(base_path: Path) -> tuple[Path, str]:
+    """Create a minimal git repo with one commit; return (repo_path, commit_hash)."""
+    repo = base_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "commit.gpgsign", "false")
+    (repo / "f.txt").write_text("hello", encoding="utf-8")
+    _git(repo, "add", "f.txt")
+    _git(repo, "commit", "-q", "-m", "initial commit")
+    result = subprocess.run(
+        ["git", "-C", str(repo), "log", "-1", "--format=%H"],
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    return repo, result.stdout.strip()
+
+
+def test_main_non_bash_tool_emits_empty_json(tmp_path):
+    """main(): non-Bash tool_name → {} stdout, no exception.
+
+    Fails-before: if main() crashed or printed non-JSON when tool_name was not
+    'Bash' (the hook must be a no-op for all non-commit tool calls).
+    """
+    import io
+    hook = _load_hook()
+    hook_input = json.dumps({"tool_name": "Read", "tool_input": {"command": ""}})
+    buf = io.StringIO()
+
+    import sys
+    old_stdin, old_stdout = sys.stdin, sys.stdout
+    try:
+        sys.stdin = io.StringIO(hook_input)
+        sys.stdout = buf
+        hook.main()
+    finally:
+        sys.stdin, sys.stdout = old_stdin, old_stdout
+
+    assert json.loads(buf.getvalue()) == {}
+
+
+def test_main_bash_non_commit_emits_empty_json(tmp_path):
+    """main(): Bash with no 'git commit' in command → {} stdout.
+
+    Fails-before: if the hook triggered on any Bash command and tried to call
+    git log unconditionally (slow + spurious journal entries on every read).
+    """
+    import io
+    import sys
+    hook = _load_hook()
+    hook_input = json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls -la"}})
+    buf = io.StringIO()
+    old_stdin, old_stdout = sys.stdin, sys.stdout
+    try:
+        sys.stdin = io.StringIO(hook_input)
+        sys.stdout = buf
+        hook.main()
+    finally:
+        sys.stdin, sys.stdout = old_stdin, old_stdout
+
+    assert json.loads(buf.getvalue()) == {}
+
+
+def test_main_records_episode_shape_and_idempotent(tmp_path):
+    """main(): git commit command → episode node appended; second call → {} (idempotent).
+
+    Pins the episode journal-record shape:
+      {action:'add_node', data:{id, type:'episode', summary(<=250), detail,
+       context:[files], references:['commit:<hash>'], severity, timestamp, author}}
+
+    Fails-before: if the hook wrote a different action name, dropped 'commit:' prefix,
+    truncated summary beyond 250 chars, or allowed a duplicate episode on a second call.
+    """
+    import io
+    import sys
+    hook = _load_hook()
+    repo, commit_hash = _make_repo_with_commit(tmp_path)
+    cognition_dir = repo / ".cognition"
+    cognition_dir.mkdir()
+    journal = cognition_dir / "journal.jsonl"
+
+    hook_input = json.dumps({
+        "tool_name": "Bash",
+        "tool_input": {"command": "git commit -m 'initial commit'"},
+    })
+
+    def _run_main():
+        buf = io.StringIO()
+        old_stdin, old_stdout = sys.stdin, sys.stdout
+        try:
+            sys.stdin = io.StringIO(hook_input)
+            sys.stdout = buf
+            import os
+            old_repo = os.environ.get("REPO_PATH")
+            os.environ["REPO_PATH"] = str(repo)
+            try:
+                hook.main()
+            finally:
+                if old_repo is None:
+                    os.environ.pop("REPO_PATH", None)
+                else:
+                    os.environ["REPO_PATH"] = old_repo
+        finally:
+            sys.stdin, sys.stdout = old_stdin, old_stdout
+        return json.loads(buf.getvalue())
+
+    # First call: episode must be appended.
+    out1 = _run_main()
+    assert out1 == {}
+    assert journal.exists()
+    lines = [ln for ln in journal.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+
+    assert record["action"] == "add_node"
+    data = record["data"]
+    assert data["type"] == "episode"
+    assert len(data["summary"]) <= 250
+    assert isinstance(data["context"], list)
+    assert any(r.startswith("commit:") for r in data["references"]), (
+        "references must contain 'commit:<hash>' so the episode links to the commit"
+    )
+    assert data["severity"] is None
+    assert "timestamp" in data
+    assert "author" in data
+    assert "id" in data
+
+    # Second call with same commit: idempotent → no new line appended.
+    _run_main()
+    lines2 = [ln for ln in journal.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    assert len(lines2) == 1, "idempotency broken: second call must not append a duplicate episode"
+
+
+def test_main_missing_cognition_dir_emits_empty_json(tmp_path):
+    """main(): .cognition/ absent → {} stdout (no crash, no journal created).
+
+    Fails-before: if the hook tried to open journal.jsonl without checking that
+    .cognition/ exists, raising FileNotFoundError that breaks the Bash call.
+    """
+    import io
+    import os
+    import sys
+    hook = _load_hook()
+    repo, _ = _make_repo_with_commit(tmp_path)
+    # Do NOT create .cognition/ — the hook must bail gracefully.
+
+    hook_input = json.dumps({
+        "tool_name": "Bash",
+        "tool_input": {"command": "git commit -m 'test'"},
+    })
+    buf = io.StringIO()
+    old_stdin, old_stdout = sys.stdin, sys.stdout
+    old_repo = os.environ.get("REPO_PATH")
+    try:
+        sys.stdin = io.StringIO(hook_input)
+        sys.stdout = buf
+        os.environ["REPO_PATH"] = str(repo)
+        hook.main()
+    finally:
+        sys.stdin, sys.stdout = old_stdin, old_stdout
+        if old_repo is None:
+            os.environ.pop("REPO_PATH", None)
+        else:
+            os.environ["REPO_PATH"] = old_repo
+
+    assert json.loads(buf.getvalue()) == {}
