@@ -11,7 +11,7 @@ from pathlib import Path
 
 from fastmcp import FastMCP
 
-from vibe_cognition.cognition.models import CognitionEdgeType
+from vibe_cognition.cognition.models import CognitionEdgeType, CognitionNodeType
 from vibe_cognition.tools import register_all_tools
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -35,6 +35,20 @@ def test_skill_tool_table_documents_every_registered_tool():
     assert registered, "no tools enumerated — register_all_tools/list_tools changed?"
     missing = sorted(name for name in registered if name not in skill_text)
     assert not missing, f"SKILL.md does not document registered tools: {missing}"
+
+
+def test_node_types_documented_in_skill_and_readme():
+    """Every CognitionNodeType value must appear in BOTH SKILL.md and README.md.
+
+    Mirrors the edge-type ==N guard: forces any future node type (e.g. 'task') to
+    self-document before shipping, or this guard fails explicitly rather than silently."""
+    expected = {e.value for e in CognitionNodeType}
+    skill_text = _SKILL.read_text(encoding="utf-8")
+    readme_text = _README.read_text(encoding="utf-8")
+    skill_missing = sorted(v for v in expected if v not in skill_text)
+    readme_missing = sorted(v for v in expected if v not in readme_text)
+    assert not skill_missing, f"SKILL.md missing node types: {skill_missing}"
+    assert not readme_missing, f"README.md missing node types: {readme_missing}"
 
 
 def test_edge_types_documented_in_skill_and_readme():

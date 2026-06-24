@@ -7,7 +7,7 @@ and `docs/DESIGN-document-storage.md` (the v0.8.0 feature spine).
 **Convention:** the proposed WP groupings below are a *triage inventory*, not briefs. Each WP
 gets a peer-reviewed execution plan (a `docs/wp-*-plan.md`) before it's assigned to Vorpid, and
 each ships through the standard gate (SHA-pinned merge, fix+proof same commit, voiding clause,
-journal-flush-via-worktree). Last updated 2026-06-23 (**v0.10.0 RELEASED & PINNED LIVE** — code `638e9cc`, marketplace `a4b2ee8`. Bundle: cognition_readme tool + onboarding (#24), CI heal (#25), journal merge=union team guidance (#26), auto git-hygiene (#27), Plan agent cross-project + S-2 close (#28). **Just shipped:** WP-Test/T-1 (PR #30, MCP tool-layer wrapper tests). **In flight:** WP-Workflow-Node. **New feature backlog:** `workflow` + `task` node types. Remaining = P3 doc/skill + hooks-tail).
+journal-flush-via-worktree). Last updated 2026-06-23 (**v0.10.0 RELEASED & PINNED LIVE** — code `638e9cc`, marketplace `a4b2ee8`. Bundle: cognition_readme tool + onboarding (#24), CI heal (#25), journal merge=union team guidance (#26), auto git-hygiene (#27), Plan agent cross-project + S-2 close (#28). **Just shipped:** WP-Test/T-1 (PR #30, MCP tool-layer wrapper tests); WP-Workflow-Node (PR pending, `workflow` first-class type + cognition_get_workflow + /vibe-workflow skill, v0.11.0). **In flight:** — **New feature backlog:** `task` node type. Remaining = P3 doc/skill + hooks-tail).
 
 ---
 

@@ -23,8 +23,8 @@ class TestModels:
     """Tests for cognition data models."""
 
     def test_node_types(self):
-        """All 9 node types exist (DOCUMENT added in WP-D1a)."""
-        assert len(CognitionNodeType) == 9
+        """All 10 node types exist (WORKFLOW added in WP-Workflow-Node)."""
+        assert len(CognitionNodeType) == 10
         assert CognitionNodeType.DECISION.value == "decision"
         assert CognitionNodeType.FAIL.value == "fail"
         assert CognitionNodeType.DISCOVERY.value == "discovery"
@@ -34,6 +34,7 @@ class TestModels:
         assert CognitionNodeType.PATTERN.value == "pattern"
         assert CognitionNodeType.EPISODE.value == "episode"
         assert CognitionNodeType.DOCUMENT.value == "document"
+        assert CognitionNodeType.WORKFLOW.value == "workflow"
 
     def test_edge_types(self):
         """All 7 edge types exist."""

@@ -572,7 +572,7 @@ def test_cognition_unload_project_returns_error_on_home(tmp_path, mock_mcp, buil
     assert "error" in result
 
 
-# ── full register_all_tools: all 25 names captured ───────────────────────────
+# ── full register_all_tools: all 26 names captured ───────────────────────────
 
 
 def test_all_25_tools_registered(mock_mcp):
@@ -584,10 +584,10 @@ def test_all_25_tools_registered(mock_mcp):
     register_all_tools(mock_mcp)
 
     expected = {
-        # cognition_tools.py (22)
+        # cognition_tools.py (23)
         "cognition_record", "cognition_store_document", "cognition_get_document",
         "cognition_get_node", "cognition_update_node", "cognition_search",
-        "cognition_get_chain", "cognition_get_superseded_chain",
+        "cognition_get_chain", "cognition_get_superseded_chain", "cognition_get_workflow",
         "cognition_get_incident_resolution", "cognition_get_history",
         "cognition_add_edge", "cognition_add_edges_batch",
         "cognition_get_edgeless_nodes", "cognition_get_uncurated_nodes",
@@ -604,6 +604,6 @@ def test_all_25_tools_registered(mock_mcp):
 
     missing = expected - set(mock_mcp.tools.keys())
     assert not missing, f"Tools not registered: {missing}"
-    assert len(mock_mcp.tools) == 25, (
-        f"Expected 25 tools, got {len(mock_mcp.tools)}: {set(mock_mcp.tools.keys())}"
+    assert len(mock_mcp.tools) == 26, (
+        f"Expected 26 tools, got {len(mock_mcp.tools)}: {set(mock_mcp.tools.keys())}"
     )

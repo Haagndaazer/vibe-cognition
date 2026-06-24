@@ -9,6 +9,7 @@ const TYPE_COLORS = {
   incident: "#ff9444",
   pattern: "#4adcc8",
   episode: "#b6bdc9",
+  workflow: "#e87ecb",
 };
 
 const TOKEN = new URL(location.href).searchParams.get("token") || "";

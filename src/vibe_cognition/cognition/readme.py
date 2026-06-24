@@ -32,6 +32,7 @@ and pattern you capture here persists across sessions and is searchable via embe
 |        | cognition_get_edgeless_nodes, cognition_get_uncurated_nodes, |
 |        | cognition_mark_curated |
 | Document | cognition_store_document, cognition_get_document |
+| Workflow | cognition_get_workflow (find by topic; resolves to current HEAD) |
 | Cross-project | cognition_load_project, cognition_unload_project, |
 |               | cognition_list_projects (use the project= arg on read/search tools) |
 | Service | get_status, cognition_dashboard, cognition_readme, cognition_reload |
@@ -43,6 +44,11 @@ Entities (concise searchable facts -- summary max 250 chars):
 
 Episodes (full narrative of a completed body of work):
   episode
+
+Workflows (step-by-step procedures stored as ONE cohesive unit):
+  workflow -- use the /vibe-workflow skill to store and retrieve procedures.
+  Versioned by supersession: update = NEW node + supersedes edge (never edit in place).
+  Retrieve: cognition_get_workflow("topic") resolves any matched version to the HEAD.
 
 Documents (stored files with text sidecar for search):
   document -- use the /vibe-document skill

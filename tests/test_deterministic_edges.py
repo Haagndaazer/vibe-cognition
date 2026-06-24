@@ -397,3 +397,54 @@ class TestEdgeTypeStatistics:
         assert stats["edge_led_to"] == 2
         assert stats["edge_resolved_by"] == 1
         assert stats["edge_part_of"] == 0
+
+
+class TestWorkflowInertGate:
+    """B1: workflow-involving pairs mint NO deterministic edge (graph-inert).
+
+    Fails-before: if WORKFLOW fell through the a_entity = not a_doc and not a_ep
+    classification, workflow↔episode would incorrectly mint a part_of edge and
+    workflow↔document would mint a part_of edge (wrong — a procedure is not
+    "part of" an episode).
+    """
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        return CognitionStorage(tmp_path / ".cognition")
+
+    def _node(self, storage, node_id, ntype, refs):
+        storage.add_node(_make_node(node_id, ntype, references=refs))
+
+    def test_workflow_and_episode_no_edge(self, storage):
+        """workflow ↔ episode → no deterministic edge.
+
+        Fails-before: workflow classified as entity → part_of auto-created.
+        """
+        self._node(storage, "wf1", CognitionNodeType.WORKFLOW, ["commit:abc"])
+        self._node(storage, "ep1", CognitionNodeType.EPISODE, ["commit:abc"])
+        created = storage.create_deterministic_edges("ep1")
+        assert created == 0, "workflow↔episode must not mint a deterministic edge (B1)"
+
+    def test_workflow_and_entity_no_edge(self, storage):
+        """workflow ↔ entity → no deterministic edge."""
+        self._node(storage, "wf1", CognitionNodeType.WORKFLOW, ["commit:abc"])
+        self._node(storage, "dec1", CognitionNodeType.DECISION, ["commit:abc"])
+        created = storage.create_deterministic_edges("dec1")
+        assert created == 0, "workflow↔entity must not mint a deterministic edge (B1)"
+
+    def test_workflow_and_workflow_no_edge(self, storage):
+        """workflow ↔ workflow → no deterministic edge."""
+        self._node(storage, "wf1", CognitionNodeType.WORKFLOW, ["commit:abc"])
+        self._node(storage, "wf2", CognitionNodeType.WORKFLOW, ["commit:abc"])
+        created = storage.create_deterministic_edges("wf2")
+        assert created == 0, "workflow↔workflow must not mint a deterministic edge (B1)"
+
+    def test_entity_episode_still_works_without_workflow(self, storage):
+        """entity↔episode still mints part_of when no workflow is involved.
+
+        Guard: the inert gate must not break existing entity↔episode behavior.
+        """
+        self._node(storage, "dec1", CognitionNodeType.DECISION, ["commit:abc"])
+        self._node(storage, "ep1", CognitionNodeType.EPISODE, ["commit:abc"])
+        created = storage.create_deterministic_edges("ep1")
+        assert created == 1, "entity↔episode must still mint part_of (inert gate must not regress this)"

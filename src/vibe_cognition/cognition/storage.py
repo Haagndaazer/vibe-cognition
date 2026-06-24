@@ -648,6 +648,13 @@ class CognitionStorage:
         for key in empty_keys:
             del self._reference_index[key]
 
+    # Types that are graph-inert: workflow-involving pairs mint no deterministic edge.
+    # (document is also listed to make the set extensible; its own pair rules below
+    # are reached only after this gate — workflow short-circuits before them.)
+    _INERT_TYPES: frozenset[str] = frozenset({
+        CognitionNodeType.WORKFLOW.value,
+    })
+
     @staticmethod
     def _deterministic_edge_for_pair(
         type_a: str, id_a: str, type_b: str, id_b: str
@@ -663,7 +670,12 @@ class CognitionStorage:
         - entity ↔ document → part_of   (entity → document), doc: ref ONLY
         - document ↔ episode → relates_to (document → episode), doc: ref ONLY
         - document ↔ document / episode ↔ episode / entity ↔ entity → no edge
+        - workflow ↔ anything → no edge (graph-inert; versioned via supersession)
         """
+        # Inert-type gate: workflow-involving pairs are graph-inert (B1).
+        if type_a in CognitionStorage._INERT_TYPES or type_b in CognitionStorage._INERT_TYPES:
+            return None
+
         doc = CognitionNodeType.DOCUMENT.value
         ep = CognitionNodeType.EPISODE.value
         a_doc, a_ep = type_a == doc, type_a == ep
