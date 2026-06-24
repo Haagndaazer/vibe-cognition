@@ -13,6 +13,7 @@ from .queries import (
     get_incident_resolution,
     get_reasoning_chain,
     get_superseded_chain,
+    get_workflow_head,
 )
 from .storage import CognitionStorage
 
@@ -32,4 +33,5 @@ __all__ = [
     "get_incident_resolution",
     "get_reasoning_chain",
     "get_superseded_chain",
+    "get_workflow_head",
 ]

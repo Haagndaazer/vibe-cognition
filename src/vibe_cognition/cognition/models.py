@@ -25,6 +25,9 @@ class CognitionNodeType(str, Enum):  # noqa: UP042
     # A stored document (client doc, spec, etc.) — episode-like in the matcher
     # (a hub for part_of links), with reference/blob storage + a text sidecar.
     DOCUMENT = "document"
+    # A step-by-step procedure stored as ONE cohesive unit. Verbose body (like episode).
+    # Versioned by supersession: an update is a NEW workflow node linked via SUPERSEDES.
+    WORKFLOW = "workflow"
 
 
 class CognitionEdgeType(str, Enum):  # noqa: UP042  (see CognitionNodeType above)

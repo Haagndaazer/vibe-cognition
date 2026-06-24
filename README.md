@@ -119,6 +119,7 @@ The embedding model (~250MB) also downloads on first use from Hugging Face. Afte
 | `cognition_search` | Search project history by natural language |
 | `cognition_get_chain` | Traverse causal reasoning chains (LED_TO edges) |
 | `cognition_get_superseded_chain` | Walk a node's version history via SUPERSEDES (newest first) |
+| `cognition_get_workflow` | Find a workflow procedure by name/topic; resolves to the current HEAD version |
 | `cognition_get_incident_resolution` | Get an incident + its resolutions, follow-ons, and contradictions |
 | `cognition_get_history` | Browse nodes by context area, type, or recency |
 | `cognition_add_edge` | Create a single edge between two nodes |
@@ -245,6 +246,7 @@ The cognition graph captures project knowledge — decisions made, approaches th
 | `incident` | A production problem |
 | `pattern` | A reusable lesson learned |
 | `episode` | Full narrative of completed work (Linear task, feature, debugging session) |
+| `workflow` | A step-by-step procedure stored as ONE unit; versioned by supersession (update = new node + `supersedes` edge) |
 
 ### Edge Types
 

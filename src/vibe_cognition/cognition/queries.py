@@ -111,6 +111,45 @@ def get_superseded_chain(
     return chain
 
 
+def get_workflow_head(
+    storage: CognitionStorage,
+    node_id: str,
+) -> str:
+    """Resolve any workflow node to the current HEAD by walking incoming SUPERSEDES edges.
+
+    Starting from ``node_id`` (which may be an old version), follows predecessor
+    SUPERSEDES edges until a node with no incoming SUPERSEDES exists — that node is
+    the HEAD (authoritative current version). Cycle-guarded with the same pattern as
+    ``get_superseded_chain``.
+
+    When multiple predecessors are found at any step (branched supersession), the first
+    match is followed and a warning is logged (mirrors ``get_superseded_chain``).
+
+    Args:
+        storage: Cognition storage instance
+        node_id: ID of any version in the workflow chain
+
+    Returns:
+        Node ID of the current HEAD version.
+    """
+    visited: set[str] = set()
+    current = node_id
+
+    while current not in visited:
+        visited.add(current)
+        preds = storage.get_predecessors(current, CognitionEdgeType.SUPERSEDES)
+        if not preds:
+            break  # no node supersedes this one — it IS the head
+        if len(preds) > 1:
+            logger.warning(
+                f"Node {current} has {len(preds)} SUPERSEDES predecessors "
+                f"(expected 1) — following first match"
+            )
+        current = preds[0][0]
+
+    return current
+
+
 def get_history_for_context(
     storage: CognitionStorage,
     context_term: str,

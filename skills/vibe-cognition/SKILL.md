@@ -14,6 +14,7 @@ description: You MUST use this skill any time you need to retrieve information a
 | `cognition_update_node` | Edit a node's narrative (summary/detail/context/severity) in place; re-embeds on text change |
 | `cognition_get_chain` | Traverse reasoning chains (LED_TO edges) from a node |
 | `cognition_get_superseded_chain` | Walk a node's version history via SUPERSEDES (newest first) |
+| `cognition_get_workflow` | Find a workflow procedure by name/topic and return the current HEAD version + chain |
 | `cognition_get_incident_resolution` | Get an incident + its resolutions, follow-ons, and contradictions |
 | `cognition_get_history` | Browse nodes by context area, type, or recency |
 | `cognition_add_edge` | Manually create an edge between two nodes |
@@ -59,12 +60,25 @@ Deletion is destructive and not undoable: `cognition_remove_node` cascades to ev
 
 ### Entities (concise facts)
 
-Types: `decision`, `fail`, `discovery`, `assumption`, `constraint`, `incident`, `pattern`
+Types: `decision`, `fail`, `discovery`, `assumption`, `constraint`, `incident`, `pattern`, `workflow`
 
 Entities are **concise, searchable facts** — like index cards, not essays.
 
 - **summary**: MAX 250 chars. Write like a commit message.
 - **detail**: 1-3 sentences of rationale. NOT the full story.
+
+### Workflows (step-by-step procedures)
+
+Type: `workflow`
+
+Workflows store **prescriptive, ordered procedures** as ONE cohesive unit — so a how-to is fetched whole, not reconstructed from scattered nodes.
+
+- **summary**: Brief title of the procedure ("deploy to production", "onboard a new engineer").
+- **detail**: The FULL procedure. Verbose is correct here.
+- **Versioned by supersession**: to update a workflow, record a NEW workflow node with the complete revised procedure and add a `supersedes` edge to the old version. Never edit in place (`cognition_update_node` is blocked on `workflow` nodes).
+- **Retrieve with `cognition_get_workflow(name_or_topic)`** — resolves any matched version to the current HEAD automatically. Use the `/vibe-workflow` skill for the full write+retrieve workflow.
+
+**Before starting any multi-step task**, search for an existing workflow first: `cognition_get_workflow("topic")`.
 
 ### Episodes (full narratives)
 
@@ -100,7 +114,7 @@ Entities are automatically linked to episodes via `PART_OF` edges when they shar
 ## Field Guide
 
 ### `node_type` (required)
-One of: `decision`, `fail`, `discovery`, `assumption`, `constraint`, `incident`, `pattern`, `episode`
+One of: `decision`, `fail`, `discovery`, `assumption`, `constraint`, `incident`, `pattern`, `episode`, `workflow`
 
 ### `summary` (required)
 For entities: MAX 250 chars. Someone scanning 50 nodes should understand what happened.

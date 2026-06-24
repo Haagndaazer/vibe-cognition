@@ -19,6 +19,7 @@ from ..cognition import (
     get_incident_resolution,
     get_reasoning_chain,
     get_superseded_chain,
+    get_workflow_head,
 )
 from ..cognition.chunking import chunk_text
 from ..cognition.documents import (
@@ -79,6 +80,44 @@ def _embed_entity_node(
     embedding_storage.upsert_embedding(node.id, embedding, metadata)
 
 
+def _embed_workflow(
+    embedding_storage: "ChromaDBStorage",
+    generator: "EmbeddingGenerator",
+    node: CognitionNode,
+) -> int:
+    """Embed a workflow node: ONE node-level vector + full body chunked into
+    ``<node_id>#chunk-N`` vectors (each carrying ``is_chunk: True``). Mirrors the
+    document chunking path so long procedures remain fully searchable.
+
+    Delete-then-write (idempotent): purges this node's existing chunks BEFORE
+    writing the fresh set so a re-chunk never orphans stale high-N chunks.
+    Returns the chunk count written."""
+    wf_type = CognitionNodeType.WORKFLOW.value
+    node_text = f"{wf_type}: {node.summary}\n{node.detail[:2000]}"
+    embedding_storage.upsert_embedding(
+        node.id,
+        generator.generate(node_text, input_type="document"),
+        {
+            "entity_type": wf_type,
+            "summary": node.summary,
+            "author": node.author,
+            "timestamp": node.timestamp,
+            "context": ",".join(node.context),
+        },
+    )
+    # Delete-then-write the chunk set (idempotent regardless of count change).
+    embedding_storage.delete_by_node_id(node.id)
+    chunks = chunk_text(node.detail)
+    for i, chunk in enumerate(chunks):
+        embedding_storage.upsert_embedding(
+            f"{node.id}#chunk-{i}",
+            generator.generate(chunk, input_type="document"),
+            {"node_id": node.id, "entity_type": wf_type, "is_chunk": True},
+            document=chunk,
+        )
+    return len(chunks)
+
+
 def _record_node(
     ctx: Context,
     node_type: CognitionNodeType,
@@ -121,13 +160,19 @@ def _record_node(
     node_id = storage.add_node(node, mint_unique_id=True)
     node = node.model_copy(update={"id": node_id})
 
-    # Embed and upsert to ChromaDB (skip if model not loaded yet — startup sync catches it later)
+    # Embed and upsert to ChromaDB (skip if model not loaded yet — startup sync catches it later).
+    # Workflows chunk the full body for searchability; all other types use a single node vector.
     if _embeddings_ready(lc):
-        _embed_entity_node(embedding_storage, generator, node)
+        if node_type == CognitionNodeType.WORKFLOW:
+            _embed_workflow(embedding_storage, generator, node)
+        else:
+            _embed_entity_node(embedding_storage, generator, node)
 
     # Create deterministic part_of edges via reference matching. This is the ONLY
     # automatic edge creation — semantic curation (led_to, supersedes, contradicts,
     # etc.) is the agent's job via the /vibe-curate skill after recording.
+    # Note: workflow-involving pairs are inert in the matcher (B1) so this is a no-op
+    # for workflow nodes.
     det_edges = storage.create_deterministic_edges(node_id)
 
     result: dict[str, Any] = {
@@ -725,6 +770,17 @@ def _update_node(
     if storage.get_node(node_id) is None:
         return {"error": f"Node '{node_id}' does not exist"}
 
+    # B5: block in-place edits on workflow nodes — they are versioned by supersession.
+    existing = storage.get_node(node_id)
+    if existing and existing.get("type") == CognitionNodeType.WORKFLOW.value:
+        return {
+            "error": (
+                "Workflow nodes are versioned by supersession — record a new workflow "
+                "node with the full updated procedure and add a `supersedes` edge to "
+                "this one; do not edit in place."
+            )
+        }
+
     updates: dict[str, Any] = {}
     if summary is not None:
         updates["summary"] = summary
@@ -987,6 +1043,13 @@ def register_cognition_tools(mcp) -> None:
           Create when a body of work is done — the episode captures the full story.
 
         ENTITY NODES (decision, fail, discovery, assumption, constraint, incident, pattern):
+        WORKFLOW NODES (workflow):
+        - A step-by-step procedure stored as ONE cohesive unit. Verbose detail (like episode).
+          Versioned by supersession: to update, record a NEW workflow node with the full revised
+          procedure and add a `supersedes` edge; never edit in place (update_node is blocked).
+          summary: Brief title of the procedure. detail: The full procedure, verbose.
+          Retrieve with cognition_get_workflow(name_or_topic) to resolve to the current HEAD.
+
         - summary: MAX 250 chars. Write like a commit message — scannable at a glance.
           Good: "Double-filter bug: query filters by language after opening language-scoped box"
           Bad: "Found a bug in the data source that was causing data to be invisible"
@@ -1004,8 +1067,8 @@ def register_cognition_tools(mcp) -> None:
         - author should be the current git user name.
 
         Args:
-            node_type: One of: decision, fail, discovery, assumption, constraint, incident, pattern, episode
-            summary: Short description (max 250 chars for entities, brief title for episodes)
+            node_type: One of: decision, fail, discovery, assumption, constraint, incident, pattern, episode, workflow
+            summary: Short description (max 250 chars for entities, brief title for episodes/workflows)
             detail: Brief rationale for entities (1-3 sentences), or full narrative for episodes
             context: Related code areas, file paths, AND topical terms (comma-separated).
                      Example: "flashcard_local_datasource.dart, HiveService, data migration, LL-298"
@@ -1244,7 +1307,7 @@ def register_cognition_tools(mcp) -> None:
                    - "what failed with the migration"
                    - "localization issues"
             node_type: Optional filter: decision, fail, discovery, assumption,
-                       constraint, incident, pattern, episode
+                       constraint, incident, pattern, episode, workflow
             limit: Max results (default: 10)
             project: None (default, home only), a tag/path (one loaded foreign
                      project), or "*" (all loaded projects — aggregate search).
@@ -1393,6 +1456,81 @@ def register_cognition_tools(mcp) -> None:
         return {"node_id": node_id, "chain": get_superseded_chain(entries[0].storage, node_id), "project": entries[0].tag}
 
     @mcp.tool()
+    def cognition_get_workflow(
+        ctx: Context,
+        name_or_topic: str,
+        project: str | None = None,
+    ) -> dict[str, Any]:
+        """Find a workflow procedure by name or topic and return the current HEAD version.
+
+        **Before starting any multi-step task**, search for an existing workflow first —
+        this is the primary retrieval trigger for workflow nodes.
+
+        Performs a type-filtered semantic search for ``workflow`` nodes matching the
+        query, then resolves the top hit to the current HEAD (in case an old version
+        was matched) via SUPERSEDES edges. Returns the full procedure body, the full
+        version chain, and which node was matched.
+
+        Args:
+            name_or_topic: Name or topic of the procedure (e.g. "deploy to production",
+                           "onboard a new engineer", "run the release process").
+            project: None (default, home) or tag/path for a loaded foreign project.
+                     "*" is rejected — node ids are not project-namespaced.
+
+        Returns:
+            {"head": {id, type, summary, detail, ...}, "chain": [...], "matched": <id>}
+            or {"error": "..."} if no workflow was found or embeddings are not ready.
+            "chain" is the full version history (newest first) via get_superseded_chain.
+            When project is not None, also includes "project": tag.
+        """
+        lc = get_lifespan(ctx)
+        err = require_embeddings(ctx)
+        if err:
+            return err
+        if project == "*":
+            return {"error": 'project="*" is not supported for single-node tools'}
+
+        if project is None:
+            storage = lc["cognition_storage"]
+            embedding_storage: ChromaDBStorage = lc["cognition_embedding_storage"]
+            generator: EmbeddingGenerator = lc["embedding_generator"]
+            project_tag = None
+        else:
+            entries, err2 = resolve_project(lc, project)
+            if err2:
+                return err2
+            storage = entries[0].storage
+            if entries[0].embeddings is None:
+                return {"error": "No vector index for the requested project"}
+            embedding_storage = entries[0].embeddings
+            generator = lc["embedding_generator"]
+            project_tag = entries[0].tag
+
+        query_embedding = generator.generate_query_embedding(name_or_topic)
+        results = _search_with_embedding(
+            storage, embedding_storage, query_embedding,
+            node_type=CognitionNodeType.WORKFLOW.value, limit=1,
+        )
+        if not results:
+            return {"error": f"No workflow found matching: {name_or_topic!r}"}
+
+        matched_id = results[0]["id"]
+        head_id = get_workflow_head(storage, matched_id)
+        head_node = storage.get_node(head_id)
+        if not head_node:
+            return {"error": f"Workflow head node not found: {head_id}"}
+
+        chain = get_superseded_chain(storage, head_id)
+        result: dict[str, Any] = {
+            "head": {"id": head_id, **head_node},
+            "chain": chain,
+            "matched": matched_id,
+        }
+        if project_tag:
+            result["project"] = project_tag
+        return result
+
+    @mcp.tool()
     def cognition_get_incident_resolution(ctx: Context, node_id: str, project: str | None = None) -> dict[str, Any]:
         """Get an incident node plus everything that resolved or relates to it.
 
@@ -1438,7 +1576,7 @@ def register_cognition_tools(mcp) -> None:
         Args:
             context_term: Optional term to search in context fields (file paths, topics)
             node_type: Optional filter: decision, fail, discovery, assumption,
-                       constraint, incident, pattern, episode
+                       constraint, incident, pattern, episode, workflow
             limit: Max results (default: 20)
             project: None (default, home), tag/path, or "*" (all loaded projects).
                      Aggregate tool: "*" fans across all loaded projects, merges and
@@ -1560,7 +1698,7 @@ def register_cognition_tools(mcp) -> None:
 
         Args:
             node_type: Optional filter: decision, fail, discovery, assumption,
-                       constraint, incident, pattern, episode
+                       constraint, incident, pattern, episode, workflow
             limit: Max results (default: 50, max: 500)
             project: None (default, home), tag/path, or "*" (all loaded projects).
                      Aggregate tool: "*" fans across all loaded projects and merges.
@@ -1631,7 +1769,7 @@ def register_cognition_tools(mcp) -> None:
 
         Args:
             node_type: Optional filter: decision, fail, discovery, assumption,
-                       constraint, incident, pattern, episode
+                       constraint, incident, pattern, episode, workflow
             limit: Max results (default: 50, max: 500)
             project: None (default, home), tag/path, or "*" (all loaded projects).
                      Aggregate tool: "*" fans across all loaded projects and merges.
