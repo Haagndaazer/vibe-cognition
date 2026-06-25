@@ -368,6 +368,30 @@ def test_update_task_note_recorded_on_transition(build_lc, make_ctx, mock_mcp, t
     assert last["status"] == "blocked" and last["note"] == "waiting on upstream"
 
 
+def test_update_task_note_without_transition_rejected(build_lc, make_ctx, mock_mcp, tmp_path):
+    """note without a status change is rejected (not silently dropped); the rejected calls
+    mutate nothing, and note WITH a real transition is accepted.
+
+    Fails-before: note only attached inside the status-change branch, so a note passed
+    without (or with an unchanged) status vanished silently.
+    """
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+
+    r1 = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], note="orphan note")
+    assert "error" in r1 and "note" in r1["error"]
+    r2 = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="open", note="x")
+    assert "error" in r2 and "note" in r2["error"]
+
+    r3 = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress", note="real")
+    assert "error" not in r3
+    assert r3["metadata"]["transitions"][-1]["note"] == "real"
+    # the two rejected calls left no stray transitions (initial open + in_progress == 2)
+    assert len(r3["metadata"]["transitions"]) == 2
+
+
 # ── list filters + tree depth ──────────────────────────────────────────────────
 
 
@@ -414,6 +438,28 @@ def test_list_tasks_rejects_bad_status(build_lc, make_ctx, mock_mcp, tmp_path):
     ctx = make_ctx(lc)
     result = mock_mcp.tools["cognition_list_tasks"](ctx, status="frob")
     assert "error" in result
+
+
+def test_list_tasks_explicit_closed_status_filter_returns_them(build_lc, make_ctx, mock_mcp, tmp_path):
+    """list_tasks(status='done'/'cancelled') returns those tasks — a closed-status filter
+    implies include_done; the default still excludes both.
+
+    Fails-before: the default closed-status exclusion fired BEFORE the status filter, so
+    list_tasks(status='done') returned empty (contradicting the docstring).
+    """
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    storage: CognitionStorage = lc["cognition_storage"]
+    _task_node(storage, "o1", "open one", status="open")
+    _task_node(storage, "d1", "done one", status="done")
+    _task_node(storage, "x1", "cancelled one", status="cancelled")
+
+    assert [t["id"] for t in mock_mcp.tools["cognition_list_tasks"](ctx, status="done")["tasks"]] == ["d1"]
+    assert [t["id"] for t in mock_mcp.tools["cognition_list_tasks"](ctx, status="cancelled")["tasks"]] == ["x1"]
+    # default (no status) and an explicit open filter both exclude the closed tasks
+    assert [t["id"] for t in mock_mcp.tools["cognition_list_tasks"](ctx)["tasks"]] == ["o1"]
+    assert [t["id"] for t in mock_mcp.tools["cognition_list_tasks"](ctx, status="open")["tasks"]] == ["o1"]
 
 
 def test_list_tasks_tolerates_deleted_parent(build_lc, make_ctx, mock_mcp, tmp_path):
@@ -533,6 +579,32 @@ def test_reparent_leaves_cluster_membership_edge_untouched(build_lc, make_ctx, m
     assert storage.graph.has_edge(c["id"], "cluster1"), "cluster-membership edge was disturbed"
     assert storage.graph.has_edge(c["id"], p2["id"])
     assert not storage.graph.has_edge(c["id"], p1["id"])
+
+
+def test_reparent_add_edge_failure_leaves_state_intact(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
+    """If add_edge fails (new parent vanished cross-process between validation and add),
+    the re-parent errors BEFORE removing the old edge or writing parent_id — no orphaned
+    pointer with a missing edge.
+
+    Fails-before: the old code removed the old edge + wrote parent_id regardless of
+    add_edge's return.
+    """
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    storage: CognitionStorage = lc["cognition_storage"]
+    p1 = mock_mcp.tools["cognition_add_task"](ctx, summary="p1", detail="d", context="c")
+    p2 = mock_mcp.tools["cognition_add_task"](ctx, summary="p2", detail="d", context="c")
+    c = mock_mcp.tools["cognition_add_task"](ctx, summary="c", detail="d", context="c", parent_id=p1["id"])
+
+    # Simulate add_edge failing at the moment of the re-parent (node vanished at add time).
+    monkeypatch.setattr(storage, "add_edge", lambda edge: False)
+    result = mock_mcp.tools["cognition_update_task"](ctx, node_id=c["id"], parent_id=p2["id"])
+    assert "error" in result
+    # old edge + pointer intact; no new edge
+    assert _meta(storage, c["id"])["parent_id"] == p1["id"]
+    assert storage.graph.has_edge(c["id"], p1["id"])
+    assert not storage.graph.has_edge(c["id"], p2["id"])
 
 
 # ── re-embed surfaces status (B1 regression guard) ─────────────────────────────

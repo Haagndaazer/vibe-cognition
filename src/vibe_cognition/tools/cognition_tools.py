@@ -935,6 +935,8 @@ def _add_task(
 
     timestamp = datetime.now(UTC).isoformat()
     # Server-resolved identity from the repo backing THIS storage (home project).
+    # Assumes the standard layout where the repo root is the .cognition dir's parent
+    # (true for every real install; config.py resolves the same root from REPO_PATH).
     created_by = resolve_git_identity(storage.cognition_dir.parent)
 
     metadata: dict[str, Any] = {
@@ -1004,7 +1006,16 @@ def _list_tasks(
     def _keep(t: dict[str, Any]) -> bool:
         meta = t.get("metadata", {})
         st = meta.get("status", "open")
-        if not include_done and st in _TASK_CLOSED_STATUSES:
+        # The default closed-status exclusion must NOT fire when the caller is
+        # EXPLICITLY filtering for a closed status — otherwise list_tasks(status="done")
+        # would return empty, contradicting the docstring ("filtering for a closed
+        # status implies include_done"). So skip the exclusion when `status` itself names
+        # a closed status (the status filter below then keeps exactly those).
+        if (
+            not include_done
+            and status not in _TASK_CLOSED_STATUSES
+            and st in _TASK_CLOSED_STATUSES
+        ):
             return False
         return (
             (status is None or st == status)
@@ -1079,23 +1090,29 @@ def _reparent_task(
         if node_id in _task_ancestor_ids(storage, new_parent):
             return {"error": "Re-parenting would create a cycle (target is a descendant of this task)"}
 
-    # Remove the OLD parent edge (child → old parent). Targeted by the exact (child,
-    # old_parent, part_of) triple, which is the task-parent edge — a cluster-membership
-    # part_of edge has a DIFFERENT target and is therefore untouched.
-    if old_parent:
-        storage.remove_edge(node_id, old_parent, CognitionEdgeType.PART_OF)
-
-    if detach:
-        metadata["parent_id"] = None
-    else:
-        storage.add_edge(CognitionEdge(
+        # Add the NEW edge FIRST and bail on failure BEFORE removing the old edge or
+        # mutating parent_id. storage.add_edge returns False (never raises) if a node
+        # vanished since validation (the new parent deleted cross-process between the
+        # get_node above and here) — without this check we'd drop the old edge and write
+        # a parent_id with no backing edge, breaking depth/cycle traversal.
+        if not storage.add_edge(CognitionEdge(
             from_id=node_id,
             to_id=new_parent,
             edge_type=CognitionEdgeType.PART_OF,
             timestamp=datetime.now(UTC).isoformat(),
             source=_TASK_PARENT_EDGE_SOURCE,
-        ))
-        metadata["parent_id"] = new_parent
+        )):
+            return {"error": f"Re-parent failed: parent '{new_parent}' is missing"}
+
+    # New edge is in place (or this is a detach) — now safe to remove the OLD parent
+    # edge. Targeted by the exact (child, old_parent, part_of) triple (the task-parent
+    # edge) — a cluster-membership part_of edge has a DIFFERENT target and is untouched.
+    # Guard old != new so a no-op re-parent (already under this parent) doesn't remove
+    # the edge we just refreshed.
+    if old_parent and old_parent != new_parent:
+        storage.remove_edge(node_id, old_parent, CognitionEdgeType.PART_OF)
+
+    metadata["parent_id"] = None if detach else new_parent
     return None
 
 
@@ -1141,6 +1158,16 @@ def _update_task(
 
     metadata = dict(node.get("metadata", {}))  # copy for read-modify-write
     metadata_changed = False
+
+    # `note` annotates a status transition — reject it (BEFORE any mutation) when no
+    # transition will occur (no status, or status == current), so it can't be silently
+    # dropped. Checked here, pre-mutation, so an erroring note never half-applies.
+    if note is not None and (status is None or status == metadata.get("status", "open")):
+        return {
+            "error": (
+                "note annotates a status change — pass a new (different) status, or omit note"
+            )
+        }
 
     # --- status transition ---
     if status is not None:
