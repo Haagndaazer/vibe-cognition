@@ -112,6 +112,9 @@ The embedding model (~250MB) also downloads on first use from Hugging Face. Afte
 | Tool | Purpose |
 |------|---------|
 | `cognition_record` | Record a knowledge node (decision, fail, discovery, pattern, episode, etc.) |
+| `cognition_add_task` | File a trackable task, server-attributed to the git user (open work + lifecycle) |
+| `cognition_list_tasks` | List the backlog: open tasks, priority-sorted, grouped by parent |
+| `cognition_update_task` | Update a task's status/owner/priority/parent in place (status-transition logged) |
 | `cognition_store_document` | Store a document (reference or copy mode) + extracted text as a first-class node |
 | `cognition_get_document` | Retrieve a stored document: metadata + full text + freshness |
 | `cognition_get_node` | Read a single node's full narrative (incl. `detail`) by id |
@@ -247,6 +250,7 @@ The cognition graph captures project knowledge — decisions made, approaches th
 | `pattern` | A reusable lesson learned |
 | `episode` | Full narrative of completed work (Linear task, feature, debugging session) |
 | `workflow` | A step-by-step procedure stored as ONE unit; versioned by supersession (update = new node + `supersedes` edge) |
+| `task` | Trackable open work, server-attributed to the git user; mutable status/priority + arbitrary-depth parent hierarchy (created with `cognition_add_task`) |
 
 ### Edge Types
 

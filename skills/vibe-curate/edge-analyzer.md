@@ -25,9 +25,19 @@ For each node ID in the batch:
 | `contradicts` | A and B assert incompatible things | either direction | Genuinely rare — only when there's a real logical conflict |
 | `relates_to` | Same topic, no causal link | either direction | Use sparingly — if you can't identify a specific relationship, don't force one |
 
+## Task nodes
+
+A `task` node is trackable open work (server-attributed to the git user, with a
+`status` in its metadata). Link tasks like this:
+
+- A task `relates_to` the `decision`/`discovery`/`pattern` it implements or acts on.
+- A **done** task (`status: done`) is `resolved_by` (or `led_to`) the `episode` that closed it.
+- **Never** propose `part_of` for a task — its parent hierarchy is an explicit edge owned by
+  `cognition_add_task`/`cognition_update_task`; an agent `part_of` would collide with it.
+
 ## Rules
 
-- Do NOT propose `part_of` edges — these are created automatically by deterministic reference matching
+- Do NOT propose `part_of` edges — these are created automatically by deterministic reference matching (and, for tasks, by the task-parent hierarchy)
 - Do NOT propose `duplicate_of` edges — these require merge logic handled elsewhere
 - Do NOT propose self-referencing edges (from_id == to_id)
 - Only propose edges with **clear, meaningful relationships**

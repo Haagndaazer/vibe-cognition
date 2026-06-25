@@ -28,6 +28,11 @@ class CognitionNodeType(str, Enum):  # noqa: UP042
     # A step-by-step procedure stored as ONE cohesive unit. Verbose body (like episode).
     # Versioned by supersession: an update is a NEW workflow node linked via SUPERSEDES.
     WORKFLOW = "workflow"
+    # Trackable open work — server-attributed to the git user. Concise (single entity
+    # vector, like an entity), with a mutable lifecycle (status/owner/parent) carried in
+    # metadata and edited in place via cognition_update_task. Graph-inert in the matcher
+    # (its parent hierarchy is an explicit part_of edge, not reference-matched).
+    TASK = "task"
 
 
 class CognitionEdgeType(str, Enum):  # noqa: UP042  (see CognitionNodeType above)

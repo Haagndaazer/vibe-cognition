@@ -572,10 +572,10 @@ def test_cognition_unload_project_returns_error_on_home(tmp_path, mock_mcp, buil
     assert "error" in result
 
 
-# ── full register_all_tools: all 26 names captured ───────────────────────────
+# ── full register_all_tools: all 29 names captured ───────────────────────────
 
 
-def test_all_25_tools_registered(mock_mcp):
+def test_all_29_tools_registered(mock_mcp):
     """register_all_tools captures every expected closure by name.
 
     Fails-before: if a new tool was added to a registrar but not captured (name drift),
@@ -584,7 +584,7 @@ def test_all_25_tools_registered(mock_mcp):
     register_all_tools(mock_mcp)
 
     expected = {
-        # cognition_tools.py (23)
+        # cognition_tools.py (26)
         "cognition_record", "cognition_store_document", "cognition_get_document",
         "cognition_get_node", "cognition_update_node", "cognition_search",
         "cognition_get_chain", "cognition_get_superseded_chain", "cognition_get_workflow",
@@ -594,6 +594,8 @@ def test_all_25_tools_registered(mock_mcp):
         "cognition_mark_curated", "cognition_get_neighbors",
         "cognition_remove_edge", "cognition_remove_node", "cognition_reload",
         "cognition_load_project", "cognition_unload_project", "cognition_list_projects",
+        # task tools (WP-Task-Node, +3)
+        "cognition_add_task", "cognition_list_tasks", "cognition_update_task",
         # service_tools.py (+1)
         "get_status",
         # dashboard_tool.py (+1)
@@ -604,6 +606,6 @@ def test_all_25_tools_registered(mock_mcp):
 
     missing = expected - set(mock_mcp.tools.keys())
     assert not missing, f"Tools not registered: {missing}"
-    assert len(mock_mcp.tools) == 26, (
-        f"Expected 26 tools, got {len(mock_mcp.tools)}: {set(mock_mcp.tools.keys())}"
+    assert len(mock_mcp.tools) == 29, (
+        f"Expected 29 tools, got {len(mock_mcp.tools)}: {set(mock_mcp.tools.keys())}"
     )

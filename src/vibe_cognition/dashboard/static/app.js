@@ -10,6 +10,7 @@ const TYPE_COLORS = {
   pattern: "#4adcc8",
   episode: "#b6bdc9",
   workflow: "#e87ecb",
+  task: "#ffd166",
 };
 
 const TOKEN = new URL(location.href).searchParams.get("token") || "";

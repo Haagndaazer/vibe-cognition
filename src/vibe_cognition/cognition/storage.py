@@ -648,11 +648,15 @@ class CognitionStorage:
         for key in empty_keys:
             del self._reference_index[key]
 
-    # Types that are graph-inert: workflow-involving pairs mint no deterministic edge.
-    # (document is also listed to make the set extensible; its own pair rules below
-    # are reached only after this gate — workflow short-circuits before them.)
+    # Types that are graph-inert: a pair involving one of these mints NO deterministic
+    # edge — the gate short-circuits before any pair rule below. ``workflow`` is
+    # versioned via supersession; ``task`` is curated explicitly (its parent hierarchy
+    # is a direct part_of edge set at creation, never reference-matched). NOTE:
+    # ``document`` is deliberately NOT inert — it has its own ``doc_gated`` pair rules
+    # below, reached only after this gate passes.
     _INERT_TYPES: frozenset[str] = frozenset({
         CognitionNodeType.WORKFLOW.value,
+        CognitionNodeType.TASK.value,
     })
 
     @staticmethod
@@ -671,8 +675,9 @@ class CognitionStorage:
         - document ↔ episode → relates_to (document → episode), doc: ref ONLY
         - document ↔ document / episode ↔ episode / entity ↔ entity → no edge
         - workflow ↔ anything → no edge (graph-inert; versioned via supersession)
+        - task ↔ anything → no edge (graph-inert; parent hierarchy is an explicit edge)
         """
-        # Inert-type gate: workflow-involving pairs are graph-inert (B1).
+        # Inert-type gate: workflow- and task-involving pairs are graph-inert (B1/B2).
         if type_a in CognitionStorage._INERT_TYPES or type_b in CognitionStorage._INERT_TYPES:
             return None
 

@@ -20,6 +20,7 @@ from ..cognition import (
     get_reasoning_chain,
     get_superseded_chain,
     get_workflow_head,
+    resolve_git_identity,
 )
 from ..cognition.chunking import chunk_text
 from ..cognition.documents import (
@@ -38,6 +39,7 @@ from ..cognition.documents import (
     write_blob,
     write_text_sidecar,
 )
+from ..cognition.prime import SEVERITY_ORDER
 from ..embeddings import ChromaDBStorage, EmbeddingGenerator, adaptive_vector_search
 from .project_registry import LoadedProjects, ModelGuard, ProjectEntry, resolve_project, tag_results
 from .utils import get_lifespan, require_embeddings
@@ -63,8 +65,20 @@ def _embed_entity_node(
     under ``node.id``. Because upsert overwrites by id, calling this again after an
     edit REFRESHES the searchable vector (this is what makes update_node's re-embed
     correct — no stale vector, no ghost/duplicate). The caller must pass a node whose
-    ``id`` is the FINAL (post-mint) id, else the vector lands under a stale id (A1)."""
+    ``id`` is the FINAL (post-mint) id, else the vector lands under a stale id (A1).
+
+    TASK lifecycle (B1): a ``task`` node carries ``status``/``owner`` in ``node.metadata``.
+    Surface BOTH into the Chroma metadata dict AND the embed text (only when present) so
+    metadata filters and semantic search both reflect lifecycle state. This is the SINGLE
+    shared embed path, so create AND re-embed (cognition_update_task) pick it up once-and-
+    done; for non-task nodes ``metadata`` is empty so this stays a no-op."""
+    status = node.metadata.get("status")
+    owner = node.metadata.get("owner")
     embed_text = f"{node.type.value}: {node.summary}\n{node.detail}"
+    if status:
+        embed_text += f"\nstatus: {status}"
+    if owner:
+        embed_text += f" owner: {owner}"
     embedding = generator.generate(embed_text, input_type="document")
     metadata: dict[str, Any] = {
         "entity_type": node.type.value,
@@ -77,6 +91,10 @@ def _embed_entity_node(
         metadata["severity"] = node.severity
     if node.references:
         metadata["references"] = ",".join(node.references)
+    if status:
+        metadata["status"] = status
+    if owner:
+        metadata["owner"] = owner
     embedding_storage.upsert_embedding(node.id, embedding, metadata)
 
 
@@ -830,6 +848,388 @@ def _update_node(
     return result
 
 
+# ── Task node core logic (cognition_add_task / _list_tasks / _update_task) ───
+#
+# A ``task`` is trackable open work, server-attributed to the git user. Unlike
+# ``workflow`` (inert + supersession-versioned), a task is concise (one entity
+# vector), curatable, and EDITED IN PLACE via a mutable ``status`` carried in
+# ``metadata``. The lifecycle constants below are the single source of truth shared
+# by _update_task and its tests.
+
+# Status vocabulary (locked clarifier 6). ``open`` is the seeded default.
+_TASK_STATUSES: tuple[str, ...] = ("open", "in_progress", "blocked", "done", "cancelled")
+
+# Legal status transitions. Reopen (done/cancelled → open) is intentionally allowed —
+# real backlogs reopen work. Kept small and in ONE constant so the tool + tests share it.
+_TASK_TRANSITIONS: dict[str, frozenset[str]] = {
+    "open": frozenset({"in_progress", "blocked", "cancelled", "done"}),
+    "in_progress": frozenset({"blocked", "done", "cancelled", "open"}),
+    "blocked": frozenset({"in_progress", "open", "cancelled", "done"}),
+    "done": frozenset({"open"}),
+    "cancelled": frozenset({"open"}),
+}
+
+# Statuses excluded from the default backlog view (list_tasks) and the prime injection.
+_TASK_CLOSED_STATUSES: frozenset[str] = frozenset({"done", "cancelled"})
+
+# The "task-parent" provenance tags the one part_of edge that mirrors metadata.parent_id,
+# distinguishing it from a /vibe-curate cluster-membership part_of edge (which must NOT
+# be disturbed by a re-parent).
+_TASK_PARENT_EDGE_SOURCE = "task-parent"
+
+
+def _task_ancestor_ids(storage: CognitionStorage, start_id: str) -> set[str]:
+    """The set of ancestor task ids reachable by walking ``metadata.parent_id`` upward
+    from (and excluding) ``start_id``. Cycle-safe (a pre-existing parent_id cycle can't
+    hang the walk). Used by the re-parent cycle guard."""
+    ancestors: set[str] = set()
+    current = start_id
+    seen: set[str] = set()
+    while current and current not in seen:
+        seen.add(current)
+        node = storage.get_node(current)
+        if not node:
+            break
+        parent = node.get("metadata", {}).get("parent_id")
+        if not parent:
+            break
+        ancestors.add(parent)
+        current = parent
+    return ancestors
+
+
+def _add_task(
+    ctx: Context,
+    summary: str,
+    detail: str,
+    context: str,
+    priority: str = "normal",
+    owner: str | None = None,
+    parent_id: str | None = None,
+    references: str | None = None,
+) -> dict[str, Any]:
+    """Create a task node (testable core of cognition_add_task).
+
+    Resolves the git identity SERVER-SIDE (no client ``created_by`` param), seeds the
+    lifecycle ``metadata`` (status=open, created_by, owner, parent_id, initial
+    transition), mints a collision-free id, creates the explicit child→parent
+    ``part_of`` edge when ``parent_id`` is given, and embeds (status/owner surfaced via
+    the shared _embed_entity_node path). ``priority`` is stored as the node's
+    ``severity`` so it sorts via SEVERITY_ORDER for free."""
+    lc = get_lifespan(ctx)
+    storage: CognitionStorage = lc["cognition_storage"]
+    embedding_storage: ChromaDBStorage = lc["cognition_embedding_storage"]
+    generator: EmbeddingGenerator = lc["embedding_generator"]
+
+    # Validate the parent BEFORE creating the node, so a bad parent_id never leaves an
+    # orphan task behind. Parent must exist AND be a task.
+    if parent_id:
+        parent = storage.get_node(parent_id)
+        if parent is None:
+            return {"error": f"Parent task '{parent_id}' does not exist"}
+        if parent.get("type") != CognitionNodeType.TASK.value:
+            return {"error": f"Parent '{parent_id}' is not a task (type: {parent.get('type')})"}
+
+    context_list = [c.strip() for c in context.split(",") if c.strip()] if context else []
+    references_list = [r.strip() for r in references.split(",") if r.strip()] if references else []
+
+    timestamp = datetime.now(UTC).isoformat()
+    # Server-resolved identity from the repo backing THIS storage (home project).
+    created_by = resolve_git_identity(storage.cognition_dir.parent)
+
+    metadata: dict[str, Any] = {
+        "status": "open",
+        "created_by": created_by,
+        "owner": owner,
+        "parent_id": parent_id,
+        "transitions": [{"status": "open", "at": timestamp, "by": created_by}],
+    }
+
+    node_id = generate_node_id(CognitionNodeType.TASK.value, summary, timestamp)
+    node = CognitionNode(
+        id=node_id,
+        type=CognitionNodeType.TASK,
+        summary=summary,
+        detail=detail,
+        context=context_list,
+        references=references_list,
+        severity=priority,  # priority IS severity (reuses SEVERITY_ORDER sort/surfacing)
+        timestamp=timestamp,
+        author=created_by["name"],  # author mirrors the server-resolved name (no client author)
+        metadata=metadata,
+    )
+    # WP-ID: mint a collision-free id under the lock; rebind BEFORE the edge + embed so
+    # both land under the FINAL id (same A1 discipline as _record_node/_store_document).
+    node_id = storage.add_node(node, mint_unique_id=True)
+    node = node.model_copy(update={"id": node_id})
+
+    # Explicit parent hierarchy edge (NOT reference-matched — task is matcher-inert). The
+    # "task-parent" source distinguishes it from a curate cluster-membership part_of edge.
+    if parent_id:
+        storage.add_edge(CognitionEdge(
+            from_id=node_id,
+            to_id=parent_id,
+            edge_type=CognitionEdgeType.PART_OF,
+            timestamp=timestamp,
+            source=_TASK_PARENT_EDGE_SOURCE,
+        ))
+
+    # Embed (single node vector; status/owner surfaced by _embed_entity_node). Skip if the
+    # model isn't loaded yet — the startup sync backfills it.
+    if _embeddings_ready(lc):
+        _embed_entity_node(embedding_storage, generator, node)
+
+    return _get_node(storage, node_id)
+
+
+def _list_tasks(
+    storage: CognitionStorage,
+    status: str | None = None,
+    priority: str | None = None,
+    owner: str | None = None,
+    parent_id: str | None = None,
+    include_done: bool = False,
+) -> dict[str, Any]:
+    """List tasks filtered + sorted (testable core of cognition_list_tasks).
+
+    Home-project only. Sorts by priority (SEVERITY_ORDER) then recency (newest first).
+    Default EXCLUDES done/cancelled. Each row carries a ``depth`` = the number of present
+    ancestors in the visible result set (so the hierarchy reads as a tree); a child whose
+    parent is filtered out or deleted falls back to depth 0 (shown ungrouped, F10)."""
+    if status is not None and status not in _TASK_STATUSES:
+        return {"error": f"Invalid status '{status}'. Valid: {list(_TASK_STATUSES)}"}
+
+    tasks = storage.get_nodes_by_type(CognitionNodeType.TASK)
+
+    def _keep(t: dict[str, Any]) -> bool:
+        meta = t.get("metadata", {})
+        st = meta.get("status", "open")
+        if not include_done and st in _TASK_CLOSED_STATUSES:
+            return False
+        return (
+            (status is None or st == status)
+            and (priority is None or t.get("severity") == priority)
+            and (owner is None or meta.get("owner") == owner)
+            and (parent_id is None or meta.get("parent_id") == parent_id)
+        )
+
+    filtered = [t for t in tasks if _keep(t)]
+    # Stable two-pass sort: recency desc first, then severity asc → severity primary,
+    # recency secondary (newest-first within a priority band).
+    filtered.sort(key=lambda t: t.get("timestamp") or "", reverse=True)
+    filtered.sort(key=lambda t: SEVERITY_ORDER.get(t.get("severity") or "normal", 2))
+
+    visible = {t["id"] for t in filtered}
+    by_id = {t["id"]: t for t in filtered}
+
+    def _depth(t: dict[str, Any]) -> int:
+        d = 0
+        seen: set[str] = set()
+        cur = t.get("metadata", {}).get("parent_id")
+        while cur and cur in visible and cur not in seen:
+            seen.add(cur)
+            d += 1
+            cur = by_id[cur].get("metadata", {}).get("parent_id")
+        return d
+
+    rows: list[dict[str, Any]] = []
+    for t in filtered:
+        meta = t.get("metadata", {})
+        rows.append({
+            "id": t["id"],
+            "summary": t.get("summary"),
+            "status": meta.get("status", "open"),
+            "priority": t.get("severity"),
+            "owner": meta.get("owner"),
+            "parent_id": meta.get("parent_id"),
+            "created_by": meta.get("created_by"),
+            "timestamp": t.get("timestamp"),
+            "depth": _depth(t),
+        })
+    return {"tasks": rows, "count": len(rows)}
+
+
+def _reparent_task(
+    storage: CognitionStorage,
+    node_id: str,
+    metadata: dict[str, Any],
+    new_parent: str,
+) -> dict[str, Any] | None:
+    """Move a task under a new parent (or detach), mutating ``metadata['parent_id']`` and
+    swapping ONLY the ``task-parent`` part_of edge. Returns an error dict on a rejected
+    move, else None (success). Performed by the caller under the storage write path so
+    metadata.parent_id and the edge stay in sync.
+
+    Three semantics on ``new_parent`` (caller already filtered out None = no change):
+      - ``"<task-id>"`` → move under that task.
+      - ``""`` (empty sentinel) → DETACH to top-level.
+    """
+    old_parent = metadata.get("parent_id")
+    detach = new_parent == ""
+
+    if not detach:
+        if new_parent == node_id:
+            return {"error": "A task cannot be its own parent"}
+        parent_node = storage.get_node(new_parent)
+        if parent_node is None:
+            return {"error": f"Parent task '{new_parent}' does not exist"}
+        if parent_node.get("type") != CognitionNodeType.TASK.value:
+            return {"error": f"Parent '{new_parent}' is not a task (type: {parent_node.get('type')})"}
+        # Cycle guard: the new parent must not be a descendant of this task.
+        if node_id in _task_ancestor_ids(storage, new_parent):
+            return {"error": "Re-parenting would create a cycle (target is a descendant of this task)"}
+
+    # Remove the OLD parent edge (child → old parent). Targeted by the exact (child,
+    # old_parent, part_of) triple, which is the task-parent edge — a cluster-membership
+    # part_of edge has a DIFFERENT target and is therefore untouched.
+    if old_parent:
+        storage.remove_edge(node_id, old_parent, CognitionEdgeType.PART_OF)
+
+    if detach:
+        metadata["parent_id"] = None
+    else:
+        storage.add_edge(CognitionEdge(
+            from_id=node_id,
+            to_id=new_parent,
+            edge_type=CognitionEdgeType.PART_OF,
+            timestamp=datetime.now(UTC).isoformat(),
+            source=_TASK_PARENT_EDGE_SOURCE,
+        ))
+        metadata["parent_id"] = new_parent
+    return None
+
+
+def _update_task(
+    storage: CognitionStorage,
+    embedding_storage: "ChromaDBStorage",
+    generator: "EmbeddingGenerator",
+    *,
+    node_id: str,
+    embeddings_ready: bool,
+    status: str | None = None,
+    priority: str | None = None,
+    owner: str | None = None,
+    summary: str | None = None,
+    detail: str | None = None,
+    parent_id: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Edit a task's lifecycle + narrative in place (testable core of cognition_update_task).
+
+    This is the ONLY path to ``status``/``owner``/``parent_id``/transition edits:
+    ``cognition_update_node`` physically cannot write ``metadata`` (its whitelist is
+    summary/detail/context/severity), so there is no competing path. Contract:
+      - reject a non-task id (use cognition_update_node for other types);
+      - validate the status transition against _TASK_TRANSITIONS;
+      - READ-MODIFY-WRITE the WHOLE metadata dict (storage.update_node replaces fields
+        wholesale, F8): set status, APPEND {status, at, by(git-resolved)} to transitions,
+        set owner, re-parent;
+      - map priority→severity and summary/detail to top-level fields via storage.update_node;
+      - RE-EMBED ONCE explicitly via _embed_entity_node on the fresh node (NOT via
+        _update_node) so search/metadata reflect the new lifecycle, deferred if the model
+        isn't ready."""
+    node = storage.get_node(node_id)
+    if node is None:
+        return {"error": f"Node '{node_id}' does not exist"}
+    if node.get("type") != CognitionNodeType.TASK.value:
+        return {
+            "error": (
+                f"Node '{node_id}' is not a task (type: {node.get('type')}) — use "
+                "cognition_update_node for non-task nodes"
+            )
+        }
+
+    metadata = dict(node.get("metadata", {}))  # copy for read-modify-write
+    metadata_changed = False
+
+    # --- status transition ---
+    if status is not None:
+        if status not in _TASK_STATUSES:
+            return {"error": f"Invalid status '{status}'. Valid: {list(_TASK_STATUSES)}"}
+        current = metadata.get("status", "open")
+        if status != current:
+            allowed = _TASK_TRANSITIONS.get(current, frozenset())
+            if status not in allowed:
+                return {
+                    "error": (
+                        f"Illegal status transition {current!r} -> {status!r}. "
+                        f"Allowed from {current!r}: {sorted(allowed)}"
+                    )
+                }
+            by = resolve_git_identity(storage.cognition_dir.parent)
+            entry: dict[str, Any] = {
+                "status": status,
+                "at": datetime.now(UTC).isoformat(),
+                "by": by,
+            }
+            if note:
+                entry["note"] = note
+            metadata["status"] = status
+            metadata["transitions"] = [*metadata.get("transitions", []), entry]
+            metadata_changed = True
+
+    # --- owner (empty string clears) ---
+    if owner is not None:
+        metadata["owner"] = owner or None
+        metadata_changed = True
+
+    # --- re-parenting (None = no change; "" = detach; "<id>" = move) ---
+    if parent_id is not None:
+        err = _reparent_task(storage, node_id, metadata, parent_id)
+        if err is not None:
+            return err
+        metadata_changed = True
+
+    if metadata_changed:
+        storage.update_node(node_id, metadata=metadata)
+
+    # --- narrative / priority top-level fields (whitelist, like _update_node) ---
+    top_updates: dict[str, Any] = {}
+    if priority is not None:
+        top_updates["severity"] = priority
+    if summary is not None:
+        top_updates["summary"] = summary
+    if detail is not None:
+        top_updates["detail"] = detail
+    if top_updates:
+        storage.update_node(node_id, **top_updates)
+
+    if not metadata_changed and not top_updates:
+        return {
+            "error": (
+                "No updatable fields provided "
+                "(status, priority, owner, summary, detail, parent_id)"
+            )
+        }
+
+    # Re-embed ONCE on the fresh node (NOT via _update_node) so the new status/owner +
+    # narrative land in Chroma. Deferred if the model isn't ready (rare — an edit needs a
+    # loaded model anyway).
+    if embeddings_ready:
+        post = storage.get_node(node_id)
+        assert post is not None  # just updated it; cannot vanish under the lock
+        cnode = CognitionNode(
+            id=node_id,
+            type=CognitionNodeType(post["type"]),
+            summary=post["summary"],
+            detail=post["detail"],
+            context=post.get("context", []),
+            references=post.get("references", []),
+            severity=post.get("severity"),
+            timestamp=post["timestamp"],
+            author=post["author"],
+            metadata=post.get("metadata", {}),
+        )
+        _embed_entity_node(embedding_storage, generator, cnode)
+        reembed = "done"
+    else:
+        reembed = "deferred"
+
+    result = _get_node(storage, node_id)
+    result["reembed"] = reembed
+    return result
+
+
 # ── XP1 core logic (module-level so tests can call without an MCP Context) ───
 
 
@@ -1087,9 +1487,161 @@ def register_cognition_tools(mcp) -> None:
             valid = [e.value for e in CognitionNodeType]
             return {"error": f"Invalid node_type '{node_type}'. Valid: {valid}"}
 
+        # task is NOT creatable here: cognition_record would stamp a client-supplied
+        # author and skip the server-resolved created_by + status/transition seeding,
+        # producing an un-attributed, lifecycle-less task (defeats the type's purpose).
+        # Redirect to the dedicated tool. (This is the WRITE path only — `task` stays a
+        # valid filter on the read tools.)
+        if nt == CognitionNodeType.TASK:
+            return {
+                "error": (
+                    "Use cognition_add_task to create a task node — it resolves the git "
+                    "creator server-side and seeds the lifecycle (status, transitions). "
+                    "cognition_record cannot attribute or track a task."
+                )
+            }
+
         return _record_node(
             ctx, nt, summary, detail, context, author,
             severity, references,
+        )
+
+    @mcp.tool()
+    def cognition_add_task(
+        ctx: Context,
+        summary: str,
+        detail: str,
+        context: str,
+        priority: str = "normal",
+        owner: str | None = None,
+        parent_id: str | None = None,
+        references: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a trackable task — open, actionable work, attributed to the git user.
+
+        Use this to file work that should be tracked and shown back at session start
+        (open tasks inject into context like constraints do) and listed via
+        `cognition_list_tasks`. The graph itself becomes the backlog. **Before picking
+        up work, check open tasks with `cognition_list_tasks` first.**
+
+        The creator is resolved SERVER-SIDE from this repo's git config — there is no
+        `created_by` parameter and a client value cannot override it. The task is seeded
+        `status="open"` with an initial transition record; change it later with
+        `cognition_update_task` (the only path to status/owner/parent edits).
+
+        Tasks support an ARBITRARY-depth parent hierarchy: pass `parent_id` to file this
+        task under a parent task/epic (it creates an explicit `part_of` edge). Re-parent
+        later with `cognition_update_task(parent_id=...)`. Tasks are fully curatable —
+        run `/vibe-curate` to link a task `relates_to` the decision/pattern it implements,
+        or `resolved_by`/`led_to` the episode that closed it.
+
+        Args:
+            summary: Short task title (like a commit message — scannable).
+            detail: Description / acceptance criteria.
+            context: Comma-separated related files AND topical terms.
+            priority: critical | high | normal | low (default normal). Stored as the
+                node's `severity`, so it sorts the backlog and the session-start view.
+            owner: Optional free-text "who's on it" (distinct from the git creator).
+            parent_id: Optional id of a parent task to file this under (must be a task).
+            references: Optional external refs (issue/PR/commit), comma-separated.
+
+        Returns:
+            The created task node ({id, type, summary, ..., severity, metadata}) or
+            {"error": ...} if the parent is missing or not a task.
+        """
+        return _add_task(
+            ctx, summary, detail, context,
+            priority=priority, owner=owner, parent_id=parent_id, references=references,
+        )
+
+    @mcp.tool()
+    def cognition_list_tasks(
+        ctx: Context,
+        status: str | None = None,
+        priority: str | None = None,
+        owner: str | None = None,
+        parent_id: str | None = None,
+        include_done: bool = False,
+    ) -> dict[str, Any]:
+        """List the project's tasks — the backlog view. **Check this before picking up work.**
+
+        Returns open tasks (home project only) sorted by priority then recency, grouped
+        as a tree via a `depth` field per row (a child whose parent is filtered out or
+        deleted is shown ungrouped at depth 0). By default `done`/`cancelled` tasks are
+        EXCLUDED — pass `include_done=true` to see them.
+
+        Args:
+            status: Optional exact-status filter (open | in_progress | blocked | done |
+                    cancelled). Filtering for a closed status implies include_done.
+            priority: Optional priority filter (critical | high | normal | low).
+            owner: Optional owner filter (exact match on the free-text owner).
+            parent_id: Optional — only tasks whose direct parent is this id.
+            include_done: Include done/cancelled tasks (default False).
+
+        Returns:
+            {"tasks": [{id, summary, status, priority, owner, parent_id, created_by,
+             timestamp, depth}, ...], "count": N} or {"error": ...} for a bad status.
+        """
+        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
+        return _list_tasks(
+            storage,
+            status=status, priority=priority, owner=owner,
+            parent_id=parent_id, include_done=include_done,
+        )
+
+    @mcp.tool()
+    def cognition_update_task(
+        ctx: Context,
+        node_id: str,
+        status: str | None = None,
+        priority: str | None = None,
+        owner: str | None = None,
+        summary: str | None = None,
+        detail: str | None = None,
+        parent_id: str | None = None,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        """Update a task's lifecycle or narrative in place — the ONLY path to status/owner/parent.
+
+        `cognition_update_node` cannot edit a task's `status`/`owner`/`parent` (they live
+        in metadata, which it doesn't touch) — use this tool for those. A status change
+        is validated against the legal transitions and appends an audit record
+        (`{status, at, by}`, `by` server-resolved) to the task's transition log.
+        Reopening a done/cancelled task (→ open) is allowed.
+
+        Re-parent via `parent_id`: a task id moves this task (and its whole subtree) under
+        that task; the empty string `""` DETACHES it to top-level; omitting it leaves the
+        parent unchanged. A move is rejected if it would create a cycle or the target is
+        not a task.
+
+        Args:
+            node_id: The task to update (must be a task node).
+            status: New status (open | in_progress | blocked | done | cancelled).
+            priority: New priority (critical | high | normal | low).
+            owner: New owner free-text; pass "" to clear it.
+            summary: New title, if changing.
+            detail: New description, if changing.
+            parent_id: Re-parent target task id, "" to detach, or omit for no change.
+            note: Optional annotation recorded on the status transition (with `status`).
+
+        Returns:
+            The updated task node plus `reembed` ("done" | "deferred"), or {"error": ...}
+            for a non-task id, an illegal/invalid status, a bad re-parent, or no fields.
+        """
+        lc = get_lifespan(ctx)
+        return _update_task(
+            lc["cognition_storage"],
+            lc["cognition_embedding_storage"],
+            lc["embedding_generator"],
+            node_id=node_id,
+            embeddings_ready=_embeddings_ready(lc),
+            status=status,
+            priority=priority,
+            owner=owner,
+            summary=summary,
+            detail=detail,
+            parent_id=parent_id,
+            note=note,
         )
 
     @mcp.tool()
@@ -1264,6 +1816,10 @@ def register_cognition_tools(mcp) -> None:
         edited document node's vector metadata takes the entity shape rather than the
         as-stored document shape.
 
+        For `task` nodes, this tool can edit summary/detail/context/severity, but
+        `status`, `owner`, and the parent hierarchy live in metadata — use
+        `cognition_update_task` for those (it also records the status-transition log).
+
         Args:
             node_id: The node to edit.
             summary: New summary, if changing.
@@ -1307,7 +1863,7 @@ def register_cognition_tools(mcp) -> None:
                    - "what failed with the migration"
                    - "localization issues"
             node_type: Optional filter: decision, fail, discovery, assumption,
-                       constraint, incident, pattern, episode, workflow
+                       constraint, incident, pattern, episode, workflow, task
             limit: Max results (default: 10)
             project: None (default, home only), a tag/path (one loaded foreign
                      project), or "*" (all loaded projects — aggregate search).
@@ -1576,7 +2132,7 @@ def register_cognition_tools(mcp) -> None:
         Args:
             context_term: Optional term to search in context fields (file paths, topics)
             node_type: Optional filter: decision, fail, discovery, assumption,
-                       constraint, incident, pattern, episode, workflow
+                       constraint, incident, pattern, episode, workflow, task
             limit: Max results (default: 20)
             project: None (default, home), tag/path, or "*" (all loaded projects).
                      Aggregate tool: "*" fans across all loaded projects, merges and
@@ -1698,7 +2254,7 @@ def register_cognition_tools(mcp) -> None:
 
         Args:
             node_type: Optional filter: decision, fail, discovery, assumption,
-                       constraint, incident, pattern, episode, workflow
+                       constraint, incident, pattern, episode, workflow, task
             limit: Max results (default: 50, max: 500)
             project: None (default, home), tag/path, or "*" (all loaded projects).
                      Aggregate tool: "*" fans across all loaded projects and merges.
@@ -1769,7 +2325,7 @@ def register_cognition_tools(mcp) -> None:
 
         Args:
             node_type: Optional filter: decision, fail, discovery, assumption,
-                       constraint, incident, pattern, episode, workflow
+                       constraint, incident, pattern, episode, workflow, task
             limit: Max results (default: 50, max: 500)
             project: None (default, home), tag/path, or "*" (all loaded projects).
                      Aggregate tool: "*" fans across all loaded projects and merges.

@@ -9,6 +9,9 @@ description: You MUST use this skill any time you need to retrieve information a
 | Tool | Purpose |
 |------|---------|
 | `cognition_record` | Record a knowledge node or episode |
+| `cognition_add_task` | File a trackable task (server-attributed to the git user) |
+| `cognition_list_tasks` | List the backlog — open tasks, priority-sorted, grouped by parent |
+| `cognition_update_task` | Update a task's status/owner/priority/parent in place (transition-logged) |
 | `cognition_search` | Semantic search across all cognition nodes |
 | `cognition_get_node` | Read a single node's full narrative (incl. `detail`) by id |
 | `cognition_update_node` | Edit a node's narrative (summary/detail/context/severity) in place; re-embeds on text change |
@@ -55,6 +58,28 @@ so it is NOT "semantic only." `duplicate_of` is reserved and not supported by
 `cognition_add_edge`.
 
 Deletion is destructive and not undoable: `cognition_remove_node` cascades to every edge attached to the node. Use it to prune junk, test, or duplicate nodes. For a node that is outdated but historically real, prefer recording the correction and adding a `supersedes` edge rather than deleting the history.
+
+## Tasks — the project backlog
+
+A `task` is **trackable open work** — actionable, owned, with a lifecycle. Open tasks
+are injected at session start and listed via `cognition_list_tasks`, so the graph itself
+**is** the backlog (no hand-maintained TODO file).
+
+**Before picking up work, check the open tasks first: `cognition_list_tasks`.**
+
+- **Create with `cognition_add_task`** (NOT `cognition_record` — that path is rejected for
+  tasks). The creator is resolved **server-side** from your git config — you can't set it,
+  so multiple people sharing one graph see who filed each task. `priority` is
+  `critical | high | normal | low`; an optional `owner` is free-text "who's on it".
+- **Hierarchy:** pass `parent_id` to file a task under a parent task/epic (any depth).
+  Re-parent later with `cognition_update_task(parent_id="<id>")`, or `parent_id=""` to
+  detach to top-level. Moving a task carries its whole subtree.
+- **Lifecycle:** `open → in_progress → blocked → done | cancelled` (reopen allowed). Change
+  it with `cognition_update_task(status=...)` — the ONLY path to status/owner/parent edits
+  (each status change is appended to an audit log). `cognition_update_node` can still fix a
+  task's summary/detail/priority, but not its status/owner/parent.
+- **Curate tasks** like any node: `/vibe-curate` links a task `relates_to` the
+  decision/pattern it implements, or a done task `resolved_by`/`led_to` the closing episode.
 
 ## Two Kinds of Nodes
 
@@ -115,6 +140,7 @@ Entities are automatically linked to episodes via `PART_OF` edges when they shar
 
 ### `node_type` (required)
 One of: `decision`, `fail`, `discovery`, `assumption`, `constraint`, `incident`, `pattern`, `episode`, `workflow`
+(`task` is also a node type, but it is created with `cognition_add_task`, not `cognition_record` — see the Tasks section above)
 
 ### `summary` (required)
 For entities: MAX 250 chars. Someone scanning 50 nodes should understand what happened.
