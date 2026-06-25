@@ -17,6 +17,7 @@ Covers the acceptance criteria from docs/wp-task-node-plan.md:
 - matcher inertness lives in test_deterministic_edges.py (TestTaskInertGate)
 """
 
+import os
 from datetime import UTC, datetime
 
 from vibe_cognition.cognition import (
@@ -69,56 +70,67 @@ def _meta(storage: CognitionStorage, node_id: str) -> dict:
     return node["metadata"]
 
 
-def _fake_git_run(name: str = "", email: str = "", *, fail: bool = False):
-    """A subprocess.run stand-in keyed on the git-config key (cmd[-1])."""
-    from subprocess import CompletedProcess
-
-    def run(cmd, **kwargs):
-        if fail:
-            raise OSError("git not found")
-        key = cmd[-1]
-        val = name if key == "user.name" else (email if key == "user.email" else "")
-        return CompletedProcess(cmd, 0 if val else 1, stdout=val, stderr="")
-
-    return run
+def _gitconfig_text(name: str | None = None, email: str | None = None) -> str:
+    """Render a minimal git-config body with tab-indented keys (exactly like real git)."""
+    lines = ["[user]"]
+    if name is not None:
+        lines.append(f"\tname = {name}")
+    if email is not None:
+        lines.append(f"\temail = {email}")
+    return "\n".join(lines) + "\n"
 
 
-# ── git identity resolution ───────────────────────────────────────────────────
+# ── git identity resolution (pure file-read; NO subprocess — P0 v0.12.1) ───────
+#
+# The original shelled `git config`, which hangs forever in the detached/windowless
+# MCP server (the git child never closes the stdout pipe, so subprocess's reader-
+# thread join never returns and timeout= cannot fire). resolve_git_identity now reads
+# the git config FILES directly. These tests isolate the global file via
+# GIT_CONFIG_GLOBAL (git's own override) so they never read the dev's real ~/.gitconfig.
 
 
-def test_resolve_git_identity_name_set(monkeypatch):
-    """git config has a name+email → those are returned verbatim."""
-    monkeypatch.setattr(
-        "vibe_cognition.cognition.git_identity.subprocess.run",
-        _fake_git_run(name="Alice Dev", email="alice@example.com"),
-    )
-    ident = resolve_git_identity("/repo")
+def test_resolve_git_identity_reads_global_config(tmp_path, monkeypatch):
+    """[user] name+email in the global config file → returned verbatim."""
+    gc = tmp_path / "gitconfig"
+    gc.write_text(_gitconfig_text(name="Alice Dev", email="alice@example.com"), encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gc))
+    ident = resolve_git_identity(tmp_path / "repo")  # repo has no .git → only global applies
     assert ident == {"name": "Alice Dev", "email": "alice@example.com"}
 
 
-def test_resolve_git_identity_name_unset_falls_back_to_os_user(monkeypatch):
-    """git config name unset → OS user (getpass.getuser()); email stays "".
+def test_resolve_git_identity_local_overrides_global(tmp_path, monkeypatch):
+    """Local .git/config overrides global name; email inherits from global when local omits it.
 
-    Fails-before: if the helper hard-required git or returned "" for name.
+    Fails-before: a reader that ignored precedence, or wiped email when local lacked it.
     """
-    monkeypatch.setattr(
-        "vibe_cognition.cognition.git_identity.subprocess.run",
-        _fake_git_run(name="", email=""),
-    )
+    gc = tmp_path / "gitconfig"
+    gc.write_text(_gitconfig_text(name="Global Name", email="global@example.com"), encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gc))
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".git" / "config").write_text(_gitconfig_text(name="Local Name"), encoding="utf-8")
+    ident = resolve_git_identity(repo)
+    assert ident["name"] == "Local Name"
+    assert ident["email"] == "global@example.com"
+
+
+def test_resolve_git_identity_name_unset_falls_back_to_os_user(tmp_path, monkeypatch):
+    """No name in any config → OS user (getpass.getuser()); email stays "".
+
+    Fails-before: if the helper hard-required a config or returned "" for name.
+    """
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "does-not-exist"))
     monkeypatch.setattr(
         "vibe_cognition.cognition.git_identity.getpass.getuser", lambda: "osuser"
     )
-    ident = resolve_git_identity("/repo")
+    ident = resolve_git_identity(tmp_path / "repo")
     assert ident["name"] == "osuser"
     assert ident["email"] == ""
 
 
-def test_resolve_git_identity_total_failure_is_unknown(monkeypatch):
-    """git raises AND getpass raises → name "unknown"; never propagates the error."""
-    monkeypatch.setattr(
-        "vibe_cognition.cognition.git_identity.subprocess.run",
-        _fake_git_run(fail=True),
-    )
+def test_resolve_git_identity_total_failure_is_unknown(tmp_path, monkeypatch):
+    """No config AND getpass raises → name "unknown"; never propagates the error."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "does-not-exist"))
 
     def _boom():
         raise OSError("no user env")
@@ -126,8 +138,110 @@ def test_resolve_git_identity_total_failure_is_unknown(monkeypatch):
     monkeypatch.setattr(
         "vibe_cognition.cognition.git_identity.getpass.getuser", _boom
     )
-    ident = resolve_git_identity("/repo")
+    ident = resolve_git_identity(tmp_path / "repo")
     assert ident["name"] == "unknown"
+
+
+def test_resolve_git_identity_malformed_config_does_not_raise(tmp_path, monkeypatch):
+    """A garbage config file must never raise — fall back cleanly to the OS user."""
+    gc = tmp_path / "gitconfig"
+    gc.write_text("\x00\x01 not ini [user\nname no-equals\n= = =\n", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gc))
+    monkeypatch.setattr(
+        "vibe_cognition.cognition.git_identity.getpass.getuser", lambda: "osuser"
+    )
+    ident = resolve_git_identity(tmp_path / "repo")
+    assert ident["name"] == "osuser"
+
+
+def test_resolve_git_identity_never_spawns_subprocess(tmp_path, monkeypatch):
+    """THE regression pin (P0 v0.12.1): resolution must NEVER shell out — a git subprocess
+    in the detached/windowless MCP server hangs forever. Record-and-raise on every spawn
+    primitive, then assert NOTHING was spawned and the file value still resolved.
+
+    Fails-before: the old subprocess implementation calls subprocess.run → recorded → fails.
+    """
+    import subprocess as _sp
+
+    spawned: list = []
+
+    def _spy(*args, **kwargs):
+        spawned.append(args)
+        raise AssertionError("resolve_git_identity must not spawn a subprocess")
+
+    monkeypatch.setattr(_sp, "run", _spy)
+    monkeypatch.setattr(_sp, "Popen", _spy)
+    monkeypatch.setattr(_sp, "call", _spy, raising=False)
+    monkeypatch.setattr(os, "system", _spy, raising=False)
+
+    gc = tmp_path / "gitconfig"
+    gc.write_text(_gitconfig_text(name="No Shell", email="ns@example.com"), encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gc))
+    ident = resolve_git_identity(tmp_path / "repo")
+
+    assert spawned == [], f"resolve_git_identity spawned a subprocess: {spawned}"
+    assert ident == {"name": "No Shell", "email": "ns@example.com"}
+
+
+def test_resolve_git_identity_ignores_user_subsection(tmp_path, monkeypatch):
+    """A name in a [user "sub"] subsection is NOT the identity — only bare [user] counts.
+
+    Fails-before: a section matcher that keys on the first token would wrongly accept it.
+    """
+    gc = tmp_path / "gitconfig"
+    gc.write_text('[user "alt"]\n\tname = Wrong Person\n\temail = wrong@example.com\n', encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gc))
+    monkeypatch.setattr(
+        "vibe_cognition.cognition.git_identity.getpass.getuser", lambda: "osuser"
+    )
+    ident = resolve_git_identity(tmp_path / "repo")
+    assert ident["name"] == "osuser"  # subsection ignored → fallback
+    assert ident["email"] == ""
+
+
+def test_resolve_git_identity_strips_quotes_and_inline_comment(tmp_path, monkeypatch):
+    """Quoted name → literal contents; unquoted email with a whitespace-preceded comment → trimmed."""
+    gc = tmp_path / "gitconfig"
+    gc.write_text(
+        '[user]\n\tname = "Colton Dyck"\n\temail = me@example.com ; work addr\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gc))
+    ident = resolve_git_identity(tmp_path / "repo")
+    assert ident == {"name": "Colton Dyck", "email": "me@example.com"}
+
+
+def test_resolve_git_identity_local_empty_value_overrides_global(tmp_path, monkeypatch):
+    """An explicit empty `email =` in local clears the global email (precedence, not truthiness).
+
+    Fails-before: a truthiness merge (`if found.get("email")`) lets the global email bleed through.
+    """
+    gc = tmp_path / "gitconfig"
+    gc.write_text(_gitconfig_text(name="N", email="global@example.com"), encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gc))
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    (repo / ".git" / "config").write_text("[user]\n\temail =\n", encoding="utf-8")
+    ident = resolve_git_identity(repo)
+    assert ident["name"] == "N"     # name still inherited from global
+    assert ident["email"] == ""     # local explicit-empty wins over global
+
+
+def test_resolve_git_identity_home_unset_does_not_raise(tmp_path, monkeypatch):
+    """Path.home() raising (no home env) must NOT propagate — fall back to OS user.
+
+    Fails-before: an unguarded Path.home() in the global-path builder crashes the tool.
+    """
+    monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
+
+    def _no_home():
+        raise RuntimeError("no home env")
+
+    monkeypatch.setattr("vibe_cognition.cognition.git_identity.Path.home", _no_home)
+    monkeypatch.setattr(
+        "vibe_cognition.cognition.git_identity.getpass.getuser", lambda: "osuser"
+    )
+    ident = resolve_git_identity(tmp_path / "repo")  # repo has no .git → only (failed) global
+    assert ident["name"] == "osuser"
 
 
 # ── cognition_add_task ─────────────────────────────────────────────────────────
