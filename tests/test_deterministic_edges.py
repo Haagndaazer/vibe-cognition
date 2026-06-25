@@ -448,3 +448,43 @@ class TestWorkflowInertGate:
         self._node(storage, "ep1", CognitionNodeType.EPISODE, ["commit:abc"])
         created = storage.create_deterministic_edges("ep1")
         assert created == 1, "entity↔episode must still mint part_of (inert gate must not regress this)"
+
+
+class TestTaskInertGate:
+    """B2: task-involving pairs mint NO deterministic edge (graph-inert).
+
+    A task shares a commit ref with the episode that closes it; without the inert gate
+    a task↔episode pair would auto-`part_of`-link (wrong — a task's hierarchy is an
+    explicit edge, and done-task↔episode links are agent-curated, not auto-glued).
+    """
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        return CognitionStorage(tmp_path / ".cognition")
+
+    def _node(self, storage, node_id, ntype, refs):
+        storage.add_node(_make_node(node_id, ntype, references=refs))
+
+    def test_task_and_episode_no_edge(self, storage):
+        """task ↔ episode → no deterministic edge (would mint part_of without the gate)."""
+        self._node(storage, "tk1", CognitionNodeType.TASK, ["commit:abc"])
+        self._node(storage, "ep1", CognitionNodeType.EPISODE, ["commit:abc"])
+        assert storage.create_deterministic_edges("ep1") == 0
+
+    def test_task_and_entity_no_edge(self, storage):
+        """task ↔ entity → no deterministic edge."""
+        self._node(storage, "tk1", CognitionNodeType.TASK, ["commit:abc"])
+        self._node(storage, "dec1", CognitionNodeType.DECISION, ["commit:abc"])
+        assert storage.create_deterministic_edges("dec1") == 0
+
+    def test_task_and_document_no_edge(self, storage):
+        """task ↔ document → no deterministic edge."""
+        self._node(storage, "tk1", CognitionNodeType.TASK, ["doc:abc123abc123"])
+        self._node(storage, "doc1", CognitionNodeType.DOCUMENT, ["doc:abc123abc123"])
+        assert storage.create_deterministic_edges("doc1") == 0
+
+    def test_task_in_inert_set(self):
+        """task is in _INERT_TYPES alongside workflow (and document is NOT)."""
+        assert CognitionNodeType.TASK.value in CognitionStorage._INERT_TYPES
+        assert CognitionNodeType.WORKFLOW.value in CognitionStorage._INERT_TYPES
+        assert CognitionNodeType.DOCUMENT.value not in CognitionStorage._INERT_TYPES

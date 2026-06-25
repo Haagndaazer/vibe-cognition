@@ -13,12 +13,55 @@ from .storage import CognitionStorage
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "normal": 2, "low": 3}
 
+# Open tasks injected at session start are bounded to a fixed top-N (by priority then
+# recency) — unambiguous regardless of how many criticals exist — with a single overflow
+# line pointing at cognition_list_tasks for the rest.
+_TASK_INJECT_CAP = 10
+_TASK_CLOSED_STATUSES = frozenset({"done", "cancelled"})
+
 
 def _format_node(node: dict) -> str:
     """Format a single node as a compact bullet point."""
     severity = node.get("severity")
     suffix = f" (severity: {severity})" if severity else ""
     return f"- [{node.get('type', '?')}] {node.get('summary', 'No summary')}{suffix}"
+
+
+def _format_task(node: dict) -> str:
+    """Format a single open task with its status/owner/priority."""
+    meta = node.get("metadata", {})
+    bits = [f"status: {meta.get('status', 'open')}"]
+    owner = meta.get("owner")
+    if owner:
+        bits.append(f"owner: {owner}")
+    priority = node.get("severity")
+    if priority:
+        bits.append(f"priority: {priority}")
+    return f"- [task] {node.get('summary', 'No summary')} ({', '.join(bits)})"
+
+
+def _format_tasks(storage: CognitionStorage) -> str:
+    """Format open tasks (status not in done/cancelled), priority- then recency-sorted,
+    capped at the top-N with an overflow line. Mirrors _format_constraints but bounded so
+    the session-start payload can't balloon on a long backlog."""
+    nodes = storage.get_nodes_by_type(CognitionNodeType.TASK)
+    open_tasks = [
+        n for n in nodes
+        if n.get("metadata", {}).get("status", "open") not in _TASK_CLOSED_STATUSES
+    ]
+    if not open_tasks:
+        return ""
+
+    # Two-pass stable sort: recency desc, then severity asc (severity primary).
+    open_tasks.sort(key=lambda n: n.get("timestamp", ""), reverse=True)
+    open_tasks.sort(key=lambda n: SEVERITY_ORDER.get(n.get("severity", "normal"), 2))
+
+    shown = open_tasks[:_TASK_INJECT_CAP]
+    lines = [_format_task(n) for n in shown]
+    overflow = len(open_tasks) - len(shown)
+    if overflow > 0:
+        lines.append(f"- +{overflow} more open tasks — use cognition_list_tasks")
+    return "## Open Tasks\n" + "\n".join(lines)
 
 
 def _format_constraints(storage: CognitionStorage) -> str:
@@ -79,6 +122,7 @@ def generate_prime(storage: CognitionStorage) -> str:
     """
     sections = [
         _format_constraints(storage),
+        _format_tasks(storage),
         _format_patterns(storage),
         _format_decisions(storage),
         _format_incidents(storage),

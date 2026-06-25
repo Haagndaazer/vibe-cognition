@@ -1,5 +1,6 @@
 """Cognition History Graph — captures decisions, failures, discoveries, and reasoning chains."""
 
+from .git_identity import resolve_git_identity
 from .models import (
     CognitionEdge,
     CognitionEdgeType,
@@ -24,6 +25,8 @@ __all__ = [
     "CognitionNode",
     "CognitionNodeType",
     "generate_node_id",
+    # Identity
+    "resolve_git_identity",
     # Storage
     "CognitionStorage",
     # Operations

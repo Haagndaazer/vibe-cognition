@@ -24,6 +24,7 @@ and pattern you capture here persists across sessions and is searchable via embe
 | Group | Tools |
 |-------|-------|
 | Record | cognition_record, cognition_update_node, cognition_remove_node |
+| Tasks | cognition_add_task, cognition_list_tasks, cognition_update_task |
 | Search | cognition_search |
 | History | cognition_get_history, cognition_get_node, cognition_get_chain, |
 |         | cognition_get_superseded_chain, cognition_get_incident_resolution, |
@@ -49,6 +50,12 @@ Workflows (step-by-step procedures stored as ONE cohesive unit):
   workflow -- use the /vibe-workflow skill to store and retrieve procedures.
   Versioned by supersession: update = NEW node + supersedes edge (never edit in place).
   Retrieve: cognition_get_workflow("topic") resolves any matched version to the HEAD.
+
+Tasks (trackable open work, server-attributed to the git user):
+  task -- create with cognition_add_task (NOT cognition_record). Mutable lifecycle
+  (open/in_progress/blocked/done/cancelled) + priority + arbitrary-depth parent
+  hierarchy. Open tasks inject at session start; list/edit via cognition_list_tasks /
+  cognition_update_task. Check open tasks before picking up work.
 
 Documents (stored files with text sidecar for search):
   document -- use the /vibe-document skill

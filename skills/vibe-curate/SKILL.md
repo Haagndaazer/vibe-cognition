@@ -49,6 +49,18 @@ Repeat for all batches until all uncurated nodes are processed.
 
 Log: "{N} edges created across {M} batches, {K} proposals discarded"
 
+#### Task nodes
+
+`task` nodes appear in the uncurated worklist like any other node — no special fetch
+needed. When you encounter one, prefer these semantic links:
+
+- A task `relates_to` the `decision`, `discovery`, or `pattern` it implements or acts on.
+- A **done** task is `resolved_by` (or `led_to`) the `episode` that closed it.
+- **Never propose `part_of` for a task.** A task's parent hierarchy is an EXPLICIT
+  `part_of` edge set at creation/re-parent time (`cognition_add_task` /
+  `cognition_update_task`) — agent `part_of` is already forbidden, and proposing one here
+  would collide with the authoritative `task-parent` edge.
+
 ### Step 3: Cluster Identification
 
 After all edges are committed:
