@@ -1,0 +1,38 @@
+# Low-Priority Hardening Pass — FINAL Dispatch Brief
+
+Manager: Vince. Implementer: Vorpid. Date: 2026-06-25.
+Peer-reviewed (sonnet) + ground-truth re-verified vs HEAD. ~70% of the 2026-06-10 audit
+residuals were already shipped (phantom). See discovery a822580680d2, decision 76cfb0686237.
+
+## HARD INVARIANT
+Invisible bug fixes — no existing functionality affected. Success path stays byte-identical.
+No allowed behavior delta (H-3, the one borderline item, is parked). If implementing any item
+reveals a behavior change, STOP and report.
+
+## WP-LP-A — src/doc tidies (invisible one-liners)
+1. D-5(c) tools/dashboard_tool.py:22 — literal 7842 -> DEFAULT_PORT from ..dashboard.server (server.py:33); docstring at :33 too.
+2. E-8 embeddings/generator.py:173 — remove generate_batch (zero callers in src/ or tests; test_e3_doc_prefix.py is a spy stub). Confirm zero callers first; if a real caller exists, DO NOT prune. Do NOT touch server.py one-node-per-loop.
+3. H-6(a) cognition/backfill.py:49,65 — logger.debug before each return [] in the two bare excepts. Preserve control flow/exit codes. Do NOT touch subprocess (task 8cd9c158, separate WP).
+4. H-6(c) migrate_mcp.py:68 — encoding utf-8 -> utf-8-sig.
+5. S-3(b) README.md:83 — "15 tools" -> "29 tools".
+6. S-3(e) prime.py:145 docstring — drop "PreCompact"; say "SessionStart hooks (initial and post-compact re-injection)".
+Acceptance: suite green; no success-path behavior change.
+
+## WP-LP-B — config/packaging (verify by BUILDING)
+1. H-5 hooks/hooks.json — entry 1 matcher -> "startup|resume|clear" (CC guide: NO negation; alternation only; NEVER ""/"*"/omitted; valid sources startup|resume|clear|compact).
+2. H-6(d) pyproject.toml:41-42 — remove hatch force-include stanza. MANDATORY: build wheel before+after, prove vibe_cognition/dashboard/static/app.js present in BOTH; if absent after, ABORT and report.
+Acceptance: wheel-content diff proves static assets unchanged; hooks.json still fires on startup.
+
+## PARKED for human
+- H-3 (33719f0d): persist hook stderr vs 2>/dev/null — only non-invisible item.
+- D-5(d) ExitStack close-on-join-timeout: intentional comment; close-under-live-daemon risk. Recommend WONTFIX.
+- H-6(b) expose --days: feature, deferred.
+- D-3 auto-poll + --no-embeddings banner: visible UX, deferred.
+
+## KNOWN-INTENTIONAL — do NOT fix
+D-5(d) ExitStack; dashboard default limit=20; zero-subprocess git-identity; .cognition/*.jsonl
+merge=union -text gitattributes; chromadb under .cognition/ gitignored.
+
+## Journal protocol (shared checkout)
+Vorpid records freely on WP branch but NEVER commits .cognition/journal.jsonl. Vince flushes to
+main at checkpoints. No reset --hard/clean/stash/checkout -- near the journal without pinging Vince.
