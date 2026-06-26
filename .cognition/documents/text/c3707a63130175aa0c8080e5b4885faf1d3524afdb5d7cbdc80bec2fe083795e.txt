@@ -1,0 +1,44 @@
+Vibe Cognition — BACKLOG.md (archived verbatim at migration to task nodes, 2026-06-25). Maintained by Vince (planner/manager). Source of truth for shipped/in-flight/queued, derived from docs/AUDIT-2026-06-10.md (~70 findings) and docs/DESIGN-document-storage.md. The exact original bytes are preserved in this document node's content-addressed blob and in git history.
+
+RELEASES: v0.7.3/0.7.4 hardening; v0.8.0 document storage (pinned 6c2ce12); v0.9.0 cross-project cognition (pinned c563ff2, code 0c2c52f); v0.10.0 onboarding+git-hygiene (pinned 638e9cc); v0.11.0 workflow node (pinned 54c35da); v0.12.0 task node (merged 4d7b85e, main b895890); v0.12.1 git-identity hotfix (467d73f).
+
+SHIPPED LEDGER (finding -> release):
+- E-1 telemetry; H-6 LICENSE/CHANGELOG/httpx/dev-dup/einops/authorship/__version__/.ruff_cache; ruff 20/23; T-10 stale comments -> v0.7.3 (WP-1)
+- CI (ruff+pyright-ratchet+pytest matrix); B-4 CPU torch; C-3 -text/merge=union defense -> v0.7.3 (WP-2)
+- H-1 hook interpreter; non-ASCII commit UTF-8 decode; B-3 Windows venv fallback; S-1 skill paths -> v0.7.3 (WP-3)
+- C-1 cross-process atomicity; C-2 short-write; C-3 replacement detection; H-2 journal-format fork -> v0.7.4 (WP-4)
+- WP-5 upgrade-brick detection (ledger 19) -> v0.7.4 (WP-5)
+- H-3 fatal-failure guard (|| true) -> v0.7.4-era hooks
+- WP-D1a document storage (reference mode, sidecar, DOCUMENT type, store/get, dedup, graph-inert+sync guards, sidecar deletion) -> 870ff09 (PR #8) v0.8.0
+- WP-D1b (matcher pair rules, shared identity predicate, copy mode + size/git policy, refcounted deletion, N1 ghost-search fix) -> 0faf302 (PR #9, pinned 3f6cdf5) v0.8.0
+- WP-D2 chunked document search (chunk embeddings + count-split, adaptive over-query + dedupe + matched_excerpt, re-sync/backfill, dashboard N1 safety filter) -> dd11cd2 (PR #10, pinned 63f2246) v0.8.0
+- WP-D3 /vibe-document skill (S4/N3 link-by-doc_ref) + doc-surface fixes (all 17 tools, edge-type accuracy, relates_to 3-provenance) + doc-drift guard -> 9afc538 (PR #11, pinned c3b1bbf) v0.8.0
+- WP-D4 dashboard document list + token-gated path-safe download (traversal+header-injection hardened) + D-6 nav + D-1 liveness + D-4 vendored libs + D-5 security -> 6939c99 (PR #12, pinned 7f07dea) v0.8.0
+- WP-R3 v0.8.0 release commit (4-file version bump + CHANGELOG) -> 8f3079f (PR #13), PINNED 6c2ce12, marketplace 09e6ab0
+- WP-T tool-layer correctness + pyright ratchet (T-9/T-2/T-3/T-6/C-5; pyright 29->8; first tool tests) -> cc9cd73 (PR #14, pinned 7e090ae)
+- WP-ID global node-id-collision data-loss fix (mint-in-add_node, replay-safe, hook discriminator, embedding-id rebind) -> d585a22 (PR #15, pinned 1494a9c) — last P1 closed
+- WP-Cap capability gaps (get_node, edge reason persist, update_node+re-embed, expose superseded/incident queries) -> 9876b43 (PR #16, pinned 9d8a8f8) — last P2
+- WP-Core-tail core robustness (C-4 journal-first all write paths, C-6 offset-noise documented, C-7 path-based cycle detection) -> 3961f32 (PR #17, pinned c4b4aa1) — P3
+- WP-Dash-tail (adaptive over-query unify, --no-embeddings disabled, IPv6 host-check, D-3/D-5 tidies) -> 2c33f54 (PR #18) v0.9.0
+- WP-Emb non-E3 (E-6 prune + pyright 7->0, E-7 revision-pin + datetime.now(UTC); E-4 DROPPED — Rust backend swallows locks) -> cd81769 (PR #19) v0.9.0
+- WP-XP0 spike (coexistence, handle release, foreign-read safety, dim/model guard, catch-up cost — GO Option A) -> d1576fe (+ docs cbebd47)
+- WP-XP1 cross-project registry (model/dim stamp, close() handle release, open_existing, LoadedProjects, load/unload/list) -> 05b0797 (PR #20) v0.9.0
+- WP-XP2 cross-project read routing (project= on search + read tools, project_notes provenance, write-isolation) -> 8a0a799 (PR #21) v0.9.0
+- WP-E-3 doc embedding prefix QUERY->DOCUMENT + marker-gated one-time re-embed (self-heal + model_guard re-stamp) -> e679857 (PR #22) v0.9.0
+- WP-XP-Docs LLM-self-sufficient docstrings for all XP tools -> 9384756 (PR #23) v0.9.0
+- v0.9.0 release (cross-project cognition XP0->XP2 + E-3) -> code 0c2c52f, PINNED marketplace c563ff2
+- WP-Lint (heal main: regen uv.lock for 0.9.0 + clear 39 masked ruff violations) -> 0be175a (PR #25)
+- WP-Readme (cognition_readme tool + empty-graph onboarding via prime.py) -> 9b14d88 (PR #24)
+- WP-Plan-XP-Discovery (Plan agent cross-project memory + sibling discovery; closed S-2 namespace) -> 5cece24 (PR #28) v0.10.0
+- WP-Git-Hygiene-Auto (server auto-configures .cognition git hygiene, one-time-ever via versioned flag) -> 70bda0f, merge 775750d (PR #27) v0.10.0
+- WP-Readme-GitAttr -> 7e95776 (PR #26) v0.10.0
+- v0.10.0 release -> 638e9cc (PR #29), marketplace a4b2ee8 (off old pin 0c2c52f); uv.lock drift trap closed
+- WP-Workflow-Node (workflow first-class type + cognition_get_workflow + /vibe-workflow; versioned by supersession) -> 54c35da (PR #31) v0.11.0 RELEASED
+- WP-Task-Node (task first-class type to retire this file: server git-attributed created_by, mutable lifecycle + transition log, re-parentable hierarchy, session-start prime + list tool) -> 4d7b85e (PR #32), main b895890, v0.12.0; episode 21fa79e52827
+- WP git-identity P0 hotfix (file-read, no subprocess — fixes detached-server add_task hang) -> 467d73f (PR #33) v0.12.1
+
+OPEN WORK (migrated to task nodes 2026-06-25):
+P3 audit tail (from docs/AUDIT-2026-06-10.md): T-1c cross-process ChromaDB convergence test + server _sync/_reconcile direct tests; S-3 README/SKILL/edge-type/backfill-wording/instructions.py doc drift; H-5 SessionStart double-fires on compact; H-2 PowerShell commit matcher (post-commit hook is Bash-only, fires on any 'git commit' substring, no success check, zero tests); H-3 stderr breadcrumbs (sync/prime/reinject discard stderr); H-4 first-install race (HUMAN-GATED) + plugin.json hardcoded venv path no fallback; H-6 remainder (backfill.py unused json import + unexposed days param + swallowed git failures; migrate_mcp UTF-8-BOM skip; redundant hatch force-include; stale session-start.sh header); E-8 one-node-per-loop startup sync / dead generate_batch+bulk_upsert; Dashboard D-5 residuals ([::1] IPv6 host-check, dup type/edge_type keys, unused context/severity, hardcoded-port dedup, ExitStack-close-on-join-timeout); Dashboard D-3 open (auto-poll, --no-embeddings banner, search-wiring-on-init).
+Reliability + process follow-ups: server-lifecycle self-exit WP (orphan server self-exit on parent death — plan docs/wp-server-lifecycle-plan.md); backfill.py subprocess hardening (same wedge class as v0.12.1 git bug, CLI-only today); dashboard search over-query unify (fixed limit*5 vs MCP adaptive); CI/process guards (uv lock in release runbook, standing `uv run ruff check .`, pin pyright PYRIGHT_PYTHON_FORCE_VERSION so local==CI).
+STANDING AUDIT (now a workflow node): tool-surface self-sufficiency — every MCP tool readable in isolation, re-run every time a tool is added/changed.
+PARKING LOT: doc-serving tools gated on empty-graph detection (Reginald + vibe-memory pattern) -> SHIPPED as WP-Readme.
