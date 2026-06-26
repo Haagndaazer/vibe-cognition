@@ -273,6 +273,16 @@ class TestMarkerGatedMigration:
         assert not recreate_called, "marker present: recreate_collection must NOT be called"
         assert chroma._collection.count() == 1, "existing vectors must be untouched"
 
+    # ── E-8 dead-method proof ─────────────────────────────────────────────────
+
+    def test_generator_has_no_generate_batch(self):
+        """E-8: generate_batch was dead (zero callers); assert it stays removed."""
+        from vibe_cognition.embeddings.generator import EmbeddingGenerator
+
+        assert not hasattr(EmbeddingGenerator, "generate_batch"), (
+            "generate_batch was pruned as dead code (WP-LP-A); do not re-add without callers"
+        )
+
     def test_idempotent_second_server_start(self, tmp_path):
         """Second server start with marker already set: collection unchanged."""
         spy = _PrefixSpy()

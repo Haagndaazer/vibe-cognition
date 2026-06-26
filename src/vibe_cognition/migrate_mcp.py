@@ -65,7 +65,7 @@ def remove_server_entry(
     result = {"status": "", "removed": [], "preserved": [], "dry_run": dry_run}
 
     try:
-        with open(mcp_path, encoding="utf-8") as f:
+        with open(mcp_path, encoding="utf-8-sig") as f:
             data = json.load(f)
     except FileNotFoundError:
         result["status"] = "missing"

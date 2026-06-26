@@ -170,33 +170,6 @@ class EmbeddingGenerator:
         result = self._backend.encode([text], is_query=is_query)
         return result[0] if result else []
 
-    def generate_batch(
-        self, texts: list[str], input_type: str = "document"
-    ) -> list[list[float]]:
-        """Generate embeddings for multiple texts.
-
-        Args:
-            texts: List of texts to embed
-            input_type: Type of input ("document" or "query")
-
-        Returns:
-            List of embedding vectors
-        """
-        if not texts:
-            return []
-
-        is_query = input_type == "query"
-
-        # Process in batches
-        all_embeddings: list[list[float]] = []
-
-        for i in range(0, len(texts), self.MAX_BATCH_SIZE):
-            batch = texts[i : i + self.MAX_BATCH_SIZE]
-            embeddings = self._backend.encode(batch, is_query=is_query)
-            all_embeddings.extend(embeddings)
-
-        return all_embeddings
-
     def generate_query_embedding(self, query: str) -> list[float]:
         """Generate embedding for a search query.
 

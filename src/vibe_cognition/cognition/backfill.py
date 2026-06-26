@@ -1,9 +1,12 @@
 """Backfill command — finds git commits without corresponding cognition episode nodes."""
 
+import logging
 import os
 import subprocess
 import sys
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from .storage import CognitionStorage
 
@@ -47,6 +50,7 @@ def _get_recent_commits(repo_path: Path, days: int = 30) -> list[dict]:
                 })
         return commits
     except Exception:
+        logger.debug("_get_recent_commits failed", exc_info=True)
         return []
 
 
@@ -64,6 +68,7 @@ def _get_changed_files(repo_path: Path, commit_hash: str) -> list[str]:
             return []
         return [f for f in result.stdout.strip().split("\n") if f]
     except Exception:
+        logger.debug("_get_changed_files failed for %s", commit_hash, exc_info=True)
         return []
 
 

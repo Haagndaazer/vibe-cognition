@@ -79,7 +79,7 @@ The plugin bundles everything needed — no manual configuration required:
 
 | Component | What It Does |
 |-----------|-------------|
-| **MCP Server** | 15 tools for recording, searching, querying, and visualizing the knowledge graph |
+| **MCP Server** | 29 tools for recording, searching, querying, and visualizing the knowledge graph |
 | `/vibe-cognition` skill | Teaches Claude when and how to capture decisions, failures, discoveries, patterns |
 | `/vibe-curate` skill | Curates semantic edges and identifies clusters using edge-analyzer and cluster-analyzer subagents |
 | `/vibe-backfill` skill | Backfills the cognition graph from git commit history |
