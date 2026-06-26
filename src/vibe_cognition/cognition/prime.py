@@ -142,7 +142,7 @@ def generate_prime(storage: CognitionStorage) -> str:
 def main():
     """Entry point for vibe-cognition-prime CLI command.
 
-    Outputs JSON for Claude Code SessionStart/PreCompact hooks.
+    Outputs JSON for Claude Code SessionStart hooks.
     Reads REPO_PATH env var or uses cwd. Optionally prepends a one-line
     migration note from VIBE_MIGRATION_NOTE (set by the SessionStart hook when
     it removes a stale per-project MCP entry), so that note is surfaced in the

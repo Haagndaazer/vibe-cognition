@@ -7,7 +7,7 @@ from typing import Any
 
 from fastmcp import Context
 
-from ..dashboard.server import start_dashboard
+from ..dashboard.server import DEFAULT_PORT, start_dashboard
 from .utils import get_lifespan
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ def register_dashboard_tool(mcp) -> None:
     @mcp.tool()
     def cognition_dashboard(
         ctx: Context,
-        port: int = 7842,
+        port: int = DEFAULT_PORT,
         open_browser: bool = True,
     ) -> dict[str, Any]:
         """Launch the local cognition graph dashboard in a web browser.
@@ -30,7 +30,7 @@ def register_dashboard_tool(mcp) -> None:
         the same URL instead of starting a second server.
 
         Args:
-            port: Preferred port (default 7842). Falls back to nearby ports
+            port: Preferred port. Falls back to nearby ports
                   or an OS-assigned ephemeral port if busy.
             open_browser: If true, attempt to open the URL in the default browser.
 
