@@ -6,9 +6,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
-
 from .storage import CognitionStorage
+
+logger = logging.getLogger(__name__)
 
 
 def _get_tracked_commit_hashes(storage: CognitionStorage) -> set[str]:
