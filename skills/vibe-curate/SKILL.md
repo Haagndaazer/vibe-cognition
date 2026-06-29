@@ -34,6 +34,7 @@ Process uncurated nodes in batches of 5-10 (timestamp order, oldest first).
 
 For each batch:
 1. Launch the **edge-analyzer** subagent (its prompt is in `edge-analyzer.md`, alongside this SKILL.md in the skill's own directory)
+   - **ALWAYS spawn this subagent with the Haiku model** (e.g. `model: "haiku"` on the Agent call). Do NOT let it inherit the main instance's model — edge analysis is a high-volume, mechanical fan-out and running it on Opus/Sonnet is extremely wasteful. Every edge-analyzer invocation MUST be Haiku.
    - Pass the node IDs as a list in the prompt
    - The subagent calls MCP tools itself to gather context
    - It returns proposed edges as a JSON list
@@ -66,6 +67,7 @@ needed. When you encounter one, prefer these semantic links:
 After all edges are committed:
 
 1. Launch the **cluster-analyzer** subagent (its prompt is in `cluster-analyzer.md`, alongside this SKILL.md in the skill's own directory)
+   - **ALWAYS spawn this subagent with the Haiku model** (`model: "haiku"` on the Agent call). Do NOT let it inherit the main instance's model — running cluster analysis on Opus/Sonnet is wasteful.
    - It analyzes the graph for densely-connected groups
    - Returns proposed summary nodes (pattern or episode type)
 2. Review each proposed summary node:
@@ -87,6 +89,7 @@ Summarize the full run:
 
 ## Key Rules
 
+- **Both the edge-analyzer AND cluster-analyzer subagents MUST run on Haiku** — pass `model: "haiku"` on every Agent call. Never let them inherit the main instance's (Opus/Sonnet) model; doing so is needless token waste on these fan-out tasks.
 - Process ALL uncurated nodes, not just the first batch
 - Review and commit autonomously — no user approval needed
 - If a subagent returns poor-quality proposals, discard them rather than committing noise

@@ -15,6 +15,7 @@ What you extract is ultimately for YOUR benefit as an agent — store what would
 - **Maximum 5 subagents running at a time.** Each subagent handles a chunk of ~5-10 commits.
 - When a subagent completes, you may launch the next one (rolling pool of 5).
 - Do NOT spawn more than 5 subagents simultaneously.
+- **ALWAYS spawn these subagents with the Haiku model** (`model: "haiku"` on every Agent call). Do NOT let them inherit the main instance's model — backfill is mechanical per-commit extraction and running it on Opus/Sonnet is extremely wasteful.
 
 ## Steps
 
@@ -49,7 +50,7 @@ Split the untracked commits into chunks of ~5-10 commits each.
 
 ### Step 3: Launch subagents (max 5 concurrent)
 
-Spawn up to 5 subagents in parallel, each given one chunk. When a subagent finishes, launch the next one until all chunks are processed.
+Spawn up to 5 subagents in parallel, each given one chunk — **each spawned with `model: "haiku"`** (never inheriting the main instance's model). When a subagent finishes, launch the next one until all chunks are processed.
 
 ### Step 4: Per-commit workflow (inside each subagent)
 

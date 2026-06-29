@@ -1,6 +1,6 @@
 [project]
 name = "vibe-cognition"
-version = "0.12.2"
+version = "0.12.3"
 description = "MCP server for project knowledge graphs — decisions, failures, discoveries, patterns"
 authors = [{ name = "Colton Dyck" }]
 license = { text = "MIT" }
