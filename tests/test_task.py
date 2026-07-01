@@ -813,7 +813,7 @@ def test_prime_excludes_done_and_cancelled(tmp_path):
     _task_node(storage, "o1", "open one", status="open")
     _task_node(storage, "d1", "done one", status="done")
     _task_node(storage, "x1", "cancelled one", status="cancelled")
-    out = _format_tasks(storage)
+    out = _format_tasks(storage, cap=5)
     assert "open one" in out
     assert "done one" not in out
     assert "cancelled one" not in out
@@ -824,14 +824,14 @@ def test_prime_caps_with_overflow_line(tmp_path):
     storage = CognitionStorage(tmp_path / ".cognition")
     for i in range(12):
         _task_node(storage, f"t{i}", f"task {i}", severity="normal")
-    out = _format_tasks(storage)
+    out = _format_tasks(storage, cap=10)
     assert "+2 more open tasks" in out
     assert "cognition_list_tasks" in out
 
 
 def test_prime_no_tasks_section_when_none(tmp_path):
     storage = CognitionStorage(tmp_path / ".cognition")
-    assert _format_tasks(storage) == ""
+    assert _format_tasks(storage, cap=5) == ""
 
 
 # ── get_status type coverage ────────────────────────────────────────────────────

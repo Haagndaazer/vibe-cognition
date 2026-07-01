@@ -1,11 +1,11 @@
 """Atomic, cross-process append for the cognition journal (audit C-1 / H-2).
 
-STDLIB-ONLY BY CONTRACT. This module is imported by the post-commit git hook,
-which path-loads it and must run against a possibly-bare venv (no third-party
-deps available). A test pins this — do NOT import anything outside the standard
-library here. Both the server (storage._append_journal) and the hook route their
-journal writes through append_journal_line(), so the format lives in ONE place
-(closes H-2, where the hook used to fork the journal-line format).
+STDLIB-ONLY BY CONTRACT. A test pins this — do NOT import anything outside the
+standard library here. This is forward-compat posture: the server
+(storage._append_journal) is the only caller today, running inside the full
+venv, but the module stays dependency-free so any future path-loaded caller
+(a git hook, a script run against a bare venv) can reuse it without pulling in
+third-party deps.
 
 Atomicity (C-1): each append goes to an O_APPEND fd while an exclusive lock is
 held, and the record is written in a loop-to-completion that is interleave-safe

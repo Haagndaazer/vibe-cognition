@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-07-01
+
+**Session-start prime trim + post-commit journal hook removal.**
+
+### Changed
+- **Trimmed the session-start `prime` injection** (~1,346 → measured at release
+  time, target ~575 tok). Added a `PrimeConfig` dataclass with 7 env-overridable
+  knobs (`PRIME_CONSTRAINT_LIMIT`, `PRIME_TASK_CAP`, `PRIME_PATTERN_LIMIT`,
+  `PRIME_DECISION_LIMIT`, `PRIME_INCIDENT_DAYS`, `PRIME_SUMMARY_MAXLEN`,
+  `PRIME_INCIDENT_MIN_SEVERITY`), a hard-cut-safe summary truncator, and
+  severity gating: incidents keep only `high`+`critical` within a 14-day
+  window (was 30), constraints drop only `low` (`None`/`normal`/`high`/
+  `critical` all kept). A `Settings()` build failure in the hook falls back to
+  `PrimeConfig()` defaults — the same trimmed shape, never the old fat output.
+
+### Removed
+- **The post-commit journal hook** (`hooks/post-commit.py` / `.sh`, the
+  `PostToolUse` wiring in `hooks/hooks.json`). It auto-appended an episode node
+  to `.cognition/journal.jsonl` after every `git commit`, re-dirtying the tree
+  right after a clean commit — redundant with deliberate `cognition_record`.
+  `/vibe-backfill` (opt-in recovery) and the shared `journal_io` helper (now
+  server-only) are unaffected.
+
 ## [0.10.0] — 2026-06-22
 
 **Team git hygiene, readme tool, and Plan agent cross-project memory.**

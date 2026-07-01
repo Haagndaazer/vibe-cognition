@@ -24,8 +24,8 @@ def _create_deterministic_edges_for_edgeless(
 ) -> None:
     """Run deterministic part_of matching for nodes with no edges.
 
-    This catches nodes created by the post-commit hook or other paths
-    that bypass cognition_record (and thus skip deterministic matching).
+    This catches nodes created by paths that bypass cognition_record (and thus
+    skip deterministic matching).
     """
     all_nodes = cognition_storage.get_all_nodes()
     if not all_nodes:

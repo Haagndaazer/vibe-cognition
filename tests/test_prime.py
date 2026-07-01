@@ -1,19 +1,23 @@
 """T-1b: prime.py — generate_prime() sections and main() hook payload.
 
 Pins: stdout IS the hook payload (SessionStart JSON), sections assembled correctly
-(constraints severity-sorted, incidents 30-day windowed, empty→onboarding block),
-migration note + hygiene line ordering. The onboarding branch is covered by
-test_readme.py; this adds the populated-graph main() payload path.
+(constraints severity-sorted + C2 gated, incidents severity+window gated, empty→
+onboarding block), migration note + hygiene line ordering, PrimeConfig trim knobs
+(_truncate, task cap, severity gates) and its equivalence with Settings defaults.
+The onboarding branch is covered by test_readme.py; this adds the populated-graph
+main() payload path.
 """
 
 import io
 import json
+from dataclasses import fields
 from datetime import UTC, datetime, timedelta
 
 from vibe_cognition.cognition import CognitionStorage
 from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
-from vibe_cognition.cognition.prime import generate_prime, main
+from vibe_cognition.cognition.prime import PrimeConfig, _truncate, generate_prime, main
 from vibe_cognition.cognition.readme import ONBOARDING_BLOCK
+from vibe_cognition.config import Settings
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -26,6 +30,39 @@ def _add(storage: CognitionStorage, node_id: str, ntype: CognitionNodeType,
         id=node_id, type=ntype, summary=summary, detail="d",
         context=[], references=[], severity=severity, timestamp=ts, author="t",
     ))
+
+
+# ── _truncate ─────────────────────────────────────────────────────────────────
+
+
+def test_truncate_hard_cuts_when_no_whitespace():
+    """No whitespace before maxlen (long URL/hash) → hard-cut at maxlen, not a
+    near-complete-looking string missing only its last char."""
+    text = "a" * 200
+    result = _truncate(text, 50)
+    assert result == ("a" * 50) + "…"
+
+
+def test_truncate_short_string_untouched():
+    text = "short enough"
+    assert _truncate(text, 110) == text
+
+
+def test_truncate_maxlen_zero_is_noop():
+    text = "a" * 500
+    assert _truncate(text, 0) == text
+
+
+# ── PrimeConfig / Settings equivalence ────────────────────────────────────────
+
+
+def test_primeconfig_defaults_match_settings_defaults():
+    """A Settings() build failure in main() falls back to PrimeConfig() — that
+    fallback must degrade to the SAME trimmed output, never the old fat one."""
+    config = PrimeConfig()
+    settings = Settings()
+    for f in fields(PrimeConfig):
+        assert getattr(config, f.name) == getattr(settings, f.name), f.name
 
 
 # ── generate_prime ────────────────────────────────────────────────────────────
@@ -56,30 +93,63 @@ def test_generate_prime_constraints_sorted_by_severity(tmp_path):
 
     Fails-before: if sorting used lexicographic order ('critical' < 'high' is fine
     but 'low' < 'normal' would invert the scale) or if no sort was applied.
+    Uses severities that survive the C2 gate (normal/critical) so the ordering
+    assertion isn't confounded with the drop-low filter (covered separately).
     """
     storage = CognitionStorage(tmp_path / ".cognition")
-    _add(storage, "c1", CognitionNodeType.CONSTRAINT, "low-priority guard", severity="low")
+    _add(storage, "c1", CognitionNodeType.CONSTRAINT, "normal-priority guard", severity="normal")
     _add(storage, "c2", CognitionNodeType.CONSTRAINT, "critical hard rule", severity="critical")
     result = generate_prime(storage)
-    # Critical must appear before low in the output.
-    assert result.index("critical hard rule") < result.index("low-priority guard")
+    assert result.index("critical hard rule") < result.index("normal-priority guard")
 
 
-def test_generate_prime_incidents_windowed_30_days(tmp_path):
-    """generate_prime: incidents older than 30 days are excluded from output.
+def test_generate_prime_constraint_c2_severity_gate(tmp_path):
+    """C2 (human-confirmed): constraints drop ONLY `low`; None/normal/high survive.
 
-    Fails-before: if all incidents were shown regardless of age (the window exists
-    to keep the injected context from growing unboundedly on long-running projects).
+    None must NOT be dropped — this is a distinct filter from the incident
+    severity gate (which has its own threshold and must not collide with C2).
     """
     storage = CognitionStorage(tmp_path / ".cognition")
-    old_ts = (datetime.now(UTC) - timedelta(days=35)).isoformat()
-    recent_ts = datetime.now(UTC).isoformat()
-    _add(storage, "i1", CognitionNodeType.INCIDENT, "old outage", timestamp=old_ts)
-    _add(storage, "i2", CognitionNodeType.INCIDENT, "recent outage", timestamp=recent_ts)
+    _add(storage, "c1", CognitionNodeType.CONSTRAINT, "low sev constraint", severity="low")
+    _add(storage, "c2", CognitionNodeType.CONSTRAINT, "normal sev constraint", severity="normal")
+    _add(storage, "c3", CognitionNodeType.CONSTRAINT, "none sev constraint", severity=None)
+    _add(storage, "c4", CognitionNodeType.CONSTRAINT, "high sev constraint", severity="high")
+    result = generate_prime(storage)
+    assert "low sev constraint" not in result
+    assert "normal sev constraint" in result
+    assert "none sev constraint" in result
+    assert "high sev constraint" in result
+
+
+def test_generate_prime_incidents_windowed_14_days(tmp_path):
+    """generate_prime: incidents older than the 14-day window are excluded.
+
+    Pins the real 14d boundary with a 10-day (kept) and 20-day (excluded)
+    incident — a 35-day-old node would pass trivially against both the old
+    30-day and new 14-day windows and must not stand in for this test.
+    """
+    storage = CognitionStorage(tmp_path / ".cognition")
+    old_ts = (datetime.now(UTC) - timedelta(days=20)).isoformat()
+    recent_ts = (datetime.now(UTC) - timedelta(days=10)).isoformat()
+    _add(storage, "i1", CognitionNodeType.INCIDENT, "old outage", severity="high", timestamp=old_ts)
+    _add(storage, "i2", CognitionNodeType.INCIDENT, "recent outage", severity="high", timestamp=recent_ts)
 
     result = generate_prime(storage)
     assert "recent outage" in result
     assert "old outage" not in result
+
+
+def test_generate_prime_incident_severity_gate(tmp_path):
+    """Incidents: keep only severity >= prime_incident_min_severity (high+critical);
+    a `normal` incident is dropped even within the window."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    now = datetime.now(UTC).isoformat()
+    _add(storage, "i1", CognitionNodeType.INCIDENT, "normal sev incident", severity="normal", timestamp=now)
+    _add(storage, "i2", CognitionNodeType.INCIDENT, "high sev incident", severity="high", timestamp=now)
+
+    result = generate_prime(storage)
+    assert "normal sev incident" not in result
+    assert "high sev incident" in result
 
 
 def test_generate_prime_decisions_appear_in_output(tmp_path):
@@ -98,6 +168,18 @@ def test_generate_prime_patterns_appear_in_output(tmp_path):
     result = generate_prime(storage)
     assert "## Recent Patterns" in result
     assert "always use uv run for hooks" in result
+
+
+def test_generate_prime_task_cap_honored_via_config(tmp_path):
+    """Task cap is wired to PrimeConfig — an explicit override changes the count
+    without any env monkeypatching."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    for i in range(4):
+        _add(storage, f"t{i}", CognitionNodeType.TASK, f"task {i}")
+
+    result = generate_prime(storage, PrimeConfig(prime_task_cap=2))
+    assert result.count("- [task]") == 2
+    assert "+2 more open tasks" in result
 
 
 # ── main() — hook payload ─────────────────────────────────────────────────────

@@ -3,9 +3,11 @@
 import json
 import os
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from ..config import Settings
 from .git_hygiene import check_hygiene_state, format_hygiene_announce
 from .models import CognitionNodeType
 from .readme import ONBOARDING_BLOCK
@@ -13,21 +15,51 @@ from .storage import CognitionStorage
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "normal": 2, "low": 3}
 
-# Open tasks injected at session start are bounded to a fixed top-N (by priority then
-# recency) — unambiguous regardless of how many criticals exist — with a single overflow
-# line pointing at cognition_list_tasks for the rest.
-_TASK_INJECT_CAP = 10
 _TASK_CLOSED_STATUSES = frozenset({"done", "cancelled"})
 
 
-def _format_node(node: dict) -> str:
+@dataclass(frozen=True)
+class PrimeConfig:
+    """Trim knobs for the session-start prime digest.
+
+    These defaults ARE the trimmed target output — main() builds a config from
+    Settings in one try/except and falls back to these on any failure, so a
+    broken env degrades to the same trimmed shape rather than the old fat one.
+    """
+
+    prime_constraint_limit: int = 5
+    prime_task_cap: int = 5
+    prime_pattern_limit: int = 3
+    prime_decision_limit: int = 3
+    prime_incident_days: int = 14
+    prime_summary_maxlen: int = 110
+    prime_incident_min_severity: str = "high"
+
+
+def _truncate(text: str, maxlen: int) -> str:
+    """Truncate text to maxlen, cutting at the last whitespace before it.
+
+    maxlen<=0 or a short-enough string is a no-op. If no whitespace is found
+    before maxlen (e.g. a long URL/hash), hard-cut at maxlen rather than
+    silently dropping only the last char.
+    """
+    if maxlen <= 0 or len(text) <= maxlen:
+        return text
+    cut = text.rfind(" ", 0, maxlen)
+    if cut <= 0:
+        cut = maxlen
+    return text[:cut].rstrip() + "…"
+
+
+def _format_node(node: dict, maxlen: int = 0) -> str:
     """Format a single node as a compact bullet point."""
     severity = node.get("severity")
     suffix = f" (severity: {severity})" if severity else ""
-    return f"- [{node.get('type', '?')}] {node.get('summary', 'No summary')}{suffix}"
+    summary = _truncate(node.get("summary", "No summary"), maxlen)
+    return f"- [{node.get('type', '?')}] {summary}{suffix}"
 
 
-def _format_task(node: dict) -> str:
+def _format_task(node: dict, maxlen: int = 0) -> str:
     """Format a single open task with its status/owner/priority."""
     meta = node.get("metadata", {})
     bits = [f"status: {meta.get('status', 'open')}"]
@@ -37,10 +69,11 @@ def _format_task(node: dict) -> str:
     priority = node.get("severity")
     if priority:
         bits.append(f"priority: {priority}")
-    return f"- [task] {node.get('summary', 'No summary')} ({', '.join(bits)})"
+    summary = _truncate(node.get("summary", "No summary"), maxlen)
+    return f"- [task] {summary} ({', '.join(bits)})"
 
 
-def _format_tasks(storage: CognitionStorage) -> str:
+def _format_tasks(storage: CognitionStorage, cap: int, maxlen: int = 0) -> str:
     """Format open tasks (status not in done/cancelled), priority- then recency-sorted,
     capped at the top-N with an overflow line. Mirrors _format_constraints but bounded so
     the session-start payload can't balloon on a long backlog."""
@@ -56,76 +89,90 @@ def _format_tasks(storage: CognitionStorage) -> str:
     open_tasks.sort(key=lambda n: n.get("timestamp", ""), reverse=True)
     open_tasks.sort(key=lambda n: SEVERITY_ORDER.get(n.get("severity", "normal"), 2))
 
-    shown = open_tasks[:_TASK_INJECT_CAP]
-    lines = [_format_task(n) for n in shown]
+    shown = open_tasks[:cap]
+    lines = [_format_task(n, maxlen) for n in shown]
     overflow = len(open_tasks) - len(shown)
     if overflow > 0:
         lines.append(f"- +{overflow} more open tasks — use cognition_list_tasks")
     return "## Open Tasks\n" + "\n".join(lines)
 
 
-def _format_constraints(storage: CognitionStorage) -> str:
-    """Format active constraints, sorted by severity."""
+def _format_constraints(storage: CognitionStorage, limit: int, maxlen: int = 0) -> str:
+    """Format active constraints, sorted by severity, dropping only `low` (C2)."""
     nodes = storage.get_nodes_by_type(CognitionNodeType.CONSTRAINT)
+    nodes = [n for n in nodes if n.get("severity") != "low"]
     if not nodes:
         return ""
 
     nodes.sort(key=lambda n: SEVERITY_ORDER.get(n.get("severity", "normal"), 2))
-    lines = [_format_node(n) for n in nodes]
+    shown = nodes[:limit]
+    lines = [_format_node(n, maxlen) for n in shown]
     return "## Active Constraints\n" + "\n".join(lines)
 
 
-def _format_patterns(storage: CognitionStorage, limit: int = 5) -> str:
+def _format_patterns(storage: CognitionStorage, limit: int, maxlen: int = 0) -> str:
     """Format recent patterns."""
     nodes = storage.get_recent_nodes(limit=limit, node_type=CognitionNodeType.PATTERN)
     if not nodes:
         return ""
 
-    lines = [_format_node(n) for n in nodes]
+    lines = [_format_node(n, maxlen) for n in nodes]
     return "## Recent Patterns\n" + "\n".join(lines)
 
 
-def _format_decisions(storage: CognitionStorage, limit: int = 5) -> str:
+def _format_decisions(storage: CognitionStorage, limit: int, maxlen: int = 0) -> str:
     """Format recent decisions."""
     nodes = storage.get_recent_nodes(limit=limit, node_type=CognitionNodeType.DECISION)
     if not nodes:
         return ""
 
-    lines = [_format_node(n) for n in nodes]
+    lines = [_format_node(n, maxlen) for n in nodes]
     return "## Recent Decisions\n" + "\n".join(lines)
 
 
-def _format_incidents(storage: CognitionStorage, days: int = 30) -> str:
-    """Format recent incidents from the last N days."""
+def _format_incidents(
+    storage: CognitionStorage, days: int, min_severity: str, maxlen: int = 0
+) -> str:
+    """Format recent incidents from the last N days at or above min_severity."""
     nodes = storage.get_nodes_by_type(CognitionNodeType.INCIDENT)
     if not nodes:
         return ""
 
     cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
-    recent = [n for n in nodes if n.get("timestamp", "") >= cutoff]
+    min_rank = SEVERITY_ORDER.get(min_severity, 1)
+    recent = [
+        n for n in nodes
+        if n.get("timestamp", "") >= cutoff
+        and SEVERITY_ORDER.get(n.get("severity", "normal"), 2) <= min_rank
+    ]
     if not recent:
         return ""
 
     recent.sort(key=lambda n: SEVERITY_ORDER.get(n.get("severity", "normal"), 2))
-    lines = [_format_node(n) for n in recent]
+    lines = [_format_node(n, maxlen) for n in recent]
     return "## Recent Incidents\n" + "\n".join(lines)
 
 
-def generate_prime(storage: CognitionStorage) -> str:
+def generate_prime(storage: CognitionStorage, config: PrimeConfig | None = None) -> str:
     """Generate the prime markdown output.
 
     Args:
         storage: Hydrated CognitionStorage instance
+        config: Trim knobs; defaults to PrimeConfig() (the trimmed target shape)
 
     Returns:
         Markdown string with project context
     """
+    if config is None:
+        config = PrimeConfig()
+
+    maxlen = config.prime_summary_maxlen
     sections = [
-        _format_constraints(storage),
-        _format_tasks(storage),
-        _format_patterns(storage),
-        _format_decisions(storage),
-        _format_incidents(storage),
+        _format_constraints(storage, config.prime_constraint_limit, maxlen),
+        _format_tasks(storage, config.prime_task_cap, maxlen),
+        _format_patterns(storage, config.prime_pattern_limit, maxlen),
+        _format_decisions(storage, config.prime_decision_limit, maxlen),
+        _format_incidents(storage, config.prime_incident_days, config.prime_incident_min_severity, maxlen),
     ]
 
     body = "\n\n".join(s for s in sections if s)
@@ -178,7 +225,20 @@ def main():
     if empty:
         sections.append(ONBOARDING_BLOCK)
     else:
-        sections.append(generate_prime(storage))  # type: ignore[arg-type]
+        try:
+            settings = Settings()
+            config = PrimeConfig(
+                prime_constraint_limit=settings.prime_constraint_limit,
+                prime_task_cap=settings.prime_task_cap,
+                prime_pattern_limit=settings.prime_pattern_limit,
+                prime_decision_limit=settings.prime_decision_limit,
+                prime_incident_days=settings.prime_incident_days,
+                prime_summary_maxlen=settings.prime_summary_maxlen,
+                prime_incident_min_severity=settings.prime_incident_min_severity,
+            )
+        except Exception:  # noqa: BLE001
+            config = PrimeConfig()
+        sections.append(generate_prime(storage, config))  # type: ignore[arg-type]
 
     output = {
         "hookSpecificOutput": {

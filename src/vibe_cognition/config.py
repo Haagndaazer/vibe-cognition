@@ -88,6 +88,38 @@ class Settings(BaseSettings):
         description="Ollama model name for embeddings",
     )
 
+    # Session-start prime digest settings (see cognition/prime.py PrimeConfig).
+    # Defaults here MUST equal PrimeConfig's defaults — a Settings build failure
+    # falls back to PrimeConfig() and must degrade to the same trimmed output.
+    prime_constraint_limit: int = Field(
+        default=5,
+        description="Max constraints shown in the session-start prime digest",
+    )
+    prime_task_cap: int = Field(
+        default=5,
+        description="Max open tasks shown in the session-start prime digest",
+    )
+    prime_pattern_limit: int = Field(
+        default=3,
+        description="Max recent patterns shown in the session-start prime digest",
+    )
+    prime_decision_limit: int = Field(
+        default=3,
+        description="Max recent decisions shown in the session-start prime digest",
+    )
+    prime_incident_days: int = Field(
+        default=14,
+        description="Incident lookback window (days) for the session-start prime digest",
+    )
+    prime_summary_maxlen: int = Field(
+        default=110,
+        description="Max chars per bullet summary in the prime digest (0 = no truncation)",
+    )
+    prime_incident_min_severity: Literal["critical", "high", "normal", "low"] = Field(
+        default="high",
+        description="Minimum incident severity shown in the prime digest (severity or higher)",
+    )
+
     @field_validator("repo_path", mode="before")
     @classmethod
     def validate_repo_path(cls, v: str | Path) -> Path:

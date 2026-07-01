@@ -15,7 +15,6 @@ fails the revert.
 """
 
 import ast
-import importlib.util
 import json
 import pathlib
 import subprocess
@@ -27,7 +26,6 @@ from vibe_cognition.cognition.storage import CognitionStorage
 
 _REPO = pathlib.Path(__file__).resolve().parents[1]
 _JIO = _REPO / "src" / "vibe_cognition" / "cognition" / "journal_io.py"
-_HOOK = _REPO / "hooks" / "post-commit.py"
 
 # Path-loads journal_io (as the hook does) and appends N large records.
 _APPENDER = """
@@ -192,10 +190,11 @@ def test_identity_detects_same_first_line_divergent_replacement(tmp_path):
 
 def test_journal_io_imports_only_stdlib():
     """H-2 contract, bound by AST (not by what's installed): journal_io.py must
-    import nothing outside the standard library — the post-commit hook path-loads
-    it and must run against a bare venv. (Adding e.g. `import networkx` to
-    journal_io fails THIS test even if the venv has networkx — the import-time
-    probe below would stay green because journal_io loads lazily.)"""
+    import nothing outside the standard library — forward-compat posture even
+    though the server (inside the full venv) is now its only caller. (Adding
+    e.g. `import networkx` to journal_io fails THIS test even if the venv has
+    networkx — the import-time probe below would stay green because journal_io
+    loads lazily.)"""
     tree = ast.parse(_JIO.read_text(encoding="utf-8"))
     imported: set[str] = set()
     for node in ast.walk(tree):
@@ -205,39 +204,6 @@ def test_journal_io_imports_only_stdlib():
             imported.add(node.module.split(".")[0])
     nonstd = {m for m in imported if m not in sys.stdlib_module_names}
     assert nonstd == set(), f"journal_io.py imports non-stdlib modules: {nonstd}"
-
-
-def test_post_commit_hook_imports_only_stdlib():
-    """H-2 contract (runtime): importing the hook must not pull any heavy
-    third-party module (it must run against a possibly-bare venv)."""
-    probe = (
-        "import importlib.util, sys\n"
-        "spec = importlib.util.spec_from_file_location('pch', sys.argv[1])\n"
-        "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
-        "heavy = sorted(x for x in "
-        "('networkx','pydantic','chromadb','torch','numpy','sentence_transformers') "
-        "if x in sys.modules)\n"
-        "print(','.join(heavy))\n"
-    )
-    out = subprocess.run(
-        [sys.executable, "-c", probe, str(_HOOK)],
-        capture_output=True, text=True, check=True, timeout=60,
-    )
-    assert out.stdout.strip() == "", f"hook pulled heavy modules at import: {out.stdout!r}"
-
-
-def test_hook_append_line_wiring(tmp_path):
-    """Exercises the hook's REAL _append_line path resolution (not the inline
-    appender script) — it must load journal_io and write a parseable record."""
-    spec = importlib.util.spec_from_file_location("pch_wiring", _HOOK)
-    assert spec is not None and spec.loader is not None
-    pch = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(pch)
-
-    journal = tmp_path / "journal.jsonl"
-    pch._append_line(journal, json.dumps({"action": "add_node", "data": {"id": "z"}}))
-    raw = journal.read_bytes()
-    assert json.loads(raw.decode("utf-8").splitlines()[0])["data"]["id"] == "z"
 
 
 def test_snapshot_journal_copies_consistently(tmp_path):

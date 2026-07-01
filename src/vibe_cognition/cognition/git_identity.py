@@ -8,10 +8,11 @@ parameter; the client cannot override it.
 WHY NO SUBPROCESS (P0, v0.12.1)
 -------------------------------
 The original implementation shelled ``git -C <repo> config user.name`` and claimed
-to "mirror hooks/post-commit.py". That precedent did NOT transfer (ledger 21 — a
-recorded pattern does not travel to a new execution context unexamined):
-post-commit.py runs as a git HOOK in a console-attached context, whereas this MCP
-server runs DETACHED with no console and piped stdio. In that context the
+to "mirror hooks/post-commit.py" (the post-commit hook, now removed). That
+precedent did NOT transfer (ledger 21 — a recorded pattern does not travel to a
+new execution context unexamined): post-commit.py ran as a git HOOK in a
+console-attached context, whereas this MCP server runs DETACHED with no console
+and piped stdio. In that context the
 Git-for-Windows launcher never closes the stdout pipe, so ``subprocess`` blocks
 forever joining its reader thread — and the ``timeout=`` cannot fire, because the
 block is in the pipe drain, not the process wait. A live ``cognition_add_task`` hung

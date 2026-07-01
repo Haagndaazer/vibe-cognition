@@ -55,7 +55,6 @@ That's it. The plugin handles dependency installation, MCP server registration, 
 - **Curation Skill**: `/vibe-curate` skill with edge-analyzer and cluster-analyzer subagents for semantic edge creation and cluster identification
 - **Local Dashboard**: Interactive graph viewer with semantic search and node-detail sidebar — launch in your browser from Claude or the CLI
 - **Session Context Injection**: Start every Claude Code session with recent project context via hooks
-- **Auto-Capture**: Automatically create episode nodes from git commits via hooks
 - **Local-First**: All processing and storage happens on your machine — no API keys, no cloud services
 - **Git-Committed Knowledge**: The cognition journal is designed to be committed to Git and shared with your team
 
@@ -85,7 +84,6 @@ The plugin bundles everything needed — no manual configuration required:
 | `/vibe-backfill` skill | Backfills the cognition graph from git commit history |
 | `/vibe-dashboard` skill | Launches the local graph dashboard via the `cognition_dashboard` MCP tool |
 | **SessionStart hook** | Injects recent project context (constraints, patterns, decisions, incidents) at session start |
-| **PostToolUse hook** | Auto-creates episode nodes from git commits |
 
 ## Prerequisites
 
@@ -232,7 +230,7 @@ The cognition graph captures project knowledge — decisions made, approaches th
 
 ### How It Works
 
-1. **Record nodes** during conversations via `cognition_record` (or automatically via the post-commit hook)
+1. **Record nodes** during conversations via `cognition_record`
 2. **Deterministic matching** instantly creates `part_of` edges (and `relates_to` for document→episode) when nodes share references (commit hashes, issue/PR numbers, `doc:` keys) — the only automatic edges
 3. **Semantic edges** (led_to, resolved_by, supersedes) are the agent's job: after recording, run the `/vibe-curate` skill (or add them with `cognition_add_edge`)
 4. **Query** with `cognition_search` (semantic) or `cognition_get_history` (by context/type)
