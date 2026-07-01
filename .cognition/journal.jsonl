@@ -919,3 +919,4 @@
 {"action": "update_node", "data": {"id": "be019b3eea3c", "curated_by_skill_at": "2026-06-26T18:19:36.200889+00:00"}}
 {"action": "update_node", "data": {"id": "21232d2acaea", "curated_by_skill_at": "2026-06-26T18:19:36.210447+00:00"}}
 {"action": "update_node", "data": {"id": "c535e96edb8d", "curated_by_skill_at": "2026-06-26T18:19:36.218596+00:00"}}
+{"action": "add_node", "data": {"id": "e983273d722e", "type": "episode", "summary": "release: v0.12.3 — pin curate/backfill subagents to Haiku", "detail": "release: v0.12.3 — pin curate/backfill subagents to Haiku", "context": [".claude-plugin/plugin.json", "pyproject.toml", "skills/vibe-backfill/SKILL.md", "skills/vibe-curate/SKILL.md"], "references": ["commit:9e6fadb93debfc69ffa288eff8b20f6b08d03522"], "severity": null, "timestamp": "2026-06-29T20:34:36.163852+00:00", "author": "Colton Dyck"}}
