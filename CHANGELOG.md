@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 **Session-start prime trim + post-commit journal hook removal.**
 
 ### Changed
-- **Trimmed the session-start `prime` injection** (~1,346 → measured at release
-  time, target ~575 tok). Added a `PrimeConfig` dataclass with 7 env-overridable
+- **Trimmed the session-start `prime` injection** (~1,346 → ~634 tok on this
+  repo's graph at release, a ~53% cut; scales with graph size). Added a
+  `PrimeConfig` dataclass with 7 env-overridable
   knobs (`PRIME_CONSTRAINT_LIMIT`, `PRIME_TASK_CAP`, `PRIME_PATTERN_LIMIT`,
   `PRIME_DECISION_LIMIT`, `PRIME_INCIDENT_DAYS`, `PRIME_SUMMARY_MAXLEN`,
   `PRIME_INCIDENT_MIN_SEVERITY`), a hard-cut-safe summary truncator, and
