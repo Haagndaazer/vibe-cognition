@@ -42,6 +42,15 @@ EOF
 fi
 
 # ── Step 2: Conditional dependency install ────────
+# Hook timeout (hooks.json, this SessionStart entry): 600s. WP-11 (c3074f43cd49):
+# a cold `uv sync` on a genuinely first install downloads ~2-4GB (mostly PyTorch)
+# -- at a healthy 50Mbps that alone is ~8 minutes, so the previous 120s was
+# insufficient even on normal home connections, not just slow ones. 600s targets
+# that case with margin. Not a guarantee for every connection speed -- a truly
+# degraded link could still exceed it -- but the hook self-heals: the version
+# stamp below is only written on a VERIFIED-successful sync+import, so a timeout
+# leaves it unwritten and the NEXT session-start just retries (uv's own package
+# cache means a retry is rarely a full re-download).
 if command -v sha256sum &>/dev/null; then
     HASH=$(cat "${PLUGIN_ROOT}/pyproject.toml" "${PLUGIN_ROOT}/uv.lock" 2>/dev/null | sha256sum | cut -d' ' -f1)
 elif command -v shasum &>/dev/null; then
@@ -73,11 +82,18 @@ if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$HASH" ]; then
         mkdir -p "${VENV_DIR}"
         echo "$HASH" > "$STAMP"
     else
-        cat << 'EOF'
+        # WP-11 (c3074f43cd49): the probe fires identically for several distinct
+        # root causes, not just the DLL-lock case it originally named -- an
+        # interrupted download (network drop) or the 600s hook timeout killing a
+        # slow sync leave the SAME half-installed signature. Enumerate the
+        # plausible causes and give ONE generic recovery (delete the venv) that
+        # works regardless of which one actually happened, alongside the
+        # cheaper DLL-lock-specific fix. Unquoted heredoc so VENV_DIR expands.
+        cat << EOF
 {
   "hookSpecificOutput": {
     "hookEventName": "SessionStart",
-    "additionalContext": "vibe-cognition: a dependency update did not finish — a Python package is half-installed. This happens when the plugin updates while other Claude Code sessions are open and holding its files (mainly on Windows). The MCP server cannot load until this is repaired, and it self-heals on a clean start. FIX: close ALL Claude Code sessions and windows, then open ONE."
+    "additionalContext": "vibe-cognition: a dependency update did not finish — a Python package is half-installed. The MCP server cannot load until this is repaired, and it self-heals on a clean retry. Possible causes: (1) the plugin updated while other Claude Code sessions were open and holding its files, mainly on Windows (FIX: close ALL Claude Code sessions and windows, then open ONE); (2) the download was interrupted (network drop, or the install exceeded the session-start hook's timeout on a slow connection); (3) the disk ran out of space mid-install. If closing all sessions and reopening one doesn't resolve it, delete ${VENV_DIR} and restart Claude Code — session-start will rebuild it from scratch."
   }
 }
 EOF

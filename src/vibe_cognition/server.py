@@ -377,16 +377,32 @@ async def lifespan(server: FastMCP):
 
     # Initialize cognition graph
     logger.info(f"Initializing cognition graph at {config.cognition_dir}...")
-    cognition_storage = CognitionStorage(config.cognition_dir)
+    try:
+        cognition_storage = CognitionStorage(config.cognition_dir)
+    except Exception as e:
+        # WP-11 (38a5914e6dc6): a corrupted journal or a .cognition/ permission
+        # error previously killed the server with a raw traceback Claude Code may
+        # never surface, leaving zero cognition tools and no explanation. Log the
+        # failing component + path diagnosably, then re-raise (FastMCP still
+        # fails the server — that's correct; this is about being able to find
+        # WHY, not about staying up in a broken state).
+        logger.error(f"Failed to initialize cognition graph at {config.cognition_dir}: {e}")
+        raise
 
     # Initialize cognition ChromaDB
     logger.info(f"Initializing cognition ChromaDB at {config.cognition_chromadb_path}...")
-    cognition_embedding_storage = ChromaDBStorage(
-        persist_directory=config.cognition_chromadb_path,
-        collection_name="cognition_embeddings",
-        embedding_model=config.embedding_model,
-        embedding_dimensions=config.embedding_dimensions,
-    )
+    try:
+        cognition_embedding_storage = ChromaDBStorage(
+            persist_directory=config.cognition_chromadb_path,
+            collection_name="cognition_embeddings",
+            embedding_model=config.embedding_model,
+            embedding_dimensions=config.embedding_dimensions,
+        )
+    except Exception as e:
+        logger.error(
+            f"Failed to initialize cognition ChromaDB at {config.cognition_chromadb_path}: {e}"
+        )
+        raise
 
     # Build project registry — home is always pinned
     loaded_projects = build_registry(

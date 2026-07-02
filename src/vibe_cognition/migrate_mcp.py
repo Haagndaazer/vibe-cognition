@@ -39,22 +39,30 @@ def remove_server_entry(
         A dict with stable keys for every outcome::
 
             {
-              "status": "missing" | "skip" | "absent" | "removed",
+              "status": "missing" | "skip" | "absent" | "removed" | "repaired"
+                        | "write-failed",
               "removed": [server_name] if it was (or would be) removed else [],
               "preserved": other server names that remain (insertion order),
               "dry_run": bool,
+              "error": str,  # ONLY present when status == "write-failed"
             }
 
         ``status`` meanings:
-          ``"missing"``  — file does not exist (nothing to do)
-          ``"skip"``     — file exists but is not a valid JSON object (untouched)
-          ``"absent"``   — file valid, no entry of ours, nothing to repair
-          ``"removed"``  — the entry was removed (or, under dry_run, would be);
-                           ``mcpServers`` is left as a valid (possibly empty)
-                           record — never written as bare ``{}``
-          ``"repaired"`` — our entry was absent but the file was a contentless
-                           invalid shape (e.g. ``{}`` left by an older version);
-                           rewritten to a valid ``{"mcpServers": {}}``
+          ``"missing"``      — file does not exist (nothing to do)
+          ``"skip"``         — file exists but is not a valid JSON object (untouched)
+          ``"absent"``       — file valid, no entry of ours, nothing to repair
+          ``"removed"``      — the entry was removed (or, under dry_run, would be);
+                               ``mcpServers`` is left as a valid (possibly empty)
+                               record — never written as bare ``{}``
+          ``"repaired"``     — our entry was absent but the file was a contentless
+                               invalid shape (e.g. ``{}`` left by an older version);
+                               rewritten to a valid ``{"mcpServers": {}}``
+          ``"write-failed"`` — the change was computed (as for "removed"/"repaired")
+                               but ``_atomic_write`` raised ``OSError`` (locked by an
+                               editor/AV tool, read-only ACL, etc. — realistic on
+                               Windows). Nothing was written; the original file is
+                               untouched. ``error`` carries ``str(exception)``. Never
+                               raised — this function always returns a dict.
 
         The file is NEVER deleted; an emptied config becomes ``{"mcpServers":
         {}}`` (valid), not ``{}`` (which Claude Code rejects).
@@ -96,7 +104,14 @@ def remove_server_entry(
         # IMPORTANT: keep `mcpServers` as a (possibly empty) record. Dropping the
         # key produces a file Claude Code rejects ("mcpServers: expected record,
         # received undefined"). An empty {} record is valid; never write {}.
-        _atomic_write(mcp_path, data)
+        try:
+            _atomic_write(mcp_path, data)
+        except OSError as e:
+            # Editor/AV lock or a read-only ACL — realistic on Windows. The
+            # original file is untouched (we write to a .tmp sibling first);
+            # report structured failure instead of an unhandled traceback.
+            result["status"] = "write-failed"
+            result["error"] = str(e)
         return result
 
     # ── Our entry is absent ────────────────────────────────────────────
@@ -110,7 +125,11 @@ def remove_server_entry(
         result["status"] = "repaired"
         if dry_run:
             return result
-        _atomic_write(mcp_path, {"mcpServers": {}})
+        try:
+            _atomic_write(mcp_path, {"mcpServers": {}})
+        except OSError as e:
+            result["status"] = "write-failed"
+            result["error"] = str(e)
         return result
 
     # Nothing of ours and nothing to repair — leave the file untouched.
@@ -208,6 +227,19 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     result = remove_server_entry(positional[0], dry_run=dry_run)
+    if result["status"] == "write-failed":
+        # Clean one-liner, no traceback -- exit nonzero so a caller (or a human
+        # running this by hand) gets a real failure signal instead of the
+        # SessionStart hook's `|| MIGRATE_NOTE=""` silently swallowing an
+        # unhandled exception's default traceback+exit.
+        print(
+            f"vibe-cognition: could not update {positional[0]}: {result['error']} "
+            "-- the stale vibe-cognition .mcp.json entry may still be present. "
+            "Close any editor/AV tool that might be locking the file, or check "
+            "its permissions, then restart Claude Code.",
+            file=sys.stderr,
+        )
+        return 1
     summary = _format_summary(result)
     if summary:
         print(summary, end="")

@@ -6,6 +6,7 @@ must report the same outcome while writing absolutely nothing.
 """
 
 import json
+import os
 from pathlib import Path
 
 from vibe_cognition.migrate_mcp import main, remove_server_entry
@@ -318,3 +319,92 @@ def test_main_rejects_unknown_flag(tmp_path):
     mcp = tmp_path / ".mcp.json"
     _write(mcp, {"mcpServers": {}})
     assert main([str(mcp), "--bogus"]) == 2
+
+
+# ── Write-path failure (WP-11, 8e207087b093) ─────────────────────────────────
+
+
+def test_write_failure_on_removal_reports_structured_status(tmp_path, monkeypatch):
+    """A locked/read-only target must not raise -- remove_server_entry returns a
+    structured "write-failed" status instead of propagating OSError.
+
+    Fails-before: _atomic_write was unguarded, so this raised straight out of
+    remove_server_entry as an unhandled exception.
+    """
+    import vibe_cognition.migrate_mcp as mm
+
+    mcp = tmp_path / ".mcp.json"
+    _write(mcp, {"mcpServers": {"vibe-cognition": OUR_ENTRY, "some-other-server": OTHER_ENTRY}})
+    before = mcp.read_text(encoding="utf-8")
+
+    def _boom(path, data):
+        raise PermissionError("simulated lock")
+
+    monkeypatch.setattr(mm, "_atomic_write", _boom)
+    result = mm.remove_server_entry(str(mcp))
+
+    assert result["status"] == "write-failed"
+    assert "simulated lock" in result["error"]
+    assert mcp.read_text(encoding="utf-8") == before  # original untouched
+
+
+def test_write_failure_on_repair_reports_structured_status(tmp_path, monkeypatch):
+    """Same guard on the repair branch's _atomic_write call site."""
+    import vibe_cognition.migrate_mcp as mm
+
+    mcp = tmp_path / ".mcp.json"
+    _write(mcp, {})  # triggers the repair path
+    before = mcp.read_text(encoding="utf-8")
+
+    def _boom(path, data):
+        raise OSError("simulated AV lock")
+
+    monkeypatch.setattr(mm, "_atomic_write", _boom)
+    result = mm.remove_server_entry(str(mcp))
+
+    assert result["status"] == "write-failed"
+    assert "simulated AV lock" in result["error"]
+    assert mcp.read_text(encoding="utf-8") == before
+
+
+def test_main_write_failure_prints_clean_stderr_and_exits_nonzero(tmp_path, monkeypatch, capsys):
+    """main() on a write failure: clean one-line stderr (no traceback), exit 1.
+
+    Fails-before: an unguarded _atomic_write raised out of main() entirely,
+    printing a full Python traceback and relying on the default unhandled-
+    exception exit code rather than an intentional one.
+    """
+    import vibe_cognition.migrate_mcp as mm
+
+    mcp = tmp_path / ".mcp.json"
+    _write(mcp, {"mcpServers": {"vibe-cognition": OUR_ENTRY}})
+
+    monkeypatch.setattr(mm, "_atomic_write", lambda path, data: (_ for _ in ()).throw(OSError("locked")))
+    rc = mm.main([str(mcp)])
+    captured = capsys.readouterr()
+
+    assert rc == 1
+    assert "Traceback" not in captured.err
+    assert "locked" in captured.err
+    assert captured.out == ""  # no misleading success note on stdout
+
+
+def test_write_failure_real_readonly_file_on_windows(tmp_path):
+    """Real (non-monkeypatched) Windows read-only file: os.replace onto it raises
+    PermissionError -- verifies the guard against the actual OS behavior, not
+    just a simulated exception."""
+    import stat
+    import sys
+
+    if sys.platform != "win32":
+        return  # this OS-specific behavior only reproduces on Windows
+
+    mcp = tmp_path / ".mcp.json"
+    _write(mcp, {"mcpServers": {"vibe-cognition": OUR_ENTRY}})
+    os.chmod(mcp, stat.S_IREAD)
+    try:
+        result = remove_server_entry(str(mcp))
+        assert result["status"] == "write-failed"
+        assert result["error"]
+    finally:
+        os.chmod(mcp, stat.S_IWRITE | stat.S_IREAD)  # let tmp_path cleanup delete it
