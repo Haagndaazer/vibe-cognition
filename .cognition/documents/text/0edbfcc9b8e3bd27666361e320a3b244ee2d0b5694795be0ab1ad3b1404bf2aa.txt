@@ -1,0 +1,50 @@
+# Fable-audit backlog burn-down — overnight autonomous run (2026-07-02)
+
+Manager: Vince. Implementers: general-purpose subagents (one per WP), editing the single
+shared checkout on `main` directly (human's explicit instruction). Implementers never
+commit; Vince gates each diff (pytest w/ hard timeout, ruff, pyright-no-new-errors,
+tautology + known-intentional checks) and commits+pushes per WP. Peer-reviewed by a
+Sonnet subagent before execution; amendments folded in below.
+[Execution note: implementation is dispatched to Vorpid (subordinate teammate), per Colton's instruction after plan commit.]
+
+Scope: the 39 children of fable-audit epic `74740daa02fa` (docs/260701-fable-audit-*.md).
+No release tonight: single version bump 0.13.0 → 0.14.0 at the end; human releases.
+Tasks needing a product decision I can't reconcile from the cognition graph are skipped
+with the open question appended to the task node.
+
+## Standing acceptance criteria (every WP)
+- `uv run pytest` green under a hard wall-clock timeout; `uv run ruff check .` clean;
+  `uv run pyright` no NEW errors (1 pre-existing dashboard/server.py error is known).
+- New tests are non-tautological (assert the specific failure reason; fail on revert).
+- No new test may spawn real subprocesses/sockets/network (mock them); Windows handle
+  cleanup in fixtures (Chroma clients, lock files).
+- Any WP touching `get_status` updates its docstring in the same diff; docstring diffed
+  against the actual return dict at the gate (WPs 1, 2, 4).
+- Diff cross-checked against the known-intentional list before commit.
+
+## Known-intentional (must NOT be "fixed")
+Task-delete child-orphaning storage behavior (F10, tested); document drift pull-only
+detection; merge=union-only auto-config (decision 9f13a8099e03 — the -text item is
+disclosure only); cognition_record rejects node_type=task; workflow in-place-edit
+refusal (supersession only); node-id mint TOCTOU accepted residual; Haiku pin for
+curate subagents; dashboard localhost-only design; embedding_ready.set() timing
+(E-8 deferral is deliberate — do not make startup sync blocking).
+
+## Work packages (execution order)
+- WP-0 (setup, folded into WP-1 dispatch): pytest-timeout + default timeout.
+- WP-1 Loss visibility — 1bce5542be63 (critical: rehydrate-reset WARNING w/ node-count delta + get_status field + next-prime flag), 74df98ebb3a4 (actor in remove_node tombstone; docstring gaps docstring-only; dashboard DELETE auth-rejection test), 914e4a354031 (disclosure only: residual autocrlf risk in readme.py + README; NO git_hygiene auto-write change).
+- WP-2 Honest search — 379e3949d90f (_parse_node_type in cognition_search), 6074dbe0875e (home-collection drift guard + get_status + regression test), 6ae6deb713e8 (fix getting-started example).
+- WP-3 Embedding write-path integrity — b35e15766c6b (stamp embed_scheme at creation; file-lock recreate reusing git_hygiene lock primitive; same-process two-instance test; multi-process repro skip-by-default), 8606d59905a5 (re-embed on journal replay via shared paths).
+- WP-4 Reconciler==writer + join visibility (code) — 3e82d4ebc004, 41ced8d1fa63, 5340ae677931 code half (third "syncing" status; embedding_ready timing unchanged).
+- WP-5 Merge-topology defense — d6cd1495b23a, 7c1899fe59ed, b36e4a79113a dedup-contract half. duplicate_of reachability + 4800d5d16adb SKIPPED with question (product call).
+- WP-6 Host/config contract — b603f667130f, d4a153f23a4c (drop env_file if ambiguous), b48927a30e66 (CI version-match).
+- WP-7 Context pipeline — 530adc9e6f3f (compact hook runs generate_prime(), pinned), 0da12a816d7f, 9aca47c5803d.
+- WP-8 Tool-surface contract — 758a360230b7, 7d1c151b0372, c0e6afeddaf9 (prefer documenting both keys over renaming), e130ad211ebe.
+- WP-9 Ship-the-knowledge docs — 519c240c279c, 5c9978ed8d29, 5340ae677931 doc half, 4350a42fc4e5, 73f750d8d528, bab6c5431a62 (docs-only).
+- WP-10 Skills layer — 9d5a19b30055, 0ad4aa80bb15, 8645d67e7055.
+- WP-11 Install/lifecycle robustness — 8e207087b093, 38a5914e6dc6, c3074f43cd49, 1a796b2be9b5 (stub PATH binaries, never real uv/network).
+- WP-12 Data-integrity tail — 4ae72cafb48c, db65f1568fa5, b9af2e60fe19, d999b4e3851a, 07fdfe725e7f.
+- WP-13 Low tail — 4aaef22e25ea (also closes 21232d2acaea), 9cb745be2570 (mock HTTP client), ebe050e78923.
+
+Closeout: version bump, journal flush, task statuses reconciled, cognition episode +
+decisions recorded, /vibe-curate run, summary for the human.
