@@ -666,3 +666,40 @@ def test_get_status_home_model_drift_null_when_clean(tmp_path):
     result = mock.tools["get_status"](ctx)
     assert result["home_model_drift"] is None
     lc["cognition_embedding_storage"].close()
+
+
+def test_replay_drain_runs_in_multiproject_path_for_home(tmp_path):
+    """WP-3 redirect: project="*" (or any resolution including home) must ALSO
+    trigger the replay-drain -- previously only the project=None branch did,
+    so a teammate's replayed node was visible via a plain search but missing
+    from an aggregate search of the SAME graph.
+
+    Fails-before: the multi-project loop never called _reembed_replayed_nodes,
+    so an id queued by catch-up stayed un-embedded forever under project="*".
+    """
+    lc = _make_lc(tmp_path, embedding_model="m", embedding_dimensions=3)
+    home_dir = lc["config"].repo_path / ".cognition"
+
+    # Simulate a teammate's write: a second storage instance on the SAME journal.
+    other = CognitionStorage(home_dir)
+    other.add_node(_node("teammate-node", summary="written by a teammate"))
+    assert lc["cognition_storage"].has_node("teammate-node")  # catch-up queues it
+    assert lc["cognition_embedding_storage"].count_documents() == 0
+
+    spy = MagicMock()
+    spy.generate_query_embedding.return_value = [0.1, 0.1, 0.1]
+    spy.generate.return_value = [0.1, 0.1, 0.1]
+    lc["embedding_generator"] = spy
+    lc["embedding_ready"].set()
+
+    mock = _MockMcp()
+    register_cognition_tools(mock)
+    ctx = _make_ctx(lc)
+
+    result = mock.tools["cognition_search"](ctx, query="anything", project="*")
+
+    assert "error" not in result, f"unexpected error: {result}"
+    assert lc["cognition_embedding_storage"].count_documents() == 1, (
+        "replayed node must be embedded via the multi-project (project=*) path too"
+    )
+    lc["cognition_embedding_storage"].close()

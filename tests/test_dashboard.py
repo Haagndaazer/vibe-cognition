@@ -8,6 +8,7 @@ import time
 from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from starlette.testclient import TestClient
@@ -290,6 +291,25 @@ class TestSearch:
         results = r.json()["results"]
         assert len(results) == 1
         assert results[0]["_id"] == "x1"
+
+    def test_search_drains_replayed_nodes_before_querying(self, client):
+        """WP-3 (8606d59905a5): the dashboard has its own search pipeline,
+        bypassing cognition_search's wrapper — it must run the SAME
+        re-embed-on-replay drain, or a teammate's replayed node stays
+        invisible in dashboard search until an MCP search happens to run
+        first. Verifies the wiring (not the full embed mechanics — those are
+        covered against a real ChromaDBStorage in test_reembed_on_replay.py)."""
+        c, lc = client
+        lc["embedding_generator"] = _FakeEmbeddingGenerator()
+        lc["embedding_ready"].set()
+
+        with patch("vibe_cognition.dashboard.api._reembed_replayed_nodes") as mock_drain:
+            r = c.post("/api/search", json={"query": "anything"}, headers=_hdr())
+
+        assert r.status_code == 200
+        mock_drain.assert_called_once_with(
+            lc["cognition_storage"], lc["cognition_embedding_storage"], lc["embedding_generator"]
+        )
 
     def test_search_drops_cross_process_ghost(self, client):
         """WP-D2 N1: a hit whose node was deleted on another machine (absent from the

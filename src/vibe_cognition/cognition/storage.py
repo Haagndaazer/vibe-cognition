@@ -80,6 +80,14 @@ class CognitionStorage:
         # and the last one kept for get_status to surface.
         self.rehydrate_count = 0
         self.last_rehydrate: dict[str, Any] | None = None
+        # Embedding drift closure (WP-3, 8606d59905a5): node ids added via
+        # journal REPLAY (this or another process's write, discovered through
+        # catch-up/rehydrate) since the last pop_replayed_node_ids() call.
+        # storage.py has no embeddings dependency (by design — see that
+        # method's docstring), so this is just a handoff queue; the tools
+        # layer (which HAS both storage and embeddings) drains it and embeds
+        # via the shared _embed_entity_node/_embed_workflow paths.
+        self._replayed_node_ids: set[str] = set()
 
         self._dir.mkdir(parents=True, exist_ok=True)
 
@@ -409,6 +417,22 @@ class CognitionStorage:
                     redirected += 1
 
             return redirected
+
+    def pop_replayed_node_ids(self) -> list[str]:
+        """Drain and return node ids added via journal REPLAY (this or another
+        process's write, discovered through catch-up/rehydrate) since the last
+        call. Used by the tools-layer re-embed-on-replay reconciliation
+        (WP-3, 8606d59905a5) so a teammate's node written elsewhere becomes
+        searchable without a server restart — see discovery 4b99fa9f44d5.
+
+        Does NOT itself trigger a catch-up; callers already do via a preceding
+        public storage call (e.g. cognition_search reads the graph first).
+        Thread-safe under the storage lock against a concurrent _replay_entry.
+        """
+        with self._lock:
+            ids = list(self._replayed_node_ids)
+            self._replayed_node_ids.clear()
+            return ids
 
     # ── Read operations ───────────────────────────────────────────────
 
@@ -1124,6 +1148,12 @@ class CognitionStorage:
                 metadata=data.get("metadata", {}),
             )
             self._index_node_refs(node_id, references)
+            # WP-3 (8606d59905a5): queue for the tools-layer re-embed-on-replay
+            # reconciliation. Queuing unconditionally (even for this process's
+            # own writes read back during catch-up) is deliberate — the
+            # consumer does one batched Chroma existence check before
+            # embedding anything, so an already-embedded id costs nothing.
+            self._replayed_node_ids.add(node_id)
         elif action == "add_edge":
             from_id = data["from_id"]
             to_id = data["to_id"]

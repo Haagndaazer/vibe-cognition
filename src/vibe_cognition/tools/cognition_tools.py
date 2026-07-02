@@ -405,6 +405,77 @@ def _format_search_results(
     return formatted
 
 
+def _reembed_replayed_nodes(
+    storage: CognitionStorage,
+    embedding_storage: ChromaDBStorage,
+    generator: EmbeddingGenerator,
+) -> int:
+    """Close the node<->embedding structural drift for nodes that arrived via
+    journal REPLAY — another process's write — rather than this process's own
+    _record_node/cognition_update_task call (those already embed synchronously
+    at write time). Without this, a teammate's node stays visible to
+    get_history but invisible to cognition_search until a server restart
+    (discovery 4b99fa9f44d5; WP-3 task 8606d59905a5).
+
+    Called at the cognition_search boundary (see caller — home path only, see
+    its comment for why) since that's exactly where the drift becomes user-
+    visible; the common case (nothing replayed since the last search) costs
+    one empty pop() and zero model calls.
+
+    Routes through the SAME shared embed paths _record_node uses
+    (_embed_entity_node / _embed_workflow) — not a third bespoke copy (the
+    plan's explicit pin; WP-4 will also converge the startup reconciler onto
+    these). DOCUMENT nodes are skipped: they need sidecar-text + chunk
+    handling that only the existing startup _sync_cognition_embeddings path
+    does today — left to that path, same as before this fix (no regression).
+
+    Filters to ids ACTUALLY missing from Chroma (one batched existence check)
+    before embedding anything, so redundant catch-up of this process's OWN
+    just-written nodes doesn't cost a model call on every search. Never
+    raises — a per-node failure is logged and skipped so it can't block the
+    search that triggered this or take down the rest of the batch.
+    """
+    pending = storage.pop_replayed_node_ids()
+    if not pending:
+        return 0
+
+    try:
+        existing = set(embedding_storage._collection.get(ids=pending)["ids"])
+    except Exception:
+        existing = set()
+    missing = [nid for nid in pending if nid not in existing]
+    if not missing:
+        return 0
+
+    doc_type = CognitionNodeType.DOCUMENT.value
+    embedded = 0
+    for node_id in missing:
+        data = storage.get_node(node_id)
+        if data is None or data.get("type") == doc_type:
+            continue
+        try:
+            node = CognitionNode(
+                id=node_id,
+                type=CognitionNodeType(data["type"]),
+                summary=data["summary"],
+                detail=data["detail"],
+                context=data.get("context", []),
+                references=data.get("references", []),
+                severity=data.get("severity"),
+                timestamp=data["timestamp"],
+                author=data["author"],
+                metadata=data.get("metadata", {}),
+            )
+            if node.type == CognitionNodeType.WORKFLOW:
+                _embed_workflow(embedding_storage, generator, node)
+            else:
+                _embed_entity_node(embedding_storage, generator, node)
+            embedded += 1
+        except Exception as e:
+            logger.warning(f"re-embed-on-replay: failed for {node_id}: {e}")
+    return embedded
+
+
 def _search_with_embedding(
     storage: CognitionStorage,
     embedding_storage: ChromaDBStorage,
@@ -1912,6 +1983,20 @@ def register_cognition_tools(mcp) -> None:
                     "semantic_unavailable": True,
                     "reason": home_entry.model_guard,
                 }
+            # WP-3 (8606d59905a5): close the node<->embedding drift for nodes
+            # this process only ever saw via journal REPLAY (a teammate's
+            # write) before running the search that would otherwise miss them
+            # — see _reembed_replayed_nodes. dashboard/api.py's search handler
+            # runs the SAME drain (it has its own request pipeline, bypassing
+            # this wrapper) so both search surfaces stay covered. Foreign/
+            # multi-project entries are deliberately NOT covered here (scoped
+            # to home) — writing new embeddings into a project this process
+            # doesn't own is a separate design question this WP doesn't settle.
+            _reembed_replayed_nodes(
+                lifespan["cognition_storage"],
+                lifespan["cognition_embedding_storage"],
+                lifespan["embedding_generator"],
+            )
             result = _search_cognition(
                 lifespan["cognition_storage"],
                 lifespan["cognition_embedding_storage"],
@@ -1932,6 +2017,17 @@ def register_cognition_tools(mcp) -> None:
             return err2
 
         generator: EmbeddingGenerator = lifespan["embedding_generator"]
+
+        # WP-3 redirect: the home-only drain above doesn't run for this branch,
+        # but project="*" (or any tag set resolving to include home) searches
+        # the SAME home collection through here — without this, a replayed
+        # node is visible via a plain search but missing from an aggregate
+        # one. Home only (entry.pinned) — foreign entries stay untouched
+        # (read-only by design/contract, not a compromise; see XP1 lineage).
+        home_in_fanout = next((e for e in entries if e.pinned), None)
+        if home_in_fanout is not None and home_in_fanout.embeddings is not None:
+            _reembed_replayed_nodes(home_in_fanout.storage, home_in_fanout.embeddings, generator)
+
         limit = min(limit, 50)
         query_embedding = generator.generate_query_embedding(query)
 

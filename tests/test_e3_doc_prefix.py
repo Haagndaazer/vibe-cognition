@@ -10,6 +10,8 @@ rebuilds document-prefixed; marker-present → skip; idempotent; count preserved
 
 from __future__ import annotations
 
+import pytest
+
 from vibe_cognition.cognition import CognitionStorage
 from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType, generate_node_id
 from vibe_cognition.embeddings import ChromaDBStorage
@@ -72,6 +74,36 @@ def _make_node(summary: str = "summary", detail: str = "detail") -> CognitionNod
 def _make_chroma(tmp_path, *, name: str = "col") -> ChromaDBStorage:
     return ChromaDBStorage(
         persist_directory=tmp_path / "chroma",
+        collection_name=name,
+        embedding_model="test-model",
+        embedding_dimensions=_PrefixSpy.DIM,
+    )
+
+
+def _make_legacy_chroma(tmp_path, *, name: str = "col") -> ChromaDBStorage:
+    """A collection that predates the embed_scheme-at-creation stamp (WP-3,
+    b35e15766c6b): it EXISTS already but was never migrated. Built via a
+    throwaway raw chromadb client (closed before handoff, for Windows handle
+    safety) so the subsequent ChromaDBStorage(...) sees an EXISTING, unstamped
+    collection and correctly does NOT add the stamp (get_or_create_collection
+    preserves an existing collection's metadata as-is) -- this is exactly the
+    real legacy-collection scenario the E-3 migration exists to handle. A
+    plain _make_chroma(...) collection is now pre-stamped at creation and can
+    no longer stand in for "needs migration."
+    """
+    import chromadb
+    from chromadb.config import Settings as ChromaSettings
+
+    persist_dir = tmp_path / "chroma"
+    persist_dir.mkdir(parents=True, exist_ok=True)
+    raw_client = chromadb.PersistentClient(
+        path=str(persist_dir), settings=ChromaSettings(anonymized_telemetry=False)
+    )
+    raw_client.get_or_create_collection(name=name, metadata={"hnsw:space": "cosine"})
+    raw_client.close()  # type: ignore[attr-defined]
+
+    return ChromaDBStorage(
+        persist_directory=persist_dir,
         collection_name=name,
         embedding_model="test-model",
         embedding_dimensions=_PrefixSpy.DIM,
@@ -171,7 +203,7 @@ class TestRecreateCollection:
     def test_drops_vectors_and_stamps_marker(self, tmp_path):
         """recreate_collection() empties the collection and stamps embed_scheme."""
         spy = _PrefixSpy()
-        chroma = _make_chroma(tmp_path)
+        chroma = _make_legacy_chroma(tmp_path)
 
         # Seed a vector with (wrong) query prefix
         chroma.upsert_embedding("n1", spy.generate_query_embedding("text"), {"entity_type": "decision"})
@@ -220,7 +252,7 @@ class TestMarkerGatedMigration:
         """
         spy = _PrefixSpy()
         cognition = _make_cognition(tmp_path)
-        chroma = _make_chroma(tmp_path)
+        chroma = _make_legacy_chroma(tmp_path)
 
         # Seed two non-doc nodes into cognition (bypassing embed — simulates pre-E3 state)
         n1 = _make_node(summary="alpha")
@@ -234,9 +266,9 @@ class TestMarkerGatedMigration:
         assert chroma._collection.count() == 2
         assert chroma._collection.metadata.get("embed_scheme") is None
 
-        # Simulate the server bg-thread gate
-        col_meta = chroma._collection.metadata or {}
-        if col_meta.get("embed_scheme") != "doc-prefix-v1":
+        # Simulate the server bg-thread gate (WP-3: live_embed_scheme(), not a
+        # process-cached metadata snapshot — see server.py's real check)
+        if chroma.live_embed_scheme() != "doc-prefix-v1":
             chroma.recreate_collection()
 
         # Collection emptied, marker stamped
@@ -263,10 +295,10 @@ class TestMarkerGatedMigration:
         chroma.upsert_embedding(n.id, spy.generate("text", input_type="document"), {"entity_type": "decision"})
         assert chroma._collection.count() == 1
 
-        # Simulate bg-thread gate: marker present → skip
-        col_meta = chroma._collection.metadata or {}
+        # Simulate bg-thread gate: marker present -> skip (live_embed_scheme(),
+        # not a process-cached metadata snapshot — see server.py's real check)
         recreate_called = False
-        if col_meta.get("embed_scheme") != "doc-prefix-v1":
+        if chroma.live_embed_scheme() != "doc-prefix-v1":
             chroma.recreate_collection()
             recreate_called = True
 
@@ -308,3 +340,99 @@ class TestMarkerGatedMigration:
         _sync_cognition_embeddings(cognition, chroma, spy2)  # type: ignore[arg-type]
         assert chroma._collection.count() == count_after_first, "second start must not change count"
         assert spy2.query_calls() == [], "second-start sync must not use query prefix"
+
+
+# ── WP-3 (b35e15766c6b): recreate_collection file-lock guard ──────────────────
+
+
+class TestRecreateCollectionLockGuard:
+    """Two same-project processes racing recreate_collection() in the model-load
+    window must not both drop+recreate — the second would silently wipe the
+    first's freshly-synced vectors (the exact failure this task fixes)."""
+
+    def test_two_instance_contention_does_not_double_wipe(self, tmp_path):
+        """SAME-PROCESS two-instance lock test (per the plan pin — no real
+        subprocess/thread needed to prove the guard): instance A holds the
+        recreate lock (simulating it mid-migration); instance B, racing the
+        SAME legacy collection, must see the lock held and NOT delete the
+        collection out from under A's in-flight work.
+
+        Fails-before: no lock existed, so B's recreate_collection() would
+        unconditionally delete_collection() -> wipe whatever A had already
+        written, even though A's own migration was still in progress.
+        """
+        legacy = _make_legacy_chroma(tmp_path)
+        legacy.upsert_embedding("pre-existing", [0.1, 0.1, 0.1], {"entity_type": "decision"})
+        assert legacy._collection.count() == 1
+        lock_path = legacy._persist_directory / ".recreate-embed-scheme.lock"
+        assert not lock_path.exists()
+
+        # Instance B attaches to the SAME on-disk collection.
+        instance_b = ChromaDBStorage(
+            persist_directory=legacy._persist_directory,
+            collection_name=legacy._collection_name,
+            embedding_model="test-model",
+            embedding_dimensions=_PrefixSpy.DIM,
+        )
+
+        # Simulate instance A being mid-migration: it holds the lock file.
+        lock_path.write_text("", encoding="utf-8")
+        try:
+            instance_b.recreate_collection()  # must NOT wipe -- lock is held
+            assert instance_b._collection.count() == 1, (
+                "contended recreate_collection() deleted the collection -- "
+                "the exact double-delete-recreate race this guard prevents"
+            )
+        finally:
+            lock_path.unlink(missing_ok=True)
+
+        # Once the lock is free, recreate_collection() proceeds normally and
+        # actually migrates (proving the guard doesn't permanently wedge it).
+        instance_b.recreate_collection()
+        assert instance_b._collection.count() == 0, "uncontended recreate must still migrate"
+        assert instance_b.live_embed_scheme() == "doc-prefix-v1"
+
+    def test_lock_released_after_recreate(self, tmp_path):
+        """The lock must not leak -- a clean recreate_collection() releases it,
+        so it never permanently blocks future migrations/attaches."""
+        legacy = _make_legacy_chroma(tmp_path)
+        lock_path = legacy._persist_directory / ".recreate-embed-scheme.lock"
+
+        legacy.recreate_collection()
+
+        assert not lock_path.exists(), "lock file must be released after recreate_collection()"
+
+    def test_double_check_under_lock_skips_redundant_wipe(self, tmp_path):
+        """If another process finishes the migration while THIS process was
+        waiting for the lock, re-acquiring must NOT re-wipe an already-migrated
+        (and possibly already-resynced) collection -- the double-checked-lock
+        re-read of live_embed_scheme() inside the lock must catch this."""
+        legacy = _make_legacy_chroma(tmp_path)
+        legacy.recreate_collection()  # "someone else" already migrated it
+        legacy.upsert_embedding("resynced", [0.1, 0.1, 0.1], {"entity_type": "decision"})
+        assert legacy._collection.count() == 1
+        assert legacy.live_embed_scheme() == "doc-prefix-v1"
+
+        legacy.recreate_collection()  # this instance's OWN stale gate check fires again
+
+        assert legacy._collection.count() == 1, (
+            "recreate_collection() re-wiped an already-migrated collection instead "
+            "of no-op'ing on the live (re-checked) embed_scheme"
+        )
+
+
+@pytest.mark.skip(
+    reason=(
+        "True cross-process repro (real OS processes racing recreate_collection() "
+        "against the same on-disk collection) -- standing test criteria forbid "
+        "real subprocesses in the default suite. Kept as a documented, runnable-"
+        "on-demand stub (plan pin b35e15766c6b): spawn two `python -c` "
+        "subprocesses that both construct ChromaDBStorage against the same "
+        "legacy (unstamped) persist_directory and call recreate_collection() as "
+        "close together as possible; assert the surviving collection has "
+        "embed_scheme=doc-prefix-v1 and non-zero count after both re-sync, i.e. "
+        "neither process's sync work was silently wiped by the other's delete."
+    )
+)
+def test_true_multiprocess_recreate_race_repro(tmp_path):
+    pass

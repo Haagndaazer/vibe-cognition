@@ -417,6 +417,39 @@ class TestJournalCatchUp:
         succ = store_a.get_successors("a1", CognitionEdgeType.RELATES_TO)
         assert [t for t, _ in succ] == ["b1"]
 
+    def test_pop_replayed_node_ids_tracks_cross_process_node(self, tmp_path):
+        """WP-3 (8606d59905a5): a node written by ANOTHER store instance must
+        show up in pop_replayed_node_ids() once THIS instance catches up on it
+        -- the queue the tools-layer re-embed-on-replay reconciliation drains.
+        Fails-before: pop_replayed_node_ids didn't exist; _replay_entry never
+        tracked anything, so cross-process nodes had no embed signal at all."""
+        cog_dir = tmp_path / ".cognition"
+        store_a = CognitionStorage(cog_dir)
+        store_b = CognitionStorage(cog_dir)
+
+        store_b.add_node(self._node("b1", author="bob"))
+        assert "b1" not in store_a._graph  # not caught up yet
+
+        assert store_a.has_node("b1")  # triggers catch-up
+        assert "b1" in store_a.pop_replayed_node_ids()
+
+    def test_pop_replayed_node_ids_drains_and_clears(self, tmp_path):
+        """Second pop (nothing new replayed) returns empty -- it's a drain,
+        not an idempotent read."""
+        cog_dir = tmp_path / ".cognition"
+        store = CognitionStorage(cog_dir)
+        store.add_node(self._node("n1"))
+        store.has_node("n1")  # own-write catch-up queues it too (by design)
+
+        first = store.pop_replayed_node_ids()
+        assert "n1" in first
+        assert store.pop_replayed_node_ids() == []
+
+    def test_pop_replayed_node_ids_empty_when_nothing_replayed(self, tmp_path):
+        cog_dir = tmp_path / ".cognition"
+        store = CognitionStorage(cog_dir)
+        assert store.pop_replayed_node_ids() == []
+
     def test_repeated_ops_do_not_double_count(self, tmp_path):
         """Catch-up replays each journal line at most once (offset guards it)."""
         cog_dir = tmp_path / ".cognition"

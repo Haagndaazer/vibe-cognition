@@ -244,8 +244,12 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
             # E-3 one-time migration: if the collection lacks the doc-prefix-v1 marker,
             # drop and recreate it so the sync below rebuilds all vectors document-prefixed.
             # Crash mid-rebuild self-heals: the additive sync re-adds only what's missing.
-            col_meta = cognition_embedding_storage._collection.metadata or {}
-            if col_meta.get("embed_scheme") != "doc-prefix-v1":
+            # live_embed_scheme() (WP-3, b35e15766c6b), NOT self._collection.metadata:
+            # a process-cached handle can go stale if another process already
+            # recreated the collection, which used to let two racing startups
+            # both decide "needs migration" and double-delete-recreate.
+            # recreate_collection() itself is file-locked against that race too.
+            if cognition_embedding_storage.live_embed_scheme() != "doc-prefix-v1":
                 logger.info("E-3 migration: recreating collection with doc-prefix stamp")
                 cognition_embedding_storage.recreate_collection()
 

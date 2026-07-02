@@ -16,6 +16,7 @@ from starlette.responses import FileResponse, JSONResponse
 from ..cognition import CognitionNodeType, delete_cognition_node
 from ..cognition.documents import documents_dir, text_sidecar_path
 from ..embeddings import adaptive_vector_search
+from ..tools.cognition_tools import _reembed_replayed_nodes
 
 _UNSAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 _SAFE_MEDIA_TYPE = re.compile(r"^[\w.+-]+/[\w.+-]+$")  # strict type/subtype, no params/CRLF
@@ -213,6 +214,14 @@ async def search(request):
     cognition_storage = lc["cognition_storage"]
 
     def _do_search():
+        # WP-3 (8606d59905a5): same drain cognition_search's home path runs —
+        # the dashboard has its own request pipeline (adaptive_vector_search
+        # directly, not through cognition_search), so without this a
+        # teammate's replayed node would stay invisible in dashboard search
+        # until an MCP search happened to run first. The dashboard is always
+        # home-only (no project routing), so this is an unambiguous 1:1 fit —
+        # no foreign-store-write scoping question like the MCP side has.
+        _reembed_replayed_nodes(cognition_storage, embed_storage, generator)
         vector = generator.generate_query_embedding(query)
 
         def _dedupe(hits: list[dict], lim: int) -> list[dict]:

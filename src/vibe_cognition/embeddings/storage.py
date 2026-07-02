@@ -9,6 +9,8 @@ from typing import Any
 import chromadb
 from chromadb.config import Settings
 
+from ..cognition.git_hygiene import _acquire_lock, _release_lock
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,6 +37,7 @@ class ChromaDBStorage:
             embedding_dimensions: Dimension count to stamp alongside embedding_model.
         """
         persist_directory.mkdir(parents=True, exist_ok=True)
+        self._persist_directory = persist_directory
         # anonymized_telemetry=False: defense-in-depth against ChromaDB's
         # PostHog telemetry (audit E-1). At our pinned chromadb 1.5.5 this is
         # inert (the telemetry client is a no-op stub), but chromadb 0.5-0.6.x —
@@ -49,6 +52,26 @@ class ChromaDBStorage:
             collection_meta["embedding_model"] = embedding_model
         if embedding_dimensions is not None:
             collection_meta["embedding_dimensions"] = embedding_dimensions
+
+        # Stamp embed_scheme=doc-prefix-v1 ONLY when we are about to CREATE the
+        # collection (WP-3, b35e15766c6b): a brand-new install writes vectors
+        # document-prefixed from day one, so it needs no E-3 migration. An
+        # EXISTING collection's metadata is preserved as-is by
+        # get_or_create_collection (chromadb silently drops new metadata keys
+        # on an existing collection — see the embedding_model note above), so a
+        # legacy un-stamped collection stays un-stamped here; that absence is
+        # exactly the signal recreate_collection()'s one-time migration keys
+        # off. Without this, EVERY fresh install used to trigger the migration
+        # unnecessarily (nothing to migrate), and two same-project sessions
+        # racing it in the model-load window could both drop+recreate.
+        try:
+            self._client.get_collection(name=collection_name)
+            is_new = False
+        except Exception:
+            is_new = True
+        if is_new:
+            collection_meta["embed_scheme"] = "doc-prefix-v1"
+
         self._collection_name = collection_name
         self._base_meta = collection_meta
         self._collection = self._client.get_or_create_collection(
@@ -57,24 +80,75 @@ class ChromaDBStorage:
         )
         logger.info(f"ChromaDB initialized at {persist_directory}")
 
+    def live_embed_scheme(self) -> str | None:
+        """Fresh (not process-cached) read of the collection's embed_scheme.
+
+        NOT ``self._collection.metadata`` — that Python-side handle's metadata
+        is a snapshot from whenever this object last created/attached to the
+        collection, and chromadb's PersistentClient does not auto-refresh it.
+        If ANOTHER process recreated the collection since, this handle's cached
+        metadata is stale — exactly the "process-local startup-frozen metadata
+        snapshot" bug (b35e15766c6b) that let two racing startups both decide
+        "needs migration" and double-delete-recreate. Re-queries the client
+        instead. Never raises (absent collection -> None).
+        """
+        try:
+            return (self._client.get_collection(name=self._collection_name).metadata or {}).get(
+                "embed_scheme"
+            )
+        except Exception:
+            return None
+
     def recreate_collection(self) -> None:
         """Drop and recreate the collection, stamping embed_scheme=doc-prefix-v1.
 
         Used by the E-3 one-time migration: deletes all stale query-prefixed
-        vectors so the startup sync can rebuild them document-prefixed.  The
-        try/except on delete is defensive (collection may be absent on a brand-new
-        install — not an error).  After recreate the stamp is permanent; the
-        server bg-thread checks for it before calling this method so it only ever
+        vectors so the startup sync can rebuild them document-prefixed. After
+        recreate the stamp is permanent; the server bg-thread checks
+        ``live_embed_scheme()`` before calling this method so it only ever
         runs once per data directory.
+
+        File-locked (WP-3, b35e15766c6b — mirrors git_hygiene._acquire_lock /
+        _release_lock) so two same-project processes racing this in the
+        model-load window can't both drop+recreate: the second would silently
+        wipe the first's freshly-synced vectors. On lock contention this
+        process does NOT perform its own drop+recreate (that IS the race) — it
+        just re-attaches via get_or_create_collection to whatever the lock
+        holder leaves behind (existing-collection metadata is untouched by
+        get_or_create, so this is an attach, not a second migration). Also
+        re-checks the LIVE embed_scheme after acquiring the lock, since another
+        process may have completed the migration while this one waited.
         """
-        with contextlib.suppress(Exception):
-            self._client.delete_collection(self._collection_name)
-        stamp_meta = {**self._base_meta, "embed_scheme": "doc-prefix-v1"}
-        self._collection = self._client.get_or_create_collection(
-            name=self._collection_name,
-            metadata=stamp_meta,
-        )
-        logger.info("Collection recreated with doc-prefix-v1 stamp")
+        lock_path = self._persist_directory / ".recreate-embed-scheme.lock"
+        if not _acquire_lock(lock_path):
+            logger.info(
+                "recreate_collection: lock held by another process; attaching "
+                "to its result instead of racing a second drop+recreate"
+            )
+            self._collection = self._client.get_or_create_collection(
+                name=self._collection_name,
+                metadata=self._base_meta,
+            )
+            return
+        try:
+            if self.live_embed_scheme() == "doc-prefix-v1":
+                # Another process finished the migration while we waited for
+                # the lock — just attach, don't drop a freshly-migrated collection.
+                self._collection = self._client.get_or_create_collection(
+                    name=self._collection_name,
+                    metadata=self._base_meta,
+                )
+                return
+            with contextlib.suppress(Exception):
+                self._client.delete_collection(self._collection_name)
+            stamp_meta = {**self._base_meta, "embed_scheme": "doc-prefix-v1"}
+            self._collection = self._client.get_or_create_collection(
+                name=self._collection_name,
+                metadata=stamp_meta,
+            )
+            logger.info("Collection recreated with doc-prefix-v1 stamp")
+        finally:
+            _release_lock(lock_path)
 
     def upsert_embedding(
         self,

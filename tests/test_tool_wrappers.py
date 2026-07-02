@@ -316,6 +316,36 @@ def test_cognition_search_not_ready_returns_error_dict(tmp_path, mock_mcp, build
     assert result.get("status") == "loading_embeddings"
 
 
+def test_cognition_search_not_ready_does_not_drain_replay_queue(
+    tmp_path, mock_mcp, build_lc, make_ctx
+):
+    """WP-3: the replayed-node queue must SURVIVE a not-ready search, not be
+    silently dropped -- the drain only happens once require_embeddings passes
+    (_reembed_replayed_nodes is called after the gate, never before), so a
+    node queued while the model is still loading is still there once it's
+    ready. Fails-before: if the drain ran before the gate check, or if the
+    gate path touched pop_replayed_node_ids() at all, the queued id would be
+    lost and never re-embedded once the model came up.
+    """
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=False)
+    ctx = make_ctx(lc)
+    storage: CognitionStorage = lc["cognition_storage"]
+
+    # Simulate a teammate's write landing while the model is still loading.
+    other = CognitionStorage(storage.cognition_dir)
+    other.add_node(_node("teammate-node"))
+    assert storage.has_node("teammate-node")  # catch-up queues it
+
+    result = mock_mcp.tools["cognition_search"](ctx, query="alpha")  # type: ignore[arg-type]
+    assert "error" in result, "gate should still block (not ready)"
+
+    pending = storage.pop_replayed_node_ids()
+    assert "teammate-node" in pending, (
+        "replay queue must survive a not-ready search, not be silently dropped"
+    )
+
+
 def test_cognition_search_ready_returns_result_shape(tmp_path, mock_mcp, build_lc, make_ctx):
     """cognition_search: when embedding_ready is set, gate passes and shape is correct.
 
