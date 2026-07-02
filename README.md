@@ -90,7 +90,7 @@ The plugin bundles everything needed — no manual configuration required:
 | **MCP Server** | 29 tools for recording, searching, querying, and visualizing the knowledge graph |
 | `/vibe-cognition` skill | Teaches Claude when and how to capture decisions, failures, discoveries, patterns |
 | `/vibe-curate` skill | Curates semantic edges and identifies clusters using edge-analyzer and cluster-analyzer subagents |
-| `/vibe-backfill` skill | Backfills the cognition graph from git commit history |
+| `/vibe-backfill` skill | Backfills the cognition graph from git commit history (watermark-based — finds everything untracked since the last backfilled commit, however old) |
 | `/vibe-dashboard` skill | Launches the local graph dashboard via the `cognition_dashboard` MCP tool |
 | **SessionStart hook** | Injects recent project context (constraints, patterns, decisions, incidents) at session start |
 
@@ -467,6 +467,23 @@ uv run ruff check .
 # Run type checking
 uv run pyright
 ```
+
+### Standalone CLIs (from a checkout of this repo)
+
+Like `vibe-cognition-dashboard` (see [Dashboard](#dashboard)), these run from a
+clone of this repo via `uv run --directory /path/to/vibe-cognition ...` and are
+NOT dependencies of your project:
+
+- **`vibe-cognition-backfill`** — a plain report (no LLM extraction) of git
+  commits not yet tracked as episode nodes, over a FIXED 30-day window. This
+  is a narrower, scriptable alternative to the `/vibe-backfill` skill, not a
+  substitute for it — the skill finds the watermark (the newest tracked
+  episode's commit reference) and walks forward however far back that is; the
+  CLI never looks further back than 30 days, so an untracked commit older
+  than that is invisible to it. Prefer the skill for a graph that hasn't been
+  backfilled recently.
+- **`vibe-cognition-prime`** — prints the same session-start context digest
+  the SessionStart hook injects automatically; useful for previewing it by hand.
 
 ## License
 

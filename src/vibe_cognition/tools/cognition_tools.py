@@ -29,6 +29,7 @@ from ..cognition.documents import (
     add_gitignore_entry,
     blob_path,
     blob_rel_path,
+    cheap_staleness_signal,
     doc_ref,
     gitignore_has_entry,
     read_text_sidecar,
@@ -439,6 +440,13 @@ def _format_search_results(
     D2 dedupe: a document yields many ``<node_id>#chunk-N`` hits; collapse them to one
     result keyed on the NODE id (results arrive score-desc from vector_search, so the
     FIRST hit per node is the best), carrying its chunk text as ``matched_excerpt``.
+
+    WP-12 (db65f1568fa5): a DOCUMENT hit ALSO gets a cheap ``staleness`` key (stat-only,
+    no file read — see ``cheap_staleness_signal``) when the cheap check finds something.
+    This is a MUCH weaker signal than ``cognition_get_document``'s full re-hash
+    ``freshness`` field (a same-size content edit isn't caught) — deliberately, so search
+    cost never scales with re-reading every matched document's full referenced file.
+
     Returns at most ``limit`` deduped nodes."""
     formatted: list[dict[str, Any]] = []
     seen_nodes: set[str] = set()
@@ -450,9 +458,10 @@ def _format_search_results(
         if node_id in seen_nodes:  # keep only the best (first) hit per node
             continue
         seen_nodes.add(node_id)
+        node_type = r.get("entity_type")
         entry: dict[str, Any] = {
             "id": node_id,  # the NODE id, never the chunk id
-            "node_type": r.get("entity_type"),
+            "node_type": node_type,
             "summary": r.get("summary") or r.get("name"),
             "author": r.get("author"),
             "timestamp": r.get("timestamp"),
@@ -460,6 +469,12 @@ def _format_search_results(
             "context": r.get("context", ""),
             "score": r.get("score"),
         }
+        if node_type == CognitionNodeType.DOCUMENT.value:
+            doc_node = storage.get_node(node_id)  # cheap: in-memory graph lookup
+            if doc_node:
+                staleness = cheap_staleness_signal(doc_node.get("metadata", {}))
+                if staleness:
+                    entry["staleness"] = staleness
         matched = r.get("matched_text")
         if matched:
             entry["matched_excerpt"] = matched[:_MATCHED_EXCERPT_LEN]
@@ -607,22 +622,28 @@ def _materialize_blob(
         eff_local = True
         warnings.append(f"size {size}B >= 50MB: auto local_only (exceeds GitHub push limit)")
 
+    status: dict[str, Any] = {}
+    already_committed = eff_local and blob_existed and not was_ignored
+    if eff_local and already_committed:
+        # Already on the default-commit track. A .gitignore line here would be
+        # INERT (git keeps tracking an already-tracked file), so don't write a
+        # misleading one — just warn that local_only can't retroactively un-publish.
+        status["already_committed"] = True
+        warnings.append(
+            "blob is on the default-commit track; local_only cannot retroactively "
+            "un-publish a committed blob (git history retains it)"
+        )
+    elif eff_local:
+        # WP-12 (07fdfe725e7f): gitignore BEFORE the blob write, not after — the
+        # previous order left a brief window where a privacy-intended local_only
+        # blob sat unignored on disk; a coincident `git add`/commit in that window
+        # could have published it. was_ignored/blob_existed above were already
+        # computed pre-write, so this reorder changes nothing else.
+        add_gitignore_entry(cognition_dir, blob_rel)
+
     write_blob(cognition_dir, sha, ext, data=data, src_path=src)
 
-    status: dict[str, Any] = {}
-    if eff_local:
-        if blob_existed and not was_ignored:
-            # Already on the default-commit track. A .gitignore line here would be
-            # INERT (git keeps tracking an already-tracked file), so don't write a
-            # misleading one — just warn that local_only can't retroactively un-publish.
-            status["already_committed"] = True
-            warnings.append(
-                "blob is on the default-commit track; local_only cannot retroactively "
-                "un-publish a committed blob (git history retains it)"
-            )
-        else:
-            add_gitignore_entry(cognition_dir, blob_rel)
-    elif remove_gitignore_entry(cognition_dir, blob_rel):
+    if not eff_local and remove_gitignore_entry(cognition_dir, blob_rel):
         status["promoted"] = True
     return eff_local, status, warnings
 
@@ -757,6 +778,21 @@ def _store_document(
                     result["warnings"] = warnings
             return result
 
+    # WP-12 (db65f1568fa5): OFFER (never auto-create) a supersedes linkage when this
+    # store is a re-store of a CHANGED file at a path some EXISTING document node
+    # already references (same path, different sha — the dedup loop above already
+    # returned early for the "same sha" case, so reaching here means either this path
+    # is new or its content genuinely changed). Manual-only linking is the recorded
+    # design (e752ff313ad7 §8d) — this only surfaces the prior node id + a note; the
+    # caller decides whether to add the edge via cognition_add_edge.
+    prior_version_id: str | None = None
+    if source_path:
+        for doc in storage.get_nodes_by_type(CognitionNodeType.DOCUMENT):
+            dmeta = doc.get("metadata", {})
+            if dmeta.get("path") == source_path and dmeta.get("sha256") != sha:
+                prior_version_id = doc["id"]
+                break
+
     indexed_chars = write_text_sidecar(cognition_dir, sha, document_text)
 
     # Copy mode (new node): materialize the blob + resolve git policy now, so the
@@ -822,7 +858,7 @@ def _store_document(
         _embed_document(embedding_storage, generator, node_id, title,
                         document_text[:2000], document_text)
 
-    return {
+    result = {
         "node_id": node_id,
         "doc_ref": ref,
         "mode": mode,
@@ -830,6 +866,16 @@ def _store_document(
         "indexed_text_chars": indexed_chars,
         **blob_result,
     }
+    if prior_version_id:
+        result["prior_version_id"] = prior_version_id
+        result["consider_supersedes"] = (
+            f"a prior document node ({prior_version_id}) exists at this same path "
+            "with different content — this was NOT auto-linked (manual-only by "
+            f"design); if this is genuinely a new version, link it yourself: "
+            f"cognition_add_edge(from_id='{node_id}', to_id='{prior_version_id}', "
+            "edge_type='supersedes')"
+        )
+    return result
 
 
 def _get_document(
@@ -982,6 +1028,12 @@ def _update_node(
 # Status vocabulary (locked clarifier 6). ``open`` is the seeded default.
 _TASK_STATUSES: tuple[str, ...] = ("open", "in_progress", "blocked", "done", "cancelled")
 
+# Priority vocabulary (WP-12, 4ae72cafb48c) — derived from SEVERITY_ORDER's keys (the
+# dict priority is stored under, via `severity=priority`) so the two can't drift apart.
+# Previously unvalidated: a typo like "urgent"/"P0" silently fell into the "normal" sort
+# band (SEVERITY_ORDER.get(..., 2) fallback) and evaded priority= filters silently.
+_TASK_PRIORITIES: tuple[str, ...] = tuple(SEVERITY_ORDER)
+
 # Legal status transitions. Reopen (done/cancelled → open) is intentionally allowed —
 # real backlogs reopen work. Kept small and in ONE constant so the tool + tests share it.
 _TASK_TRANSITIONS: dict[str, frozenset[str]] = {
@@ -1039,6 +1091,9 @@ def _add_task(
     ``part_of`` edge when ``parent_id`` is given, and embeds (status/owner surfaced via
     the shared _embed_entity_node path). ``priority`` is stored as the node's
     ``severity`` so it sorts via SEVERITY_ORDER for free."""
+    if priority not in _TASK_PRIORITIES:
+        return {"error": f"Invalid priority '{priority}'. Valid: {list(_TASK_PRIORITIES)}"}
+
     lc = get_lifespan(ctx)
     storage: CognitionStorage = lc["cognition_storage"]
     embedding_storage: ChromaDBStorage = lc["cognition_embedding_storage"]
@@ -1278,6 +1333,11 @@ def _update_task(
                 "cognition_update_node for non-task nodes"
             )
         }
+
+    # Validate priority BEFORE any mutation (same discipline as status/note below) so an
+    # invalid priority never half-applies alongside a valid status/owner/parent change.
+    if priority is not None and priority not in _TASK_PRIORITIES:
+        return {"error": f"Invalid priority '{priority}'. Valid: {list(_TASK_PRIORITIES)}"}
 
     metadata = dict(node.get("metadata", {}))  # copy for read-modify-write
     metadata_changed = False
@@ -1805,7 +1865,13 @@ def register_cognition_tools(mcp) -> None:
 
         Returns:
             {node_id, doc_ref, mode, size, indexed_text_chars, already_stored?,
-             blob_bytes?, blob_path?, local_only?, promoted?, already_committed?, warnings?}
+             blob_bytes?, blob_path?, local_only?, promoted?, already_committed?, warnings?,
+             prior_version_id?, consider_supersedes?}
+            prior_version_id/consider_supersedes (WP-12, db65f1568fa5) appear ONLY when
+            file_path pointed at a path some EXISTING document node already references,
+            with DIFFERENT content (sha changed) — a re-store of a changed file. This is
+            an OFFER, never automatic: no supersedes edge is created for you; link it
+            yourself with cognition_add_edge if this genuinely is a new version.
         """
         lifespan = get_lifespan(ctx)
         storage: CognitionStorage = lifespan["cognition_storage"]
@@ -1994,6 +2060,14 @@ def register_cognition_tools(mcp) -> None:
                                          # (the raw graph attribute name). The two
                                          # families are NOT interchangeable; branching
                                          # code must key off the right one per tool.
+                                         # A "document" hit ALSO gets "staleness":
+                                         # "path_missing"/"size_changed" when a CHEAP
+                                         # (stat-only, no file read) check catches
+                                         # something -- omitted otherwise. Weaker than
+                                         # cognition_get_document's full re-hash
+                                         # "freshness" field (misses a same-size edit);
+                                         # deliberately cheap so search cost doesn't
+                                         # scale with re-reading every matched document.
               ],
               count: int,
               project_notes: {           # project != None only; omitted when empty

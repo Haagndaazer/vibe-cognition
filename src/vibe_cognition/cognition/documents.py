@@ -14,6 +14,10 @@ import re
 import shutil
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .storage import CognitionStorage  # avoid the real circular import at runtime
 
 _DOC_REF_PREFIX = "doc:"
 _DOC_REF_SHA_LEN = 12
@@ -189,3 +193,92 @@ def remove_gitignore_entry(cognition_dir: Path, rel_path: str) -> bool:
         ("\n".join(kept) + "\n") if kept else "", encoding="utf-8"
     )
     return True
+
+
+# ── Orphaned artifact discovery (WP-12, d999b4e3851a) ─────────────────────────
+
+_SHA256_HEX_LEN = 64  # len(hashlib.sha256(...).hexdigest())
+
+
+def find_orphaned_document_artifacts(cognition_dir: Path, storage: "CognitionStorage") -> list[str]:
+    """Find sidecar/blob files under ``documents/`` that no DOCUMENT node references.
+
+    ``_store_document`` writes the text sidecar (and, in copy mode, the blob)
+    BEFORE minting/journaling the node — its metadata (``indexed_text_chars``,
+    ``blob_path``, ``local_only``) is only known once those writes complete, so
+    journaling the node first would need a larger two-phase (pending-then-update)
+    restructure. A crash between an artifact write and the node mint leaves an
+    ownerless file with no reclaim path today — ``delete_cognition_node``'s
+    reclaim only walks DOWN from an existing node, it never scans ``documents/``
+    for files no node claims.
+
+    Discovery only — never deletes. Callers decide whether/how to act on the
+    result; reclaiming here would mean unlinking data with no way to first rule
+    out "another process is mid-write" the way the (regenerable) ChromaDB orphan
+    sweep can. Best-effort: any filesystem error scanning a subdirectory yields
+    "no orphans found there" rather than raising — this must never block startup.
+
+    Returns relative paths (from ``cognition_dir``), sorted, empty if none.
+    """
+    orphans: list[str] = []
+    doc_dir = documents_dir(cognition_dir)
+
+    # Sidecars: documents/text/<sha>.txt
+    try:
+        sidecar_files = list((doc_dir / "text").glob("*.txt"))
+    except OSError:
+        sidecar_files = []
+    for f in sidecar_files:
+        sha = f.stem
+        if len(sha) == _SHA256_HEX_LEN and not storage.documents_with_sha(sha):
+            orphans.append(str(f.relative_to(cognition_dir)))
+
+    # Blobs: documents/<sha[:2]>/<sha><ext>
+    try:
+        shard_dirs = [d for d in doc_dir.iterdir() if d.is_dir() and d.name != "text"]
+    except OSError:
+        shard_dirs = []
+    for shard in shard_dirs:
+        try:
+            shard_files = [f for f in shard.iterdir() if f.is_file()]
+        except OSError:
+            continue
+        for f in shard_files:
+            if len(f.name) < _SHA256_HEX_LEN:
+                continue  # not a content-addressed blob filename; ignore
+            sha = f.name[:_SHA256_HEX_LEN]
+            if not storage.documents_with_sha(sha):
+                orphans.append(str(f.relative_to(cognition_dir)))
+
+    return sorted(orphans)
+
+
+# ── Cheap staleness signal (WP-12, db65f1568fa5) ──────────────────────────────
+
+
+def cheap_staleness_signal(metadata: dict) -> str | None:
+    """Stat-only (no file read) staleness check for a document's referenced
+    source path — for surfacing in cognition_search results, where re-hashing
+    every document hit (cognition_get_document's full ``freshness`` check,
+    which reads the ENTIRE file) would make search cost scale with how many
+    documents it happened to match.
+
+    This is intentionally a WEAKER guarantee than get_document's freshness:
+    it can only ever detect the path being GONE or a SIZE difference (both
+    O(1) syscalls, no read) — a same-size content edit is invisible to it.
+    Returns "path_missing", "size_changed", or None (either no path to check,
+    or the cheap check found nothing — NOT a confirmation of freshness; use
+    cognition_get_document's freshness field for that).
+    """
+    path = metadata.get("path")
+    if not path:
+        return None
+    p = Path(path)
+    try:
+        if not p.is_file():
+            return "path_missing"
+        if p.stat().st_size != metadata.get("size"):
+            return "size_changed"
+    except OSError:
+        return "path_missing"
+    return None

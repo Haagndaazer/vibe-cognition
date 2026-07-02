@@ -10,6 +10,14 @@ Finds recent commits on the main branch that don't have corresponding episode no
 
 What you extract is ultimately for YOUR benefit as an agent — store what would be most helpful to you in future sessions when you need to retrieve context about the project.
 
+There is also a standalone `vibe-cognition-backfill` CLI (a plain report, no
+LLM extraction) for quick/scripted checks. It is NOT a substitute for this
+skill for a graph that hasn't been touched in a while: this skill finds the
+WATERMARK (the newest tracked episode's commit reference) and walks forward
+from there, however old, while the CLI only ever checks a fixed 30-day
+window — an untracked commit older than that is invisible to the CLI but
+would still be found by this skill.
+
 ## Concurrency Rules
 
 - **Maximum 5 subagents running at a time.** Each subagent handles a chunk of ~5-10 commits.

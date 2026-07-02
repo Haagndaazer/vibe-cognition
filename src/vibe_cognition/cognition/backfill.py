@@ -77,6 +77,21 @@ def main():
 
     Reports git commits without corresponding episode nodes, with
     instructions for creating episodes and entity nodes from them.
+
+    WP-12 (b9af2e60fe19): this CLI's window is a FIXED 30-day lookback
+    (``_get_recent_commits``'s ``days`` default) — it never checks how long
+    ago the graph was last backfilled. The ``/vibe-backfill`` skill instead
+    finds a WATERMARK (the newest tracked episode's ``commit:`` reference)
+    and walks forward from there via ``git log <watermark>..HEAD``, so it
+    surfaces everything untracked regardless of age. These are genuinely
+    different mechanisms, not a bug in either: a commit older than 30 days
+    that was never backfilled is invisible to THIS CLI (it filters already-
+    tracked commits out of the 30-day window, but never looks further back
+    than that window in the first place) even though the skill would still
+    find it. Prefer ``/vibe-backfill`` for a graph that hasn't been touched
+    in a while; this CLI suits quick/scripted checks on an actively-
+    maintained graph where a 30-day window is plausible. (A ``--days`` flag
+    to override the window is tracked separately, not yet implemented here.)
     """
     repo_path = resolve_repo_path_env()
     cognition_dir = repo_path / ".cognition"
@@ -97,10 +112,15 @@ def main():
     tracked_count = len(commits) - len(untracked)
 
     if not untracked:
-        print(f"All {len(commits)} recent commits are already tracked.")
+        print(
+            f"All {len(commits)} recent commits (last 30 days) are already tracked. "
+            "Note: this only checked the last 30 days — an older untracked commit "
+            "would not be found by this CLI; use /vibe-backfill for a full sweep "
+            "back to the graph's actual watermark."
+        )
         sys.exit(0)
 
-    print(f"# Untracked Commits ({len(untracked)} found, {tracked_count} already tracked)")
+    print(f"# Untracked Commits ({len(untracked)} found, {tracked_count} already tracked, last 30 days only)")
     print()
 
     for commit in untracked:

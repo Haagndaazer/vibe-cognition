@@ -8,7 +8,7 @@ from typing import Any
 from fastmcp import FastMCP
 
 from .cognition import CognitionNodeType, CognitionStorage
-from .cognition.documents import read_text_sidecar
+from .cognition.documents import find_orphaned_document_artifacts, read_text_sidecar
 from .config import Settings, setup_logging
 from .embeddings import ChromaDBStorage, EmbeddingGenerator
 from .instructions import SERVER_INSTRUCTIONS
@@ -318,6 +318,26 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
         cognition_storage = context.get("cognition_storage")
         if cognition_storage:
             _create_deterministic_edges_for_edgeless(cognition_storage)
+
+        # WP-12 (d999b4e3851a): log-only sweep for document sidecar/blob files no
+        # node references (a crash between _store_document's artifact writes and
+        # its node mint orphans them — see find_orphaned_document_artifacts'
+        # docstring for why this is discovery-only, never auto-reclaimed). Cheap
+        # (a directory walk), runs once at background-init time; never blocks
+        # startup or raises.
+        if cognition_storage:
+            try:
+                orphans = find_orphaned_document_artifacts(
+                    cognition_storage.cognition_dir, cognition_storage
+                )
+                if orphans:
+                    logger.warning(
+                        f"Found {len(orphans)} orphaned document artifact(s) with no "
+                        f"owning node (not auto-deleted, review manually): {orphans[:10]}"
+                        + ("..." if len(orphans) > 10 else "")
+                    )
+            except Exception as e:  # pragma: no cover - defensive, must never block startup
+                logger.warning(f"Orphaned-document-artifact sweep failed: {e}")
 
         # Sync cognition embeddings (backfill any missing from JSONL)
         cognition_embedding_storage = context.get("cognition_embedding_storage")

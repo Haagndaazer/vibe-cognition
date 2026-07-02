@@ -7,7 +7,9 @@ import vibe_cognition.tools.cognition_tools as ct
 from vibe_cognition.cognition.documents import (
     blob_path,
     blob_rel_path,
+    cheap_staleness_signal,
     documents_dir,
+    find_orphaned_document_artifacts,
     gitignore_has_entry,
     sanitize_extension,
     sha256_bytes,
@@ -324,6 +326,59 @@ def test_get_document_freshness_modified_and_missing(tmp_path):
     assert _get_document(s, node_id=res["node_id"])["freshness"] == "missing", "missing not detected"
 
 
+def test_restore_changed_file_offers_supersedes_link(tmp_path):
+    """WP-12 (db65f1568fa5): re-storing a file at the SAME path with DIFFERENT
+    content (new sha) offers a supersedes link -- prior_version_id + a
+    consider_supersedes note -- WITHOUT creating the edge itself (manual-only
+    is the recorded design).
+
+    Fails-before: no such offer existed; the two document nodes at the same
+    path sat completely unlinked with no signal a curator could act on.
+    """
+    s = CognitionStorage(tmp_path / "cog")
+    doc = tmp_path / "f.txt"
+    doc.write_bytes(b"version one")
+    first = _store_document(s, title="d", document_text="v1", context="", author="t",
+                            file_path=str(doc))
+    assert "prior_version_id" not in first  # nothing prior on the first store
+
+    doc.write_bytes(b"version two, genuinely different content")
+    second = _store_document(s, title="d", document_text="v2", context="", author="t",
+                             file_path=str(doc))
+
+    assert second["prior_version_id"] == first["node_id"]
+    assert "consider_supersedes" in second
+    assert first["node_id"] in second["consider_supersedes"]
+    assert second["node_id"] in second["consider_supersedes"]
+    # Never auto-created -- the two nodes must have NO edge between them yet.
+    assert not any(
+        tid == first["node_id"] for tid, _ in s.get_successors(second["node_id"])
+    )
+
+
+def test_first_store_at_path_has_no_supersedes_offer(tmp_path):
+    """A brand-new path with no prior document node gets no offer at all."""
+    s = CognitionStorage(tmp_path / "cog")
+    doc = tmp_path / "f.txt"
+    doc.write_bytes(b"only version")
+    res = _store_document(s, title="d", document_text="v1", context="", author="t",
+                          file_path=str(doc))
+    assert "prior_version_id" not in res
+    assert "consider_supersedes" not in res
+
+
+def test_content_text_store_never_offers_supersedes(tmp_path):
+    """content_text-sourced stores have no path at all -- the check must not
+    run (and must not crash) for them."""
+    s = CognitionStorage(tmp_path / "cog")
+    first = _store_document(s, title="d", document_text="v1", context="", author="t",
+                            content_text="version one")
+    second = _store_document(s, title="d", document_text="v2", context="", author="t",
+                             content_text="version two")
+    assert "prior_version_id" not in first
+    assert "prior_version_id" not in second
+
+
 def test_document_metadata_survives_journal_replay(tmp_path):
     """Cross-process seam: the metadata dict (sha256, path, mode) must round-trip
     through the JSONL journal — a SECOND storage instance replaying the same
@@ -466,6 +521,37 @@ def test_copy_mode_local_only_writes_gitignore(tmp_path):
     assert res["local_only"] is True
     assert gitignore_has_entry(s.cognition_dir, res["blob_path"]), "local_only blob not gitignored"
     assert gitignore_has_entry(s.cognition_dir, ".gitignore"), ".gitignore is not self-ignoring"
+
+
+def test_local_only_gitignore_entry_lands_before_blob_write(tmp_path, monkeypatch):
+    """WP-12 (07fdfe725e7f): the .gitignore entry for a local_only blob must be
+    written BEFORE the blob file itself lands on disk -- otherwise there is a
+    window where the privacy-intended blob sits unignored, and a coincident
+    `git add`/commit in that window could publish it.
+
+    Fails-before: write_blob ran first, then add_gitignore_entry -- monkeypatching
+    write_blob to check gitignore state at call-time would have observed the
+    entry ABSENT, failing this assertion.
+    """
+    s = CognitionStorage(tmp_path / "cog")
+    seen_ignored_at_write_time = {}
+
+    real_write_blob = ct.write_blob
+
+    def _spy_write_blob(cognition_dir, sha, ext, **kwargs):
+        blob_rel = blob_rel_path(sha, ext)
+        seen_ignored_at_write_time["value"] = gitignore_has_entry(cognition_dir, blob_rel)
+        return real_write_blob(cognition_dir, sha, ext, **kwargs)
+
+    monkeypatch.setattr(ct, "write_blob", _spy_write_blob)
+
+    res = _store_document(s, title="d", document_text="x", context="", author="t",
+                          content_text="secret", store_copy=True, local_only=True)
+
+    assert res["local_only"] is True
+    assert seen_ignored_at_write_time.get("value") is True, (
+        "gitignore entry was not yet present when write_blob ran -- ordering regression"
+    )
 
 
 def test_copy_mode_size_policy_forces_local_only(tmp_path, monkeypatch):
@@ -856,3 +942,149 @@ def test_deleted_document_all_chunk_hits_drop(tmp_path):
     ]
     out = _format_search_results(hits, s, limit=10)
     assert out == [], "a deleted document's chunk hits were served (N1xdedupe compose failed)"
+
+
+# ── Orphaned document artifact discovery (WP-12, d999b4e3851a) ────────────────
+
+
+def test_find_orphaned_artifacts_none_after_normal_store(tmp_path):
+    """A normally-stored document's sidecar (and, in copy mode, blob) are owned
+    by its node -- the sweep must report zero orphans."""
+    s = CognitionStorage(tmp_path / "cog")
+    _store_document(s, title="d", document_text="hello world", context="", author="t",
+                     content_text="hello world", store_copy=True)
+    orphans = find_orphaned_document_artifacts(s.cognition_dir, s)
+    assert orphans == []
+
+
+def test_find_orphaned_sidecar_with_no_owning_node(tmp_path):
+    """A text sidecar written directly (simulating the write-before-journal crash
+    window _store_document has) with no node citing its sha must be flagged.
+
+    Fails-before: no scanner existed at all to find this class of file.
+    """
+    s = CognitionStorage(tmp_path / "cog")
+    sha = sha256_bytes(b"orphaned content")
+    sidecar = text_sidecar_path(s.cognition_dir, sha)
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    sidecar.write_text("orphaned content", encoding="utf-8")
+
+    orphans = find_orphaned_document_artifacts(s.cognition_dir, s)
+
+    assert len(orphans) == 1
+    assert orphans[0].replace("\\", "/") == f"documents/text/{sha}.txt"
+
+
+def test_find_orphaned_blob_with_no_owning_node(tmp_path):
+    """A copy-mode blob with no node citing its sha must be flagged."""
+    from vibe_cognition.cognition.documents import write_blob
+
+    s = CognitionStorage(tmp_path / "cog")
+    sha = sha256_bytes(b"orphan blob bytes")
+    write_blob(s.cognition_dir, sha, ".txt", data=b"orphan blob bytes")
+
+    orphans = find_orphaned_document_artifacts(s.cognition_dir, s)
+
+    assert len(orphans) == 1
+    assert orphans[0].replace("\\", "/") == f"documents/{sha[:2]}/{sha}.txt"
+
+
+def test_find_orphaned_artifacts_ignores_non_content_addressed_files(tmp_path):
+    """documents/.gitignore and other non-sha-named files must not be
+    misidentified as orphaned blobs (they're shorter than a sha256 hexdigest,
+    or live outside the shard-dir layout)."""
+    s = CognitionStorage(tmp_path / "cog")
+    _store_document(s, title="d", document_text="x", context="", author="t",
+                     content_text="x", store_copy=True, local_only=True)
+    # documents/.gitignore now exists (from the local_only store above) at the
+    # documents/ root, not inside a 2-char shard dir -- must not crash or flag it.
+    orphans = find_orphaned_document_artifacts(s.cognition_dir, s)
+    assert orphans == []
+
+
+def test_find_orphaned_artifacts_empty_when_no_documents_dir(tmp_path):
+    """No documents/ directory at all (never stored anything) -- empty, no error."""
+    s = CognitionStorage(tmp_path / "cog")
+    assert find_orphaned_document_artifacts(s.cognition_dir, s) == []
+
+
+# ── Cheap search staleness signal (WP-12, db65f1568fa5) ───────────────────────
+
+
+def test_cheap_staleness_signal_no_path_is_none():
+    """content_text-sourced documents have no path -- nothing to check."""
+    assert cheap_staleness_signal({"size": 5}) is None
+
+
+def test_cheap_staleness_signal_path_missing(tmp_path):
+    gone = tmp_path / "does_not_exist.txt"
+    assert cheap_staleness_signal({"path": str(gone), "size": 5}) == "path_missing"
+
+
+def test_cheap_staleness_signal_size_changed(tmp_path):
+    p = tmp_path / "f.txt"
+    p.write_text("this is now much longer than five bytes", encoding="utf-8")
+    assert cheap_staleness_signal({"path": str(p), "size": 5}) == "size_changed"
+
+
+def test_cheap_staleness_signal_unchanged_size_returns_none(tmp_path):
+    """Same size = no cheap signal -- NOT proof of no drift (a same-size edit
+    is invisible to this check by design), but the honest "nothing detected" case."""
+    p = tmp_path / "f.txt"
+    p.write_text("exact5", encoding="utf-8")  # 6 bytes
+    assert cheap_staleness_signal({"path": str(p), "size": 6}) is None
+
+
+def test_search_results_document_hit_carries_staleness_when_path_missing(tmp_path):
+    """WP-12 (db65f1568fa5): a search hit for a document whose referenced path
+    no longer exists carries "staleness": "path_missing" -- surfaced without a
+    full re-hash (unlike cognition_get_document's freshness field).
+
+    Fails-before: no scanner existed at all to find this class of file; search
+    results never carried a staleness key.
+    """
+    s = CognitionStorage(tmp_path / "cog")
+    gone_path = str(tmp_path / "gone.txt")
+    node = CognitionNode(
+        id="doc1", type=CognitionNodeType.DOCUMENT, summary="a doc", detail="d",
+        context=[], references=[], timestamp="2026-06-23T00:00:00+00:00", author="t",
+        metadata={"path": gone_path, "size": 10, "sha256": "abc123"},
+    )
+    s.add_node(node)
+
+    hits = [{"_id": "doc1", "entity_type": "document", "summary": "a doc"}]
+    out = _format_search_results(hits, s, limit=10)
+
+    assert len(out) == 1
+    assert out[0]["staleness"] == "path_missing"
+
+
+def test_search_results_non_document_hit_has_no_staleness_key(tmp_path):
+    """A non-document hit never gets a staleness key at all (not even None) --
+    keeps the common-case result shape unbloated."""
+    s = CognitionStorage(tmp_path / "cog")
+    s.add_node(_node("dec1", CognitionNodeType.DECISION, summary="a decision"))
+
+    hits = [{"_id": "dec1", "entity_type": "decision", "summary": "a decision"}]
+    out = _format_search_results(hits, s, limit=10)
+
+    assert len(out) == 1
+    assert "staleness" not in out[0]
+
+
+def test_search_results_document_hit_no_staleness_key_when_unchanged(tmp_path):
+    """A document whose path is unchanged (or content_text-sourced, no path at
+    all) gets no staleness key -- only a POSITIVE cheap finding is surfaced."""
+    s = CognitionStorage(tmp_path / "cog")
+    node = CognitionNode(
+        id="doc1", type=CognitionNodeType.DOCUMENT, summary="a doc", detail="d",
+        context=[], references=[], timestamp="2026-06-23T00:00:00+00:00", author="t",
+        metadata={"sha256": "abc123"},  # no "path" -- content_text-sourced
+    )
+    s.add_node(node)
+
+    hits = [{"_id": "doc1", "entity_type": "document", "summary": "a doc"}]
+    out = _format_search_results(hits, s, limit=10)
+
+    assert len(out) == 1
+    assert "staleness" not in out[0]

@@ -416,6 +416,47 @@ def test_update_task_rejects_unknown_status(build_lc, make_ctx, mock_mcp, tmp_pa
     assert "error" in result and "Invalid status" in result["error"]
 
 
+def test_add_task_rejects_invalid_priority(build_lc, make_ctx, mock_mcp, tmp_path):
+    """WP-12 (4ae72cafb48c): priority is validated like status, one function
+    away -- a typo like "urgent" must be rejected, not silently accepted and
+    sorted into the "normal" SEVERITY_ORDER band.
+
+    Fails-before: any string was written into severity unvalidated.
+    """
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    result = mock_mcp.tools["cognition_add_task"](
+        ctx, summary="t", detail="d", context="c", priority="urgent"
+    )
+    assert "error" in result and "Invalid priority" in result["error"]
+
+
+def test_add_task_rejects_p0_style_priority(build_lc, make_ctx, mock_mcp, tmp_path):
+    """The other example from the task write-up: "P0" must also be rejected."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    result = mock_mcp.tools["cognition_add_task"](
+        ctx, summary="t", detail="d", context="c", priority="P0"
+    )
+    assert "error" in result and "Invalid priority" in result["error"]
+
+
+def test_update_task_rejects_invalid_priority(build_lc, make_ctx, mock_mcp, tmp_path):
+    """Same guard on the update path -- a task's priority can't be corrupted
+    to an unfilterable value after creation either."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    result = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], priority="urgent")
+    assert "error" in result and "Invalid priority" in result["error"]
+    # Original priority must be untouched by the rejected update.
+    fetched = mock_mcp.tools["cognition_get_node"](ctx, node_id=t["id"])
+    assert fetched["severity"] == "normal"
+
+
 def test_update_task_rejects_illegal_jump(build_lc, make_ctx, mock_mcp, tmp_path):
     """done -> in_progress is not legal (must reopen first); rejected with a clear error."""
     register_cognition_tools(mock_mcp)
