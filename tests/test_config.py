@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from vibe_cognition.config import Settings, _default_repo_path
+from vibe_cognition.config import Settings, _default_repo_path, resolve_repo_path_env
 
 # ── _default_repo_path ────────────────────────────────────────────────────────
 
@@ -30,6 +30,34 @@ def test_default_repo_path_falls_back_to_cwd(monkeypatch):
     monkeypatch.delenv("CLAUDE_PROJECT_DIR", raising=False)
     result = _default_repo_path()
     assert result == Path.cwd()
+
+
+# ── WP-6 (b603f667130f): empty REPO_PATH must not silently misdirect ─────────
+
+
+def test_settings_empty_repo_path_env_ignored_falls_back_to_default(tmp_path, monkeypatch):
+    """An explicitly-empty REPO_PATH env var must be treated as ABSENT
+    (env_ignore_empty), not as an override -- pydantic-settings only invokes
+    the default_factory when the env var is fully unset, so without this,
+    REPO_PATH="" flows straight to the validator as "" and (via the
+    Path("") == Path(".") pathlib alias) silently resolves to the process's
+    cwd instead of the intended project.
+
+    Fails-before: without env_ignore_empty, Settings() would accept
+    repo_path="" and resolve to cwd, ignoring CLAUDE_PROJECT_DIR entirely.
+    """
+    monkeypatch.setenv("REPO_PATH", "")
+    monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(tmp_path))
+    s = Settings()
+    assert s.repo_path == tmp_path.resolve()
+
+
+def test_settings_env_file_not_configured():
+    """WP-6 (d4a153f23a4c): env_file is dropped (not pinned) -- a project-
+    level .env would be inert (resolved against the shared plugin cwd) and a
+    plugin-root .env would silently become global config for every project.
+    Config is env-var-only."""
+    assert Settings.model_config.get("env_file") is None
 
 
 # ── validate_repo_path ────────────────────────────────────────────────────────
@@ -59,6 +87,42 @@ def test_validate_repo_path_accepts_dir(tmp_path):
     """Settings.repo_path: valid directory is accepted and resolved."""
     s = Settings(repo_path=tmp_path)
     assert s.repo_path == tmp_path.resolve()
+
+
+def test_validate_repo_path_rejects_explicit_empty_string():
+    """WP-6 defense in depth: an explicit empty-string repo_path is rejected
+    with a clear error, not silently aliased to cwd via the
+    Path("") == Path(".") pathlib quirk -- exists()/is_dir() alone would NOT
+    catch this, since "." trivially exists and is a directory."""
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError, match="empty string"):
+        Settings(repo_path="")  # type: ignore[arg-type]
+
+
+# ── resolve_repo_path_env ─────────────────────────────────────────────────────
+
+
+def test_resolve_repo_path_env_reads_set_value(monkeypatch, tmp_path):
+    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    assert resolve_repo_path_env() == Path(str(tmp_path))
+
+
+def test_resolve_repo_path_env_empty_falls_back_to_default(monkeypatch, tmp_path):
+    """Fails-before (the exact bug WP-6 fixes across prime.py/backfill.py): a
+    naive os.environ.get("REPO_PATH", default) only falls back when the key
+    is ABSENT, not when it's present-but-empty."""
+    monkeypatch.setenv("REPO_PATH", "")
+    assert resolve_repo_path_env(default=tmp_path) == tmp_path
+
+
+def test_resolve_repo_path_env_absent_falls_back_to_default(monkeypatch, tmp_path):
+    monkeypatch.delenv("REPO_PATH", raising=False)
+    assert resolve_repo_path_env(default=tmp_path) == tmp_path
+
+
+def test_resolve_repo_path_env_absent_no_default_uses_cwd(monkeypatch):
+    monkeypatch.delenv("REPO_PATH", raising=False)
+    assert resolve_repo_path_env() == Path.cwd()
 
 
 # ── derived properties ────────────────────────────────────────────────────────

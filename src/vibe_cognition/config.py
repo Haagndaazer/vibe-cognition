@@ -20,12 +20,42 @@ def _default_repo_path() -> Path:
     return Path(env_dir) if env_dir else Path.cwd()
 
 
+def resolve_repo_path_env(*, default: Path | None = None) -> Path:
+    """Read the REPO_PATH env var directly, absent-OR-empty-safe.
+
+    THE single such read (WP-6, b603f667130f) — prime.py, backfill.py, and
+    dashboard/cli.py each read this independently for their standalone-CLI
+    entry points (they don't go through the full ``Settings`` class), and
+    only cli.py's ``or``-guarded read actually handled an explicitly-empty
+    value; the others used ``os.environ.get("REPO_PATH", Path.cwd())``, whose
+    default only fires when the KEY IS ABSENT — an explicitly-empty
+    ``REPO_PATH`` (e.g. an unresolved ``${CLAUDE_PROJECT_DIR}`` substitution)
+    passed straight through as ``""``. ``Path("")`` silently aliases to the
+    current working directory (a pathlib quirk — ``Path("") == Path(".")``),
+    which for the plugin's ``uv run --directory`` launch IS the plugin's own
+    install root, not the user's project: ``.cognition/`` would get created
+    in the wrong place, silently. (The ``Settings.repo_path`` field itself
+    gets the equivalent protection via ``env_ignore_empty`` below — this
+    helper is for the non-Settings entry points.)
+    """
+    value = os.environ.get("REPO_PATH")
+    if value:
+        return Path(value)
+    return default if default is not None else Path.cwd()
+
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
+        # No env_file: it would resolve against the process's cwd, which for
+        # every project's server is the SHARED plugin root (`uv run
+        # --directory`) — a project-level .env would be inert, and a
+        # plugin-root .env would silently become global config for every
+        # project (WP-6, d4a153f23a4c). Config is env-var-only; document that
+        # rather than resolve a per-project .env path (ambiguous/circular:
+        # repo_path isn't known until this class is built).
+        env_ignore_empty=True,  # WP-6 (b603f667130f): "" is absent, not an override
         extra="ignore",
     )
 
@@ -123,7 +153,25 @@ class Settings(BaseSettings):
     @field_validator("repo_path", mode="before")
     @classmethod
     def validate_repo_path(cls, v: str | Path) -> Path:
-        """Convert string to Path and validate it exists."""
+        """Convert string to Path and validate it exists.
+
+        WP-6 (b603f667130f) defense in depth: reject an explicitly-empty
+        string BEFORE it reaches ``Path()`` — ``Path("")`` silently aliases
+        to ``Path(".")`` (a pathlib quirk), which trivially exists and is a
+        directory, so the checks below would NOT have caught it; the
+        resolved cwd (the plugin's own install root under ``uv run
+        --directory``, not the user's project) would have passed straight
+        through. ``env_ignore_empty`` on ``model_config`` already stops an
+        empty ``REPO_PATH`` env var from reaching this validator in the
+        normal case; this catches it too if ``Settings`` is ever constructed
+        with an explicit empty value some other way.
+        """
+        if isinstance(v, str) and not v.strip():
+            raise ValueError(
+                "repo_path resolved to an empty string — Path('') silently "
+                "aliases to the current working directory (a pathlib quirk), "
+                "which is almost certainly NOT the intended project root"
+            )
         path = Path(v) if isinstance(v, str) else v
         if not path.exists():
             raise ValueError(f"Repository path does not exist: {path}")

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from ..config import Settings
+from ..config import Settings, resolve_repo_path_env
 from .git_hygiene import check_hygiene_state, format_hygiene_announce
 from .models import CognitionNodeType
 from .readme import ONBOARDING_BLOCK
@@ -240,7 +240,7 @@ def main():
     and injects its warning ahead of the project context when present.
     """
     note = os.environ.get("VIBE_MIGRATION_NOTE", "").strip()
-    repo_path = Path(os.environ.get("REPO_PATH", Path.cwd()))
+    repo_path = resolve_repo_path_env()
     cognition_dir = repo_path / ".cognition"
 
     sections: list[str] = []

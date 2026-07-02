@@ -14,7 +14,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from ..config import Settings, setup_logging
+from ..config import Settings, resolve_repo_path_env, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +86,7 @@ def main() -> int:
 
     setup_logging(args.log_level)
 
-    repo_path = args.repo_path or Path(os.environ.get("REPO_PATH") or Path.cwd())
+    repo_path = args.repo_path or resolve_repo_path_env()
     repo_path = repo_path.resolve()
 
     if not repo_path.exists() or not repo_path.is_dir():

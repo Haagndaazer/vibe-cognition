@@ -64,6 +64,13 @@ jobs:
       - name: Sync dependencies
         run: uv sync --locked --python ${{ matrix.python }}
 
+      # The release procedure requires bumping pyproject.toml and plugin.json
+      # together by hand (CLAUDE.md's Plugin Release Procedure) — nothing else
+      # asserts they stayed in sync, so a forgotten bump ships a plugin whose
+      # displayed version misrepresents the pinned code.
+      - name: version match (pyproject.toml <-> plugin.json)
+        run: uv run python .github/scripts/check_version_match.py
+
       - name: ruff
         run: uv run ruff check .
 

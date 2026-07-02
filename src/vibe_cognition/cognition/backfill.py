@@ -1,11 +1,11 @@
 """Backfill command — finds git commits without corresponding cognition episode nodes."""
 
 import logging
-import os
 import subprocess
 import sys
 from pathlib import Path
 
+from ..config import resolve_repo_path_env
 from .storage import CognitionStorage
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ def main():
     Reports git commits without corresponding episode nodes, with
     instructions for creating episodes and entity nodes from them.
     """
-    repo_path = Path(os.environ.get("REPO_PATH", Path.cwd()))
+    repo_path = resolve_repo_path_env()
     cognition_dir = repo_path / ".cognition"
 
     if not cognition_dir.exists():
