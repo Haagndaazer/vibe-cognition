@@ -37,6 +37,16 @@ Observed on Colton's Windows machine during the v0.12.0 firefight:
 Harms: unbounded resource leak (RAM/handles/processes); update-time corruption risk (running servers
 hold venv DLLs during `/plugin update` — ledger 19, cf. v0.7.3 incident).
 
+**Additional angle (fable-audit, bab6c5431a62):** an orphan that had launched the local
+dashboard (`cognition_dashboard`) doesn't just leak RAM/handles — it keeps a LIVE,
+token-gated, DELETE-capable HTTP listener on `127.0.0.1` for the orphan's entire
+lifetime (`dashboard/server.py`, a daemon thread with no liveness tie-in to its parent
+session). Since orphans have been observed persisting up to 3 days, this is a live
+attack surface window (bound to localhost and token-protected, so the practical risk is
+low, but it is a listener that can delete graph nodes, sitting unsupervised) — not just
+a resource leak. Any self-exit mechanism designed here should close this listener along
+with the process, not just free memory.
+
 > NOTE: the `add_task` hang in this firefight was the **git subprocess** bug (fixed v0.12.1, PR #33),
 > **not** this. The pileup is a separate reliability bug the firefight exposed.
 

@@ -1571,7 +1571,10 @@ def register_cognition_tools(mcp) -> None:
             detail: Brief rationale for entities (1-3 sentences), or full narrative for episodes
             context: Related code areas, file paths, AND topical terms (comma-separated).
                      Example: "flashcard_local_datasource.dart, HiveService, data migration, LL-298"
-            author: The current git user name (e.g., "Colton Dyck")
+            author: The current git user name (e.g., "Colton Dyck"), OR an agent
+                    persona name — this is UNVERIFIED client-supplied text, not
+                    server-resolved like a task's created_by. Use whichever
+                    identifies who/what actually made this call.
             severity: Optional priority — critical, high, normal, low
             references: Optional external refs, comma-separated. Include issue/PR/commit refs
                         so nodes link to their episode (part_of) and /vibe-curate can

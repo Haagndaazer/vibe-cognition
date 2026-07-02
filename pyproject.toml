@@ -43,6 +43,7 @@ vibe-cognition = "vibe_cognition.server:main"
 vibe-cognition-prime = "vibe_cognition.cognition.prime:main"
 vibe-cognition-backfill = "vibe_cognition.cognition.backfill:main"
 vibe-cognition-dashboard = "vibe_cognition.dashboard.cli:main"
+vibe-cognition-snapshot = "vibe_cognition.cognition.snapshot_cli:main"
 
 [dependency-groups]
 dev = [
