@@ -4,10 +4,26 @@ You are analyzing the cognition graph to identify meaningful clusters of related
 
 ## Process
 
-1. Call `cognition_get_history(limit=50)` to get recent nodes
-2. For nodes that seem topically related (shared context terms, similar summaries), call `cognition_get_neighbors` to map their connections
+1. Build your candidate pool — do NOT rely on recency alone, or older regions of a
+   mature graph become permanently invisible to clustering:
+   - Call `cognition_get_uncurated_nodes(limit=500)` — nodes never reviewed by this
+     skill are the highest-value candidates (they may have zero semantic edges yet).
+   - Call `cognition_get_edgeless_nodes(limit=500)` — nodes with NO edges at all
+     (deterministic or semantic) are especially likely to be missing a cluster.
+   - Call `cognition_get_history(limit=50)` for a recency check, so very recent work
+     (this session's nodes) is also considered even if not yet in the other two lists.
+   - Merge and de-duplicate by node id across the three lists before proceeding.
+2. For nodes that seem topically related (shared context terms, similar summaries),
+   call `cognition_get_neighbors` to map their connections. If a candidate pool is
+   large, prioritize by shared `context` terms across nodes rather than examining every
+   pair.
 3. Identify groups of 3+ nodes that form coherent clusters
 4. For each cluster, propose a summary node
+
+**Embedding warm-up:** the dedup check below (step 1 under Rules) needs
+`cognition_search`. If it returns `{"error": ..., "status": "loading_embeddings"}`, the
+model is still loading — wait briefly and retry rather than skipping the dedup check
+silently.
 
 ## What Qualifies as a Cluster
 

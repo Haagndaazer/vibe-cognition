@@ -28,6 +28,12 @@ cognition_get_workflow("topic or procedure name")
 This returns the current HEAD version (even if an old version was matched), plus the
 full version chain. If a workflow exists, follow it. If it's outdated, update it (see below).
 
+`cognition_get_workflow` does a semantic search under the hood, so it needs the
+embedding model. If it returns `{"error": "...", "status": "loading_embeddings"}` (or
+`"embedding_status": "loading"`/`"syncing"` from `get_status`), the model is still
+loading/catching up — wait a few seconds and retry rather than concluding no workflow
+exists.
+
 ## Storing a new workflow
 
 ```

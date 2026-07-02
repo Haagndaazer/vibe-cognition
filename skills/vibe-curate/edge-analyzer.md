@@ -15,6 +15,11 @@ For each node ID in the batch:
 3. Call `cognition_get_history` to get additional context on related nodes
 4. Analyze relationships — both within the batch and between batch nodes and their search results
 
+**Embedding warm-up:** step 2 needs the embedding model. If `cognition_search` returns
+`{"error": ..., "status": "loading_embeddings"}`, the model is still loading (a few
+seconds, typically) — wait briefly and retry, or fall back to `cognition_get_neighbors`
++ `cognition_get_history` alone (structural context only) for this batch if you can't wait.
+
 ## Edge Types
 
 | Type | Meaning | Direction | When to use |
@@ -33,12 +38,21 @@ A `task` node is trackable open work (server-attributed to the git user, with a
 - A task `relates_to` the `decision`/`discovery`/`pattern` it implements or acts on.
 - A **done** task (`status: done`) is `resolved_by` (or `led_to`) the `episode` that closed it.
 - **Never** propose `part_of` for a task — its parent hierarchy is an explicit edge owned by
-  `cognition_add_task`/`cognition_update_task`; an agent `part_of` would collide with it.
+  `cognition_add_task`/`cognition_update_task`. This rule is enforced by YOU, not the
+  tool — nothing rejects a task `part_of` at the API level, so proposing one anyway
+  would create a second, wrong `part_of` edge alongside the real one.
 
 ## Rules
 
-- Do NOT propose `part_of` edges — these are created automatically by deterministic reference matching (and, for tasks, by the task-parent hierarchy)
-- Do NOT propose `duplicate_of` edges — these require merge logic handled elsewhere
+- Do NOT propose `part_of` edges. For entity<->episode, entity<->document, and
+  document<->episode pairs (sharing the right kind of reference), these are created
+  automatically by deterministic reference matching; for tasks, the parent hierarchy is
+  a separate explicit edge (see above — that one is a MUST-NOT, not just redundant). The
+  tool itself does not reject a manually-added `part_of` on other pairs, but proposing
+  one just duplicates work the server already does — it is excluded from this skill's
+  scope, not blocked by the API.
+- Do NOT propose `duplicate_of` edges — the tool REJECTS these outright ("duplicate_of
+  edges require merge logic and are not supported here"); there is no merge flow yet.
 - Do NOT propose self-referencing edges (from_id == to_id)
 - Only propose edges with **clear, meaningful relationships**
 - For `led_to`: require evidence of causation beyond mere temporal proximity. "Happened after" is not "caused by"
@@ -58,10 +72,12 @@ Proposed edges:
 2. ...
 ```
 
-**JSON block for batch processing:**
+**JSON block for batch processing** — each object needs a `source` field so the calling
+skill can attribute the edge's provenance (`cognition_add_edges_batch` reads `source`
+per-edge from this array; it is NOT a separate argument to the tool call):
 ```json
 [
-  {"from_id": "abc123", "to_id": "def456", "edge_type": "led_to", "reason": "Discovery of memory leak led to decision to refactor cache"},
+  {"from_id": "abc123", "to_id": "def456", "edge_type": "led_to", "reason": "Discovery of memory leak led to decision to refactor cache", "source": "curate-skill"},
   ...
 ]
 ```

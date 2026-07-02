@@ -13,19 +13,40 @@ Deterministic `part_of` edges are the only edges created automatically (on recor
 ## When to Use
 
 - After running `/vibe-backfill` (many new episode nodes without semantic edges)
-- When `get_status` shows a high number of uncurated nodes
-- After recording several related nodes in a session
+- When `get_status` shows **10 or more** uncurated nodes
+- After any session that recorded **3 or more** related nodes
 - When the user asks about graph health or curation
+
+## Before you start: cost, scope, and concurrency
+
+The edge-analyzer and cluster-analyzer subagents both call MCP tools themselves
+(`cognition_search`, which needs the embedding model). If `get_status`'s
+`embedding_status` is `loading` or `syncing`, subagent search calls may return the
+`loading_embeddings` error for a few seconds — wait for `ready`, or proceed with
+structural-only context (`cognition_get_neighbors`, `cognition_get_history`) if the
+work can't wait.
+
+Before fanning out, tell the user (a one-line note, not a prompt for approval — curation
+proceeds autonomously either way): **"Curating N uncurated nodes -> about M
+edge-analyzer subagent batches."** (M = ceil(N / 10), since batches are 5-10 nodes.)
+
+**Concurrency:** `cognition_get_uncurated_nodes` is a stateless read — it doesn't claim
+or lock nodes. If two agents run `/vibe-curate` at the same time on the same graph, both
+will see the same uncurated nodes and do duplicate subagent analysis (wasted LLM work);
+the `(from, to, edge_type)` idempotency key on edge creation prevents the WASTE from
+becoming duplicate edges, but not the redundant analysis itself. If you know a teammate
+is also curating, check their status via teammate-comms (if available) before starting,
+or accept the waste knowingly rather than being surprised by it.
 
 ## Workflow
 
 ### Step 1: Assess
 
 ```
-1. Call get_status — note total nodes, edges, edge type breakdown, and uncurated count
+1. Call get_status — note total nodes, edges, edge type breakdown, uncurated count, and embedding_status
 2. Call cognition_get_uncurated_nodes(limit=500) — get nodes not yet reviewed by this skill
 3. If 0 uncurated nodes → report "graph is fully curated" and stop
-4. Log: "{N} uncurated nodes found, starting curation"
+4. Log: "{N} uncurated nodes found, starting curation" + the preflight cost note above
 ```
 
 ### Step 2: Edge Curation
@@ -37,12 +58,21 @@ For each batch:
    - **ALWAYS spawn this subagent with the Haiku model** (e.g. `model: "haiku"` on the Agent call). Do NOT let it inherit the main instance's model — edge analysis is a high-volume, mechanical fan-out and running it on Opus/Sonnet is extremely wasteful. Every edge-analyzer invocation MUST be Haiku.
    - Pass the node IDs as a list in the prompt
    - The subagent calls MCP tools itself to gather context
-   - It returns proposed edges as a JSON list
+   - It returns proposed edges as a JSON list, each with a `source` field (see edge-analyzer.md's output schema)
 2. Review the proposals:
    - Remove any self-references (from_id == to_id)
-   - Remove any `part_of` or `duplicate_of` proposals (not allowed)
+   - Remove any `duplicate_of` proposals (rejected by the tool — see Key Rules)
+   - Remove any `part_of` proposals for TASK nodes specifically (collides with the
+     authoritative task-parent edge — see Task nodes below); other `part_of` proposals
+     are simply redundant with the deterministic matcher, not harmful, but still prefer
+     discarding them since this skill's job is semantic edges
    - Discard proposals with vague reasons ("related" without specifics)
-3. Commit approved edges via `cognition_add_edges_batch` with `source: "curate-skill"`
+3. Commit approved edges via `cognition_add_edges_batch` — each edge object in the JSON
+   array carries its OWN `"source": "curate-skill"` key (source is a per-edge field
+   inside each array element, not a separate argument to the tool call):
+   ```json
+   [{"from_id": "...", "to_id": "...", "edge_type": "led_to", "source": "curate-skill"}]
+   ```
 4. Mark ALL nodes in the batch as curated via `cognition_mark_curated` with their IDs
    — including nodes where no edges were created (they were still reviewed)
 
@@ -59,8 +89,10 @@ needed. When you encounter one, prefer these semantic links:
 - A **done** task is `resolved_by` (or `led_to`) the `episode` that closed it.
 - **Never propose `part_of` for a task.** A task's parent hierarchy is an EXPLICIT
   `part_of` edge set at creation/re-parent time (`cognition_add_task` /
-  `cognition_update_task`) — agent `part_of` is already forbidden, and proposing one here
-  would collide with the authoritative `task-parent` edge.
+  `cognition_update_task`). This is a SKILL-LEVEL rule, not a tool-level block — the
+  tools don't reject a task `part_of` edge, so nothing stops you from proposing one by
+  mistake; it's on you not to. Doing so anyway would collide with the authoritative
+  `task-parent` edge (two `part_of` edges from the same task, one right and one wrong).
 
 ### Step 3: Cluster Identification
 
@@ -80,12 +112,18 @@ Log: "{N} clusters identified, {M} summary nodes created"
 
 ### Step 4: Report
 
-Summarize the full run:
+Summarize the full run — this is the ONLY in-chat surface for what curation did; a user
+who never opens the dashboard should still be able to see what got connected and why:
+
 - Uncurated nodes: before → after
-- Edges created (by type)
+- **The actual edges created, narrated by content** — not just a count. For each
+  committed edge (or a representative sample if there were many): "`<id-a>`
+  `<edge_type>` `<id-b>`: `<reason>`" using the reason text the edge-analyzer proposed.
+  A stats-only report ("12 edges created") is not sufficient — name what connected.
 - Nodes reviewed with no edges created
-- Clusters identified
-- Summary nodes created
+- Clusters identified, and for each: its title and member count (from cluster-analyzer's
+  proposal)
+- Summary nodes created, with their ids
 
 ## Key Rules
 

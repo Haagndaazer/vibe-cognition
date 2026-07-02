@@ -17,6 +17,8 @@ from vibe_cognition.tools import register_all_tools
 _REPO = Path(__file__).resolve().parent.parent
 _SKILL = _REPO / "skills" / "vibe-cognition" / "SKILL.md"
 _README = _REPO / "README.md"
+_CURATE_SKILL = _REPO / "skills" / "vibe-curate" / "SKILL.md"
+_EDGE_ANALYZER = _REPO / "skills" / "vibe-curate" / "edge-analyzer.md"
 
 
 def _registered_tool_names() -> set[str]:
@@ -65,3 +67,31 @@ def test_edge_types_documented_in_skill_and_readme():
     readme_missing = sorted(v for v in expected if v not in readme_text)
     assert not skill_missing, f"SKILL.md missing edge types: {skill_missing}"
     assert not readme_missing, f"README.md missing edge types: {readme_missing}"
+
+
+def test_edge_analyzer_output_schema_includes_source_field():
+    """WP-10 (9d5a19b30055): edge-analyzer.md's example JSON output must include a
+    "source" key, since cognition_add_edges_batch reads source PER-EDGE from each
+    array element (default "batch") -- omitting it from the schema means curate's
+    provenance ("curate-skill") silently never lands, even though the skill's prose
+    says to set it.
+
+    Fails-before: the old schema block had no "source" key at all.
+    """
+    text = _EDGE_ANALYZER.read_text(encoding="utf-8")
+    assert '"source"' in text, "edge-analyzer.md's output schema is missing a source key"
+
+
+def test_curate_skill_files_do_not_claim_part_of_is_forbidden():
+    """WP-10 (9d5a19b30055): neither vibe-curate/SKILL.md nor edge-analyzer.md may
+    claim agent part_of is "forbidden" -- nothing in the tool layer rejects it (only
+    duplicate_of is rejected); the honest position (post-WP-8) is "not blocked, just
+    usually redundant with the deterministic matcher; NEVER for tasks specifically,
+    which IS a hard skill-level rule but not a tool-level one".
+
+    Fails-before: SKILL.md said "agent part_of is already forbidden" -- literally false.
+    """
+    for path in (_CURATE_SKILL, _EDGE_ANALYZER):
+        text = path.read_text(encoding="utf-8")
+        assert "already forbidden" not in text, f"{path.name} still claims part_of is forbidden"
+        assert "is forbidden" not in text, f"{path.name} still claims part_of is forbidden"
