@@ -1,0 +1,39 @@
+# Fable Audit — Stage 1: Per-System Audit — 2026-07-01
+
+Confirmed intended purpose: Vibe Cognition is a fully local MCP server plugin for Claude Code that gives a codebase persistent, structured memory — a git-committed knowledge graph (.cognition/journal.jsonl) of decisions, failures, discoveries, constraints, incidents, patterns, workflows, and open tasks. Multi-agent / multi-human team collaboration is first-class. Local embeddings power semantic search; dashboard is secondary. Curation is agent-driven via /vibe-curate by current design. Success: install from marketplace, restart, and within a session or two see Claude recording history, retrieving context at session start, and after /vibe-curate having a browsable linked graph.
+
+Scope: seven parallel Sonnet auditors, one per system: core graph & persistence; documents/tasks/workflows; embeddings & search; MCP server & tools; session lifecycle & install/upgrade; skills layer; dashboard (weighted secondary). 39 raw findings synthesized.
+
+FINDINGS (condensed; full detail in docs/260701-fable-audit-systems.md):
+
+1. [critical/blindspot] Journal rehydrate-reset is completely silent — _catch_up() detects a shrunk/replaced journal and _rehydrate_reset() discards all in-memory state with only logger.info; no tool response, get_status field, or prime flag ever reports nodes lost. Incident 5d63a548783d was real; mitigation was process-only (constraint 1f39e60c6d83). storage.py:829-930.
+2. [high/gap] Byte-rewrite defense (-text gitattribute) withheld from consumer teams — git_hygiene/readme teach only merge=union; C-3 replay defense survives via autocrlf coincidence. Deliberate decision 9f13a8099e03 but residual risk never disclosed. git_hygiene.py:39, readme.py:83-103.
+3. [high/gap] Home ChromaDB collection has no model/dim drift guard — model_guard only on foreign attach (XP1); home drift → vector_search broad except → [] → search silently empty. Zero tests cover home drift or Ollama backend. storage.py:181-190, cognition_tools.py:1296-1356.
+4. [high/bug] cognition_search never validates node_type — typo returns successful-looking empty result; _parse_node_type exists but search was scoped out of WP-T T-6 (episode 49ef4310ba17) and forgotten. cognition_tools.py:426-451.
+5. [high/gap] Journal replay never re-embeds — teammate nodes visible to get_history but invisible to search until restart; discovery 4b99fa9f44d5 says drift is structural, v0.13.0 fixed only one of two sources. storage.py:976-1041.
+6. [high/bug] Getting-started example broken — COGNITION_GETTING_STARTED shows cognition_record(type=...) with wrong param name and missing required context/author; newcomer's first write fails. readme.py:120-121.
+7. [high/gap, tracked a54b0191e362] Orphan server unimplemented at v0.13.0; NEW angle: orphaned dashboard keeps live DELETE-capable HTTP listener — missing from plan's harm register. server.py:238-338, dashboard/server.py:169-224.
+8. [medium/gap] Dashboard full-capability token written into MCP tool results (transcript-persistent) and INFO logs. dashboard_tool.py:42, dashboard/server.py:114,198.
+9. [medium/gap] Node deletion journals no actor — dashboard click deletes with zero provenance; remove_node docstring omits unlinked_artifacts and task-child detachment; delete endpoint lacks auth-rejection test. storage.py:283-287, app.js:226-245.
+10. [medium/blindspot] Lifespan startup failures (CognitionStorage/ChromaDB init) uncaught → raw traceback, no diagnosable error, zero tools. server.py:244-267.
+11. [medium/unclear] get_status docstring promises embedding_model/embedding_ready keys that don't exist; returns undocumented embedding_status/curation. service_tools.py:21-92.
+12. [medium/bug] migrate_mcp write path unguarded — locked .mcp.json crashes migration invisibly (hook swallows stderr); stale entry survives outranking plugin server. migrate_mcp.py:95-129.
+13. [medium/gap] First-install: 120s hook timeout vs cold uv sync (torch download); health-probe message single-cause ("close all sessions") though probe fires for other causes; shell scripts have zero tests despite shipped B-3 regression class.
+14. [medium/broken-assumption] Graph overstates completion: S-3 backfill skill/CLI drift closed by coarse resolved_by edge (f70c9ad1c55d → c535e96edb8d) though shipped scope excluded it; two disagreeing backfill mechanisms persist; CLIs undocumented in README.
+15. [medium/bug] Task priority documented as critical|high|normal|low but unvalidated — garbage silently sorts "normal" and evades priority filters. cognition_tools.py:901-918,1214-1216.
+16. [medium/gap] Document drift pull-only (only get_document re-hashes); no surfacing in search/status/prime; re-store of changed file mints unlinked node, no supersedes. Passive detection deliberate (e752ff313ad7 §8d); surfacing never decided.
+17. [medium/unclear] /vibe-curate skill drift: phantom top-level source kwarg (real: per-edge key, defaults "batch"); "part_of already forbidden" overstated (nothing enforces it; Haiku subagents most likely to trust it); no concurrent-curate coordination; embedding warm-up gating undocumented outside dashboard skill.
+18. [medium/blindspot] cluster-analyzer only sees get_history(limit=50) — mature graphs permanently outside clustering window.
+19. [medium/blindspot] snapshot_journal (torn-tail-safe copy built for manager flush, CR-4) has zero production callers — the manual worktree-flush doesn't use it.
+20. [medium/gap] cognition_store_document references param silently lands in context (deliberate storage restriction, e752ff313ad7) — /vibe-document never teaches the asymmetry.
+21. [medium-low/blindspot] OllamaBackend ignores is_query — drops nomic query/document prefixes → systematically worse search on the alternative backend; zero Ollama tests.
+22. [low/blindspot] local_only blob written before .gitignore entry — brief unignored window vs privacy guarantee. cognition_tools.py:454-497.
+23. [low/gap] Workflow supersedes has no type/HEAD/cycle guardrails (cycle-safe but implementation-defined HEAD); redirect_edges dead code + duplicate_of unimplemented merge feature.
+
+Known deliberate deferrals re-confirmed, not re-filed: E-8 (be019b3eea3c), T-1c (c34c788b8d5b), H-3 (33719f0d26bb), H-4 (afed9ed48066, human-gated), backfill subprocess hardening (8cd9c158ed65), node-id mint TOCTOU (accepted residual), task-delete orphaning storage behavior (F10, deliberate).
+
+Confirmed good: git-identity wedge fully fixed and exemplarily linked; dashboard localhost-only, no CORS, per-request replay (never stale), search parity with cognition_search, traversal defenses tested.
+
+THEMES: (1) The system neither defends nor announces its own memory loss — all defenses are procedural, not coded. (2) Search failures are indistinguishable from "no history" — need an "honest empty" principle. (3) The docstring/skill layer IS the API and has drifted exactly where newcomers/weak models touch first — re-run the recurring tool-surface self-sufficiency audit repo-wide. (4) Coarse closure: multi-item tasks closed by one resolved_by edge silently drop sub-items. (5) Multi-agent is first-class in intent but second-class in verification (multi-process paths get reasoning, single-process paths get tests).
+
+23 potential tasks filed under the fable-audit epic (74740daa02fa); see the doc's checklist for full titles and priorities.
