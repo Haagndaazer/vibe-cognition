@@ -488,3 +488,72 @@ class TestTaskInertGate:
         assert CognitionNodeType.TASK.value in CognitionStorage._INERT_TYPES
         assert CognitionNodeType.WORKFLOW.value in CognitionStorage._INERT_TYPES
         assert CognitionNodeType.DOCUMENT.value not in CognitionStorage._INERT_TYPES
+
+
+class TestDeterministicEdgeSweep:
+    """WP-5 (7c1899fe59ed): the startup sweep must re-evaluate against the
+    reference index, not skip any node with ANY edge at all."""
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        return CognitionStorage(tmp_path / ".cognition")
+
+    def _node(self, storage, node_id, node_type, refs, summary="s"):
+        storage.add_node(_make_node(node_id, node_type, summary=summary, references=refs))
+
+    def test_already_linked_node_still_gets_a_later_matching_peer(self, storage):
+        """The bug this closes: a node that already has ONE edge (to an
+        unrelated peer) must still be linked to a LATER-appearing node that
+        shares a reference with it -- e.g. a teammate's episode for the same
+        commit, merged in after this node already had some other edge.
+
+        Fails-before: the has-ANY-edge predicate skipped ep1 entirely once it
+        had any edge, so ep2 (added after, same commit ref) never got linked.
+        """
+        from vibe_cognition.server import _create_deterministic_edges_for_edgeless
+
+        self._node(storage, "dec1", CognitionNodeType.DECISION, ["commit:abc"], summary="d1")
+        self._node(storage, "ep1", CognitionNodeType.EPISODE, ["commit:abc"], summary="e1")
+        # ep1 <-> dec1 already linked (has-any-edge predicate would skip ep1 below).
+        assert storage.create_deterministic_edges("ep1") == 1
+        assert storage.get_successors("ep1") or storage.get_predecessors("ep1")
+
+        # A teammate's episode for the SAME commit merges in later.
+        self._node(storage, "dec2", CognitionNodeType.DECISION, ["commit:abc"], summary="d2")
+
+        _create_deterministic_edges_for_edgeless(storage)
+
+        linked_to_dec2 = [t for t, _ in storage.get_successors("dec2")] + \
+                          [s for s, _ in storage.get_predecessors("dec2")]
+        assert "ep1" in linked_to_dec2, "dec2 must link to the pre-existing ep1 via commit:abc"
+
+    def test_edgeless_node_still_gets_linked(self, storage):
+        """Regression guard: the original (pre-WP-5) case -- a node with NO
+        edges at all and a matching reference -- must still get linked."""
+        from vibe_cognition.server import _create_deterministic_edges_for_edgeless
+
+        self._node(storage, "ep1", CognitionNodeType.EPISODE, ["commit:xyz"])
+        self._node(storage, "dec1", CognitionNodeType.DECISION, ["commit:xyz"])
+
+        _create_deterministic_edges_for_edgeless(storage)
+
+        assert storage.get_successors("dec1") or storage.get_predecessors("dec1")
+
+    def test_fully_linked_node_is_left_alone(self, storage, caplog):
+        """A node already linked to EVERY reference-sharing peer must not
+        cost a create_deterministic_edges call (cheap sweep, not a full
+        rescan every startup)."""
+        import logging
+
+        from vibe_cognition.server import _create_deterministic_edges_for_edgeless
+
+        self._node(storage, "dec1", CognitionNodeType.DECISION, ["commit:abc"])
+        self._node(storage, "ep1", CognitionNodeType.EPISODE, ["commit:abc"])
+        assert storage.create_deterministic_edges("dec1") == 1
+
+        # Nothing new to link -- the sweep must be a no-op (0 created).
+        with caplog.at_level(logging.INFO, logger="vibe_cognition.server"):
+            _create_deterministic_edges_for_edgeless(storage)
+        assert not any("created" in r.message for r in caplog.records), (
+            "already-fully-linked nodes must not trigger a new edge creation"
+        )

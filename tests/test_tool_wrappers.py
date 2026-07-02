@@ -344,6 +344,77 @@ def test_cognition_record_invalid_node_type_returns_error_dict(tmp_path, mock_mc
     assert "error" in result
 
 
+def test_cognition_record_episode_flags_duplicate_by_shared_ref(tmp_path, mock_mcp, build_lc, make_ctx):
+    """WP-5 dedup-contract half (b36e4a79113a): a new episode sharing a
+    reference with an EXISTING episode must surface possible_duplicate_of --
+    the exact "two clones independently minted an episode for the same
+    commit" scenario. The node is still created (never silently reused).
+
+    Fails-before: possible_duplicate_of didn't exist; no ref-lookup ran
+    before minting an episode.
+    """
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    ctx = make_ctx(lc)
+
+    first = mock_mcp.tools["cognition_record"](  # type: ignore[arg-type]
+        ctx, node_type="episode", summary="ep1", detail="d",
+        context="", author="t", references="commit:abc123",
+    )
+    assert "error" not in first
+
+    second = mock_mcp.tools["cognition_record"](  # type: ignore[arg-type]
+        ctx, node_type="episode", summary="ep2 (independently minted)", detail="d",
+        context="", author="t", references="commit:abc123",
+    )
+    assert "error" not in second
+    assert second.get("possible_duplicate_of") == [first["id"]]
+    # The node is still created, not silently reused/merged.
+    assert second["id"] != first["id"]
+
+
+def test_cognition_record_decisions_sharing_ref_not_flagged(tmp_path, mock_mcp, build_lc, make_ctx):
+    """Regression guard: the dedup warning is scoped to episodes only. Two
+    DECISIONS legitimately sharing one commit ref (normal -- e.g. multiple
+    choices made in the same commit) must NOT be flagged as duplicates."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    ctx = make_ctx(lc)
+
+    first = mock_mcp.tools["cognition_record"](  # type: ignore[arg-type]
+        ctx, node_type="decision", summary="d1", detail="d",
+        context="", author="t", references="commit:abc123",
+    )
+    assert "error" not in first
+
+    second = mock_mcp.tools["cognition_record"](  # type: ignore[arg-type]
+        ctx, node_type="decision", summary="d2", detail="d",
+        context="", author="t", references="commit:abc123",
+    )
+    assert "error" not in second
+    assert "possible_duplicate_of" not in second
+
+
+def test_cognition_record_episode_no_shared_ref_not_flagged(tmp_path, mock_mcp, build_lc, make_ctx):
+    """A genuinely unrelated episode (no shared reference) must not be flagged."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    ctx = make_ctx(lc)
+
+    first = mock_mcp.tools["cognition_record"](  # type: ignore[arg-type]
+        ctx, node_type="episode", summary="ep1", detail="d",
+        context="", author="t", references="commit:abc123",
+    )
+    assert "error" not in first
+
+    second = mock_mcp.tools["cognition_record"](  # type: ignore[arg-type]
+        ctx, node_type="episode", summary="ep2", detail="d",
+        context="", author="t", references="commit:different999",
+    )
+    assert "error" not in second
+    assert "possible_duplicate_of" not in second
+
+
 def test_cognition_record_valid_type_returns_node_shape(tmp_path, mock_mcp, build_lc, make_ctx):
     """cognition_record wrapper: valid node_type → {id, type, summary, timestamp}.
 

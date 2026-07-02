@@ -88,6 +88,20 @@ class CognitionStorage:
         # layer (which HAS both storage and embeddings) drains it and embeds
         # via the shared _embed_entity_node/_embed_workflow paths.
         self._replayed_node_ids: set[str] = set()
+        # WP-5 gate redirect (d6cd1495b23a): node ids this process has seen
+        # legitimately removed (via its own live remove_node call, or an
+        # already-APPLIED replay of someone else's). Distinguishes "target
+        # absent because it was validly deleted and we already know it" from
+        # "target absent because it hasn't been replayed yet" in
+        # _replay_entry's remove_node branch — without this, a process's own
+        # remove_node tombstone read back on its NEXT catch-up (C-6: appends
+        # don't advance the offset, so a process re-reads its own just-
+        # appended lines) always found the target already gone and defer-
+        # then-warned on every ordinary deletion. Never drained: legitimate
+        # deletions are rare relative to adds, so this stays small in
+        # practice — same trade as _replayed_node_ids being an unbounded-but-
+        # naturally-small handoff set.
+        self._removed_node_ids: set[str] = set()
 
         self._dir.mkdir(parents=True, exist_ok=True)
 
@@ -312,6 +326,11 @@ class CognitionStorage:
             self._append_journal("remove_node", tombstone)
             self._unindex_node_refs(node_id)
             self._graph.remove_node(node_id)
+            # WP-5 gate redirect: remember this was a real removal so our OWN
+            # tombstone read-back on the next catch-up (C-6) doesn't defer-
+            # then-warn about a target that's "missing" only because we just
+            # validly deleted it ourselves.
+            self._removed_node_ids.add(node_id)
             return True
 
     def remove_edge(
@@ -1050,15 +1069,36 @@ class CognitionStorage:
         self._journal_hasher.update(complete)
 
         count = 0
+        # WP-5 (d6cd1495b23a — merge-shaped replay defense): a merge=union
+        # merge (the supported separate-clones mechanism) can interleave
+        # divergent journal tails so an edge/update/remove line lands BEFORE
+        # its target node's add_node line within this same batch. Collect
+        # entries _replay_entry defers (target not in the graph yet) and
+        # retry them ONCE more after every line in this batch has had its
+        # first pass — by then any add_node from later in the batch has
+        # landed, so ordinary within-batch reordering self-heals instead of
+        # silently and permanently dropping the edge.
+        deferred: list[dict[str, Any]] = []
         for line in complete.decode("utf-8", errors="replace").splitlines():
             line = line.strip()
             if not line:
                 continue
             try:
-                self._replay_entry(json.loads(line))
+                parsed = json.loads(line)
+                if self._replay_entry(parsed) == "deferred":
+                    deferred.append(parsed)
                 count += 1
             except (json.JSONDecodeError, KeyError, ValueError) as e:
                 logger.warning(f"Skipping malformed journal line: {e}")
+
+        for parsed in deferred:
+            if self._replay_entry(parsed) == "deferred":
+                logger.warning(
+                    "Dropped journal entry during replay (dependency never "
+                    "appeared in this batch — merge-interleaved or genuinely "
+                    "missing): action=%s data=%s",
+                    parsed.get("action"), parsed.get("data"),
+                )
 
         if rehydrate:
             # Record AFTER the replay-from-top so the identity comparison sees
@@ -1123,11 +1163,25 @@ class CognitionStorage:
             ]
             return {"nodes": nodes, "edges": edges}
 
-    def _replay_entry(self, entry: dict[str, Any]) -> None:
+    def _replay_entry(self, entry: dict[str, Any]) -> str:
         """Replay a single journal entry into the graph (no journal write).
 
         Args:
             entry: Journal entry with 'action' and 'data' keys
+
+        Returns one of (WP-5, d6cd1495b23a — merge-shaped replay defense):
+          - "applied": the entry mutated the graph as intended.
+          - "deferred": the entry's target node(s) aren't in the graph YET.
+            ``merge=union`` (the supported separate-clones mechanism) can
+            interleave divergent journal tails so an edge/update/remove line
+            precedes its endpoint's ``add_node`` line within the SAME batch —
+            the caller (``_catch_up``) retries deferred entries once more
+            after the full batch's ``add_node`` lines have all been applied,
+            so ordinary within-batch reordering self-heals instead of
+            silently and permanently losing the edge.
+          - "skipped": a genuine no-op (e.g. removing an edge that's already
+            gone, given both endpoint nodes DO exist) — never worth a retry
+            or a warning.
         """
         action = entry["action"]
         data = entry["data"]
@@ -1154,43 +1208,59 @@ class CognitionStorage:
             # consumer does one batched Chroma existence check before
             # embedding anything, so an already-embedded id costs nothing.
             self._replayed_node_ids.add(node_id)
+            return "applied"
         elif action == "add_edge":
             from_id = data["from_id"]
             to_id = data["to_id"]
             edge_type = data["edge_type"]
-            if from_id in self._graph and to_id in self._graph:
-                self._graph.add_edge(
-                    from_id,
-                    to_id,
-                    key=edge_type,
-                    type=edge_type,
-                    timestamp=data.get("timestamp", ""),
-                    # Historical provenance tag, NOT an active curator. Old journals
-                    # contain many edges sourced "curator"; the background curator
-                    # feature was removed, but the stored tag is left intact.
-                    source=data.get("source", "curator"),
-                    # Graceful for pre-WP-Cap journals (no reason field) — like the
-                    # D1a metadata round-trip: absent -> None, never a KeyError.
-                    reason=data.get("reason"),
-                )
+            if from_id not in self._graph or to_id not in self._graph:
+                return "deferred"
+            self._graph.add_edge(
+                from_id,
+                to_id,
+                key=edge_type,
+                type=edge_type,
+                timestamp=data.get("timestamp", ""),
+                # Historical provenance tag, NOT an active curator. Old journals
+                # contain many edges sourced "curator"; the background curator
+                # feature was removed, but the stored tag is left intact.
+                source=data.get("source", "curator"),
+                # Graceful for pre-WP-Cap journals (no reason field) — like the
+                # D1a metadata round-trip: absent -> None, never a KeyError.
+                reason=data.get("reason"),
+            )
+            return "applied"
         elif action == "remove_edge":
             from_id = data["from_id"]
             to_id = data["to_id"]
             edge_type = data.get("edge_type")
-            if (
-                self._graph.has_edge(from_id, to_id)
-                and edge_type
-                and edge_type in self._graph[from_id][to_id]
-            ):
+            if from_id not in self._graph or to_id not in self._graph:
+                return "deferred"
+            if edge_type and self._graph.has_edge(from_id, to_id, key=edge_type):
                 self._graph.remove_edge(from_id, to_id, key=edge_type)
+                return "applied"
+            return "skipped"  # both nodes exist; edge is simply already gone
         elif action == "remove_node":
             node_id = data["id"]
-            if node_id in self._graph:
-                self._unindex_node_refs(node_id)
-                self._graph.remove_node(node_id)
+            if node_id not in self._graph:
+                # WP-5 gate redirect (d6cd1495b23a): a target already known
+                # removed (our own live remove_node, or an already-applied
+                # replay) is a BENIGN own-tombstone/duplicate read-back, not
+                # a loss — only a never-before-seen missing target is worth
+                # deferring/retrying/warning about.
+                if node_id in self._removed_node_ids:
+                    return "skipped"
+                return "deferred"
+            self._unindex_node_refs(node_id)
+            self._graph.remove_node(node_id)
+            self._removed_node_ids.add(node_id)
+            return "applied"
         elif action == "update_node":
             node_id = data["id"]
-            if node_id in self._graph:
-                for key, value in data.items():
-                    if key != "id":
-                        self._graph.nodes[node_id][key] = value
+            if node_id not in self._graph:
+                return "deferred"
+            for key, value in data.items():
+                if key != "id":
+                    self._graph.nodes[node_id][key] = value
+            return "applied"
+        return "skipped"  # unrecognized action — nothing to apply or retry

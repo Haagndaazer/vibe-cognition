@@ -584,6 +584,136 @@ class TestJournalCatchUp:
             f"{[r.message for r in caplog.records]}"
         )
 
+    # ── WP-5 (d6cd1495b23a): merge-shaped replay defense ──────────────────
+
+    def test_merge_shaped_edge_before_node_self_heals_within_batch(self, tmp_path):
+        """merge=union (the supported separate-clones mechanism) can
+        interleave divergent journal tails so an edge line lands BEFORE its
+        endpoint's add_node line. Within ONE catch-up batch this must
+        self-heal via the deferred-retry pass, not silently and permanently
+        drop the edge.
+
+        Fails-before: _replay_entry silently dropped add_edge when an
+        endpoint wasn't yet in the graph, with no retry -- the edge would
+        never appear even though its node arrives moments later in the SAME
+        batch.
+        """
+        cog_dir = tmp_path / ".cognition"
+        store = CognitionStorage(cog_dir)
+        journal = cog_dir / "journal.jsonl"
+
+        a1 = self._node("a1")
+        b1 = self._node("b1")
+        a1_line = json.dumps({"action": "add_node", "data": a1.model_dump(mode="json")}).encode()
+        b1_line = json.dumps({"action": "add_node", "data": b1.model_dump(mode="json")}).encode()
+        edge_line = json.dumps({
+            "action": "add_edge",
+            "data": {
+                "from_id": "a1", "to_id": "b1", "edge_type": "relates_to",
+                "timestamp": "2026-03-15T10:02:00Z", "source": "test", "reason": None,
+            },
+        }).encode()
+
+        # Merge-shaped: edge BEFORE b1's add_node, all in ONE appended batch.
+        journal.write_bytes(a1_line + b"\n" + edge_line + b"\n" + b1_line + b"\n")
+
+        assert store.has_node("a1")  # forces catch-up of the whole batch above
+        assert store.has_node("b1")
+        succ = store.get_successors("a1", CognitionEdgeType.RELATES_TO)
+        assert [t for t, _ in succ] == ["b1"], "edge must self-heal via the deferred-retry pass"
+
+    def test_merge_shaped_duplicate_add_node_is_idempotent(self, tmp_path, caplog):
+        """A merge can duplicate an add_node line -- replaying it twice must
+        be a silent, idempotent no-op, not a warning or an error."""
+        cog_dir = tmp_path / ".cognition"
+        store = CognitionStorage(cog_dir)
+        journal = cog_dir / "journal.jsonl"
+
+        n1 = self._node("n1")
+        line = json.dumps({"action": "add_node", "data": n1.model_dump(mode="json")}).encode()
+        journal.write_bytes(line + b"\n" + line + b"\n")
+
+        with caplog.at_level(logging.WARNING, logger="vibe_cognition.cognition.storage"):
+            assert store.has_node("n1")
+
+        assert store.get_statistics()["nodes"] == 1
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+    def test_merge_shaped_edge_to_permanently_missing_node_warns(self, tmp_path, caplog):
+        """An edge referencing a node that never appears anywhere in the
+        batch is a GENUINE loss after the retry pass -- must be logged at
+        WARNING now, not silently dropped (the old behavior; no log branch
+        existed at all)."""
+        cog_dir = tmp_path / ".cognition"
+        store = CognitionStorage(cog_dir)
+        journal = cog_dir / "journal.jsonl"
+
+        a1 = self._node("a1")
+        a1_line = json.dumps({"action": "add_node", "data": a1.model_dump(mode="json")}).encode()
+        edge_line = json.dumps({
+            "action": "add_edge",
+            "data": {
+                "from_id": "a1", "to_id": "ghost-node", "edge_type": "relates_to",
+                "timestamp": "2026-03-15T10:02:00Z", "source": "test", "reason": None,
+            },
+        }).encode()
+        journal.write_bytes(a1_line + b"\n" + edge_line + b"\n")
+
+        with caplog.at_level(logging.WARNING, logger="vibe_cognition.cognition.storage"):
+            assert store.has_node("a1")
+
+        assert "ghost-node" not in store._graph
+        assert store.get_successors("a1", CognitionEdgeType.RELATES_TO) == []
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("Dropped journal entry" in r.message for r in warnings), (
+            f"expected a WARNING for the permanently-missing edge target, got: "
+            f"{[r.message for r in caplog.records]}"
+        )
+
+    def test_merge_shaped_remove_node_before_add_node_self_heals(self, tmp_path):
+        """A remove_node tombstone can also land before its target's
+        add_node in a merge-interleaved batch -- must self-heal (node ends
+        up removed), not leave behind a node that should have been deleted."""
+        cog_dir = tmp_path / ".cognition"
+        store = CognitionStorage(cog_dir)
+        journal = cog_dir / "journal.jsonl"
+
+        n1 = self._node("n1")
+        add_line = json.dumps({"action": "add_node", "data": n1.model_dump(mode="json")}).encode()
+        remove_line = json.dumps({"action": "remove_node", "data": {"id": "n1"}}).encode()
+
+        # Merge-shaped: remove BEFORE add, in one batch.
+        journal.write_bytes(remove_line + b"\n" + add_line + b"\n")
+
+        assert not store.has_node("n1")
+
+    def test_live_remove_node_own_tombstone_readback_does_not_warn(self, tmp_path, caplog):
+        """WP-5 gate redirect: a process's OWN remove_node call, read back on
+        its next catch-up (C-6: appends don't advance the offset, so a
+        process re-reads its own just-appended lines), must NOT be
+        misclassified as a loss.
+
+        Fails-before: the deferred-retry pass had no way to distinguish
+        "target absent because we just validly deleted it ourselves" from
+        "target absent because it hasn't replayed yet" -- every ordinary
+        live remove_node produced a spurious "Dropped journal entry" WARNING
+        on the process's very next operation.
+        """
+        cog_dir = tmp_path / ".cognition"
+        store = CognitionStorage(cog_dir)
+        store.add_node(self._node("n1"))
+        store.has_node("n1")  # settle the own-write add_node catch-up first
+
+        assert store.remove_node("n1")
+
+        with caplog.at_level(logging.WARNING, logger="vibe_cognition.cognition.storage"):
+            assert not store.has_node("n1")  # forces the next catch-up
+
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING], (
+            f"ordinary own-delete must not warn: {[r.message for r in caplog.records]}"
+        )
+        assert store.rehydrate_count == 0
+
     def test_torn_trailing_line_is_eventually_ingested(self, tmp_path):
         """A half-written final line is NOT skipped+lost: the offset stays before
         it, and once the writer completes the line it gets ingested."""

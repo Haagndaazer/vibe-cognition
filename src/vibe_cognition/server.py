@@ -24,13 +24,41 @@ from .tools.project_registry import build_registry, compute_model_guard
 logger = logging.getLogger(__name__)
 
 
+def _missing_deterministic_edge(cognition_storage: CognitionStorage, node_id: str, references: list) -> bool:
+    """True if ``node_id`` shares a reference with some OTHER node it has no
+    edge to/from yet — the exact condition ``create_deterministic_edges``
+    would try to fill.
+
+    WP-5 (7c1899fe59ed): diffs against the reference index rather than
+    replicating the six-pair type-matching truth table
+    (``_deterministic_edge_for_pair``) — a false positive here just costs one
+    harmless, idempotent ``create_deterministic_edges`` call (it independently
+    re-checks the real rules and no-ops if no edge is actually warranted for
+    that pair), so this only needs to be a cheap, conservative OVER-approximation,
+    not a byte-exact replay of the matching logic.
+    """
+    connected = {t for t, _ in cognition_storage.get_successors(node_id)}
+    connected |= {s for s, _ in cognition_storage.get_predecessors(node_id)}
+    for ref in references:
+        for other_id in cognition_storage.find_nodes_by_ref(ref):
+            if other_id != node_id and other_id not in connected:
+                return True
+    return False
+
+
 def _create_deterministic_edges_for_edgeless(
     cognition_storage: CognitionStorage,
 ) -> None:
-    """Run deterministic part_of matching for nodes with no edges.
+    """Run deterministic part_of matching for nodes missing an edge their
+    references warrant.
 
-    This catches nodes created by paths that bypass cognition_record (and thus
-    skip deterministic matching).
+    This catches nodes created by paths that bypass cognition_record (and
+    thus skip deterministic matching), AND (WP-5, 7c1899fe59ed) nodes that
+    already have SOME edge but are still missing a link to a reference-
+    sharing peer that appeared later (e.g. a teammate's episode for the same
+    commit, merged in after this node already had an unrelated edge) — the
+    old has-ANY-edge predicate skipped those permanently, since this sweep
+    only runs once per server startup and there's no other repair path.
     """
     all_nodes = cognition_storage.get_all_nodes()
     if not all_nodes:
@@ -39,12 +67,11 @@ def _create_deterministic_edges_for_edgeless(
     total_created = 0
     for node_data in all_nodes:
         node_id = node_data["id"]
-        # Skip nodes that already have edges
-        if (cognition_storage.get_successors(node_id) or
-                cognition_storage.get_predecessors(node_id)):
-            continue
+        references = node_data.get("references", [])
         # Skip nodes with no references (can't match)
-        if not node_data.get("references"):
+        if not references:
+            continue
+        if not _missing_deterministic_edge(cognition_storage, node_id, references):
             continue
         total_created += cognition_storage.create_deterministic_edges(node_id)
 

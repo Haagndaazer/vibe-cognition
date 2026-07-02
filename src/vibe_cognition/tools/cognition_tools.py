@@ -194,6 +194,39 @@ def _record_node(
     timestamp = datetime.now(UTC).isoformat()
     node_id = generate_node_id(node_type.value, summary, timestamp)
 
+    # WP-5 dedup-contract half (b36e4a79113a): two clones/agents can each
+    # independently mint a distinct EPISODE for the SAME commit ref, and both
+    # survive merges forever today (no repair path — duplicate_of reachability
+    # is a separate, parked product call). Ref-lookup BEFORE mint so this is
+    # visible instead of silent, WITHOUT changing cognition_record's contract:
+    # it still always creates what was asked (never silently substitutes/
+    # reuses an existing node) — same philosophy as elsewhere in this
+    # codebase (prefer a supersedes edge over deleting/replacing history). A
+    # curator reconciles genuine duplicates manually. Scoped to episodes
+    # (contrast: five different decisions legitimately sharing one commit ref
+    # is normal, not a duplicate — episodes are the "one node per completed
+    # unit of work" type where a shared ref really does suggest the same
+    # work got recorded twice).
+    possible_duplicates: list[str] = []
+    if node_type == CognitionNodeType.EPISODE and references_list:
+        seen: set[str] = set()
+        for ref in references_list:
+            for other_id in storage.find_nodes_by_ref(ref):
+                if other_id in seen:
+                    continue
+                seen.add(other_id)
+                other = storage.get_node(other_id)
+                if other and other.get("type") == CognitionNodeType.EPISODE.value:
+                    possible_duplicates.append(other_id)
+        if possible_duplicates:
+            logger.warning(
+                "cognition_record: new episode shares a reference with "
+                f"existing episode(s) {possible_duplicates} — possible "
+                "duplicate (e.g. two clones independently minted an episode "
+                "for the same commit); not auto-merged, consider a "
+                "supersedes/duplicate note"
+            )
+
     node = CognitionNode(
         id=node_id,
         type=node_type,
@@ -236,6 +269,8 @@ def _record_node(
     }
     if det_edges:
         result["deterministic_edges_created"] = det_edges
+    if possible_duplicates:
+        result["possible_duplicate_of"] = possible_duplicates
     return result
 
 
@@ -1533,7 +1568,14 @@ def register_cognition_tools(mcp) -> None:
                         relate them. Example: "issue:LL-298,pr:97"
 
         Returns:
-            The created node with ID and timestamp
+            {id, type, summary, timestamp} plus, when non-empty,
+            deterministic_edges_created (int) and, for episode nodes only,
+            possible_duplicate_of: [node_id, ...] — other EXISTING episodes
+            sharing a reference with this one (e.g. two clones each minted an
+            episode for the same commit). The node is still created either
+            way (never silently reused/merged) — this is a visibility signal
+            for a curator to reconcile manually (e.g. supersedes), not an
+            automatic dedup.
         """
         try:
             nt = CognitionNodeType(node_type)
