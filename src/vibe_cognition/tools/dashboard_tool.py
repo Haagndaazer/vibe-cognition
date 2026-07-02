@@ -35,8 +35,12 @@ def register_dashboard_tool(mcp) -> None:
             open_browser: If true, attempt to open the URL in the default browser.
 
         Returns:
-            Dict with `url`, `status` ("running" or "already_running"),
-            `embedding_ready` (bool), and `embedding_error` (string or null).
+            Dict with `url`, `status`, `embedding_ready` (bool), and
+            `embedding_error` (string or null). `status` is "running" (first
+            call) or "already_running" (a subsequent call, same session —
+            `url` is the SAME URL as before). On a bind failure (e.g. no free
+            port found), `status` is "failed" instead: `url` is None and an
+            `error` key (string) is added explaining what happened.
         """
         lc = get_lifespan(ctx)
         return start_dashboard(lc, port=port, open_browser=open_browser)

@@ -1514,11 +1514,16 @@ def register_cognition_tools(mcp) -> None:
         what failed, what was discovered, assumptions made, constraints identified,
         production incidents, generalized patterns, or episode summaries of completed work.
 
-        CURATION IS YOUR JOB. The only edges created automatically are deterministic
-        `part_of` edges, formed when nodes share references (commit/issue/PR). All
-        semantic relationships (led_to, supersedes, contradicts, resolved_by, relates_to)
-        are NOT created for you — after recording, run the `/vibe-curate` skill to link
-        the new nodes (or add edges manually with cognition_add_edge).
+        CURATION IS YOUR JOB for semantic relationships. Deterministic edges are
+        created automatically ONLY for these pairs sharing a reference: entity<->episode
+        (part_of, ANY shared ref) and document-involving pairs sharing a doc: ref
+        specifically (entity<->document -> part_of; document<->episode -> relates_to).
+        entity<->entity, episode<->episode, and document<->document NEVER auto-link even
+        when they share a reference — e.g. two decisions citing the same commit stay
+        fully edgeless until curation. All semantic relationships (led_to, supersedes,
+        contradicts, resolved_by, relates_to) and any entity<->entity linking are NOT
+        created for you — after recording, run the `/vibe-curate` skill to link the new
+        nodes (or add edges manually with cognition_add_edge).
 
         NODE TYPES:
         - decision: A choice between alternatives. Include what was chosen AND rejected.
@@ -1530,6 +1535,11 @@ def register_cognition_tools(mcp) -> None:
         - pattern: A reusable approach, convention, or anti-pattern.
         - episode: Full narrative of completed work (Linear task, feature, debugging session).
           Create when a body of work is done — the episode captures the full story.
+        - document: NOT creatable here — use cognition_store_document instead (it handles
+          content storage, a text sidecar for search, and embedding together).
+        - task: NOT creatable here — use cognition_add_task instead (it resolves the git
+          creator server-side and seeds the status/transition lifecycle; passing
+          node_type="task" to this tool returns an error, not a task node).
 
         ENTITY NODES (decision, fail, discovery, assumption, constraint, incident, pattern):
         WORKFLOW NODES (workflow):
@@ -1866,7 +1876,10 @@ def register_cognition_tools(mcp) -> None:
                      project. "*" is rejected (node ids are not project-namespaced).
 
         Returns:
-            {id, type, summary, detail, ...} or {"error": ...} if absent.
+            {id, type, summary, detail, ...} or {"error": ...} if absent. The
+            node's kind is keyed "type" here (the raw graph attribute name) —
+            NOTE cognition_search's results use "node_type" instead, not "type";
+            the two are NOT interchangeable, check which tool you're reading from.
             When project is not None, also includes "project": tag.
         """
         lc = get_lifespan(ctx)
@@ -1969,8 +1982,15 @@ def register_cognition_tools(mcp) -> None:
             {
               query: str,
               results: [                 # hits, sorted by score desc
-                {id, type, summary, score, …, project: tag}
-                                         # "project" present when project != None
+                {id, node_type, summary, score, …, project: tag}
+                                         # "project" present when project != None.
+                                         # NOTE the key is "node_type" here, NOT
+                                         # "type" — cognition_get_node/get_history/
+                                         # get_neighbors/get_edgeless_nodes/
+                                         # get_uncurated_nodes all use "type" instead
+                                         # (the raw graph attribute name). The two
+                                         # families are NOT interchangeable; branching
+                                         # code must key off the right one per tool.
               ],
               count: int,
               project_notes: {           # project != None only; omitted when empty
@@ -2309,7 +2329,11 @@ def register_cognition_tools(mcp) -> None:
                      carries a "project" tag when project != None.
 
         Returns:
-            {context_term, results: [...nodes], count}
+            {context_term, results: [{id, type, summary, detail, ...}, ...], count}
+            Each node's kind is keyed "type" (the raw graph attribute name) — NOT
+            "node_type" like cognition_search's results use; the two shapes are
+            not interchangeable. (The node_type ARG above, which filters the
+            query, is unrelated to this key-naming asymmetry.)
             When project != None also includes "projects_queried": [tag, …].
             (Cross-project note: for semantic search over projects use
             cognition_search with project=; get_history is structural only.)
@@ -2368,6 +2392,40 @@ def register_cognition_tools(mcp) -> None:
         Use this to curate relationships directly — either while running the
         `/vibe-curate` skill or to add a single edge by hand.
 
+        EDGE SEMANTICS — when to use each type (ported from the /vibe-curate
+        edge-analyzer subagent's own table, so the direct/manual path isn't
+        guesswork):
+
+          led_to       cause -> effect (earlier -> later). A caused or directly
+                       motivated B. Requires real evidence of causation, not
+                       mere temporal adjacency ("happened after" != "caused by").
+          resolved_by  problem -> solution. A (a fail/incident) was fixed by B.
+                       B must explicitly address the problem A describes.
+          supersedes   newer -> older. B replaces A for the same concern (a
+                       newer approach to the same system/component).
+          contradicts  either direction. A and B assert incompatible things.
+                       Genuinely rare — a real logical conflict, not just
+                       disagreement or a different opinion.
+          relates_to   either direction. Same topic, no causal link. Use
+                       sparingly — if you can't name the specific
+                       relationship, don't force one.
+
+        TASK nodes: a task relates_to the decision/discovery/pattern it
+        implements or acts on; a DONE task (status: done) is resolved_by (or
+        led_to) the episode that closed it. NEVER part_of a task — its parent
+        hierarchy is an explicit edge owned by cognition_add_task /
+        cognition_update_task; a manually-added part_of would collide with it.
+
+        part_of: avoid proposing/adding this manually (except task parenting,
+        which the task tools above own) — it's created automatically by
+        deterministic reference matching (see cognition_record's docstring for
+        exactly which node-type pairs qualify); a manual mint on a pair the
+        matcher also covers just duplicates work the server already does
+        idempotently. Not blocked, just usually redundant.
+        duplicate_of: REJECTED by this tool ("duplicate_of edges require merge
+        logic and are not supported here") — it exists in the schema but has
+        no supported merge flow yet, so there is no working path to use it.
+
         DOCUMENT nodes are intentionally manually-linkable: versioning uses an
         explicit ``supersedes`` edge between document nodes, and curated
         ``relates_to`` edges are expected. The deterministic matcher only
@@ -2379,7 +2437,7 @@ def register_cognition_tools(mcp) -> None:
             from_id: Source node ID (must exist)
             to_id: Target node ID (must exist)
             edge_type: One of: led_to, supersedes, contradicts, relates_to,
-                       resolved_by, part_of
+                       resolved_by, part_of (duplicate_of is rejected — see above)
             reason: Optional brief explanation of why this edge exists
             source: Provenance tag (default: "manual")
 
@@ -2399,8 +2457,44 @@ def register_cognition_tools(mcp) -> None:
         Each edge in the JSON array needs from_id, to_id, and edge_type.
         Edges are validated individually — invalid ones are skipped and reported.
 
+        EDGE SEMANTICS — when to use each type (ported from the /vibe-curate
+        edge-analyzer subagent's own table, so the direct/manual path isn't
+        guesswork):
+
+          led_to       cause -> effect (earlier -> later). A caused or directly
+                       motivated B. Requires real evidence of causation, not
+                       mere temporal adjacency ("happened after" != "caused by").
+          resolved_by  problem -> solution. A (a fail/incident) was fixed by B.
+                       B must explicitly address the problem A describes.
+          supersedes   newer -> older. B replaces A for the same concern (a
+                       newer approach to the same system/component).
+          contradicts  either direction. A and B assert incompatible things.
+                       Genuinely rare — a real logical conflict, not just
+                       disagreement or a different opinion.
+          relates_to   either direction. Same topic, no causal link. Use
+                       sparingly — if you can't name the specific
+                       relationship, don't force one.
+
+        TASK nodes: a task relates_to the decision/discovery/pattern it
+        implements or acts on; a DONE task (status: done) is resolved_by (or
+        led_to) the episode that closed it. NEVER part_of a task — its parent
+        hierarchy is an explicit edge owned by cognition_add_task /
+        cognition_update_task; a manually-added part_of would collide with it.
+
+        part_of: avoid proposing/adding this manually (except task parenting,
+        which the task tools above own) — it's created automatically by
+        deterministic reference matching (see cognition_record's docstring for
+        exactly which node-type pairs qualify); a manual mint on a pair the
+        matcher also covers just duplicates work the server already does
+        idempotently. Not blocked, just usually redundant.
+        duplicate_of: REJECTED, per-edge ("duplicate_of edges require merge
+        logic and are not supported here") — it exists in the schema but has
+        no supported merge flow yet, so there is no working path to use it.
+
         Args:
-            edges: JSON array string of edge objects, max 500. Example:
+            edges: JSON array string of edge objects, max 500. edge_type is one
+                   of: led_to, supersedes, contradicts, relates_to, resolved_by,
+                   part_of (duplicate_of is rejected — see above). Example:
                    '[{"from_id":"abc","to_id":"def","edge_type":"led_to"}]'
 
         Returns:
@@ -2595,8 +2689,16 @@ def register_cognition_tools(mcp) -> None:
                      same id can exist in two projects; use a specific tag.
 
         Returns:
-            {"node_id": "...", "incoming": [...], "outgoing": [...]}
-            When project is not None, also includes "project": tag.
+            {"node_id": "..."}, PLUS "outgoing": [...] when direction is
+            "outgoing" or "both", and/or "incoming": [...] when direction is
+            "incoming" or "both". Each entry is {id, edge_type, reason, type}
+            (that connected node's raw graph "type", not "node_type"). The key
+            for a direction NOT requested is entirely ABSENT (not an empty
+            list) — e.g. direction="outgoing" never puts "incoming" in the
+            result at all; check with .get() or "in", don't assume both keys
+            are always present. When project is not None, also includes
+            "project": tag. {"error": "..."} on a missing node/bad edge_type/
+            unsupported direction/rejected "*".
         """
         lc = get_lifespan(ctx)
 
@@ -2796,8 +2898,14 @@ def register_cognition_tools(mcp) -> None:
                   a .cognition/journal.jsonl).
 
         Returns:
-            {tag, path, node_count, vector_count, model_guard, warning?}
+            On success: {tag, path, node_count, vector_count, model_guard, warning?}
             vector_count is "n/a" when no chroma index exists for the project.
+
+            On failure: {"error": "..."} — invalid path, path is already loaded
+            as home, no .cognition/journal.jsonl found at path, or path is
+            already loaded as a foreign project (in which case the error dict
+            ALSO carries "tag": <existing tag> — the already-loaded project's
+            tag, not confirmation of a new load; check for "error" first).
         """
         return _load_project_core(get_lifespan(ctx), path)
 

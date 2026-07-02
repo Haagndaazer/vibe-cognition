@@ -276,6 +276,35 @@ def test_cognition_dashboard_idempotent_second_call(tmp_path, mock_mcp, build_lc
     assert r2["status"] == "already_running"
 
 
+def test_cognition_dashboard_wrapper_passes_through_failed_status(
+    tmp_path, mock_mcp, build_lc, make_ctx
+):
+    """WP-8 (e130ad211ebe audit sweep): a bind-failure "failed" status (url:
+    None, plus an "error" key — see start_dashboard's D-1 bind-verification
+    path) must reach the caller unmodified, not just "running"/"already_running".
+
+    Fails-before: the docstring didn't mention "failed" existed at all; this
+    pins that the wrapper is a transparent passthrough regardless.
+    """
+    register_dashboard_tool(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    ctx = make_ctx(lc)
+
+    fake_failure = {
+        "url": None,
+        "status": "failed",
+        "error": "dashboard server did not start (port bind failed?)",
+        "embedding_ready": True,
+        "embedding_error": None,
+    }
+    with patch("vibe_cognition.tools.dashboard_tool.start_dashboard", return_value=fake_failure):
+        result = mock_mcp.tools["cognition_dashboard"](ctx)  # type: ignore[arg-type]
+
+    assert result["status"] == "failed"
+    assert result["url"] is None
+    assert "error" in result
+
+
 # ── cognition_list_projects wrapper (wrapper gap) ─────────────────────────────
 
 
@@ -703,6 +732,32 @@ def test_cognition_get_incident_resolution_returns_dict(tmp_path, mock_mcp, buil
     assert isinstance(result, dict)
 
 
+def test_add_edge_docstrings_list_exactly_the_accepted_edge_types(mock_mcp):
+    """WP-8 (7d1c151b0372): cognition_add_edge and cognition_add_edges_batch's
+    docstrings must each mention every CognitionEdgeType the tool actually
+    accepts, and flag duplicate_of as rejected (not silently omit it) — a
+    real drift test introspecting the ACTUAL enum and the ACTUAL registered
+    docstrings, not a copy of either.
+
+    Fails-before: a future edge type added to the enum but never ported into
+    these docstrings, or a docstring that silently dropped a real type,
+    would go unnoticed; this fails immediately in either direction.
+    """
+    from vibe_cognition.cognition.models import CognitionEdgeType
+
+    register_cognition_tools(mock_mcp)
+    accepted = {e.value for e in CognitionEdgeType if e != CognitionEdgeType.DUPLICATE_OF}
+
+    for tool_name in ("cognition_add_edge", "cognition_add_edges_batch"):
+        doc = mock_mcp.tools[tool_name].__doc__ or ""
+        for edge_type in accepted:
+            assert edge_type in doc, f"{tool_name} docstring is missing edge type '{edge_type}'"
+        assert "duplicate_of" in doc, f"{tool_name} docstring never mentions duplicate_of"
+        assert "reject" in doc.lower(), (
+            f"{tool_name} docstring mentions duplicate_of but doesn't explain it's rejected"
+        )
+
+
 def test_cognition_add_edge_returns_dict(tmp_path, mock_mcp, build_lc, make_ctx):
     """cognition_add_edge wrapper: valid edge → {created, from_id, to_id, edge_type}."""
     register_cognition_tools(mock_mcp)
@@ -785,6 +840,36 @@ def test_cognition_get_neighbors_returns_dict(tmp_path, mock_mcp, build_lc, make
     assert result.get("node_id") == nid
     assert "incoming" in result
     assert "outgoing" in result
+
+
+def test_cognition_get_neighbors_direction_filter_omits_unrequested_key(
+    tmp_path, mock_mcp, build_lc, make_ctx
+):
+    """WP-8 (e130ad211ebe audit sweep): direction="outgoing"/"incoming" must
+    NOT include the other direction's key at all (not even an empty list) —
+    now documented in the docstring; this pins the actual behavior it
+    describes.
+
+    Fails-before: a caller trusting the old docstring's unconditional
+    {"incoming": [...], "outgoing": [...]} claim could KeyError on the
+    direction not requested.
+    """
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    nid = _add_node(lc, "n1")
+
+    out_only = mock_mcp.tools["cognition_get_neighbors"](  # type: ignore[arg-type]
+        ctx, node_id=nid, direction="outgoing"
+    )
+    assert "outgoing" in out_only
+    assert "incoming" not in out_only
+
+    in_only = mock_mcp.tools["cognition_get_neighbors"](  # type: ignore[arg-type]
+        ctx, node_id=nid, direction="incoming"
+    )
+    assert "incoming" in in_only
+    assert "outgoing" not in in_only
 
 
 def test_cognition_remove_edge_returns_error_on_missing_edge(tmp_path, mock_mcp, build_lc, make_ctx):

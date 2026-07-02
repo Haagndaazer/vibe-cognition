@@ -347,6 +347,27 @@ def test_load_project_refuses_home_by_exact_path(tmp_path):
     assert "error" in res3 and "home" in res3["error"], f"dot-join path not refused: {res3}"
 
 
+def test_load_project_reload_same_path_error_carries_existing_tag(tmp_path):
+    """WP-8 (c0e6afeddaf9 audit sweep): re-loading an already-loaded foreign
+    project's error dict ALSO carries "tag" (the EXISTING project's tag) —
+    documented now in cognition_load_project's docstring, since a caller
+    checking truthy "tag" instead of "error" first would misread this as a
+    successful (re-)load rather than a no-op collision.
+
+    Fails-before: no test previously pinned this second key existing at all.
+    """
+    lc = _make_lc(tmp_path)
+    b_path = _make_foreign(tmp_path, "B", with_journal=True)
+
+    first = _load_project_core(lc, str(b_path))
+    assert "error" not in first
+    tag = first["tag"]
+
+    second = _load_project_core(lc, str(b_path))
+    assert "error" in second
+    assert second["tag"] == tag
+
+
 def test_unload_project_refuses_home_by_tag(tmp_path):
     """cognition_unload_project refuses to unload home even by tag."""
     lc = _make_lc(tmp_path)
