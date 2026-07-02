@@ -146,6 +146,21 @@ def test_getting_started_record_example_matches_real_signature(mock_mcp):
     assert not missing, f"example is missing required kwarg(s): {missing}"
 
 
+def test_guide_core_loop_references_server_instructions_not_restates():
+    """WP-7 (9aca47c5803d): the record->curate loop's mechanics live in ONE
+    owning channel (SERVER_INSTRUCTIONS) now; COGNITION_GUIDE's "core loop"
+    section points back at it instead of independently restating the full
+    loop, so the two can't quietly drift apart the way Stage-1's skill split
+    did.
+
+    Fails-before: the old text fully restated "1. Record as you work... 2.
+    Curate after recording..." with no reference to the standing practices.
+    """
+    normalized = " ".join(COGNITION_GUIDE.split())  # collapse wrapping whitespace
+    assert "MCP server instructions" in normalized
+    assert "Three standing practices" in normalized
+
+
 def test_readme_constants_are_ascii_clean():
     """All readme.py constants must be ASCII-only (hook path constraint)."""
     assert COGNITION_GUIDE.isascii(), "COGNITION_GUIDE contains non-ASCII characters"

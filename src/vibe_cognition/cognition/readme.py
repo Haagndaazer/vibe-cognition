@@ -13,11 +13,12 @@ and pattern you capture here persists across sessions and is searchable via embe
 
 ## The core loop
 
-1. Record as you work -- call cognition_record whenever you make a decision, hit a
-   failure, discover something non-obvious, or notice a reusable pattern.
-2. Curate after recording -- run /vibe-curate to add semantic edges (led_to,
-   resolved_by, supersedes, contradicts, relates_to) that connect new nodes to the
-   existing graph. Deterministic part_of edges are created automatically.
+The full record -> curate loop (what to capture, when, and how) is the "Three standing
+practices" in your MCP server instructions -- surfaced every session via the MCP
+initialize handshake and re-injected after a compact, so it is already in your
+context. In brief: record with cognition_record as you work, then curate with
+/vibe-curate to add semantic edges (led_to, resolved_by, supersedes, contradicts,
+relates_to). Deterministic part_of edges are created automatically.
 
 ## Tool groups
 

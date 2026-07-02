@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# SessionStart(compact) hook — re-inject the standing cognition practices.
+# SessionStart(compact) hook — re-inject standing practices + the prime digest.
 #
 # The server's SERVER_INSTRUCTIONS are surfaced via the MCP initialize handshake, but it
 # is undocumented whether those survive a context compaction. This hook (matcher: compact
 # in hooks.json) re-injects them as additionalContext after a compact so the rules stay
-# in force. Emits a SessionStart hookSpecificOutput JSON, or '{}' on any failure.
+# in force. It ALSO regenerates the prime data digest (open tasks, constraints, patterns,
+# decisions, incidents — WP-7, 530adc9e6f3f) via vibe_cognition.instructions.main(), so a
+# compacted session gets the graph's actual backlog back, not just the static rules.
+# Emits a SessionStart hookSpecificOutput JSON, or '{}' on any failure.
 set -euo pipefail
 
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"
