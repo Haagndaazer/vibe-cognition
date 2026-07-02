@@ -49,9 +49,15 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=4.0.0",
+    "pytest-timeout>=2.3.0",
     "ruff>=0.3.0",
     "pyright>=1.1.0",
 ]
+
+[tool.pytest.ini_options]
+# WP-1 item 0: no single test may wedge an unattended run. Thread-based (the
+# default) is Windows-safe; individual tests can override with @pytest.mark.timeout.
+timeout = 60
 
 [tool.ruff]
 line-length = 100

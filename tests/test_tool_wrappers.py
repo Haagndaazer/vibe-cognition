@@ -99,6 +99,45 @@ def test_get_status_node_chunk_split(tmp_path, mock_mcp, build_lc, make_ctx):
     assert emb["nodes"] == emb["total"] - emb["chunks"]
 
 
+def test_get_status_rehydrate_events_null_when_clean(tmp_path, mock_mcp, build_lc, make_ctx):
+    """WP-1 item 1: rehydrate_events must be absent/null when no reset happened.
+
+    Fails-before: if the field were always present or defaulted to a truthy
+    placeholder, a clean process would look like it had lost data.
+    """
+    register_service_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    ctx = make_ctx(lc)
+
+    result = mock_mcp.tools["get_status"](ctx)  # type: ignore[arg-type]
+    assert result["rehydrate_events"] is None
+
+
+def test_get_status_surfaces_rehydrate_event(tmp_path, mock_mcp, build_lc, make_ctx):
+    """WP-1 item 1 (critical): a lossy rehydrate-reset must surface in get_status
+    with the node-count delta, not just an internal log line.
+
+    Fails-before: rehydrate resets were invisible outside a log grep — nothing
+    queryable recorded that a reset (and possible data loss) occurred.
+    """
+    register_service_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    ctx = make_ctx(lc)
+    storage: CognitionStorage = lc["cognition_storage"]
+    storage.add_node(_node("n1"))
+    storage.add_node(_node("n2"))
+
+    (storage.cognition_dir / "journal.jsonl").write_bytes(b"")
+    storage.get_statistics()  # forces catch-up, detecting the shrink
+
+    result = mock_mcp.tools["get_status"](ctx)  # type: ignore[arg-type]
+    events = result["rehydrate_events"]
+    assert events is not None
+    assert events["count"] == 1
+    assert events["last"]["nodes_before"] == 2
+    assert events["last"]["nodes_after"] == 0
+
+
 # ── cognition_dashboard (zero-coverage, monkeypatched) ────────────────────────
 
 

@@ -1,5 +1,6 @@
 """Prime command — outputs compact project context for Claude Code session injection."""
 
+import contextlib
 import json
 import os
 import sys
@@ -11,7 +12,7 @@ from ..config import Settings
 from .git_hygiene import check_hygiene_state, format_hygiene_announce
 from .models import CognitionNodeType
 from .readme import ONBOARDING_BLOCK
-from .storage import CognitionStorage
+from .storage import REHYDRATE_FLAG_FILENAME, CognitionStorage
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "normal": 2, "low": 3}
 
@@ -186,6 +187,41 @@ def generate_prime(storage: CognitionStorage, config: PrimeConfig | None = None)
     )
 
 
+def _consume_rehydrate_flag(cognition_dir: Path) -> str:
+    """One-shot journal-loss alert for the next session start (WP-1 item 1.4).
+
+    A server process that detected a LOSSY rehydrate-reset (journal shrunk or
+    replaced under its replay offset, dropping in-memory nodes) persists a small
+    flag file (storage.REHYDRATE_FLAG_FILENAME). Prime runs in a separate
+    process, so this file IS the cross-process plumbing: read it, format a
+    warning section, and delete it (shown once — the server's own get_status
+    keeps reporting the event for its process lifetime). Never raises; an
+    unreadable flag is consumed silently so it cannot wedge every future prime.
+    """
+    flag = cognition_dir / REHYDRATE_FLAG_FILENAME
+    try:
+        raw = flag.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    with contextlib.suppress(OSError):
+        flag.unlink()
+    try:
+        info = json.loads(raw)
+        lost = int(info["nodes_lost"])
+        at = str(info.get("at", "unknown time"))
+    except (ValueError, TypeError, KeyError):
+        return ""
+    sample = info.get("sample_missing_ids") or []
+    sample_note = f" (e.g. {', '.join(sample)})" if sample else ""
+    return (
+        "WARNING (vibe-cognition): in a previous session the journal was replaced or "
+        f"truncated under a live server ({at}); {lost} node(s) recorded in that "
+        f"session are no longer on disk{sample_note} — "
+        "check `git log -- .cognition/journal.jsonl` or a teammate's clone to recover, "
+        "and alert the user."
+    )
+
+
 def main():
     """Entry point for vibe-cognition-prime CLI command.
 
@@ -199,6 +235,9 @@ def main():
     onboarding block instructing the LLM to alert the user and call
     cognition_readme. Migration note and onboarding are independent: both emit
     if both conditions hold (note first, then onboarding).
+
+    Also consumes the one-shot journal-loss flag (see _consume_rehydrate_flag)
+    and injects its warning ahead of the project context when present.
     """
     note = os.environ.get("VIBE_MIGRATION_NOTE", "").strip()
     repo_path = Path(os.environ.get("REPO_PATH", Path.cwd()))
@@ -215,6 +254,12 @@ def main():
             sections.append(hygiene_line)
     except Exception:  # noqa: BLE001
         pass
+
+    # Journal-loss alert (WP-1): surfaced BEFORE the project context so it can't
+    # be buried; consumed so it shows exactly once.
+    rehydrate_note = _consume_rehydrate_flag(cognition_dir)
+    if rehydrate_note:
+        sections.append(rehydrate_note)
 
     storage: CognitionStorage | None = None
     if cognition_dir.exists():

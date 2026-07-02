@@ -6,7 +6,8 @@ except when the schema version is bumped for future writers (triggers one re-run
 
 Two writes (both idempotent, locked, crash-proof):
   1. repo-root .gitattributes  — .cognition/journal.jsonl merge=union
-  2. .cognition/.gitignore     — chromadb/ and .git-hygiene-managed
+  2. .cognition/.gitignore     — chromadb/, .git-hygiene-managed, *.lock,
+                                 and .last-rehydrate.json (local loss-alert flag)
 
 `merge=union` is a MERGE-DRIVER attribute — it only changes 3-way merge resolution
 and never participates in checkout/checkin filtering, so adding it does NOT
@@ -33,13 +34,17 @@ logger = logging.getLogger(__name__)
 
 # Bump this integer when a NEW writer is added to ensure every working copy
 # re-runs the pass exactly once more to pick up the new rule.
-GIT_HYGIENE_VERSION = 1
+# v2: .last-rehydrate.json added to .cognition/.gitignore (WP-1 loss visibility).
+GIT_HYGIENE_VERSION = 2
 
 _GITATTRIBUTES_MARKER = "# vibe-cognition: append-only journal union-merge (safe to remove)"
 _GITATTRIBUTES_RULE = ".cognition/journal.jsonl merge=union"
 _GITIGNORE_CHROMADB = "chromadb/"
 _GITIGNORE_FLAG = ".git-hygiene-managed"
 _GITIGNORE_LOCKS = "*.lock"
+# Local-only rehydrate loss-alert flag (storage.REHYDRATE_FLAG_FILENAME) — string
+# duplicated here rather than imported to keep this module stdlib-only/standalone.
+_GITIGNORE_REHYDRATE = ".last-rehydrate.json"
 _FLAG_FILENAME = ".git-hygiene-managed"
 
 # A lock older than this is assumed stale (leftover from a hard-killed process).
@@ -164,7 +169,8 @@ def _needs_gitignore_entry(gitignore_path: Path, entry: str, bare: str) -> bool:
 
 
 def _write_gitignore(cognition_dir: Path) -> bool:
-    """Ensure .cognition/.gitignore contains chromadb/, .git-hygiene-managed, and *.lock.
+    """Ensure .cognition/.gitignore contains chromadb/, .git-hygiene-managed, *.lock,
+    and .last-rehydrate.json.
     Returns True if the file is correct after the call (success or already-present)."""
     gitignore_path = cognition_dir / ".gitignore"
     lock = cognition_dir / ".gitignore.lock"
@@ -174,7 +180,10 @@ def _write_gitignore(cognition_dir: Path) -> bool:
         need_chromadb = _needs_gitignore_entry(gitignore_path, _GITIGNORE_CHROMADB, "chromadb")
         need_flag = _needs_gitignore_entry(gitignore_path, _GITIGNORE_FLAG, _GITIGNORE_FLAG)
         need_locks = _needs_gitignore_entry(gitignore_path, _GITIGNORE_LOCKS, _GITIGNORE_LOCKS)
-        if not need_chromadb and not need_flag and not need_locks:
+        need_rehydrate = _needs_gitignore_entry(
+            gitignore_path, _GITIGNORE_REHYDRATE, _GITIGNORE_REHYDRATE
+        )
+        if not need_chromadb and not need_flag and not need_locks and not need_rehydrate:
             return True
 
         if not gitignore_path.exists():
@@ -185,6 +194,8 @@ def _write_gitignore(cognition_dir: Path) -> bool:
                 lines_to_add.append(_GITIGNORE_FLAG)
             if need_locks:
                 lines_to_add.append(_GITIGNORE_LOCKS)
+            if need_rehydrate:
+                lines_to_add.append(_GITIGNORE_REHYDRATE)
             try:
                 gitignore_path.write_text("\n".join(lines_to_add) + "\n", encoding="utf-8")
             except OSError as exc:
@@ -205,6 +216,8 @@ def _write_gitignore(cognition_dir: Path) -> bool:
             lines_to_add.append(_GITIGNORE_FLAG)
         if need_locks:
             lines_to_add.append(_GITIGNORE_LOCKS)
+        if need_rehydrate:
+            lines_to_add.append(_GITIGNORE_REHYDRATE)
 
         prefix = "" if (not existing or existing.endswith("\n")) else "\n"
         addition = prefix + "\n".join(lines_to_add) + "\n"

@@ -151,12 +151,20 @@ def get_node(request):
 
 
 def delete_node(request):
-    """Remove a node from the graph and ChromaDB."""
+    """Remove a node from the graph and ChromaDB.
+
+    Provenance: the journal tombstone records the acting surface ("dashboard") —
+    the dashboard has no per-user identity (deliberately: token-gated, single
+    local user), so the surface tag is the honest attribution.
+    """
     lc = _ctx(request)
     node_id = request.path_params["node_id"]
 
     result = delete_cognition_node(
-        lc["cognition_storage"], lc["cognition_embedding_storage"], node_id
+        lc["cognition_storage"],
+        lc["cognition_embedding_storage"],
+        node_id,
+        removed_by="dashboard",
     )
     if result is None:
         return JSONResponse({"error": "not found"}, status_code=404)

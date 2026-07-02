@@ -30,6 +30,11 @@ _COMMIT_SHORT_PREFIX_LEN = 7
 
 JOURNAL_FILENAME = "journal.jsonl"
 
+# Sidecar flag written on a LOSSY rehydrate-reset (nodes vanished from memory) so
+# the next session-start prime — a separate process — can surface the loss. Consumed
+# (deleted) by prime.py after it is shown once. Git-ignored via git_hygiene.py.
+REHYDRATE_FLAG_FILENAME = ".last-rehydrate.json"
+
 
 class CognitionStorage:
     """Cognition graph storage: JSONL source of truth + NetworkX in-memory graph.
@@ -69,6 +74,12 @@ class CognitionStorage:
         self._journal_mtime_ns: int | None = None
         # Re-entrancy depth for _synced(): catch-up runs once per outermost op.
         self._sync_depth = 0
+        # Loss visibility (WP-1): process-lifetime record of rehydrate resets —
+        # a shrunk/replaced journal silently discarding in-memory state is the
+        # exact failure this product exists to prevent, so every reset is counted
+        # and the last one kept for get_status to surface.
+        self.rehydrate_count = 0
+        self.last_rehydrate: dict[str, Any] | None = None
 
         self._dir.mkdir(parents=True, exist_ok=True)
 
@@ -267,11 +278,17 @@ class CognitionStorage:
                 self._graph.nodes[node_id][key] = value
             return True
 
-    def remove_node(self, node_id: str) -> bool:
+    def remove_node(
+        self, node_id: str, removed_by: dict[str, str] | str | None = None
+    ) -> bool:
         """Remove a node and all its edges from the graph.
 
         Args:
             node_id: ID of the node to remove
+            removed_by: Acting author for the journal tombstone (provenance) —
+                a resolved git identity dict or a surface tag like "dashboard".
+                Optional; omitted from the tombstone when None. Replay ignores
+                it, so old tombstones without the field keep replaying fine.
 
         Returns:
             True if the node existed and was removed
@@ -281,7 +298,10 @@ class CognitionStorage:
                 return False
 
             # C-4 journal-FIRST (see add_node): record before mutating the graph.
-            self._append_journal("remove_node", {"id": node_id})
+            tombstone: dict[str, Any] = {"id": node_id}
+            if removed_by is not None:
+                tombstone["removed_by"] = removed_by
+            self._append_journal("remove_node", tombstone)
             self._unindex_node_refs(node_id)
             self._graph.remove_node(node_id)
             return True
@@ -826,6 +846,83 @@ class CognitionStorage:
         self._offset = 0
         self._journal_hasher = hashlib.sha256()
 
+    def _record_rehydrate(self, before_ids: set[str], *, ambiguous_first_observation: bool) -> None:
+        """Make a rehydrate-reset LOUD and durable (WP-1 loss visibility) — unless
+        it's a known-benign false trigger, in which case stay quiet.
+
+        Called by ``_catch_up`` after the reset AND the replay-from-top, so
+        ``self._graph`` reflects what actually survived on disk.
+
+        IDENTITY, not count, is the loss signal: ``missing = before_ids -
+        after_ids``. A replacement journal can have MORE total nodes than we had
+        in memory (a divergent branch with its own unrelated history) while still
+        having silently dropped one of OUR nodes — a pure count comparison misses
+        exactly that case (the incident that motivated this task: a branch-switch
+        clobbered 2 live nodes). Before/after COUNTS are still recorded for
+        context, but they never drive the warn/quiet or flag-write decision.
+
+        ``ambiguous_first_observation``: True when the reset was detected via the
+        "offset==0, graph already non-empty" branch on this instance's FIRST-EVER
+        stat of the journal — which is indistinguishable from, and in the
+        overwhelming common case simply IS, this process reading its own recent
+        writes back for the first time (see ``_catch_up``). That is expected,
+        constant, harmless behavior, not a "reset" a human needs to see — so
+        UNLESS ``missing`` is non-empty (an external actor really did
+        truncate/replace the journal in that exact narrow window), skip all loud
+        surfacing and log a quiet DEBUG line instead of a WARNING.
+
+        Loud path (the common shrink/hash-mismatch case, or any case with an
+        actual identity loss) has three surfaces:
+          1. WARNING log naming the lost-node count (was a silent logger.info);
+          2. ``self.last_rehydrate`` / ``self.rehydrate_count`` for get_status;
+          3. on ``missing``, a best-effort sidecar flag file so the next
+             session-start prime — a separate process — can alert once (prime
+             consumes/deletes it). Benign rehydrates (a divergent merge that only
+             ADDED remote nodes, none of ours missing) don't spam prime.
+        Never raises: the flag write is best-effort (the reset itself already
+        succeeded; visibility must not break convergence).
+
+        NOTE: ``cognition_reload`` deliberately does NOT hit this path — it calls
+        ``_rehydrate_reset`` itself before ``_catch_up``, so the graph is already
+        empty at offset 0 and the rehydrate detection stays False.
+        """
+        after_ids = set(self._graph.nodes)
+        missing = sorted(before_ids - after_ids)
+
+        if ambiguous_first_observation and not missing:
+            logger.debug(
+                "Journal first observed non-empty while reading back this "
+                "process's own recent writes (nodes before=%d, after=%d) — "
+                "not a loss event, staying quiet",
+                len(before_ids),
+                len(after_ids),
+            )
+            return
+
+        logger.warning(
+            "Journal changed under our replay offset; re-hydrated from top "
+            "(nodes before=%d, after=%d; %d node(s) recorded this session are no "
+            "longer on disk)",
+            len(before_ids),
+            len(after_ids),
+            len(missing),
+        )
+        self.rehydrate_count += 1
+        self.last_rehydrate = {
+            "at": datetime.now(UTC).isoformat(),
+            "nodes_before": len(before_ids),
+            "nodes_after": len(after_ids),
+            "nodes_lost": len(missing),
+            "sample_missing_ids": missing[:5],
+        }
+        if missing:
+            try:
+                (self._dir / REHYDRATE_FLAG_FILENAME).write_text(
+                    json.dumps(self.last_rehydrate), encoding="utf-8"
+                )
+            except OSError as exc:
+                logger.debug("could not write rehydrate flag file: %s", exc)
+
     def _catch_up(self) -> int:
         """Replay journal lines appended since we last read; return entry count.
 
@@ -868,6 +965,10 @@ class CognitionStorage:
             return 0
         size = st.st_size
         mtime = st.st_mtime_ns
+        # First time this instance has ever stat'd the file with content (WP-1):
+        # distinguishes the ambiguous "offset==0, graph already non-empty" case
+        # below from a genuine replacement — see that branch's comment.
+        first_observation = self._journal_mtime_ns is None
 
         # Cheap path: size AND mtime unchanged → nothing happened (one stat, no
         # read). mtime also catches an equal-byte-size replacement.
@@ -879,13 +980,24 @@ class CognitionStorage:
             data = f.read()
 
         rehydrate = False
+        ambiguous_first_observation = False
         if size < self._offset:
             rehydrate = True  # shrank: truncated / rotated / reset
         elif self._offset == 0 and self._graph.number_of_nodes() > 0:
             # Reading from the TOP with a non-empty graph = a re-hydrate: the
             # journal was replaced before this store advanced its offset past its
             # own first appends (appends don't move the offset — see C-6).
+            #
+            # WP-1 refinement: when this is ALSO this instance's first-ever stat
+            # of the file (first_observation), the graph's only possible source
+            # is this process's OWN prior writes (nothing else could have landed
+            # in self._graph before any replay ran) — so this is indistinguishable
+            # from, and in practice almost always IS, catch-up simply reading its
+            # own just-appended lines back (see _append_journal's C-6 note), not a
+            # real external reset. _record_rehydrate downgrades this specific
+            # combination to quiet unless it turns out nodes were actually lost.
             rehydrate = True
+            ambiguous_first_observation = first_observation
         elif (
             self._offset > 0
             # C-3: the replayed prefix must still be byte-identical.
@@ -893,14 +1005,21 @@ class CognitionStorage:
         ):
             rehydrate = True
 
+        before_ids: set[str] = set()
         if rehydrate:
-            logger.info("Journal changed under our replay offset; re-hydrating from top")
+            before_ids = set(self._graph.nodes)
             self._rehydrate_reset()
 
         raw = data[self._offset :]
         last_nl = raw.rfind(b"\n")
         if last_nl == -1:
-            return 0  # no complete line yet — do not advance past a torn append
+            # No complete line yet — do not advance past a torn append. Still
+            # record the reset (the replaced journal may simply be empty/torn).
+            if rehydrate:
+                self._record_rehydrate(
+                    before_ids, ambiguous_first_observation=ambiguous_first_observation
+                )
+            return 0
 
         complete = raw[: last_nl + 1]
         self._offset += len(complete)
@@ -916,6 +1035,13 @@ class CognitionStorage:
                 count += 1
             except (json.JSONDecodeError, KeyError, ValueError) as e:
                 logger.warning(f"Skipping malformed journal line: {e}")
+
+        if rehydrate:
+            # Record AFTER the replay-from-top so the identity comparison sees
+            # what actually survived on disk.
+            self._record_rehydrate(
+                before_ids, ambiguous_first_observation=ambiguous_first_observation
+            )
 
         if count:
             # C-6: +N includes THIS process's own just-appended lines re-read from

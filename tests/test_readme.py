@@ -5,6 +5,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
+from vibe_cognition.cognition.git_hygiene import _GITATTRIBUTES_RULE
 from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType, generate_node_id
 from vibe_cognition.cognition.prime import main
 from vibe_cognition.cognition.readme import (
@@ -129,6 +130,21 @@ def test_gitattr_union_merge_present_in_getting_started():
     assert "merge=union" in COGNITION_GETTING_STARTED
 
 
-def test_gitattr_no_text_flag_in_guide():
-    """COGNITION_GUIDE must never recommend -text (scar: causes blob rewrite + duplication)."""
-    assert "-text" not in COGNITION_GUIDE
+def test_gitattr_auto_write_never_includes_text_flag():
+    """git_hygiene's AUTO-WRITTEN rule must always be exactly merge=union, never
+    -text (decision 9f13a8099e03, known-intentional in the fable-audit burndown
+    plan). WP-1 item 3 narrowed the old blanket "COGNITION_GUIDE must never even
+    mention -text" guard to this: -text may be DISCLOSED in docs as a manual,
+    cut-over-gated team decision (scar: 90ee3c1b968c -- applying -text without a
+    cut-over commit IS the byte-rewrite it defends against), but the server must
+    never write it automatically."""
+    assert _GITATTRIBUTES_RULE == ".cognition/journal.jsonl merge=union"
+    assert "-text" not in _GITATTRIBUTES_RULE
+
+
+def test_gitattr_text_flag_disclosure_is_cut_over_gated():
+    """If COGNITION_GUIDE discloses -text, it must also warn about the cut-over
+    requirement (scar: 90ee3c1b968c) -- disclosure without that caveat would
+    recreate the exact hazard decision 9f13a8099e03 originally banned."""
+    if "-text" in COGNITION_GUIDE:
+        assert "cut-over" in COGNITION_GUIDE.lower()

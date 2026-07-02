@@ -21,6 +21,7 @@ def delete_cognition_node(
     storage: CognitionStorage,
     embed_storage: Any,
     node_id: str,
+    removed_by: dict[str, str] | str | None = None,
 ) -> dict[str, Any] | None:
     """Delete a node, its incident edges, and its embedding.
 
@@ -34,6 +35,9 @@ def delete_cognition_node(
         embed_storage: The ChromaDB embedding store (duck-typed: needs
             ``delete_embedding(node_id)``).
         node_id: ID of the node to delete.
+        removed_by: Acting author recorded in the journal tombstone (provenance):
+            a resolved git identity dict (MCP path) or a surface tag like
+            "dashboard". Optional — omitted from the tombstone when None.
 
     Returns:
         A result dict ``{"id", "removed_edges", "edges_removed"}`` on success, or
@@ -64,7 +68,7 @@ def delete_cognition_node(
         for source_id, edata in storage.get_predecessors(node_id)
     ]
 
-    if not storage.remove_node(node_id):
+    if not storage.remove_node(node_id, removed_by=removed_by):
         # Lost a race with a concurrent deletion — treat as not found.
         return None
 

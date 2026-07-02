@@ -304,6 +304,8 @@ This avoids the ~2GB sentence-transformers/PyTorch dependency.
 
 **ChromaDB lock / database errors** — Only one Vibe Cognition instance can run per project at a time. Check for duplicate MCP server instances or other processes using `.cognition/chromadb/`.
 
+**Journal permanently shows as modified, or replay resets after merges (Windows / autocrlf)** — The journal is replayed by byte offset, so line-ending normalization must never rewrite its bytes; on `core.autocrlf` setups this holds only by convention. If `git status` permanently shows `.cognition/journal.jsonl` as modified, or logs show "re-hydrated from top" after merges/pulls, add `.cognition/*.jsonl merge=union -text` to your repo-root `.gitattributes` — EARLY in the graph's life. Do not retrofit `-text` onto a grown shared-checkout journal without a planned cut-over: the first commit after adding it re-normalizes the file once, which live sessions see as a replaced journal. (Auto-configuration writes only `merge=union`, never `-text`.)
+
 **Semantic edges not appearing** — Curation is agent-driven: after recording nodes, run the `/vibe-curate` skill to create semantic edges. Only `part_of` edges (from shared references) are automatic. Nodes are stored and searchable regardless.
 
 **Model download failures** — The embedding model (~250MB) is downloaded from Hugging Face on first run. Check your internet connection and proxy settings. Corporate firewalls may block Hugging Face downloads.

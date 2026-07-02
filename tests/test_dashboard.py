@@ -237,6 +237,20 @@ class TestGraphAPI:
         r = c.delete(f"/api/node/{node_id}", headers=_hdr())
         assert r.status_code == 404
 
+    def test_delete_node_requires_token(self, client, storage):
+        """WP-1 item 2c: missing/wrong token must be rejected by middleware
+        BEFORE the handler runs — the node must survive both attempts."""
+        c, _ = client
+        node_id = next(iter(storage.graph.nodes))
+
+        r = c.delete(f"/api/node/{node_id}")
+        assert r.status_code == 403
+        assert storage.has_node(node_id)
+
+        r = c.delete(f"/api/node/{node_id}", headers=_hdr("nope"))
+        assert r.status_code == 403
+        assert storage.has_node(node_id)
+
 
 class TestSearch:
     def test_search_503_when_not_ready(self, client):

@@ -101,6 +101,21 @@ automatically adds the union-merge line to `.gitattributes` and adds `chromadb/`
 `.cognition/.gitignore` (one-time-ever, idempotent). Opt out with
 `VIBE_COGNITION_NO_GIT_HYGIENE=1`. To re-arm: delete `.cognition/.git-hygiene-managed`.
 For existing projects or non-standard topologies, use the manual line above.
+
+**Residual risk (Windows / autocrlf):** the journal is replayed by byte offset, so
+its on-disk bytes must never be rewritten by line-ending normalization. With
+`core.autocrlf`-style setups this currently holds only by coincidence of git config,
+not by guarantee. If your team sees `.cognition/journal.jsonl` permanently "modified"
+in git status, or "re-hydrated from top" replay resets after merges/pulls, add EOL
+protection alongside union-merge:
+
+    .cognition/*.jsonl merge=union -text
+
+Set this EARLY in the graph's life. Do NOT retrofit `-text` onto a grown
+shared-checkout journal without a planned cut-over: the first commit after adding
+`-text` re-normalizes the file bytes once, which live sessions see as a replaced
+journal. The server auto-writes only `merge=union`, never `-text` -- adding `-text` is
+a deliberate, manual team decision.
 """
 
 COGNITION_GETTING_STARTED = """\

@@ -1,6 +1,7 @@
 """Tests for the cognition history graph module."""
 
 import json
+import logging
 
 import pytest
 
@@ -17,6 +18,7 @@ from vibe_cognition.cognition import (
     get_reasoning_chain,
     get_superseded_chain,
 )
+from vibe_cognition.cognition.storage import REHYDRATE_FLAG_FILENAME
 
 
 class TestModels:
@@ -446,6 +448,108 @@ class TestJournalCatchUp:
         assert store.get_statistics()["nodes"] == 0
         assert "n1" not in store._graph
         assert store._reference_index.get("commit:abcdef0") in (None, [])
+
+    def test_rehydrate_reset_warns_and_is_tracked(self, tmp_path, caplog):
+        """WP-1 item 1 (critical): a lossy rehydrate-reset must not be silent.
+        Fails-before: the old code only logged at INFO with no node-count delta
+        and never recorded anything queryable — this asserts both surfaces."""
+        cog_dir = tmp_path / ".cognition"
+        store = CognitionStorage(cog_dir)
+        store.add_node(self._node("n1"))
+        store.add_node(self._node("n2"))
+        assert store.rehydrate_count == 0
+        assert store.last_rehydrate is None
+
+        (cog_dir / "journal.jsonl").write_bytes(b"")
+
+        with caplog.at_level(logging.WARNING, logger="vibe_cognition.cognition.storage"):
+            stats = store.get_statistics()
+        assert stats["nodes"] == 0
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("re-hydrated" in r.message.lower() for r in warnings), (
+            "expected a WARNING-level rehydrate log, got: "
+            f"{[r.message for r in caplog.records]}"
+        )
+        assert any("2" in r.message and "0" in r.message for r in warnings), (
+            "WARNING must include the node-count delta (before=2, after=0)"
+        )
+
+        assert store.rehydrate_count == 1
+        assert store.last_rehydrate is not None
+        assert store.last_rehydrate["nodes_before"] == 2
+        assert store.last_rehydrate["nodes_after"] == 0
+        assert store.last_rehydrate["nodes_lost"] == 2
+        assert set(store.last_rehydrate["sample_missing_ids"]) == {"n1", "n2"}
+        assert (cog_dir / REHYDRATE_FLAG_FILENAME).exists()
+
+    def test_replacement_with_more_nodes_still_warns_on_missing_one(self, tmp_path, caplog):
+        """WP-1 redirect: loss must be detected by NODE IDENTITY, not count. A
+        replacement journal can have MORE total nodes than we had in memory (a
+        divergent branch's own unrelated history) while still having silently
+        dropped one of OUR nodes -- this is exactly the incident that motivated
+        the task (a branch-switch clobbering 2 live nodes even though the other
+        branch's journal was larger). Fails-before: a count-only comparison
+        (nodes_after=4 > nodes_before=2) would report "0 lost" and never warn,
+        never bump the counter, never write the flag -- even though n2 is gone."""
+        cog_dir = tmp_path / ".cognition"
+        store = CognitionStorage(cog_dir)
+        store.add_node(self._node("n1"))
+        store.add_node(self._node("n2"))
+        store.get_statistics()  # settle into steady state (offset > 0)
+        assert store.rehydrate_count == 0, "own-write catch-up must stay quiet"
+
+        journal = cog_dir / "journal.jsonl"
+        first_line = journal.read_bytes().split(b"\n", 1)[0]
+
+        def _line(node_id):
+            data = self._node(node_id).model_dump(mode="json")
+            return json.dumps({"action": "add_node", "data": data}, ensure_ascii=False).encode()
+
+        # Shares line 1 (so this looks like a plausible divergent merge), has
+        # MORE total nodes than we hold in memory (4 vs 2), but never re-adds n2.
+        replacement = (
+            first_line + b"\n" + _line("n3") + b"\n" + _line("n4") + b"\n" + _line("n5") + b"\n"
+        )
+        journal.write_bytes(replacement)
+
+        with caplog.at_level(logging.WARNING, logger="vibe_cognition.cognition.storage"):
+            stats = store.get_statistics()
+
+        assert stats["nodes"] == 4, "replacement has MORE nodes than we had in memory"
+        assert "n2" not in store._graph, "n2 is the real loss this test guards"
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warnings, "a replacement dropping a known node must WARN even though total count grew"
+        assert store.rehydrate_count == 1
+        assert store.last_rehydrate is not None
+        assert store.last_rehydrate["nodes_lost"] == 1
+        assert store.last_rehydrate["sample_missing_ids"] == ["n2"]
+        assert (cog_dir / REHYDRATE_FLAG_FILENAME).exists(), "flag must be written on identity loss"
+
+    def test_own_first_writes_do_not_count_as_rehydrate(self, tmp_path, caplog):
+        """WP-1 regression: catch-up reading back THIS process's own first
+        appends (offset still 0, nothing external happened) must NOT be
+        reported as a loss event — no WARNING, no counter bump.
+        Fails-before: every fresh store's second write tripped the same
+        offset==0-nonempty-graph branch as a real external replacement,
+        so rehydrate_count/get_status would be non-null on virtually every
+        session even with a single writer and zero data loss."""
+        cog_dir = tmp_path / ".cognition"
+        store = CognitionStorage(cog_dir)
+
+        with caplog.at_level(logging.WARNING, logger="vibe_cognition.cognition.storage"):
+            store.add_node(self._node("n1"))
+            store.add_node(self._node("n2"))
+            store.add_node(self._node("n3"))
+
+        assert store.get_statistics()["nodes"] == 3
+        assert store.rehydrate_count == 0
+        assert store.last_rehydrate is None
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING], (
+            f"unexpected WARNING(s) on plain single-writer growth: "
+            f"{[r.message for r in caplog.records]}"
+        )
 
     def test_torn_trailing_line_is_eventually_ingested(self, tmp_path):
         """A half-written final line is NOT skipped+lost: the offset stays before

@@ -2566,6 +2566,13 @@ def register_cognition_tools(mcp) -> None:
         concurrent sessions on the shared journal. Use this to prune junk,
         test, or duplicate nodes — for an outdated-but-real node, prefer adding
         a `supersedes` edge (cognition_add_edge) over deleting the history.
+        The acting author is resolved SERVER-SIDE from this repo's git config
+        (same as cognition_add_task) and recorded in the journal tombstone.
+
+        WARNING — parent tasks: deleting a task that has child tasks DETACHES
+        the children; they keep reporting the deleted id as their `parent_id`
+        (this stale-pointer behavior is deliberate, not a bug). Reparent or
+        close children first if that matters.
 
         Args:
             node_id: ID of the node to delete.
@@ -2573,13 +2580,22 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             {"removed": true, "id": ..., "removed_edges": [...], "edges_removed": N}
             on success, where removed_edges lists each orphaned edge
-            ({"from", "to", "type"}); or {"error": "..."} if the node does not exist.
+            ({"from", "to", "type"}). For document nodes the result additionally
+            carries "unlinked_artifacts": a list of managed on-disk artifacts
+            (text sidecar / content blob, repo-relative under
+            .cognition/documents/) reclaimed because no other document
+            references them — note a previously committed blob still survives
+            in git history. Returns {"error": "..."} if the node does not exist.
         """
         lc = get_lifespan(ctx)
         storage: CognitionStorage = lc["cognition_storage"]
         embed_storage: ChromaDBStorage = lc["cognition_embedding_storage"]
 
-        result = delete_cognition_node(storage, embed_storage, node_id)
+        # Delete provenance (WP-1): server-resolved identity, same source as
+        # cognition_add_task's creator (pure file reads, never raises).
+        removed_by = resolve_git_identity(storage.cognition_dir.parent)
+
+        result = delete_cognition_node(storage, embed_storage, node_id, removed_by=removed_by)
         if result is None:
             return {"error": f"Node '{node_id}' does not exist"}
 
