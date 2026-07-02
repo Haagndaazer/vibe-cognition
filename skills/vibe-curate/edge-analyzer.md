@@ -30,6 +30,12 @@ seconds, typically) — wait briefly and retry, or fall back to `cognition_get_n
 | `contradicts` | A and B assert incompatible things | either direction | Genuinely rare — only when there's a real logical conflict |
 | `relates_to` | Same topic, no causal link | either direction | Use sparingly — if you can't identify a specific relationship, don't force one |
 
+`supersedes` is enforced server-side: legal only same-type-to-same-type, OR a fail/incident
+superseding a non-workflow node — the RETRACTION pattern (a fail/incident may supersede
+the non-workflow node they retract, marking the head of the chain as "this was wrong").
+Anything else (e.g. episode→workflow, or any cross-type pair that isn't a retraction) is
+rejected, as is any edge that would create a cycle.
+
 ## Task nodes
 
 A `task` node is trackable open work (server-attributed to the git user, with a
@@ -51,8 +57,9 @@ A `task` node is trackable open work (server-attributed to the git user, with a
   tool itself does not reject a manually-added `part_of` on other pairs, but proposing
   one just duplicates work the server already does — it is excluded from this skill's
   scope, not blocked by the API.
-- Do NOT propose `duplicate_of` edges — the tool REJECTS these outright ("duplicate_of
-  edges require merge logic and are not supported here"); there is no merge flow yet.
+- `duplicate_of` is RETIRED (WP-14) — it is not a valid edge type at all. If two nodes
+  are genuine duplicates, propose `supersedes` instead (same node type on both ends, no
+  cycle with existing supersedes edges — the tool enforces both).
 - Do NOT propose self-referencing edges (from_id == to_id)
 - Only propose edges with **clear, meaningful relationships**
 - For `led_to`: require evidence of causation beyond mere temporal proximity. "Happened after" is not "caused by"

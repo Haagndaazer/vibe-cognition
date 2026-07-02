@@ -36,7 +36,15 @@ class CognitionNodeType(str, Enum):  # noqa: UP042
 
 
 class CognitionEdgeType(str, Enum):  # noqa: UP042  (see CognitionNodeType above)
-    """Types of edges in the cognition graph."""
+    """Types of edges in the cognition graph.
+
+    ``duplicate_of`` RETIRED (WP-14, decision 7b9db5a8d675): it was tool-rejected
+    since inception (a modeled-then-shelved merge feature, never reachable — no
+    journal ever contained one) and is now simply not a valid edge type at all,
+    not a special-cased rejection. ``supersedes`` is THE reconciliation edge —
+    including for the episode-duplicate case ``cognition_record``'s
+    ``possible_duplicate_of`` warning flags.
+    """
 
     LED_TO = "led_to"
     SUPERSEDES = "supersedes"
@@ -44,7 +52,6 @@ class CognitionEdgeType(str, Enum):  # noqa: UP042  (see CognitionNodeType above
     RELATES_TO = "relates_to"
     RESOLVED_BY = "resolved_by"
     PART_OF = "part_of"
-    DUPLICATE_OF = "duplicate_of"
 
 
 class CognitionNode(BaseModel):

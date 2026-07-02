@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **WP-11** `migrate_mcp`'s write path now handles locked/read-only files cleanly, server startup failures log diagnosably before re-raising, SessionStart hook timeout raised to 600s with a multi-cause failure message, new shell-level hook test harness.
 - **WP-12** Task priority validation, cheap document-staleness surfacing in search + supersedes-offer on content changes, an orphaned-document-artifact reconciler, `.gitignore`-before-blob-write ordering.
 - **WP-13** `vibe-cognition-prime`/`vibe-cognition-backfill` gained real argparse (`--help` no longer silently executes the full command) and backfill gained `--days`; `OllamaBackend` now applies the same nomic query/document prefixes the sentence-transformers backend does; the dashboard token no longer appears in INFO logs.
+- **WP-14** `duplicate_of` retired from `CognitionEdgeType` — it was tool-rejected since inception (never reachable) and `supersedes` is now the reconciliation edge, including for the episode-duplicate case. Removed `CognitionStorage.redirect_edges` (zero production callers, would double edges if resumed). `supersedes` gained shape guardrails at edge creation: legal only same-node-type-to-same-node-type, or a fail/incident superseding a non-workflow node (the retraction pattern), plus cycle prevention.
 
 ## [0.13.0] — 2026-07-01
 

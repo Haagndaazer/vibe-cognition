@@ -383,60 +383,6 @@ class CognitionStorage:
                     self._graph.remove_edge(from_id, to_id, key=key)
                 return len(keys) > 0
 
-    def redirect_edges(self, old_node_id: str, new_node_id: str) -> int:
-        """Redirect all edges from/to old_node_id to point to/from new_node_id.
-
-        Args:
-            old_node_id: The node being replaced
-            new_node_id: The node that takes over
-
-        Returns:
-            Number of edges redirected
-        """
-        with self._synced():
-            if old_node_id not in self._graph or new_node_id not in self._graph:
-                return 0
-
-            redirected = 0
-
-            # Redirect outgoing edges
-            for _, target_id, key, edge_data in list(
-                self._graph.out_edges(old_node_id, data=True, keys=True)
-            ):
-                if target_id != new_node_id:  # Avoid self-loops (validation: stays before the append)
-                    edge_type = edge_data.get("type", key)
-                    # C-4 journal-FIRST per edge: record before mutating the graph.
-                    self._append_journal("add_edge", {
-                        "from_id": new_node_id, "to_id": target_id,
-                        "edge_type": edge_type,
-                        "timestamp": edge_data.get("timestamp", ""),
-                        "source": edge_data.get("source", "curator"),
-                    })
-                    self._graph.add_edge(
-                        new_node_id, target_id, key=edge_type, **edge_data
-                    )
-                    redirected += 1
-
-            # Redirect incoming edges
-            for source_id, _, key, edge_data in list(
-                self._graph.in_edges(old_node_id, data=True, keys=True)
-            ):
-                if source_id != new_node_id:  # Avoid self-loops (validation: stays before the append)
-                    edge_type = edge_data.get("type", key)
-                    # C-4 journal-FIRST per edge: record before mutating the graph.
-                    self._append_journal("add_edge", {
-                        "from_id": source_id, "to_id": new_node_id,
-                        "edge_type": edge_type,
-                        "timestamp": edge_data.get("timestamp", ""),
-                        "source": edge_data.get("source", "curator"),
-                    })
-                    self._graph.add_edge(
-                        source_id, new_node_id, key=edge_type, **edge_data
-                    )
-                    redirected += 1
-
-            return redirected
-
     def pop_replayed_node_ids(self) -> list[str]:
         """Drain and return node ids added via journal REPLAY (this or another
         process's write, discovered through catch-up/rehydrate) since the last

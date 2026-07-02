@@ -197,9 +197,11 @@ def _record_node(
 
     # WP-5 dedup-contract half (b36e4a79113a): two clones/agents can each
     # independently mint a distinct EPISODE for the SAME commit ref, and both
-    # survive merges forever today (no repair path — duplicate_of reachability
-    # is a separate, parked product call). Ref-lookup BEFORE mint so this is
-    # visible instead of silent, WITHOUT changing cognition_record's contract:
+    # survive merges forever today (no automatic repair path — reconciliation is
+    # supersedes, added manually by a curator; WP-14/7b9db5a8d675 retired
+    # duplicate_of rather than building a repair path for it). Ref-lookup
+    # BEFORE mint so this is visible instead of silent, WITHOUT changing
+    # cognition_record's contract:
     # it still always creates what was asked (never silently substitutes/
     # reuses an existing node) — same philosophy as elsewhere in this
     # codebase (prefer a supersedes edge over deleting/replacing history). A
@@ -299,6 +301,74 @@ def _validate_direction(direction: str, allowed: tuple[str, ...]) -> dict[str, A
     return None
 
 
+def _would_create_supersedes_cycle(storage: CognitionStorage, from_id: str, to_id: str) -> bool:
+    """True if ``from_id`` is already reachable by following EXISTING ``supersedes``
+    edges outward from ``to_id`` — i.e. adding ``from_id -> to_id`` would close a
+    loop. Full traversal (not a single-path walk like get_superseded_chain's
+    newest-first display) since a cycle can exist along ANY branch, not just the
+    first one found. Mirrors cognition_update_task's re-parent cycle guard
+    (``_task_ancestor_ids``): walk the graph BEFORE adding the edge."""
+    visited: set[str] = set()
+    stack = [to_id]
+    while stack:
+        current = stack.pop()
+        if current == from_id:
+            return True
+        if current in visited:
+            continue
+        visited.add(current)
+        for succ_id, _ in storage.get_successors(current, CognitionEdgeType.SUPERSEDES):
+            stack.append(succ_id)
+    return False
+
+
+def _validate_supersedes_shape(
+    storage: CognitionStorage, from_id: str, to_id: str
+) -> dict[str, Any] | None:
+    """Enforce the WP-14 supersedes shape rule (decision 7b9db5a8d675, refined
+    live against the real journal): a supersedes edge is legal iff (a) from_id
+    and to_id are the SAME node type (the "newer version of the same thing"
+    case), OR (b) the from-node is fail/incident AND the to-node is NOT workflow
+    (the RETRACTION case — "this claim/decision turned out to be wrong").
+    Everything else is rejected with an error naming both legal shapes.
+
+    Same-type protects typed chain-resolution: workflow is the only type whose
+    RETRIEVAL resolves via supersession head (get_workflow_head), so a workflow
+    chain must never resolve to a non-workflow node — a wrong runbook gets
+    retracted by superseding it with a corrected WORKFLOW (or a `contradicts`
+    edge from the fail), never by a fail sitting at the head of the chain.
+
+    Also enforces no-cycle via ``_would_create_supersedes_cycle``.
+
+    Returns an error dict, or None if the edge is legal. Caller must confirm
+    both nodes exist first (this assumes ``storage.get_node`` returns non-None)."""
+    from_node = storage.get_node(from_id)
+    to_node = storage.get_node(to_id)
+    ft = from_node.get("type") if from_node else None
+    tt = to_node.get("type") if to_node else None
+    same_type = ft is not None and ft == tt
+    is_retraction = (
+        ft in (CognitionNodeType.FAIL.value, CognitionNodeType.INCIDENT.value)
+        and tt != CognitionNodeType.WORKFLOW.value
+    )
+    if not (same_type or is_retraction):
+        return {
+            "error": (
+                f"supersedes rejected: '{from_id}' ({ft}) -> '{to_id}' ({tt}) is neither "
+                "same-type (newer version of the same thing) nor a fail/incident "
+                "retracting a non-workflow node (the only two legal shapes)."
+            )
+        }
+    if _would_create_supersedes_cycle(storage, from_id, to_id):
+        return {
+            "error": (
+                f"supersedes rejected: '{from_id}' -> '{to_id}' would create a cycle "
+                "(to_id already transitively supersedes from_id)"
+            )
+        }
+    return None
+
+
 def _add_edge_core(
     storage: CognitionStorage,
     from_id: str,
@@ -311,10 +381,8 @@ def _add_edge_core(
     try:
         et = CognitionEdgeType(edge_type)
     except ValueError:
-        valid = [e.value for e in CognitionEdgeType if e != CognitionEdgeType.DUPLICATE_OF]
+        valid = [e.value for e in CognitionEdgeType]
         return {"error": f"Invalid edge_type '{edge_type}'. Valid: {valid}"}
-    if et == CognitionEdgeType.DUPLICATE_OF:
-        return {"error": "duplicate_of edges require merge logic and are not supported here."}
     if from_id == to_id:
         return {"error": "Self-referencing edges are not allowed"}
     if not storage.has_node(from_id):
@@ -323,6 +391,10 @@ def _add_edge_core(
         return {"error": f"Target node '{to_id}' does not exist"}
     if any(tid == to_id for tid, _ in storage.get_successors(from_id, et)):
         return {"error": f"Edge already exists: {from_id} -[{edge_type}]-> {to_id}"}
+    if et == CognitionEdgeType.SUPERSEDES:
+        shape_error = _validate_supersedes_shape(storage, from_id, to_id)
+        if shape_error:
+            return shape_error
 
     timestamp = datetime.now(UTC).isoformat()
     edge = CognitionEdge(
@@ -382,10 +454,6 @@ def _add_edges_batch_core(storage: CognitionStorage, edges: str) -> dict[str, An
             errors.append(f"[{i}] Invalid edge_type '{etype_str}'")
             skipped += 1
             continue
-        if et == CognitionEdgeType.DUPLICATE_OF:
-            errors.append(f"[{i}] duplicate_of not allowed in batch")
-            skipped += 1
-            continue
         if fid == tid:
             errors.append(f"[{i}] Self-reference: {fid}")
             skipped += 1
@@ -406,6 +474,12 @@ def _add_edges_batch_core(storage: CognitionStorage, edges: str) -> dict[str, An
             errors.append(f"[{i}] Already exists: {fid} -[{etype_str}]-> {tid}")
             skipped += 1
             continue
+        if et == CognitionEdgeType.SUPERSEDES:
+            shape_error = _validate_supersedes_shape(storage, fid, tid)
+            if shape_error:
+                errors.append(f"[{i}] {shape_error['error']}")
+                skipped += 1
+                continue
 
         seen_triples.add(triple)
         timestamp = datetime.now(UTC).isoformat()
@@ -2479,7 +2553,20 @@ def register_cognition_tools(mcp) -> None:
           resolved_by  problem -> solution. A (a fail/incident) was fixed by B.
                        B must explicitly address the problem A describes.
           supersedes   newer -> older. B replaces A for the same concern (a
-                       newer approach to the same system/component).
+                       newer approach to the same system/component) — THE
+                       reconciliation edge, including for the episode-duplicate
+                       case cognition_record's possible_duplicate_of warning
+                       flags. Enforced (WP-14, decision 7b9db5a8d675): legal
+                       ONLY as (1) same node type on both ends (the "newer
+                       version" case), or (2) a fail/incident superseding any
+                       NON-workflow node (the RETRACTION case — "this claim/
+                       decision turned out to be wrong"; workflow is excluded
+                       because get_workflow_head resolves supersession chains
+                       to a HEAD it treats as a workflow — a wrong runbook gets
+                       retracted by superseding it with a corrected workflow,
+                       never by a fail at the head of that chain). Also
+                       rejected: any edge that would create a cycle along
+                       existing supersedes edges.
           contradicts  either direction. A and B assert incompatible things.
                        Genuinely rare — a real logical conflict, not just
                        disagreement or a different opinion.
@@ -2499,9 +2586,6 @@ def register_cognition_tools(mcp) -> None:
         exactly which node-type pairs qualify); a manual mint on a pair the
         matcher also covers just duplicates work the server already does
         idempotently. Not blocked, just usually redundant.
-        duplicate_of: REJECTED by this tool ("duplicate_of edges require merge
-        logic and are not supported here") — it exists in the schema but has
-        no supported merge flow yet, so there is no working path to use it.
 
         DOCUMENT nodes are intentionally manually-linkable: versioning uses an
         explicit ``supersedes`` edge between document nodes, and curated
@@ -2514,7 +2598,9 @@ def register_cognition_tools(mcp) -> None:
             from_id: Source node ID (must exist)
             to_id: Target node ID (must exist)
             edge_type: One of: led_to, supersedes, contradicts, relates_to,
-                       resolved_by, part_of (duplicate_of is rejected — see above)
+                       resolved_by, part_of. (``duplicate_of`` was retired —
+                       WP-14, decision 7b9db5a8d675 — and is simply not a
+                       valid value; supersedes is the reconciliation edge.)
             reason: Optional brief explanation of why this edge exists
             source: Provenance tag (default: "manual")
 
@@ -2544,7 +2630,20 @@ def register_cognition_tools(mcp) -> None:
           resolved_by  problem -> solution. A (a fail/incident) was fixed by B.
                        B must explicitly address the problem A describes.
           supersedes   newer -> older. B replaces A for the same concern (a
-                       newer approach to the same system/component).
+                       newer approach to the same system/component) — THE
+                       reconciliation edge, including for the episode-duplicate
+                       case cognition_record's possible_duplicate_of warning
+                       flags. Enforced (WP-14, decision 7b9db5a8d675): legal
+                       ONLY as (1) same node type on both ends (the "newer
+                       version" case), or (2) a fail/incident superseding any
+                       NON-workflow node (the RETRACTION case — "this claim/
+                       decision turned out to be wrong"; workflow is excluded
+                       because get_workflow_head resolves supersession chains
+                       to a HEAD it treats as a workflow — a wrong runbook gets
+                       retracted by superseding it with a corrected workflow,
+                       never by a fail at the head of that chain). Also
+                       rejected: any edge that would create a cycle along
+                       existing supersedes edges.
           contradicts  either direction. A and B assert incompatible things.
                        Genuinely rare — a real logical conflict, not just
                        disagreement or a different opinion.
@@ -2564,14 +2663,13 @@ def register_cognition_tools(mcp) -> None:
         exactly which node-type pairs qualify); a manual mint on a pair the
         matcher also covers just duplicates work the server already does
         idempotently. Not blocked, just usually redundant.
-        duplicate_of: REJECTED, per-edge ("duplicate_of edges require merge
-        logic and are not supported here") — it exists in the schema but has
-        no supported merge flow yet, so there is no working path to use it.
 
         Args:
             edges: JSON array string of edge objects, max 500. edge_type is one
                    of: led_to, supersedes, contradicts, relates_to, resolved_by,
-                   part_of (duplicate_of is rejected — see above). Example:
+                   part_of. (``duplicate_of`` was retired — WP-14, decision
+                   7b9db5a8d675 — and is simply not a valid value; supersedes
+                   is the reconciliation edge.) Example:
                    '[{"from_id":"abc","to_id":"def","edge_type":"led_to"}]'
 
         Returns:

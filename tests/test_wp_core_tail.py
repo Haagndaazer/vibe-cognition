@@ -132,25 +132,6 @@ def test_remove_edge_remove_all_append_failure_on_first_leaves_all(tmp_path, mon
     assert s.graph.has_edge("a", "b", key=CognitionEdgeType.RELATES_TO.value), "second edge phantom-removed"
 
 
-def test_redirect_edges_append_failure_leaves_no_phantom_redirect(tmp_path, monkeypatch):
-    """redirect_edges must not leave a phantom redirected edge on new_node when the
-    append raises. Fails-before (mutate-first): the first redirected edge is added to
-    new_node before its append raises."""
-    s = CognitionStorage(tmp_path / ".cognition")
-    for nid in ("X", "Y", "S", "T"):
-        s.add_node(_node(nid))
-    s.add_edge(_edge("X", "T"))  # out-edge on old_node
-    s.add_edge(_edge("S", "X"))  # in-edge on old_node
-    monkeypatch.setattr(s, "_append_journal", _raise)
-
-    with pytest.raises(_BoomError):
-        s.redirect_edges("X", "Y")
-
-    assert s.graph.out_degree("Y") == 0 and s.graph.in_degree("Y") == 0, (
-        "phantom redirected edge appeared on new_node after a failed append"
-    )
-
-
 # --- C-4: journal-first still replays + converges, idempotently --------------
 
 def test_add_node_journal_first_visible_to_replay_and_idempotent(tmp_path):
@@ -287,8 +268,9 @@ def test_composition_all_reordered_writes_round_trip_through_replay(tmp_path):
     """Exercise every journal-first write path on one instance, then rebuild a second
     instance from the same journal — nodes and edge-keys must match exactly, and the
     update must survive. Proves the C-4 reorder preserved replay-equivalence across the
-    whole write surface (add_node, add_edge, update_node, remove_edge single, redirect
-    _edges, remove_node) — not just per-op in isolation."""
+    whole write surface (add_node, add_edge, update_node, remove_edge single, remove_node)
+    — not just per-op in isolation. (redirect_edges was retired in WP-14 and dropped from
+    this composition — it had zero production callers.)"""
     cog = tmp_path / ".cognition"
     s1 = CognitionStorage(cog)
     s1.add_node(_node("a"))
@@ -298,7 +280,6 @@ def test_composition_all_reordered_writes_round_trip_through_replay(tmp_path):
     s1.add_edge(_edge("a", "c"))
     s1.update_node("a", summary="updated")
     s1.remove_edge("a", "c", CognitionEdgeType.LED_TO)  # single-edge removal
-    s1.redirect_edges("b", "c")  # move b's edges onto c
     s1.remove_node("b")
 
     s2 = CognitionStorage(cog)  # fresh replay of the same journal

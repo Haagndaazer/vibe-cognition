@@ -54,8 +54,9 @@ Deterministic edges are created automatically on record when nodes share referen
 (`led_to`, `resolved_by`, `supersedes`, `contradicts`, `relates_to`), use the
 `/vibe-curate` skill or create them manually with `cognition_add_edge`. Note `relates_to`
 has three provenances — deterministic (document→episode), curator-proposed, and manual —
-so it is NOT "semantic only." `duplicate_of` is reserved and not supported by
-`cognition_add_edge`.
+so it is NOT "semantic only." `supersedes` is THE reconciliation edge for duplicates (e.g.
+two clones each recording an episode for the same commit) — `cognition_add_edge` enforces
+same-node-type-to-same-node-type and no cycles when creating one.
 
 Deletion is destructive and not undoable: `cognition_remove_node` cascades to every edge attached to the node. Use it to prune junk, test, or duplicate nodes. For a node that is outdated but historically real, prefer recording the correction and adding a `supersedes` edge rather than deleting the history.
 

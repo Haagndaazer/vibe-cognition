@@ -61,7 +61,8 @@ For each batch:
    - It returns proposed edges as a JSON list, each with a `source` field (see edge-analyzer.md's output schema)
 2. Review the proposals:
    - Remove any self-references (from_id == to_id)
-   - Remove any `duplicate_of` proposals (rejected by the tool — see Key Rules)
+   - Remove any `duplicate_of` proposals (retired — not a valid edge type; propose
+     `supersedes` for genuine duplicates instead)
    - Remove any `part_of` proposals for TASK nodes specifically (collides with the
      authoritative task-parent edge — see Task nodes below); other `part_of` proposals
      are simply redundant with the deterministic matcher, not harmful, but still prefer

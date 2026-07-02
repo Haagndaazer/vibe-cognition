@@ -733,11 +733,12 @@ def test_cognition_get_incident_resolution_returns_dict(tmp_path, mock_mcp, buil
 
 
 def test_add_edge_docstrings_list_exactly_the_accepted_edge_types(mock_mcp):
-    """WP-8 (7d1c151b0372): cognition_add_edge and cognition_add_edges_batch's
-    docstrings must each mention every CognitionEdgeType the tool actually
-    accepts, and flag duplicate_of as rejected (not silently omit it) — a
-    real drift test introspecting the ACTUAL enum and the ACTUAL registered
-    docstrings, not a copy of either.
+    """WP-8 (7d1c151b0372) / WP-14 (7b9db5a8d675): cognition_add_edge and
+    cognition_add_edges_batch's docstrings must each mention every
+    CognitionEdgeType the tool actually accepts, and flag duplicate_of as
+    RETIRED (not silently omit it — it's a real trap for anyone remembering
+    the old behavior) — a real drift test introspecting the ACTUAL enum and
+    the ACTUAL registered docstrings, not a copy of either.
 
     Fails-before: a future edge type added to the enum but never ported into
     these docstrings, or a docstring that silently dropped a real type,
@@ -746,15 +747,16 @@ def test_add_edge_docstrings_list_exactly_the_accepted_edge_types(mock_mcp):
     from vibe_cognition.cognition.models import CognitionEdgeType
 
     register_cognition_tools(mock_mcp)
-    accepted = {e.value for e in CognitionEdgeType if e != CognitionEdgeType.DUPLICATE_OF}
+    accepted = {e.value for e in CognitionEdgeType}
+    assert "duplicate_of" not in accepted, "duplicate_of should be RETIRED from the enum (WP-14)"
 
     for tool_name in ("cognition_add_edge", "cognition_add_edges_batch"):
         doc = mock_mcp.tools[tool_name].__doc__ or ""
         for edge_type in accepted:
             assert edge_type in doc, f"{tool_name} docstring is missing edge type '{edge_type}'"
         assert "duplicate_of" in doc, f"{tool_name} docstring never mentions duplicate_of"
-        assert "reject" in doc.lower(), (
-            f"{tool_name} docstring mentions duplicate_of but doesn't explain it's rejected"
+        assert "retire" in doc.lower(), (
+            f"{tool_name} docstring mentions duplicate_of but doesn't explain it was retired"
         )
 
 
@@ -788,6 +790,156 @@ def test_cognition_add_edges_batch_returns_dict(tmp_path, mock_mcp, build_lc, ma
     assert "created" in result
     assert "skipped" in result
     assert "errors" in result
+
+
+# ── supersedes guardrails (WP-14, decision 7b9db5a8d675) ─────────────────────
+
+
+def test_supersedes_same_type_allowed(tmp_path, mock_mcp, build_lc, make_ctx):
+    """The "newer version of the same thing" case: same node type both ends."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    newer = _add_node(lc, "d1", ntype=CognitionNodeType.DECISION, summary="newer decision")
+    older = _add_node(lc, "d2", ntype=CognitionNodeType.DECISION, summary="older decision")
+
+    result = mock_mcp.tools["cognition_add_edge"](  # type: ignore[arg-type]
+        ctx, from_id=newer, to_id=older, edge_type="supersedes"
+    )
+    assert result.get("created") is True, result
+
+
+def test_supersedes_fail_retracting_discovery_allowed(tmp_path, mock_mcp, build_lc, make_ctx):
+    """The REAL pattern found in this project's own journal: a fail node
+    retracting a discovery that turned out to be wrong (352a79a64406-style).
+
+    Fails-before: an unqualified same-type-only rule would have rejected this
+    exact real, meaningful pattern.
+    """
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    retraction = _add_node(lc, "f1", ntype=CognitionNodeType.FAIL, summary="false alarm")
+    wrong_claim = _add_node(lc, "disc1", ntype=CognitionNodeType.DISCOVERY, summary="wrong claim")
+
+    result = mock_mcp.tools["cognition_add_edge"](  # type: ignore[arg-type]
+        ctx, from_id=retraction, to_id=wrong_claim, edge_type="supersedes"
+    )
+    assert result.get("created") is True, result
+
+
+def test_supersedes_incident_retracting_decision_allowed(tmp_path, mock_mcp, build_lc, make_ctx):
+    """incident is the other retraction-eligible type, per the rule."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    retraction = _add_node(lc, "i1", ntype=CognitionNodeType.INCIDENT, summary="root cause found")
+    wrong_decision = _add_node(lc, "d1", ntype=CognitionNodeType.DECISION, summary="wrong decision")
+
+    result = mock_mcp.tools["cognition_add_edge"](  # type: ignore[arg-type]
+        ctx, from_id=retraction, to_id=wrong_decision, edge_type="supersedes"
+    )
+    assert result.get("created") is True, result
+
+
+def test_supersedes_cross_type_non_retraction_rejected(tmp_path, mock_mcp, build_lc, make_ctx):
+    """episode -> workflow: neither same-type nor a fail/incident retraction --
+    the general cross-type-modeling-error case."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    ep = _add_node(lc, "ep1", ntype=CognitionNodeType.EPISODE, summary="an episode")
+    wf = _add_node(lc, "wf1", ntype=CognitionNodeType.WORKFLOW, summary="a workflow")
+
+    result = mock_mcp.tools["cognition_add_edge"](  # type: ignore[arg-type]
+        ctx, from_id=ep, to_id=wf, edge_type="supersedes"
+    )
+    assert "error" in result
+    assert "rejected" in result["error"]
+
+
+def test_supersedes_fail_retracting_workflow_rejected(tmp_path, mock_mcp, build_lc, make_ctx):
+    """The workflow exclusion: even a fail/incident retraction is rejected when
+    the target is a workflow -- get_workflow_head must never resolve a
+    supersession chain to a non-workflow node."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    retraction = _add_node(lc, "f1", ntype=CognitionNodeType.FAIL, summary="runbook was wrong")
+    wf = _add_node(lc, "wf1", ntype=CognitionNodeType.WORKFLOW, summary="a wrong runbook")
+
+    result = mock_mcp.tools["cognition_add_edge"](  # type: ignore[arg-type]
+        ctx, from_id=retraction, to_id=wf, edge_type="supersedes"
+    )
+    assert "error" in result
+    assert "rejected" in result["error"]
+
+
+def test_supersedes_cycle_rejected(tmp_path, mock_mcp, build_lc, make_ctx):
+    """A -> B -> C already exists; C -> A would close a cycle and must be rejected."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    a = _add_node(lc, "a1", ntype=CognitionNodeType.DECISION, summary="a")
+    b = _add_node(lc, "b1", ntype=CognitionNodeType.DECISION, summary="b")
+    c = _add_node(lc, "c1", ntype=CognitionNodeType.DECISION, summary="c")
+
+    r1 = mock_mcp.tools["cognition_add_edge"](ctx, from_id=a, to_id=b, edge_type="supersedes")  # type: ignore[arg-type]
+    assert r1.get("created") is True, r1
+    r2 = mock_mcp.tools["cognition_add_edge"](ctx, from_id=b, to_id=c, edge_type="supersedes")  # type: ignore[arg-type]
+    assert r2.get("created") is True, r2
+
+    result = mock_mcp.tools["cognition_add_edge"](  # type: ignore[arg-type]
+        ctx, from_id=c, to_id=a, edge_type="supersedes"
+    )
+    assert "error" in result
+    assert "cycle" in result["error"]
+
+
+def test_supersedes_workflow_versioning_still_works(tmp_path, mock_mcp, build_lc, make_ctx):
+    """Legitimate workflow supersession (the versioning-by-supersession design)
+    must keep working -- same-type applies to workflow too."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    new_wf = _add_node(lc, "wf2", ntype=CognitionNodeType.WORKFLOW, summary="updated procedure")
+    old_wf = _add_node(lc, "wf1", ntype=CognitionNodeType.WORKFLOW, summary="old procedure")
+
+    result = mock_mcp.tools["cognition_add_edge"](  # type: ignore[arg-type]
+        ctx, from_id=new_wf, to_id=old_wf, edge_type="supersedes"
+    )
+    assert result.get("created") is True, result
+
+
+def test_supersedes_episode_duplicate_reconciliation_still_works(tmp_path, mock_mcp, build_lc, make_ctx):
+    """The possible_duplicate_of follow-up path: a curator reconciling two
+    duplicate episodes with supersedes (same-type) must keep working."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    ep_a = _add_node(lc, "ep1", ntype=CognitionNodeType.EPISODE, summary="episode A")
+    ep_b = _add_node(lc, "ep2", ntype=CognitionNodeType.EPISODE, summary="episode B (duplicate)")
+
+    result = mock_mcp.tools["cognition_add_edge"](  # type: ignore[arg-type]
+        ctx, from_id=ep_a, to_id=ep_b, edge_type="supersedes"
+    )
+    assert result.get("created") is True, result
+
+
+def test_supersedes_batch_rejects_cross_type_and_reports_error(tmp_path, mock_mcp, build_lc, make_ctx):
+    """The batch path enforces the same shape rule, per-edge, with a clear
+    skipped+errors report (not a silent drop or a whole-batch failure)."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    ep = _add_node(lc, "ep1", ntype=CognitionNodeType.EPISODE, summary="an episode")
+    wf = _add_node(lc, "wf1", ntype=CognitionNodeType.WORKFLOW, summary="a workflow")
+
+    edges = json.dumps([{"from_id": ep, "to_id": wf, "edge_type": "supersedes"}])
+    result = mock_mcp.tools["cognition_add_edges_batch"](ctx, edges=edges)  # type: ignore[arg-type]
+    assert result["created"] == 0
+    assert result["skipped"] == 1
+    assert any("rejected" in err for err in result["errors"])
 
 
 def test_cognition_get_edgeless_nodes_returns_dict(tmp_path, mock_mcp, build_lc, make_ctx):

@@ -63,7 +63,7 @@ Documents (stored files with text sidecar for search):
 
 ## Edge types
 
-  part_of (auto), led_to, resolved_by, supersedes, contradicts, relates_to, duplicate_of (reserved)
+  part_of (auto), led_to, resolved_by, supersedes, contradicts, relates_to
 
 ## When to record
 

@@ -319,37 +319,6 @@ class TestRemoveEdge:
         assert succ[0][1]["type"] == "part_of"
 
 
-class TestRedirectEdgesMultiDiGraph:
-    """Tests for redirect_edges with MultiDiGraph."""
-
-    def test_redirect_preserves_parallel_edges(self, tmp_path):
-        """Both edge types from old node are redirected to new node."""
-        storage = CognitionStorage(tmp_path / ".cognition")
-        storage.add_node(_make_node("old"))
-        storage.add_node(_make_node("new"))
-        storage.add_node(_make_node("target"))
-
-        storage.add_edge(CognitionEdge(
-            from_id="old", to_id="target",
-            edge_type=CognitionEdgeType.LED_TO,
-            timestamp="2026-03-15T10:00:00Z",
-        ))
-        storage.add_edge(CognitionEdge(
-            from_id="old", to_id="target",
-            edge_type=CognitionEdgeType.PART_OF,
-            timestamp="2026-03-15T10:01:00Z",
-        ))
-
-        redirected = storage.redirect_edges("old", "new")
-        assert redirected == 2
-
-        # Both types should exist on new -> target
-        succ = storage.get_successors("new")
-        assert len(succ) == 2
-        types = {s[1]["type"] for s in succ}
-        assert types == {"led_to", "part_of"}
-
-
 class TestGetSupersededChainMultiDiGraph:
     """Tests for get_superseded_chain with MultiDiGraph."""
 

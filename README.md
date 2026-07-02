@@ -287,10 +287,9 @@ The cognition graph captures project knowledge — decisions made, approaches th
 | `part_of` | Entity belongs to an episode, or a descriptor to a document | Deterministic (entity↔episode on any shared ref; entity→document on a shared `doc:` ref) |
 | `led_to` | Causal chain — X led to Y | Semantic (via `/vibe-curate` skill or manual) |
 | `resolved_by` | Problem X was fixed by Y | Semantic |
-| `supersedes` | X replaces Y | Semantic |
+| `supersedes` | X replaces Y (THE reconciliation edge for duplicates — same node type on both ends, no cycles, enforced) | Semantic |
 | `contradicts` | X conflicts with Y | Semantic |
 | `relates_to` | Same topic, no causal link | Deterministic (document→episode on a shared `doc:` ref) OR semantic (`/vibe-curate` or manual) |
-| `duplicate_of` | X is semantically identical to Y | Reserved for merge logic (not user-created) |
 
 The graph uses a **MultiDiGraph** — multiple edge types between the same pair of nodes are supported (e.g., A can be both `part_of` B and `led_to` B). Each (from, to, edge_type) triple is unique.
 
