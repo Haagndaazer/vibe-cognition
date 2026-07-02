@@ -28,7 +28,7 @@ def _run_prime(tmp_path: Path, env: dict) -> dict:
     """Run prime.main() with a patched env and capture its stdout JSON."""
     buf = StringIO()
     with patch.dict("os.environ", env, clear=False), patch("sys.stdout", buf):
-        main()
+        main(argv=[])  # WP-13: explicit argv, not pytest's own sys.argv
     return json.loads(buf.getvalue())
 
 

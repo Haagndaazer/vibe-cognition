@@ -1,5 +1,6 @@
 """Prime command — outputs compact project context for Claude Code session injection."""
 
+import argparse
 import contextlib
 import json
 import os
@@ -222,7 +223,7 @@ def _consume_rehydrate_flag(cognition_dir: Path) -> str:
     )
 
 
-def main():
+def main(argv: list[str] | None = None):
     """Entry point for vibe-cognition-prime CLI command.
 
     Outputs JSON for Claude Code SessionStart hooks.
@@ -238,7 +239,23 @@ def main():
 
     Also consumes the one-shot journal-loss flag (see _consume_rehydrate_flag)
     and injects its warning ahead of the project context when present.
+
+    ``argv``: explicit args list (tests pass ``[]``); ``None`` (the real CLI
+    invocation) reads ``sys.argv[1:]`` via argparse's own default, matching
+    migrate_mcp.py's ``main(argv=None)`` convention.
     """
+    parser = argparse.ArgumentParser(
+        prog="vibe-cognition-prime",
+        description=(
+            "Print the session-start context digest (SessionStart hook JSON) for "
+            "the project at $REPO_PATH (or the current directory). This is the "
+            "same output the plugin's SessionStart hook injects automatically -- "
+            "run this by hand to preview it. Takes no arguments; reads REPO_PATH "
+            "and VIBE_MIGRATION_NOTE from the environment."
+        ),
+    )
+    parser.parse_args(argv)  # WP-13 (4aaef22e25ea): --help correctness only, no new flags
+
     note = os.environ.get("VIBE_MIGRATION_NOTE", "").strip()
     repo_path = resolve_repo_path_env()
     cognition_dir = repo_path / ".cognition"

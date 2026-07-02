@@ -13,6 +13,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# WP-13 (9cb745be2570): nomic-family task-specific prefixes. Module-level (not a
+# SentenceTransformersBackend attribute) because they are NOMIC-specific, not
+# sentence-transformers-specific -- OllamaBackend needs the SAME two strings when
+# its configured model is also nomic (the default for both backends), not a
+# second, independently-drifting copy. Neither backend actually gates on model
+# name today (both apply these unconditionally to whatever model is configured)
+# -- that's a pre-existing simplification for the ST backend this mirrors exactly,
+# not a new rule invented here.
+NOMIC_DOCUMENT_PREFIX = "search_document: "
+NOMIC_QUERY_PREFIX = "search_query: "
+
 
 class EmbeddingBackend(ABC):
     """Abstract base class for embedding backends."""
@@ -34,8 +45,8 @@ class EmbeddingBackend(ABC):
 class SentenceTransformersBackend(EmbeddingBackend):
     """Embedding backend using sentence-transformers library."""
 
-    DOCUMENT_PREFIX = "search_document: "
-    QUERY_PREFIX = "search_query: "
+    DOCUMENT_PREFIX = NOMIC_DOCUMENT_PREFIX
+    QUERY_PREFIX = NOMIC_QUERY_PREFIX
 
     def __init__(self, model_name: str, dimensions: int | None = None, revision: str | None = None):
         """Initialize the sentence-transformers backend.
@@ -102,7 +113,11 @@ class OllamaBackend(EmbeddingBackend):
 
         Args:
             texts: List of texts to encode
-            is_query: Whether the texts are queries (ignored for Ollama)
+            is_query: Whether the texts are queries (vs documents) — applies the
+                same nomic search_query:/search_document: prefix SentenceTransformersBackend
+                does (WP-13, 9cb745be2570). Previously accepted but ignored, silently
+                degrading retrieval quality for the default nomic-embed-text Ollama model
+                the SAME way an un-prefixed ST call would.
 
         Returns:
             List of embedding vectors
@@ -110,9 +125,10 @@ class OllamaBackend(EmbeddingBackend):
         if not texts:
             return []
 
+        prefix = NOMIC_QUERY_PREFIX if is_query else NOMIC_DOCUMENT_PREFIX
         embeddings = []
         for text in texts:
-            response = self._client.embeddings(model=self._model, prompt=text)
+            response = self._client.embeddings(model=self._model, prompt=prefix + text)
             embeddings.append(response["embedding"])
 
         return embeddings

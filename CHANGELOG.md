@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-07-02
+
+**Fable-audit burndown (39 tasks): journal integrity, tool-surface honesty, docs, skills, install robustness, data integrity.**
+
+### Changed
+- **WP-1** Journal loss visibility (rehydrate/replacement detection), delete provenance (`removed_by`), byte-rewrite disclosure.
+- **WP-2** Search honesty: node-type validation, home embedding-model drift guard.
+- **WP-3** Embedding write-path integrity: collection-metadata stamping race closed, re-embed on journal replay.
+- **WP-4** Reconciler/writer parity, chunk-completeness detection, a "syncing" `embedding_status` for teammates joining an existing graph.
+- **WP-5** Merge-shaped replay defense (deferred retry + WARNING), deterministic-edge sweep fix, episode-dedup warning.
+- **WP-6** Hardened `REPO_PATH` handling against an empty env value, dropped the unsafe `.env` resolution, CI version-match check.
+- **WP-7** The compact hook now restores the prime data digest, not just static instructions; `SERVER_INSTRUCTIONS` gained the tasks-first/workflow-first gates the tools already mandated.
+- **WP-8** Tool-surface docstring accuracy sweep (`cognition_get_neighbors`, `cognition_dashboard`, `cognition_load_project`) and edge-semantics tables ported into the edge tools.
+- **WP-9** README accuracy pass (concurrency, cross-project tools, attribution), a new `docs/topology-guide.md`, `vibe-cognition-snapshot` console entry point.
+- **WP-10** `/vibe-curate` skill drift fixed: the `source` field is per-edge (not a tool kwarg), `part_of` is not tool-enforced (skill-level rule, not "forbidden"), concurrency/embedding-warm-up notes added, cluster-analyzer's scan widened.
+- **WP-11** `migrate_mcp`'s write path now handles locked/read-only files cleanly, server startup failures log diagnosably before re-raising, SessionStart hook timeout raised to 600s with a multi-cause failure message, new shell-level hook test harness.
+- **WP-12** Task priority validation, cheap document-staleness surfacing in search + supersedes-offer on content changes, an orphaned-document-artifact reconciler, `.gitignore`-before-blob-write ordering.
+- **WP-13** `vibe-cognition-prime`/`vibe-cognition-backfill` gained real argparse (`--help` no longer silently executes the full command) and backfill gained `--days`; `OllamaBackend` now applies the same nomic query/document prefixes the sentence-transformers backend does; the dashboard token no longer appears in INFO logs.
+
 ## [0.13.0] — 2026-07-01
 
 **Session-start prime trim + post-commit journal hook removal.**

@@ -638,6 +638,28 @@ class TestLifecycle:
         finally:
             stop_dashboard(lifespan_ctx, join_timeout=3.0)
 
+    def test_start_dashboard_never_logs_the_token(self, lifespan_ctx, caplog):
+        """WP-13 (ebe050e78923): the token-gated URL (read/download/DELETE
+        access) must never appear in a log line -- only host:port, so a log
+        line is not a second leak surface for the token.
+
+        Fails-before: logger.info(f"Dashboard launched at {url}") included the
+        full ?token=... query string.
+        """
+        import logging
+
+        with caplog.at_level(logging.INFO):
+            result = start_dashboard(lifespan_ctx, port=0, open_browser=False)
+        try:
+            token = result["url"].split("token=")[1]
+            assert token, "test setup: no token found in the returned URL"
+            log_text = "\n".join(r.message for r in caplog.records)
+            assert token not in log_text, "token appeared in a log line"
+            assert "redacted" in log_text.lower()
+            assert "127.0.0.1" in log_text
+        finally:
+            stop_dashboard(lifespan_ctx, join_timeout=3.0)
+
     def test_stop_dashboard_joins_thread(self, lifespan_ctx):
         start_dashboard(lifespan_ctx, port=0, open_browser=False)
         thread = lifespan_ctx["dashboard"]["thread"]

@@ -1,5 +1,6 @@
 """Backfill command — finds git commits without corresponding cognition episode nodes."""
 
+import argparse
 import logging
 import subprocess
 import sys
@@ -7,6 +8,8 @@ from pathlib import Path
 
 from ..config import resolve_repo_path_env
 from .storage import CognitionStorage
+
+_DEFAULT_DAYS = 30
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +24,7 @@ def _get_tracked_commit_hashes(storage: CognitionStorage) -> set[str]:
     return hashes
 
 
-def _get_recent_commits(repo_path: Path, days: int = 30) -> list[dict]:
+def _get_recent_commits(repo_path: Path, days: int = _DEFAULT_DAYS) -> list[dict]:
     """Get recent git commits from the repo."""
     try:
         result = subprocess.run(
@@ -72,27 +75,47 @@ def _get_changed_files(repo_path: Path, commit_hash: str) -> list[str]:
         return []
 
 
-def main():
+def main(argv: list[str] | None = None):
     """Entry point for vibe-cognition-backfill CLI command.
 
     Reports git commits without corresponding episode nodes, with
     instructions for creating episodes and entity nodes from them.
 
-    WP-12 (b9af2e60fe19): this CLI's window is a FIXED 30-day lookback
-    (``_get_recent_commits``'s ``days`` default) — it never checks how long
-    ago the graph was last backfilled. The ``/vibe-backfill`` skill instead
-    finds a WATERMARK (the newest tracked episode's ``commit:`` reference)
-    and walks forward from there via ``git log <watermark>..HEAD``, so it
-    surfaces everything untracked regardless of age. These are genuinely
-    different mechanisms, not a bug in either: a commit older than 30 days
-    that was never backfilled is invisible to THIS CLI (it filters already-
-    tracked commits out of the 30-day window, but never looks further back
-    than that window in the first place) even though the skill would still
-    find it. Prefer ``/vibe-backfill`` for a graph that hasn't been touched
-    in a while; this CLI suits quick/scripted checks on an actively-
-    maintained graph where a 30-day window is plausible. (A ``--days`` flag
-    to override the window is tracked separately, not yet implemented here.)
+    WP-12/WP-13 (b9af2e60fe19, 4aaef22e25ea, H-6(b) 21232d2acaea): this CLI's
+    window is a lookback of ``--days`` (default 30) — it never checks how
+    long ago the graph was last backfilled the way the ``/vibe-backfill``
+    skill does. The skill finds a WATERMARK (the newest tracked episode's
+    ``commit:`` reference) and walks forward from there via ``git log
+    <watermark>..HEAD``, so it surfaces everything untracked regardless of
+    age. These remain genuinely different mechanisms, not a bug in either: a
+    commit older than the window that was never backfilled is invisible to
+    THIS CLI (it filters already-tracked commits out of the window, but
+    never looks further back than the window in the first place) even
+    though the skill would still find it. Prefer ``/vibe-backfill`` for a
+    graph that hasn't been touched in a while, or pass a larger ``--days``
+    here for a one-off wider check.
+
+    ``argv``: explicit args list (tests pass ``[]``); ``None`` (the real CLI
+    invocation) reads ``sys.argv[1:]`` via argparse's own default.
     """
+    parser = argparse.ArgumentParser(
+        prog="vibe-cognition-backfill",
+        description=(
+            "Report git commits without corresponding cognition episode nodes "
+            "(a plain report, no LLM extraction -- see the /vibe-backfill skill "
+            "for that). Checks only the last --days days; an untracked commit "
+            "older than that is not found by this CLI."
+        ),
+    )
+    parser.add_argument(
+        "--days", type=int, default=_DEFAULT_DAYS,
+        help=f"How many days back to check (default: {_DEFAULT_DAYS})",
+    )
+    args = parser.parse_args(argv)
+    if args.days <= 0:
+        print(f"error: --days must be positive, got {args.days}", file=sys.stderr)
+        sys.exit(2)
+
     repo_path = resolve_repo_path_env()
     cognition_dir = repo_path / ".cognition"
 
@@ -102,10 +125,10 @@ def main():
 
     storage = CognitionStorage(cognition_dir)
     tracked_hashes = _get_tracked_commit_hashes(storage)
-    commits = _get_recent_commits(repo_path)
+    commits = _get_recent_commits(repo_path, days=args.days)
 
     if not commits:
-        print("No recent commits found (last 30 days).")
+        print(f"No recent commits found (last {args.days} days).")
         sys.exit(0)
 
     untracked = [c for c in commits if c["hash"] not in tracked_hashes]
@@ -113,14 +136,18 @@ def main():
 
     if not untracked:
         print(
-            f"All {len(commits)} recent commits (last 30 days) are already tracked. "
-            "Note: this only checked the last 30 days — an older untracked commit "
-            "would not be found by this CLI; use /vibe-backfill for a full sweep "
-            "back to the graph's actual watermark."
+            f"All {len(commits)} recent commits (last {args.days} days) are already "
+            f"tracked. Note: this only checked the last {args.days} days — an older "
+            "untracked commit would not be found by this CLI (pass a larger --days, "
+            "or use /vibe-backfill for a full sweep back to the graph's actual "
+            "watermark)."
         )
         sys.exit(0)
 
-    print(f"# Untracked Commits ({len(untracked)} found, {tracked_count} already tracked, last 30 days only)")
+    print(
+        f"# Untracked Commits ({len(untracked)} found, {tracked_count} already "
+        f"tracked, last {args.days} days only)"
+    )
     print()
 
     for commit in untracked:

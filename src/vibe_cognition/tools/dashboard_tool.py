@@ -29,6 +29,13 @@ def register_dashboard_tool(mcp) -> None:
         127.0.0.1 with a token-protected URL — calling this tool again returns
         the same URL instead of starting a second server.
 
+        SECURITY NOTE (WP-13, ebe050e78923): the returned URL's token grants full
+        read/download/DELETE access to the graph for as long as this server runs.
+        It persists in this conversation's transcript for the URL's lifetime —
+        anyone with access to the transcript can read or delete graph nodes via
+        that URL while the dashboard is running. This is not logged at INFO
+        (only host:port is), but the tool result itself necessarily carries it.
+
         Args:
             port: Preferred port. Falls back to nearby ports
                   or an OS-assigned ephemeral port if busy.

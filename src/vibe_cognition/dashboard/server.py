@@ -111,7 +111,12 @@ def run_dashboard_blocking(
     app, stack = build_app(lifespan_ctx, token)
 
     url = _make_url(chosen_port, token)
-    logger.info(f"Dashboard listening at {url}")
+    # WP-13 (ebe050e78923): never INFO-log the full tokened URL -- the token gates
+    # read/download/DELETE and a log line is a second, easily-overlooked place it
+    # could leak (log aggregators, shared terminals). Host:port is enough to say
+    # the server came up; the token itself only needs to reach the caller (the
+    # return value / browser open below), not the log.
+    logger.info(f"Dashboard listening at http://127.0.0.1:{chosen_port}/ (token redacted)")
     if open_browser:
         with suppress(Exception):
             webbrowser.open(url)
@@ -195,7 +200,8 @@ def start_dashboard(
         "stack": stack,
     }
 
-    logger.info(f"Dashboard launched at {url}")
+    # WP-13 (ebe050e78923): same token-redaction as run_dashboard_blocking above.
+    logger.info(f"Dashboard launched at http://127.0.0.1:{chosen_port}/ (token redacted)")
     if open_browser:
         with suppress(Exception):
             webbrowser.open(url)

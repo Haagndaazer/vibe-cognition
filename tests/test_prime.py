@@ -13,6 +13,8 @@ import json
 from dataclasses import fields
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from vibe_cognition.cognition import CognitionStorage
 from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
 from vibe_cognition.cognition.prime import PrimeConfig, _truncate, generate_prime, main
@@ -197,7 +199,7 @@ def test_main_empty_graph_injects_onboarding(tmp_path, monkeypatch):
 
     buf = io.StringIO()
     monkeypatch.setattr("sys.stdout", buf)
-    main()
+    main(argv=[])  # WP-13: explicit argv, not pytest's own sys.argv
 
     data = json.loads(buf.getvalue())
     ctx = data["hookSpecificOutput"]["additionalContext"]
@@ -219,7 +221,7 @@ def test_main_populated_graph_emits_session_start_json(tmp_path, monkeypatch):
 
     buf = io.StringIO()
     monkeypatch.setattr("sys.stdout", buf)
-    main()
+    main(argv=[])  # WP-13: explicit argv, not pytest's own sys.argv
 
     data = json.loads(buf.getvalue())
     hook = data["hookSpecificOutput"]
@@ -240,10 +242,33 @@ def test_main_migration_note_prepended(tmp_path, monkeypatch):
 
     buf = io.StringIO()
     monkeypatch.setattr("sys.stdout", buf)
-    main()
+    main(argv=[])  # WP-13: explicit argv, not pytest's own sys.argv
 
     data = json.loads(buf.getvalue())
     ctx = data["hookSpecificOutput"]["additionalContext"]
     note_pos = ctx.index("Removed stale MCP entry")
     onboard_pos = ctx.index(ONBOARDING_BLOCK[:30])
     assert note_pos < onboard_pos, "migration note must appear before the body"
+
+
+# ── argparse / --help correctness (WP-13, 4aaef22e25ea) ──────────────────────
+
+
+def test_help_exits_zero_and_never_runs_the_hook_payload(tmp_path, monkeypatch, capsys):
+    """Fails-before: no argparse at all, so --help was silently swallowed and
+    the full session context dumped instead of printing usage.
+    """
+    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    with pytest.raises(SystemExit) as exc:
+        main(argv=["--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "usage" in out.lower()
+    assert "hookSpecificOutput" not in out, "--help must not run the hook payload"
+
+
+def test_rejects_unknown_flag(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    with pytest.raises(SystemExit) as exc:
+        main(argv=["--bogus"])
+    assert exc.value.code == 2
