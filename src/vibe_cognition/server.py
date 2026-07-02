@@ -14,7 +14,7 @@ from .embeddings import ChromaDBStorage, EmbeddingGenerator
 from .instructions import SERVER_INSTRUCTIONS
 from .tools import register_all_tools
 from .tools.cognition_tools import _embed_document
-from .tools.project_registry import build_registry
+from .tools.project_registry import build_registry, compute_model_guard
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +192,31 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
     import time
 
     try:
+        # Home model/dim drift guard (WP-2): a cheap metadata comparison (no
+        # model load needed), run FIRST so it can't add to embedding_ready
+        # latency below (that stays gated on model load only, unchanged —
+        # known-intentional) and so get_status/cognition_search see the guard
+        # state as early as possible. Reuses the SAME check the foreign-attach
+        # path uses (compute_model_guard) — do not invent a second guard.
+        # Unlike the foreign path, home's embeddings handle is never closed on
+        # a mismatch: it's the actively-written index and new writes must
+        # still land regardless of a stale stamp.
+        home_chroma = context.get("cognition_embedding_storage")
+        if home_chroma is not None:
+            guard, guard_warning, _ = compute_model_guard(
+                home_chroma, config.embedding_model, config.embedding_dimensions,
+                config.effective_repo_name,
+            )
+            loaded_projects = context.get("loaded_projects")
+            if loaded_projects is not None:
+                home_entry = loaded_projects.get(config.repo_path)
+                if home_entry is not None:
+                    home_entry.model_guard = guard
+            context["home_model_guard"] = guard
+            context["home_model_guard_warning"] = guard_warning
+            if guard in ("dim-mismatch", "model-mismatch"):
+                logger.warning(f"Home embedding collection drift: {guard_warning}")
+
         # Load embedding model (the bottleneck: 2-30s)
         t_start = time.monotonic()
         logger.info(f"Background: loading embedding model ({config.embedding_backend})...")
@@ -283,6 +308,12 @@ async def lifespan(server: FastMCP):
         "embedding_generator": None,  # Set by background thread
         "embedding_ready": threading.Event(),
         "embedding_error": None,
+        # Optimistic default until the background thread's cheap drift check
+        # runs (WP-2); matches add_home's default and is never search-visible
+        # earlier than this, since search is gated behind embedding_ready
+        # which the background thread only sets AFTER the drift check.
+        "home_model_guard": "match",
+        "home_model_guard_warning": None,
     }
 
     # ── Background init (2-30s for model, then sync + curation) ────

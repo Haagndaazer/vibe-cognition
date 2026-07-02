@@ -46,6 +46,20 @@ def register_service_tools(mcp) -> None:
               cognition_embeddings: {nodes, chunks, total}
                                     (or {"error": ...}; 0 if uninitialized),
               embedding_status: "ready" | "loading" | "error: <detail>",
+              home_model_drift: null when the home embedding collection's stored
+                                model/dims match this process's configured
+                                embedding_model/embedding_dimensions (the common
+                                case); otherwise {state: "dim-mismatch" |
+                                "model-mismatch" | "unknown", warning: str}.
+                                A non-null state means cognition_search on the
+                                home project (project=None) is degraded or
+                                unavailable — see its docstring. "unknown" means
+                                degraded-confidence (pre-stamp collection, search
+                                still runs); the mismatch states mean search
+                                short-circuits to an honest empty result. May be
+                                stale for a few seconds after startup (the check
+                                runs in the background init thread, same as
+                                embedding model load, before this field settles),
               loaded_foreign_projects: int,   # count of loaded foreign projects
                                               # (use cognition_list_projects for
                                               # details; absent if no registry)
@@ -98,6 +112,17 @@ def register_service_tools(mcp) -> None:
                 result["cognition_embeddings"] = {"error": str(e)}
         else:
             result["cognition_embeddings"] = 0
+
+        # Home embedding model/dim drift (WP-2): null when clean (the common
+        # case), matching rehydrate_events' null-when-clean shape.
+        home_guard = lc.get("home_model_guard")
+        if home_guard is not None and home_guard != "match":
+            result["home_model_drift"] = {
+                "state": home_guard,
+                "warning": lc.get("home_model_guard_warning"),
+            }
+        else:
+            result["home_model_drift"] = None
 
         # Embedding model status
         embedding_ready = lc.get("embedding_ready")

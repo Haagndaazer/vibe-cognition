@@ -18,7 +18,7 @@ from unittest.mock import patch
 from vibe_cognition.cognition import CognitionStorage
 from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
 from vibe_cognition.tools import register_all_tools
-from vibe_cognition.tools.cognition_tools import register_cognition_tools
+from vibe_cognition.tools.cognition_tools import _load_project_core, register_cognition_tools
 from vibe_cognition.tools.dashboard_tool import register_dashboard_tool
 from vibe_cognition.tools.readme_tool import register_readme_tool
 from vibe_cognition.tools.service_tools import register_service_tools
@@ -332,6 +332,70 @@ def test_cognition_search_ready_returns_result_shape(tmp_path, mock_mcp, build_l
     assert "query" in result
     assert "results" in result
     assert "count" in result
+
+
+def test_cognition_search_invalid_node_type_returns_error_not_empty_results(
+    tmp_path, mock_mcp, build_lc, make_ctx
+):
+    """WP-2 item 1: a typo'd node_type must return the shared _parse_node_type
+    error shape, NOT results:[] -- an infra-shaped empty result (bad filter)
+    must never look indistinguishable from "no history."
+
+    Fails-before: cognition_search passed node_type straight through to the
+    Chroma entity_type filter unvalidated, silently matching nothing.
+    """
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    ctx = make_ctx(lc)
+
+    result = mock_mcp.tools["cognition_search"](  # type: ignore[arg-type]
+        ctx, query="alpha", node_type="descision"
+    )
+    assert "error" in result, f"expected a validation error, got: {result}"
+    assert "descision" in result["error"]
+    assert "decision" in result["error"], "error should list valid types"
+    assert "results" not in result, "invalid node_type must not fall through to a search"
+
+
+def test_cognition_search_valid_node_type_still_works(
+    tmp_path, mock_mcp, build_lc, make_ctx
+):
+    """WP-2 item 1 regression guard: a real node_type value must keep working
+    after the validation gate is added (not just reject bad ones)."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    ctx = make_ctx(lc)
+
+    result = mock_mcp.tools["cognition_search"](  # type: ignore[arg-type]
+        ctx, query="alpha", node_type="decision"
+    )
+    assert "error" not in result, f"valid node_type wrongly rejected: {result}"
+    assert "results" in result and "count" in result
+
+
+def test_cognition_search_multi_project_invalid_node_type_also_rejected(
+    tmp_path, mock_mcp, build_lc, make_ctx
+):
+    """WP-2 item 1: the multi-project (project='*') path must reject a bad
+    node_type too -- validation happens once, before the home/multi-project
+    branch, so it can't be skipped by routing through a foreign project."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    ctx = make_ctx(lc)
+
+    foreign_path = tmp_path / "foreign"
+    (foreign_path / ".cognition").mkdir(parents=True)
+    (foreign_path / ".cognition" / "journal.jsonl").write_text(
+        '{"id": "n1", "type": "decision", "summary": "s"}\n', encoding="utf-8"
+    )
+    load_result = _load_project_core(lc, str(foreign_path))
+    assert "error" not in load_result, f"foreign project load failed: {load_result}"
+
+    result = mock_mcp.tools["cognition_search"](  # type: ignore[arg-type]
+        ctx, query="alpha", node_type="descision", project="*"
+    )
+    assert "error" in result, f"expected a validation error, got: {result}"
+    assert "results" not in result
 
 
 # ── cognition_store_document: embedding-ready defers gracefully ───────────────

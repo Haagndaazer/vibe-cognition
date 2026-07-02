@@ -41,7 +41,13 @@ from ..cognition.documents import (
 )
 from ..cognition.prime import SEVERITY_ORDER
 from ..embeddings import ChromaDBStorage, EmbeddingGenerator, adaptive_vector_search
-from .project_registry import LoadedProjects, ModelGuard, ProjectEntry, resolve_project, tag_results
+from .project_registry import (
+    LoadedProjects,
+    ProjectEntry,
+    compute_model_guard,
+    resolve_project,
+    tag_results,
+)
 from .utils import get_lifespan, require_embeddings
 
 logger = logging.getLogger(__name__)
@@ -1293,67 +1299,17 @@ def _load_project_core(lc: dict[str, Any], path: str) -> dict[str, Any]:
     b_chroma_dir = resolved / ".cognition" / "chromadb"
     b_embeddings = ChromaDBStorage.open_existing(b_chroma_dir)
 
-    # Load-time guard
-    model_guard: ModelGuard
-    warning: str | None = None
-    vector_count: int | str = 0
-
-    if b_embeddings is None:
-        model_guard = "no-index"
-        warning = f"semantic search unavailable for {resolved.name} (no vector index)"
-        vector_count = "n/a"
-    else:
-        # Probe stored dimension — metadata stamp is authoritative (available since C1);
-        # live vector probe is the fallback for pre-stamp collections only.
-        b_meta = b_embeddings._collection.metadata or {}
-        b_model = b_meta.get("embedding_model")
-        b_dims_meta = b_meta.get("embedding_dimensions")
-
-        if b_dims_meta is not None:
-            b_dim_actual: int | None = int(b_dims_meta)
-        else:
-            # Pre-stamp collection: fall back to probing a sample vector.
-            # len() works for both plain lists and numpy arrays (chromadb Rust backend
-            # may return either). Exception → None (unknown dim, skip dim check).
-            try:
-                probe = b_embeddings._collection.get(limit=1, include=["embeddings"])
-                embs = probe.get("embeddings") or []
-                b_dim_actual = int(len(embs[0])) if embs else None
-            except Exception:
-                b_dim_actual = None
-
-        a_dims = config.embedding_dimensions
-        a_model = config.embedding_model
-
-        if b_dim_actual is not None and b_dim_actual != a_dims:
-            b_embeddings.close()
-            b_embeddings = None
-            model_guard = "dim-mismatch"
-            warning = (
-                f"semantic search disabled for {resolved.name}: "
-                f"stored dim={b_dim_actual}, home dim={a_dims} (structural-only)"
-            )
-            vector_count = "n/a"
-        elif b_model is not None and b_model != a_model:
-            b_embeddings.close()
-            b_embeddings = None
-            model_guard = "model-mismatch"
-            warning = (
-                f"semantic search disabled for {resolved.name}: "
-                f"model '{b_model}' ≠ home '{a_model}' (structural-only)"
-            )
-            vector_count = "n/a"
-        elif b_model is not None and b_model == a_model:
-            model_guard = "match"
-            vector_count = b_embeddings.count_documents()
-        else:
-            # model absent (pre-stamp collection) OR empty collection
-            model_guard = "unknown"
-            warning = (
-                f"semantic search for {resolved.name} is degraded-confidence: "
-                f"no model provenance in collection metadata (pre-stamp)"
-            )
-            vector_count = b_embeddings.count_documents() if b_embeddings else 0
+    # Load-time guard — THE single model/dim drift check (also used for the
+    # home collection at startup, WP-2; see compute_model_guard).
+    model_guard, warning, vector_count = compute_model_guard(
+        b_embeddings, config.embedding_model, config.embedding_dimensions, resolved.name
+    )
+    # Foreign-specific: a mismatch means this collection is unusable AND
+    # unwritten-to by us, so detach it entirely (structural-only attach).
+    # Home never takes this branch — see compute_model_guard's docstring.
+    if model_guard in ("dim-mismatch", "model-mismatch") and b_embeddings is not None:
+        b_embeddings.close()
+        b_embeddings = None
 
     # Assign tag with collision suffix
     base_tag = resolved.name
@@ -1904,25 +1860,59 @@ def register_cognition_tools(mcp) -> None:
                                          # "project" present when project != None
               ],
               count: int,
-              project_notes: {           # omitted when empty
+              project_notes: {           # project != None only; omitted when empty
                 "<tag>": {semantic_unavailable: true, reason: "<model_guard>"}
                           # or {confidence: "degraded (no model provenance for <tag>)"}
-              }
+              },
+              semantic_unavailable: true,  # project=None (home) only; present
+              reason: "<model_guard>",     # only when home's embedding model/dims
+                                            # have drifted from current config —
+                                            # results/count are [] / 0 in this case
+              confidence: "degraded — no model provenance in collection metadata "
+                          "(pre-stamp)"  # project=None only; present when home
+                                         # ran search but provenance is unverified
             }
-            project_notes[tag].semantic_unavailable means the index is guarded off
-            for that project (no-index / dim-mismatch / model-mismatch) — that
-            project contributed no hits, but it is NOT "no history."  A confidence
+            semantic_unavailable/project_notes[tag].semantic_unavailable means the
+            index is guarded off (no-index / dim-mismatch / model-mismatch) — that
+            source contributed no hits, but it is NOT "no history." A confidence
             caveat means search ran but the model provenance couldn't be verified.
         """
         err = require_embeddings(ctx)
         if err:
             return err
 
+        # WP-2: validate node_type via the shared parser BEFORE branching, so an
+        # invalid value returns the same clear error shape every other read tool
+        # uses (not results:[] — an infra-shaped empty result must never look
+        # like "no history"). Both the home and multi-project paths share this
+        # one check since it runs before the branch.
+        _, nt_err = _parse_node_type(node_type)
+        if nt_err:
+            return nt_err
+
         lifespan = get_lifespan(ctx)
 
-        # Default (project=None): byte-identical to the pre-XP2 path.
+        # Default (project=None): byte-identical to the pre-XP2 path UNLESS the
+        # home collection's model/dims have drifted from current config (WP-2
+        # item 2) — a dim-mismatch would otherwise raise inside Chroma (caught
+        # by vector_search's broad except -> silent results:[]) and a
+        # model-mismatch with equal dims wouldn't raise at all, just return
+        # confidently-wrong nonsense scores. Both must be surfaced honestly
+        # instead, mirroring the multi-project project_notes shape.
         if project is None:
-            return _search_cognition(
+            registry: LoadedProjects = lifespan["loaded_projects"]
+            home_entry = registry.get(lifespan["config"].repo_path)
+            if home_entry is not None and home_entry.model_guard in (
+                "dim-mismatch", "model-mismatch",
+            ):
+                return {
+                    "query": query,
+                    "results": [],
+                    "count": 0,
+                    "semantic_unavailable": True,
+                    "reason": home_entry.model_guard,
+                }
+            result = _search_cognition(
                 lifespan["cognition_storage"],
                 lifespan["cognition_embedding_storage"],
                 lifespan["embedding_generator"],
@@ -1930,6 +1920,11 @@ def register_cognition_tools(mcp) -> None:
                 node_type=node_type,
                 limit=limit,
             )
+            if home_entry is not None and home_entry.model_guard == "unknown":
+                result["confidence"] = (
+                    "degraded — no model provenance in collection metadata (pre-stamp)"
+                )
+            return result
 
         # Multi-project path: resolve entries, embed once, fan out.
         entries, err2 = resolve_project(lifespan, project)

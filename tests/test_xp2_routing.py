@@ -3,6 +3,7 @@
 import inspect
 import threading
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 from vibe_cognition.cognition import CognitionStorage
@@ -16,9 +17,11 @@ from vibe_cognition.tools.cognition_tools import (
 )
 from vibe_cognition.tools.project_registry import (
     build_registry,
+    compute_model_guard,
     resolve_project,
     tag_results,
 )
+from vibe_cognition.tools.service_tools import register_service_tools
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -297,7 +300,7 @@ def test_cross_project_id_collision_no_dedup(tmp_path):
 class _MockMcp:
     """Minimal MCP collector that captures registered tool functions."""
     def __init__(self):
-        self.tools: dict[str, object] = {}
+        self.tools: dict[str, Any] = {}
 
     def tool(self):
         def decorator(fn):
@@ -462,3 +465,204 @@ def test_get_document_cross_project_freshness(tmp_path):
     result_raw["project"] = "B"
     result_raw["freshness"] = "cross-project: unavailable"
     assert result_raw["freshness"] == "cross-project: unavailable"
+
+
+# ── Home model/dim drift guard (WP-2 item 2) ──────────────────────────────────
+
+
+def _make_lc_with_home_guard(
+    tmp_path,
+    *,
+    stamped_model="model-a",
+    configured_model="model-a",
+    stamped_dims=3,
+    configured_dims=3,
+):
+    """Build an lc like _make_lc, but the home Chroma collection is stamped with
+    (stamped_model, stamped_dims) while the PROCESS is configured for
+    (configured_model, configured_dims) -- simulating a config change after the
+    collection was created (get_or_create silently drops new metadata keys on an
+    existing collection, so the stamp genuinely goes stale in production).
+
+    Then runs the exact same compute_model_guard check server.py's background
+    init thread runs, and applies its result to the registry entry + lc guard
+    fields -- without spinning up a real thread (standing criteria: no real
+    subprocess/thread in tests). This is what "reuse the existing model_guard
+    machinery" means in test form: don't reimplement the check, call it.
+    """
+    home_path = tmp_path / "home"
+    home_path.mkdir(parents=True, exist_ok=True)
+    home_cognition = CognitionStorage(home_path / ".cognition")
+    home_chroma = ChromaDBStorage(
+        persist_directory=home_path / ".cognition" / "chromadb",
+        embedding_model=stamped_model,
+        embedding_dimensions=stamped_dims,
+    )
+    config = SimpleNamespace(
+        embedding_model=configured_model,
+        embedding_dimensions=configured_dims,
+        repo_path=home_path,
+        effective_repo_name="home",
+    )
+    registry = build_registry(
+        home_path=home_path, home_tag="home",
+        home_storage=home_cognition, home_embeddings=home_chroma,
+    )
+    guard, warning, _ = compute_model_guard(
+        home_chroma, configured_model, configured_dims, "home"
+    )
+    home_entry = registry.get(home_path)
+    assert home_entry is not None
+    home_entry.model_guard = guard
+
+    mock_gen = MagicMock()
+    mock_gen.generate_query_embedding.return_value = [0.1] * configured_dims
+
+    event = threading.Event()
+    event.set()
+    return {
+        "config": config,
+        "cognition_storage": home_cognition,
+        "cognition_embedding_storage": home_chroma,
+        "loaded_projects": registry,
+        "embedding_generator": mock_gen,
+        "embedding_ready": event,
+        "embedding_error": None,
+        "home_model_guard": guard,
+        "home_model_guard_warning": warning,
+    }
+
+
+def test_home_model_mismatch_search_returns_honest_signal(tmp_path):
+    """A home collection stamped with a DIFFERENT model than configured must
+    make cognition_search(project=None) return semantic_unavailable+reason,
+    not a silent empty result indistinguishable from 'no history.'
+
+    Fails-before: model_guard was never checked for home (add_home hardcoded
+    "match") -- search would either raise inside Chroma (dim-mismatch, caught
+    by vector_search's broad except -> results:[]) or, for a same-dim
+    model-mismatch, return confidently-wrong nonsense scores with no signal
+    anything was wrong.
+    """
+    lc = _make_lc_with_home_guard(
+        tmp_path, stamped_model="old-model", configured_model="new-model"
+    )
+    ctx = _make_ctx(lc)
+    mock = _MockMcp()
+    register_cognition_tools(mock)
+
+    result = mock.tools["cognition_search"](ctx, query="alpha")
+    assert result.get("semantic_unavailable") is True, f"expected honest signal, got: {result}"
+    assert result.get("reason") == "model-mismatch"
+    assert result["results"] == []
+    assert result["count"] == 0
+    lc["cognition_embedding_storage"].close()
+
+
+def test_home_dim_mismatch_search_returns_honest_signal(tmp_path):
+    """A home collection stamped with a DIFFERENT dimension count must also
+    short-circuit to the honest semantic_unavailable signal (the case that
+    would otherwise raise inside Chroma's query and get swallowed as [])."""
+    lc = _make_lc_with_home_guard(
+        tmp_path, stamped_dims=6, configured_dims=3,
+        stamped_model="m", configured_model="m",
+    )
+    ctx = _make_ctx(lc)
+    mock = _MockMcp()
+    register_cognition_tools(mock)
+
+    result = mock.tools["cognition_search"](ctx, query="alpha")
+    assert result.get("semantic_unavailable") is True, f"expected honest signal, got: {result}"
+    assert result.get("reason") == "dim-mismatch"
+    lc["cognition_embedding_storage"].close()
+
+
+def test_home_model_match_search_unaffected(tmp_path):
+    """Regression guard: a clean (matching) home collection must NOT gain the
+    semantic_unavailable/reason keys -- the byte-identical pre-XP2 shape."""
+    lc = _make_lc_with_home_guard(tmp_path)  # stamped == configured by default
+    ctx = _make_ctx(lc)
+    mock = _MockMcp()
+    register_cognition_tools(mock)
+
+    result = mock.tools["cognition_search"](ctx, query="alpha")
+    assert "semantic_unavailable" not in result
+    assert "reason" not in result
+    assert set(result.keys()) == {"query", "results", "count"}
+    lc["cognition_embedding_storage"].close()
+
+
+def test_home_model_unknown_search_still_runs_with_confidence_caveat(tmp_path):
+    """A pre-stamp home collection (no embedding_model in metadata -- created
+    before the C1 stamping feature existed) gets model_guard='unknown': search
+    still RUNS (unlike dim/model-mismatch, which short-circuit), but the result
+    carries a confidence caveat instead of silently claiming full confidence."""
+    home_path = tmp_path / "home"
+    home_path.mkdir(parents=True, exist_ok=True)
+    home_cognition = CognitionStorage(home_path / ".cognition")
+    # No embedding_model/dimensions passed -> collection metadata has no stamp.
+    home_chroma = ChromaDBStorage(persist_directory=home_path / ".cognition" / "chromadb")
+    config = SimpleNamespace(
+        embedding_model="new-model", embedding_dimensions=3,
+        repo_path=home_path, effective_repo_name="home",
+    )
+    registry = build_registry(
+        home_path=home_path, home_tag="home",
+        home_storage=home_cognition, home_embeddings=home_chroma,
+    )
+    guard, warning, _ = compute_model_guard(home_chroma, "new-model", 3, "home")
+    assert guard == "unknown"
+    home_entry = registry.get(home_path)
+    assert home_entry is not None
+    home_entry.model_guard = guard
+
+    mock_gen = MagicMock()
+    mock_gen.generate_query_embedding.return_value = [0.1, 0.1, 0.1]
+    event = threading.Event()
+    event.set()
+    lc = {
+        "config": config, "cognition_storage": home_cognition,
+        "cognition_embedding_storage": home_chroma, "loaded_projects": registry,
+        "embedding_generator": mock_gen, "embedding_ready": event,
+        "embedding_error": None, "home_model_guard": guard,
+        "home_model_guard_warning": warning,
+    }
+    ctx = _make_ctx(lc)
+    mock = _MockMcp()
+    register_cognition_tools(mock)
+
+    result = mock.tools["cognition_search"](ctx, query="alpha")
+    assert "semantic_unavailable" not in result, "unknown must still run search"
+    assert result["results"] == []  # empty collection -> no hits, unrelated to the guard
+    assert "confidence" in result and "degraded" in result["confidence"]
+    home_chroma.close()
+
+
+def test_get_status_surfaces_home_model_drift(tmp_path):
+    """get_status must surface home_model_drift (WP-2 item 2c) matching what
+    cognition_search's guard is keyed off, with the docstring's {state, warning}
+    shape -- null when clean."""
+    lc = _make_lc_with_home_guard(
+        tmp_path, stamped_model="old-model", configured_model="new-model"
+    )
+    ctx = _make_ctx(lc)
+    mock = _MockMcp()
+    register_service_tools(mock)
+
+    result = mock.tools["get_status"](ctx)
+    drift = result["home_model_drift"]
+    assert drift is not None
+    assert drift["state"] == "model-mismatch"
+    assert isinstance(drift["warning"], str) and drift["warning"]
+    lc["cognition_embedding_storage"].close()
+
+
+def test_get_status_home_model_drift_null_when_clean(tmp_path):
+    lc = _make_lc_with_home_guard(tmp_path)
+    ctx = _make_ctx(lc)
+    mock = _MockMcp()
+    register_service_tools(mock)
+
+    result = mock.tools["get_status"](ctx)
+    assert result["home_model_drift"] is None
+    lc["cognition_embedding_storage"].close()

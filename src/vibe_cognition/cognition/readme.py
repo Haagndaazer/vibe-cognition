@@ -132,8 +132,9 @@ The graph for this project is empty. Here is the act-now procedure:
    (cognition_readme) for details.
 
 2. Record the first decision or constraint you are currently aware of for this project:
-     cognition_record(type="decision", summary="<what was decided>",
-                      detail="<why, and what was rejected>")
+     cognition_record(node_type="decision", summary="<what was decided>",
+                      detail="<why, and what was rejected>", context="<area, e.g. src/auth>",
+                      author="<your name>")
 
 3. Run /vibe-curate to add semantic edges to anything you record. Curation is your
    job -- no background curator runs automatically.

@@ -1,6 +1,8 @@
 """WP-Readme: tests for cognition_readme tool + prime.py empty-graph onboarding."""
 
+import inspect
 import json
+import re
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +16,7 @@ from vibe_cognition.cognition.readme import (
     ONBOARDING_BLOCK,
 )
 from vibe_cognition.cognition.storage import CognitionStorage
+from vibe_cognition.tools.cognition_tools import register_cognition_tools
 from vibe_cognition.tools.readme_tool import cognition_readme_core
 
 # ---------------------------------------------------------------------------
@@ -111,6 +114,36 @@ def test_cognition_readme_tool_returns_expected_shape():
         "guide must be a non-empty string"
     assert isinstance(result.get("getting_started"), str) and result["getting_started"], \
         "getting_started must be a non-empty string"
+
+
+def test_getting_started_record_example_matches_real_signature(mock_mcp):
+    """WP-2 item 3: the cognition_record example in COGNITION_GETTING_STARTED must
+    use real, current kwargs of the actual tool -- not a stale/typo'd shape (it
+    used to say type= instead of node_type= and omit required context/author).
+
+    Extracts the kwarg names used in the example call and asserts they are a
+    SUBSET of cognition_record's real parameter names, so a future rename of
+    cognition_record can't silently leave the example drifted again.
+
+    Fails-before: "type" is not a real parameter (real one is "node_type") --
+    this would have failed against the old example text.
+    """
+    register_cognition_tools(mock_mcp)
+    real_params = set(inspect.signature(mock_mcp.tools["cognition_record"]).parameters) - {"ctx"}
+
+    match = re.search(r"cognition_record\((.*?)\)", COGNITION_GETTING_STARTED, re.DOTALL)
+    assert match, "no cognition_record(...) example found in COGNITION_GETTING_STARTED"
+    example_kwargs = set(re.findall(r"(\w+)=", match.group(1)))
+
+    assert example_kwargs, "example call has no kwargs -- regex likely broken"
+    unknown = example_kwargs - real_params
+    assert not unknown, (
+        f"example uses kwarg(s) not in cognition_record's real signature: {unknown} "
+        f"(real params: {real_params})"
+    )
+    required = {"node_type", "summary", "detail", "context", "author"}
+    missing = required - example_kwargs
+    assert not missing, f"example is missing required kwarg(s): {missing}"
 
 
 def test_readme_constants_are_ascii_clean():
