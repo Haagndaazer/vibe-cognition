@@ -115,9 +115,14 @@ def _embed_workflow(
 
     Delete-then-write (idempotent): purges this node's existing chunks BEFORE
     writing the fresh set so a re-chunk never orphans stale high-N chunks.
-    Returns the chunk count written."""
+    The node-level vector's metadata carries ``chunk_count`` (WP-4,
+    41ced8d1fa63) so a completeness check (e.g. the startup reconciler) can
+    verify the FULL chunk set landed, not just chunk-0 — a crash mid-loop
+    used to read as "fully synced" once chunk-0 existed, permanently hiding
+    chunks 1..N. Returns the chunk count written."""
     wf_type = CognitionNodeType.WORKFLOW.value
     node_text = f"{wf_type}: {node.summary}\n{node.detail[:2000]}"
+    chunks = chunk_text(node.detail)
     embedding_storage.upsert_embedding(
         node.id,
         generator.generate(node_text, input_type="document"),
@@ -127,11 +132,11 @@ def _embed_workflow(
             "author": node.author,
             "timestamp": node.timestamp,
             "context": ",".join(node.context),
+            "chunk_count": len(chunks),
         },
     )
     # Delete-then-write the chunk set (idempotent regardless of count change).
     embedding_storage.delete_by_node_id(node.id)
-    chunks = chunk_text(node.detail)
     for i, chunk in enumerate(chunks):
         embedding_storage.upsert_embedding(
             f"{node.id}#chunk-{i}",
@@ -140,6 +145,30 @@ def _embed_workflow(
             document=chunk,
         )
     return len(chunks)
+
+
+def _node_from_dict(node_id: str, data: dict[str, Any]) -> CognitionNode:
+    """Reconstruct a CognitionNode from a storage node dict (CognitionStorage.
+    get_node()'s return, which omits 'id'; or one row of get_all_nodes(),
+    which includes it — either works since 'id' is never read FROM ``data``,
+    only the explicit ``node_id`` param is used).
+
+    THE single such reconstruction: cognition_update_node's re-embed,
+    _reembed_replayed_nodes (WP-3), and _sync_cognition_embeddings (WP-4) all
+    need it — kept in one place so the field mapping can't drift between
+    them (the exact kind of drift 3e82d4ebc004 exists to close)."""
+    return CognitionNode(
+        id=node_id,
+        type=CognitionNodeType(data["type"]),
+        summary=data["summary"],
+        detail=data["detail"],
+        context=data.get("context", []),
+        references=data.get("references", []),
+        severity=data.get("severity"),
+        timestamp=data["timestamp"],
+        author=data["author"],
+        metadata=data.get("metadata", {}),
+    )
 
 
 def _record_node(
@@ -454,18 +483,7 @@ def _reembed_replayed_nodes(
         if data is None or data.get("type") == doc_type:
             continue
         try:
-            node = CognitionNode(
-                id=node_id,
-                type=CognitionNodeType(data["type"]),
-                summary=data["summary"],
-                detail=data["detail"],
-                context=data.get("context", []),
-                references=data.get("references", []),
-                severity=data.get("severity"),
-                timestamp=data["timestamp"],
-                author=data["author"],
-                metadata=data.get("metadata", {}),
-            )
+            node = _node_from_dict(node_id, data)
             if node.type == CognitionNodeType.WORKFLOW:
                 _embed_workflow(embedding_storage, generator, node)
             else:
@@ -590,17 +608,21 @@ def _embed_document(
     Delete-then-write (peer-review A5): purge this node's existing chunks BEFORE
     writing the fresh set, so a re-chunk that yields FEWER chunks can't orphan stale
     high-N chunks under the live node_id (which would surface as ghost excerpts of
-    deleted text). Returns the chunk count written."""
+    deleted text). The node-level vector's metadata carries ``chunk_count`` (WP-4,
+    41ced8d1fa63) so a completeness check can verify the FULL chunk set landed,
+    not just chunk-0 — a crash mid-loop used to read as "fully synced" once
+    chunk-0 existed, permanently hiding chunks 1..N. Returns the chunk count
+    written."""
     doc_type = CognitionNodeType.DOCUMENT.value
     node_text = f"{doc_type}: {summary}\n{detail}"
+    chunks = chunk_text(sidecar_text)
     embedding_storage.upsert_embedding(
         node_id,
         generator.generate(node_text, input_type="document"),
-        {"entity_type": doc_type, "summary": summary},
+        {"entity_type": doc_type, "summary": summary, "chunk_count": len(chunks)},
     )
     # Delete-then-write the chunk set (idempotent regardless of count change).
     embedding_storage.delete_by_node_id(node_id)
-    chunks = chunk_text(sidecar_text)
     for i, chunk in enumerate(chunks):
         embedding_storage.upsert_embedding(
             f"{node_id}#chunk-{i}",
@@ -903,18 +925,7 @@ def _update_node(
     if embeddings_ready:
         post = storage.get_node(node_id)
         assert post is not None  # just updated it; cannot vanish under the lock
-        cnode = CognitionNode(
-            id=node_id,
-            type=CognitionNodeType(post["type"]),
-            summary=post["summary"],
-            detail=post["detail"],
-            context=post.get("context", []),
-            references=post.get("references", []),
-            severity=post.get("severity"),
-            timestamp=post["timestamp"],
-            author=post["author"],
-            metadata=post.get("metadata", {}),
-        )
+        cnode = _node_from_dict(node_id, post)
         _embed_entity_node(embedding_storage, generator, cnode)
         reembed = "done"
     else:
@@ -1312,18 +1323,7 @@ def _update_task(
     if embeddings_ready:
         post = storage.get_node(node_id)
         assert post is not None  # just updated it; cannot vanish under the lock
-        cnode = CognitionNode(
-            id=node_id,
-            type=CognitionNodeType(post["type"]),
-            summary=post["summary"],
-            detail=post["detail"],
-            context=post.get("context", []),
-            references=post.get("references", []),
-            severity=post.get("severity"),
-            timestamp=post["timestamp"],
-            author=post["author"],
-            metadata=post.get("metadata", {}),
-        )
+        cnode = _node_from_dict(node_id, post)
         _embed_entity_node(embedding_storage, generator, cnode)
         reembed = "done"
     else:
@@ -2036,7 +2036,16 @@ def register_cognition_tools(mcp) -> None:
 
         for entry in entries:
             tag = entry.tag
-            if entry.embeddings is None:
+            # WP-4 item 0 (454226d592e0): a dim/model-mismatched entry must be
+            # treated the same whether it's a guarded foreign attach
+            # (embeddings=None) or home (embeddings stays live so writes keep
+            # landing — WP-2 — but must NOT be searched against a stale/wrong
+            # stamp either). Foreign entries already null out embeddings on
+            # mismatch (_load_project_core), so this check is a no-op there;
+            # it only changes behavior for home.
+            if entry.embeddings is None or entry.model_guard in (
+                "dim-mismatch", "model-mismatch",
+            ):
                 project_notes[tag] = {
                     "semantic_unavailable": True,
                     "reason": entry.model_guard,

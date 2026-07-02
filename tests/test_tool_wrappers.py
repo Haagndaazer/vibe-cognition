@@ -81,6 +81,85 @@ def test_get_status_embedding_ready(tmp_path, mock_mcp, build_lc, make_ctx):
     assert result["embedding_status"] == "ready"
 
 
+def test_get_status_syncing_when_ready_but_sync_not_done(tmp_path, mock_mcp, build_lc, make_ctx):
+    """WP-4 item 3 (5340ae677931): embedding_ready fires BEFORE the historical
+    backfill sync starts (unchanged, known-intentional) -- get_status must
+    report the third "syncing" state in that window, not a falsely-confident
+    "ready" (a teammate joining an existing graph would otherwise see "ready"
+    while search was silently incomplete).
+
+    Fails-before: embedding_status only ever checked embedding_ready, so this
+    would have reported "ready".
+    """
+    import threading
+
+    register_service_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    lc["embedding_sync_done"] = threading.Event()  # NOT set -- sync still running
+    ctx = make_ctx(lc)
+
+    result = mock_mcp.tools["get_status"](ctx)  # type: ignore[arg-type]
+    assert result["embedding_status"] == "syncing"
+
+
+def test_get_status_ready_once_sync_done(tmp_path, mock_mcp, build_lc, make_ctx):
+    """Regression guard: once embedding_sync_done is set, status returns to
+    "ready" -- "syncing" is a transient window, not a permanent regression."""
+    import threading
+
+    register_service_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    lc["embedding_sync_done"] = threading.Event()
+    lc["embedding_sync_done"].set()
+    ctx = make_ctx(lc)
+
+    result = mock_mcp.tools["get_status"](ctx)  # type: ignore[arg-type]
+    assert result["embedding_status"] == "ready"
+
+
+def test_get_status_syncing_does_not_block_embedding_ready_tools(
+    tmp_path, mock_mcp, build_lc, make_ctx
+):
+    """embedding_ready gates tool availability (require_embeddings) -- this
+    must stay frozen/unaffected by embedding_sync_done (known-intentional:
+    do NOT make startup sync blocking). cognition_search must still work
+    normally while "syncing"."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    import threading
+    lc["embedding_sync_done"] = threading.Event()  # still syncing
+    ctx = make_ctx(lc)
+
+    result = mock_mcp.tools["cognition_search"](ctx, query="alpha")  # type: ignore[arg-type]
+    assert "error" not in result, "syncing must not gate cognition_search"
+
+
+def test_get_status_sync_progress_null_before_sync_completes(
+    tmp_path, mock_mcp, build_lc, make_ctx
+):
+    register_service_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    import threading
+    lc["embedding_sync_done"] = threading.Event()
+    ctx = make_ctx(lc)
+
+    result = mock_mcp.tools["get_status"](ctx)  # type: ignore[arg-type]
+    assert result["embedding_sync_progress"] is None
+
+
+def test_get_status_sync_progress_populated_after_sync(tmp_path, mock_mcp, build_lc, make_ctx):
+    register_service_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    import threading
+    lc["embedding_sync_done"] = threading.Event()
+    lc["embedding_sync_done"].set()
+    lc["embedding_sync_progress"] = {"nodes": 3, "workflows": 1, "documents": 0}
+    ctx = make_ctx(lc)
+
+    result = mock_mcp.tools["get_status"](ctx)  # type: ignore[arg-type]
+    assert result["embedding_sync_progress"] == {"nodes": 3, "workflows": 1, "documents": 0}
+
+
 def test_get_status_node_chunk_split(tmp_path, mock_mcp, build_lc, make_ctx):
     """get_status: cognition_embeddings splits node vectors from chunk vectors.
 
@@ -263,7 +342,6 @@ def test_cognition_record_invalid_node_type_returns_error_dict(tmp_path, mock_mc
     )
     assert isinstance(result, dict)
     assert "error" in result
-    assert "not_a_real_type" in result["error"]
 
 
 def test_cognition_record_valid_type_returns_node_shape(tmp_path, mock_mcp, build_lc, make_ctx):

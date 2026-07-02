@@ -13,7 +13,12 @@ from .config import Settings, setup_logging
 from .embeddings import ChromaDBStorage, EmbeddingGenerator
 from .instructions import SERVER_INSTRUCTIONS
 from .tools import register_all_tools
-from .tools.cognition_tools import _embed_document
+from .tools.cognition_tools import (
+    _embed_document,
+    _embed_entity_node,
+    _embed_workflow,
+    _node_from_dict,
+)
 from .tools.project_registry import build_registry, compute_model_guard
 
 logger = logging.getLogger(__name__)
@@ -53,75 +58,117 @@ def _sync_cognition_embeddings(
     cognition_storage: CognitionStorage,
     embedding_storage: ChromaDBStorage,
     generator: EmbeddingGenerator,
-) -> None:
+) -> dict[str, int]:
     """Sync cognition nodes from JSONL into ChromaDB if missing.
 
     This handles the case where a teammate pulled new JSONL entries via Git
     but the local ChromaDB doesn't have their embeddings yet.
+
+    WP-4 (3e82d4ebc004): routes through the SAME shared embed paths
+    _record_node uses (_embed_entity_node / _embed_workflow / _embed_document)
+    instead of a drifted inline copy. The old inline non-doc branch omitted
+    task status/owner from the embed text/metadata, and workflow nodes never
+    got chunked here at all (no _embed_workflow call) — a workflow embedded
+    ONLY by this reconciler (e.g. created in the 2-30s model-load window
+    where _record_node defers) stayed permanently un-chunked with no repair
+    path (in-place workflow edits are refused; versioning is by supersession).
     """
     all_nodes = cognition_storage.get_all_nodes()
     if not all_nodes:
-        return
+        return {"nodes": 0, "workflows": 0, "documents": 0}
 
-    # Get existing IDs from ChromaDB in one call
-    existing_ids = set()
+    # Get existing IDs + metadata (WP-4, 41ced8d1fa63: metadata carries each
+    # node's chunk_count for the completeness check below) in one call.
+    existing_ids: set[str] = set()
+    existing_meta: dict[str, Any] = {}
     try:
-        results = embedding_storage._collection.get(ids=[n["id"] for n in all_nodes])
+        results = embedding_storage._collection.get(
+            ids=[n["id"] for n in all_nodes], include=["metadatas"]
+        )
         existing_ids = set(results["ids"])
+        existing_meta = dict(zip(results["ids"], results["metadatas"] or [], strict=False))
     except Exception:
         pass  # If collection is empty or IDs not found, treat all as missing
 
     doc_type = CognitionNodeType.DOCUMENT.value
+    wf_type = CognitionNodeType.WORKFLOW.value
     cognition_dir = cognition_storage.cognition_dir
     doc_nodes = [n for n in all_nodes if n.get("type") == doc_type]
+    wf_nodes = [n for n in all_nodes if n.get("type") == wf_type]
 
-    # Probe chunk-0 presence for document nodes (un-chunked detection, one batch get).
-    chunk0_present: set[str] = set()
-    if doc_nodes:
+    # WP-4 (41ced8d1fa63): verify the FULL chunk set via each node's stored
+    # chunk_count metadata, not just chunk-0 presence — a crash mid-write-loop
+    # used to read as "fully synced" the instant chunk-0 landed, permanently
+    # hiding chunks 1..N. One batched probe across ALL doc+workflow nodes'
+    # expected chunk ids (same cost shape as the old chunk-0-only probe).
+    expected_chunk_ids: list[str] = []
+    for n in doc_nodes + wf_nodes:
+        if n["id"] not in existing_ids:
+            continue
+        count = int((existing_meta.get(n["id"]) or {}).get("chunk_count") or 0)
+        expected_chunk_ids.extend(f"{n['id']}#chunk-{i}" for i in range(count))
+    chunk_present: set[str] = set()
+    if expected_chunk_ids:
         try:
-            probe = embedding_storage._collection.get(ids=[f"{n['id']}#chunk-0" for n in doc_nodes])
-            chunk0_present = set(probe["ids"])
+            probe = embedding_storage._collection.get(ids=expected_chunk_ids)
+            chunk_present = set(probe["ids"])
         except Exception:
             pass
 
-    # Non-document nodes: embed node-level if missing (unchanged path).
+    def _chunks_complete(node_id: str) -> bool:
+        meta = existing_meta.get(node_id) or {}
+        if "chunk_count" not in meta:
+            # Legacy vector (written before this WP started stamping
+            # chunk_count unconditionally, len(chunks) incl. explicit 0):
+            # chunk state is UNKNOWN, not "zero expected" — key-absent must
+            # NOT be conflated with an explicit 0 (redirect from Vince's
+            # gate review) or a legacy text-bearing doc/workflow with a
+            # missing/incomplete chunk set reads as permanently complete.
+            # Force one re-embed; it stamps chunk_count and converges.
+            return False
+        count = int(meta.get("chunk_count") or 0)
+        if count == 0:
+            return True  # explicitly zero expected (e.g. empty sidecar) -> complete
+        return all(f"{node_id}#chunk-{i}" in chunk_present for i in range(count))
+
+    # Plain (non-document, non-workflow) nodes: embed node-level if missing.
     non_doc_missing = [
         n for n in all_nodes
-        if n.get("type") != doc_type and n["id"] not in existing_ids
+        if n.get("type") not in (doc_type, wf_type) and n["id"] not in existing_ids
+    ]
+
+    # Workflows: missing entirely, OR present but with an incomplete chunk set
+    # (WP-4, 41ced8d1fa63 — previously any presence at all was "synced").
+    wf_to_embed = [
+        n for n in wf_nodes
+        if n["id"] not in existing_ids or not _chunks_complete(n["id"])
     ]
 
     # Documents (WP-D2): a document is fully synced iff its NODE vector exists AND
-    # (its sidecar is empty/absent OR its chunk-0 exists). The "empty sidecar" branch
-    # is load-bearing — without it a text-less document looks "missing" forever and
-    # re-embeds every boot. This replaces D1a's blanket document-skip and backfills
-    # documents created in the D1a/D1b interim (deliberately never embedded then).
+    # (its sidecar is empty/absent OR its FULL chunk set is present). The "empty
+    # sidecar" branch is load-bearing — without it a text-less document looks
+    # "missing" forever and re-embeds every boot. This replaces D1a's blanket
+    # document-skip and backfills documents created in the D1a/D1b interim
+    # (deliberately never embedded then).
     docs_to_embed: list[tuple[dict[str, Any], str]] = []
     for n in doc_nodes:
         node_present = n["id"] in existing_ids
         sha = n.get("metadata", {}).get("sha256")
         sidecar = read_text_sidecar(cognition_dir, sha) if sha else None
         has_text = bool(sidecar and sidecar.strip())
-        chunked = f"{n['id']}#chunk-0" in chunk0_present
-        if not (node_present and (not has_text or chunked)):
+        complete = node_present and (not has_text or _chunks_complete(n["id"]))
+        if not complete:
             docs_to_embed.append((n, sidecar or ""))
 
     if non_doc_missing:
         logger.info(f"Syncing {len(non_doc_missing)} cognition nodes to ChromaDB...")
-        for node in non_doc_missing:
-            embed_text = f"{node.get('type', '')}: {node.get('summary', '')}\n{node.get('detail', '')}"
-            embedding = generator.generate(embed_text, input_type="document")
-            metadata = {
-                "entity_type": node.get("type", ""),
-                "summary": node.get("summary", ""),
-                "author": node.get("author", ""),
-                "timestamp": node.get("timestamp", ""),
-                "context": ",".join(node.get("context", [])),
-            }
-            if node.get("severity"):
-                metadata["severity"] = node["severity"]
-            if node.get("references"):
-                metadata["references"] = ",".join(node["references"])
-            embedding_storage.upsert_embedding(node["id"], embedding, metadata)
+        for n in non_doc_missing:
+            _embed_entity_node(embedding_storage, generator, _node_from_dict(n["id"], n))
+
+    if wf_to_embed:
+        logger.info(f"Syncing {len(wf_to_embed)} workflow node(s) to ChromaDB...")
+        for n in wf_to_embed:
+            _embed_workflow(embedding_storage, generator, _node_from_dict(n["id"], n))
 
     # Documents: node vector + sidecar chunks via the shared _embed_document (the same
     # delete-then-write path store-time uses — no chunk-contract drift). A sidecar-less
@@ -133,16 +180,24 @@ def _sync_cognition_embeddings(
             node.get("summary", ""), node.get("detail", ""), sidecar_text,
         )
 
-    if non_doc_missing or docs_to_embed:
+    if non_doc_missing or wf_to_embed or docs_to_embed:
         logger.info(
             f"Cognition embedding sync: {len(non_doc_missing)} nodes + "
-            f"{len(docs_to_embed)} documents (re)embedded"
+            f"{len(wf_to_embed)} workflows + {len(docs_to_embed)} documents (re)embedded"
         )
     else:
         logger.info("Cognition embeddings: all nodes already synced")
 
     # Always reconcile orphans (independent of the add passes above).
     _reconcile_orphan_embeddings(cognition_storage, embedding_storage)
+
+    # WP-4 item 3 (5340ae677931, code half): coarse progress counts for
+    # get_status's "syncing" state — how much this pass actually (re)embedded.
+    return {
+        "nodes": len(non_doc_missing),
+        "workflows": len(wf_to_embed),
+        "documents": len(docs_to_embed),
+    }
 
 
 def _reconcile_orphan_embeddings(
@@ -254,14 +309,25 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
                 cognition_embedding_storage.recreate_collection()
 
             logger.info("Syncing cognition embeddings...")
-            _sync_cognition_embeddings(
+            context["embedding_sync_progress"] = _sync_cognition_embeddings(
                 cognition_storage, cognition_embedding_storage, embedding_generator
             )
+
+        # WP-4 item 3 (5340ae677931, code half): embedding_ready.set() above
+        # fires BEFORE this backfill sync — deliberately unchanged (known-
+        # intentional) — so a teammate joining an existing graph could see
+        # embedding_status "ready" while historical nodes were still
+        # un-embedded and search silently incomplete. embedding_sync_done is
+        # a SEPARATE signal get_status uses to report "syncing" in that
+        # window instead of a falsely-confident "ready"; it never gates tool
+        # availability.
+        context["embedding_sync_done"].set()
 
     except Exception as e:
         logger.error(f"Background initialization failed: {e}")
         context["embedding_error"] = str(e)
         context["embedding_ready"].set()  # Signal so tools don't hang forever
+        context["embedding_sync_done"].set()  # Sync phase is over either way
 
 
 @asynccontextmanager
@@ -318,6 +384,12 @@ async def lifespan(server: FastMCP):
         # which the background thread only sets AFTER the drift check.
         "home_model_guard": "match",
         "home_model_guard_warning": None,
+        # WP-4 item 3 (5340ae677931, code half): set once the historical
+        # backfill sync finishes (success or error) — independent of
+        # embedding_ready, which fires earlier and is frozen (known-
+        # intentional). get_status derives "syncing" from ready-but-not-done.
+        "embedding_sync_done": threading.Event(),
+        "embedding_sync_progress": None,
     }
 
     # ── Background init (2-30s for model, then sync + curation) ────

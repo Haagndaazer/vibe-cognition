@@ -577,6 +577,34 @@ def test_home_dim_mismatch_search_returns_honest_signal(tmp_path):
     lc["cognition_embedding_storage"].close()
 
 
+def test_home_model_mismatch_in_multiproject_fanout_also_honest(tmp_path):
+    """WP-4 item 0 (454226d592e0): the multi-project (project='*') path must
+    treat a dim/model-mismatched HOME entry the same as a guarded foreign
+    entry -- project_notes[tag].semantic_unavailable -- not silently search
+    against a stale/wrong stamp just because home.embeddings stays non-None
+    (WP-2 deliberately keeps it live for writes).
+
+    Fails-before: only the project=None path checked model_guard; project="*"
+    only checked entry.embeddings is None (never true for home) and the
+    "unknown" confidence caveat, so a mismatched home entry fell through to
+    a real (wrong) vector_search call under the aggregate path.
+    """
+    lc = _make_lc_with_home_guard(
+        tmp_path, stamped_model="old-model", configured_model="new-model"
+    )
+    ctx = _make_ctx(lc)
+    mock = _MockMcp()
+    register_cognition_tools(mock)
+
+    result = mock.tools["cognition_search"](ctx, query="alpha", project="*")
+
+    assert "error" not in result, f"unexpected error: {result}"
+    assert result["results"] == []
+    notes = result.get("project_notes", {})
+    assert notes.get("home") == {"semantic_unavailable": True, "reason": "model-mismatch"}
+    lc["cognition_embedding_storage"].close()
+
+
 def test_home_model_match_search_unaffected(tmp_path):
     """Regression guard: a clean (matching) home collection must NOT gain the
     semantic_unavailable/reason keys -- the byte-identical pre-XP2 shape."""

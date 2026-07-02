@@ -45,7 +45,20 @@ def register_service_tools(mcp) -> None:
                                 node ids, for diagnosis,
               cognition_embeddings: {nodes, chunks, total}
                                     (or {"error": ...}; 0 if uninitialized),
-              embedding_status: "ready" | "loading" | "error: <detail>",
+              embedding_status: "loading" | "syncing" | "ready" | "error: <detail>".
+                                "syncing" (WP-4, 5340ae677931) means the embedding
+                                model is loaded and tools are usable, but the
+                                historical backfill sync (teammate-pulled nodes
+                                not yet embedded) hasn't finished — search may be
+                                silently incomplete during this window. embedding_
+                                ready (tool availability) still fires BEFORE sync
+                                starts, unchanged; "syncing" is purely a visibility
+                                signal, not a new gate,
+              embedding_sync_progress: null before the sync PASS finishes (covers
+                                both "still loading" and "still syncing"); once it
+                                finishes, {nodes, workflows, documents} counts of
+                                what THAT pass (re)embedded (0/0/0 if nothing was
+                                missing),
               home_model_drift: null when the home embedding collection's stored
                                 model/dims match this process's configured
                                 embedding_model/embedding_dimensions (the common
@@ -124,15 +137,25 @@ def register_service_tools(mcp) -> None:
         else:
             result["home_model_drift"] = None
 
-        # Embedding model status
+        # Embedding model status (WP-4 item 3: "syncing" is a THIRD state
+        # between "loading" and "ready" — embedding_ready fires before the
+        # historical backfill sync starts, unchanged, so without this a
+        # teammate joining an existing graph saw a falsely-confident "ready"
+        # while search was silently incomplete).
         embedding_ready = lc.get("embedding_ready")
         embedding_error = lc.get("embedding_error")
+        embedding_sync_done = lc.get("embedding_sync_done")
         if embedding_error:
             result["embedding_status"] = f"error: {embedding_error}"
         elif embedding_ready and embedding_ready.is_set():
-            result["embedding_status"] = "ready"
+            if embedding_sync_done is not None and not embedding_sync_done.is_set():
+                result["embedding_status"] = "syncing"
+            else:
+                result["embedding_status"] = "ready"
         else:
             result["embedding_status"] = "loading"
+
+        result["embedding_sync_progress"] = lc.get("embedding_sync_progress")
 
         # Foreign project count (XP1)
         if registry is not None:

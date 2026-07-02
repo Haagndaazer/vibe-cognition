@@ -13,12 +13,14 @@ from __future__ import annotations
 import pytest
 
 from vibe_cognition.cognition import CognitionStorage
+from vibe_cognition.cognition.documents import sha256_bytes, write_text_sidecar
 from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType, generate_node_id
 from vibe_cognition.embeddings import ChromaDBStorage
 from vibe_cognition.server import _sync_cognition_embeddings
 from vibe_cognition.tools.cognition_tools import (
     _embed_document,
     _embed_entity_node,
+    _embed_workflow,
     _search_cognition,
 )
 
@@ -162,11 +164,10 @@ class TestAllStoragePathsUseDocumentPrefix:
         assert len(doc_calls) >= 2, "site 3: chunk loop must also call generate(input_type='document')"
 
     def test_site4_sync_nondoc_inline(self, tmp_path):
-        """Site 4: _sync_cognition_embeddings non-doc inline (server.py line 112).
-
-        This is the inline that bypasses _embed_entity_node — the most likely to be
-        missed.  Assert it goes through generate(input_type='document'), NOT
-        generate_query_embedding.
+        """Site 4: _sync_cognition_embeddings's non-doc path (WP-4, 3e82d4ebc004:
+        now routes through the shared _embed_entity_node rather than a drifted
+        inline copy — kept as a regression guard). Assert it goes through
+        generate(input_type='document'), NOT generate_query_embedding.
         """
         spy = _PrefixSpy()
         cognition = _make_cognition(tmp_path)
@@ -178,10 +179,10 @@ class TestAllStoragePathsUseDocumentPrefix:
 
         _sync_cognition_embeddings(cognition, chroma, spy)  # type: ignore[arg-type]
 
-        # The inline at server.py:112 (non-doc path) must have called generate(document)
+        # The non-doc path (_embed_entity_node) must have called generate(document)
         query_calls = spy.query_calls()
         doc_calls = spy.storage_calls()
-        assert query_calls == [], "site 4 non-doc inline must NOT use generate_query_embedding"
+        assert query_calls == [], "site 4 non-doc path must NOT use generate_query_embedding"
         assert len(doc_calls) >= 1, "site 4 must call generate(input_type='document')"
 
     def test_search_path_stays_query_prefixed(self, tmp_path):
@@ -436,3 +437,232 @@ class TestRecreateCollectionLockGuard:
 )
 def test_true_multiprocess_recreate_race_repro(tmp_path):
     pass
+
+
+# ── WP-4 (3e82d4ebc004): reconciler routes through the shared embed paths ─────
+
+
+class TestReconcilerSharedPathParity:
+    """_sync_cognition_embeddings must produce the SAME output as calling the
+    shared _embed_entity_node/_embed_workflow paths directly -- not a second,
+    driftable copy of the embed-text/metadata-building logic."""
+
+    def test_task_status_owner_survive_reconciler_embed(self, tmp_path):
+        """Fails-before: the old inline non-doc branch never read
+        node.metadata, so a task's status/owner were silently dropped from
+        both the embed text and Chroma metadata when a task was only ever
+        embedded by the reconciler (e.g. created during the 2-30s model-load
+        window where _record_node defers embedding)."""
+        spy = _PrefixSpy()
+        cognition = _make_cognition(tmp_path)
+        chroma = _make_chroma(tmp_path)
+
+        ts = "2026-06-21T00:00:00+00:00"
+        task = CognitionNode(
+            id=generate_node_id("task", "ship the thing", ts),
+            type=CognitionNodeType.TASK, summary="ship the thing", detail="d",
+            context=[], references=[], timestamp=ts, author="t",
+            metadata={"status": "in_progress", "owner": "alice"},
+        )
+        cognition.add_node(task)
+
+        _sync_cognition_embeddings(cognition, chroma, spy)  # type: ignore[arg-type]
+
+        got = chroma._collection.get(ids=[task.id], include=["metadatas"])
+        assert got["metadatas"] is not None
+        meta = got["metadatas"][0]
+        assert meta.get("status") == "in_progress"
+        assert meta.get("owner") == "alice"
+        [call] = [c for c in spy.calls if c[0] == "generate"]
+        assert "status: in_progress" in call[2]
+        assert "owner: alice" in call[2]
+
+    def test_reconciler_embed_matches_embed_entity_node_directly(self, tmp_path):
+        """The reconciler's output for a plain node must match (embed text +
+        metadata, modulo updated_at) calling _embed_entity_node directly --
+        proves there's no second copy of the embed logic to drift."""
+        ts = "2026-06-21T00:00:00+00:00"
+        node = CognitionNode(
+            id=generate_node_id("decision", "parity check", ts),
+            type=CognitionNodeType.DECISION, summary="parity check", detail="d",
+            context=["ctx"], references=["commit:abc"], timestamp=ts, author="t",
+            severity="high",
+        )
+
+        cognition = _make_cognition(tmp_path)
+        cognition.add_node(node)
+        chroma_reconciler = _make_chroma(tmp_path, name="via_reconciler")
+        chroma_direct = _make_chroma(tmp_path, name="via_direct")
+        spy = _PrefixSpy()
+
+        _sync_cognition_embeddings(cognition, chroma_reconciler, spy)  # type: ignore[arg-type]
+        _embed_entity_node(chroma_direct, spy, node)  # type: ignore[arg-type]
+
+        via_reconciler = chroma_reconciler._collection.get(ids=[node.id], include=["metadatas", "embeddings"])
+        via_direct = chroma_direct._collection.get(ids=[node.id], include=["metadatas", "embeddings"])
+        assert via_reconciler["metadatas"] is not None and via_direct["metadatas"] is not None
+        assert via_reconciler["embeddings"] is not None and via_direct["embeddings"] is not None
+
+        meta_a = {k: v for k, v in via_reconciler["metadatas"][0].items() if k != "updated_at"}
+        meta_b = {k: v for k, v in via_direct["metadatas"][0].items() if k != "updated_at"}
+        assert meta_a == meta_b
+        assert list(via_reconciler["embeddings"][0]) == list(via_direct["embeddings"][0])
+
+    def test_reconciler_chunks_workflow_nodes(self, tmp_path):
+        """Fails-before: workflow nodes went through the generic non-doc path
+        (one unchunked vector of the full, untruncated detail, no #chunk-N
+        ids) -- proves the reconciler now routes them through
+        _embed_workflow like _record_node does."""
+        spy = _PrefixSpy()
+        cognition = _make_cognition(tmp_path)
+        chroma = _make_chroma(tmp_path)
+
+        ts = "2026-06-21T00:00:00+00:00"
+        long_body = "step. " * 300
+        wf = CognitionNode(
+            id=generate_node_id("workflow", "deploy", ts),
+            type=CognitionNodeType.WORKFLOW, summary="deploy", detail=long_body,
+            context=[], references=[], timestamp=ts, author="t",
+        )
+        cognition.add_node(wf)
+
+        _sync_cognition_embeddings(cognition, chroma, spy)  # type: ignore[arg-type]
+
+        ids = chroma._collection.get()["ids"]
+        assert wf.id in ids
+        chunk_ids = [i for i in ids if i.startswith(f"{wf.id}#chunk-")]
+        assert chunk_ids, "reconciler must chunk workflow nodes via _embed_workflow"
+
+
+# ── WP-4 (41ced8d1fa63): reconciler verifies the FULL chunk set ───────────────
+
+
+class TestReconcilerChunkCompleteness:
+    def test_detects_incomplete_chunk_set_and_reembeds(self, tmp_path):
+        """A crash mid-write-loop (chunk-0 survives, a later chunk vanishes)
+        must be detected and repaired -- the old chunk-0-only probe would
+        have read this node as fully synced and never touched it again.
+        """
+        spy = _PrefixSpy()
+        cognition = _make_cognition(tmp_path)
+        chroma = _make_chroma(tmp_path)
+
+        ts = "2026-06-21T00:00:00+00:00"
+        long_body = "step. " * 1200  # > chunk_text's 1000-word window -> >=2 chunks
+        wf = CognitionNode(
+            id=generate_node_id("workflow", "deploy", ts),
+            type=CognitionNodeType.WORKFLOW, summary="deploy", detail=long_body,
+            context=[], references=[], timestamp=ts, author="t",
+        )
+        cognition.add_node(wf)
+        _embed_workflow(chroma, spy, wf)  # type: ignore[arg-type]  # full, correct embed
+
+        all_ids = chroma._collection.get()["ids"]
+        chunk_ids = sorted(i for i in all_ids if i.startswith(f"{wf.id}#chunk-"))
+        assert len(chunk_ids) >= 2, "test needs a multi-chunk workflow to prove the gap"
+
+        # Simulate a crash mid-write-loop: chunk-0 survives, a LATER chunk vanishes.
+        victim = chunk_ids[-1]
+        chroma._collection.delete(ids=[victim])
+        assert victim not in set(chroma._collection.get()["ids"])
+
+        spy2 = _PrefixSpy()
+        _sync_cognition_embeddings(cognition, chroma, spy2)  # type: ignore[arg-type]
+
+        healed_ids = set(chroma._collection.get()["ids"])
+        assert victim in healed_ids, "reconciler must detect the missing chunk and re-embed"
+
+    def test_complete_chunk_set_is_left_alone(self, tmp_path):
+        """Regression guard: a genuinely complete node must NOT be re-embedded
+        (no wasted model calls every boot)."""
+        spy = _PrefixSpy()
+        cognition = _make_cognition(tmp_path)
+        chroma = _make_chroma(tmp_path)
+
+        ts = "2026-06-21T00:00:00+00:00"
+        wf = CognitionNode(
+            id=generate_node_id("workflow", "deploy2", ts),
+            type=CognitionNodeType.WORKFLOW, summary="deploy2", detail="step. " * 300,
+            context=[], references=[], timestamp=ts, author="t",
+        )
+        cognition.add_node(wf)
+        _embed_workflow(chroma, spy, wf)  # type: ignore[arg-type]
+
+        spy2 = _PrefixSpy()
+        _sync_cognition_embeddings(cognition, chroma, spy2)  # type: ignore[arg-type]
+
+        assert spy2.calls == [], "a fully-synced workflow must not be re-embedded"
+
+    def test_legacy_vector_missing_chunk_count_is_reembedded(self, tmp_path):
+        """WP-4 gate redirect: a vector written BEFORE chunk_count stamping
+        existed (no chunk_count key at all) must be treated as INCOMPLETE, not
+        conflated with an explicit chunk_count=0. Fails-before: `... or 0`
+        treated key-absent identically to an explicit zero, so a legacy
+        text-bearing document with a missing/zero chunk set read as
+        permanently complete and was never healed.
+        """
+        cognition = _make_cognition(tmp_path)
+        chroma = _make_chroma(tmp_path)
+
+        ts = "2026-06-21T00:00:00+00:00"
+        text = "real content. " * 50
+        sha = sha256_bytes(text.encode("utf-8"))
+        doc = CognitionNode(
+            id=generate_node_id("document", "legacy doc", ts),
+            type=CognitionNodeType.DOCUMENT, summary="legacy doc", detail="d",
+            context=[], references=[], timestamp=ts, author="t",
+            metadata={"sha256": sha},
+        )
+        cognition.add_node(doc)
+        write_text_sidecar(cognition.cognition_dir, sha, text)
+
+        # Simulate a LEGACY node vector: no chunk_count key, no chunk vectors
+        # (upsert directly -- bypassing _embed_document, which always stamps).
+        legacy_spy = _PrefixSpy()
+        chroma.upsert_embedding(
+            doc.id, legacy_spy.generate("document: legacy doc\nd"),
+            {"entity_type": "document", "summary": "legacy doc"},
+        )
+        pre_meta = chroma._collection.get(ids=[doc.id], include=["metadatas"])["metadatas"]
+        assert pre_meta is not None
+        assert "chunk_count" not in pre_meta[0]
+
+        spy = _PrefixSpy()
+        _sync_cognition_embeddings(cognition, chroma, spy)  # type: ignore[arg-type]
+
+        post = chroma._collection.get(ids=[doc.id], include=["metadatas"])
+        assert post["metadatas"] is not None
+        assert post["metadatas"][0].get("chunk_count") == 1, (
+            "reconciler must re-embed the legacy vector and stamp chunk_count"
+        )
+        chunk_ids = [i for i in chroma._collection.get()["ids"] if i.startswith(f"{doc.id}#chunk-")]
+        assert chunk_ids, "legacy doc's chunks must actually land, not just the count"
+
+    def test_empty_sidecar_doc_with_explicit_zero_chunk_count_not_reembedded(self, tmp_path):
+        """Regression guard for the fix above: an explicit chunk_count=0 (a
+        genuinely empty-sidecar document, fully synced by THIS WP's own
+        _embed_document) must NOT be conflated with the legacy-absent case
+        and must NOT be wastefully re-embedded on every boot."""
+        cognition = _make_cognition(tmp_path)
+        chroma = _make_chroma(tmp_path)
+        spy = _PrefixSpy()
+
+        ts = "2026-06-21T00:00:00+00:00"
+        sha = sha256_bytes(b"")
+        doc = CognitionNode(
+            id=generate_node_id("document", "empty doc", ts),
+            type=CognitionNodeType.DOCUMENT, summary="empty doc", detail="d",
+            context=[], references=[], timestamp=ts, author="t",
+            metadata={"sha256": sha},
+        )
+        cognition.add_node(doc)
+        # No sidecar written -- read_text_sidecar returns None -> has_text=False.
+        _embed_document(chroma, spy, doc.id, doc.summary, doc.detail, "")  # type: ignore[arg-type]
+
+        meta = chroma._collection.get(ids=[doc.id], include=["metadatas"])["metadatas"]
+        assert meta is not None and meta[0].get("chunk_count") == 0
+
+        spy2 = _PrefixSpy()
+        _sync_cognition_embeddings(cognition, chroma, spy2)  # type: ignore[arg-type]
+
+        assert spy2.calls == [], "explicit chunk_count=0 must not be treated as legacy/incomplete"
