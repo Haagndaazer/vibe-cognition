@@ -23,6 +23,10 @@ A bad final message repeats specific edges, reasons, or node IDs. Don't do that.
 
 If you fail partway through (a tool errors out you can't route around, you hit an unrecoverable state), your final message must say **"re-run /vibe-curate to resume"** — never anything that invites the main instance to finish the job by hand (it does not have edge-writing tools; that's the whole point of this design). Your work is idempotent per batch (`mark_curated` is the checkpoint), so a re-run picks up exactly where you left off.
 
+## MODEL PIN ENFORCEMENT — HARD RULE
+
+EVERY `curate-edge-analyzer` and `curate-cluster-analyzer` spawn MUST pass `model: "haiku"` explicitly on the Agent tool call. Never rely on the frontmatter pin alone — it was proven unreliable in the installed context (fail f09e770da046: a v0.15.0 installed-cache production run had `curate-cluster-analyzer` run on Sonnet despite its own `model: haiku` frontmatter line). Analyzer fan-out running on Sonnet or Opus is a cost violation, not a quality upgrade — the whole point of splitting this pipeline into a Sonnet orchestrator with Haiku analyzers is to keep the high-volume fan-out cheap. The analyzers' own frontmatter pins stay in place as passive defense, but this orchestrator's explicit override is the mechanism actually relied on.
+
 ## ANTI-FABRICATION GUARD
 
 If a tool listed in your frontmatter is unexpectedly absent from your actual available tool list, or a call errors, STOP and report the failure plainly — in your transcript, and in your final message if it's fatal to the run. Never fabricate a result to fill a gap. This applies doubly to anything you delegate to a subagent: if `curate-edge-analyzer` or `curate-cluster-analyzer` returns a suspiciously clean result with no real tool evidence behind it, don't take it at face value — treat an ungrounded proposal as untrustworthy and discard it rather than committing it.
@@ -38,9 +42,11 @@ If a tool listed in your frontmatter is unexpectedly absent from your actual ava
 
 Process uncurated nodes in batches of 5-10 (timestamp order, oldest first). For each batch:
 
-1. **Spawn `curate-edge-analyzer` on the batch.** Use the Agent tool with `subagent_type: "vibe-cognition:curate-edge-analyzer"`. Do not pass an explicit `model` override — its own frontmatter pins it to haiku, and WP-0 spike testing (discovery d79cd9a93a02) confirmed that pin is honored without an override. Pass the batch's node IDs in the prompt. It returns proposed edges as JSON, each carrying its own `source` field.
+1. **Spawn `curate-edge-analyzer` on the batch.** Use the Agent tool with `subagent_type: "vibe-cognition:curate-edge-analyzer"` and an explicit `model: "haiku"` override — always pass it, regardless of the subagent's own frontmatter pin. An explicit override is authoritative and harmless if the frontmatter pin also holds; a v0.15.0 installed-cache production run observed `curate-cluster-analyzer` running Sonnet despite its haiku pin (fail f09e770da046), so the frontmatter pin alone is not trusted here anymore. Pass the batch's node IDs in the prompt. It returns proposed edges as JSON, each carrying its own `source` field.
 
    **Degraded / no-nesting fallback:** if the Agent tool is unavailable to you at all (old Claude Code, or the call errors as "tool not found" rather than a normal task failure), do NOT block or fail the whole run — perform the edge-analysis yourself, inline, using the embedded protocol in "Embedded analyzer protocol" below. Note in your transcript (not your final report) that you ran in degraded mode.
+
+   **Self-check:** if anything about the spawn's result indicates `curate-edge-analyzer` actually ran on a non-haiku model (e.g. a resolved-model field, or the agent's own report, showing Sonnet/Opus), note it in your transcript as cost telemetry — do not fail the run over it, and do not put it in your final report.
 
 2. **Review every proposal before committing anything.** Apply ALL of the following, mirrored from the analyzer's own directives so a regressed or degraded analysis still dies here if it slips:
    - Remove self-references (`from_id == to_id`).
@@ -66,9 +72,11 @@ Repeat until every uncurated node has been processed. Keep a running tally: node
 
 After all edge batches are committed:
 
-1. **Spawn `curate-cluster-analyzer`.** Use the Agent tool with `subagent_type: "vibe-cognition:curate-cluster-analyzer"`, no explicit `model` override (same reasoning as step 2). It returns proposed summary nodes as JSON.
+1. **Spawn `curate-cluster-analyzer`.** Use the Agent tool with `subagent_type: "vibe-cognition:curate-cluster-analyzer"` and an explicit `model: "haiku"` override (same reasoning as step 2). It returns proposed summary nodes as JSON.
 
    **Degraded fallback:** same as step 2 — if Agent is genuinely unavailable, run the cluster-analysis protocol yourself inline.
+
+   **Self-check:** same as step 2 — if anything about the spawn's result indicates `curate-cluster-analyzer` actually ran on a non-haiku model, note it in your transcript as cost telemetry, don't fail the run over it.
 
 2. **Review each proposed summary node before creating anything:**
    - Check it doesn't duplicate an existing pattern/episode covering the same ground (`cognition_search` with the proposed summary).
