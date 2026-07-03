@@ -18,7 +18,7 @@ _REPO = Path(__file__).resolve().parent.parent
 _SKILL = _REPO / "skills" / "vibe-cognition" / "SKILL.md"
 _README = _REPO / "README.md"
 _CURATE_SKILL = _REPO / "skills" / "vibe-curate" / "SKILL.md"
-_EDGE_ANALYZER = _REPO / "skills" / "vibe-curate" / "edge-analyzer.md"
+_EDGE_ANALYZER = _REPO / "agents" / "curate-edge-analyzer.md"
 
 
 def _registered_tool_names() -> set[str]:

@@ -16,9 +16,10 @@ and pattern you capture here persists across sessions and is searchable via embe
 The full record -> curate loop (what to capture, when, and how) is the "Three standing
 practices" in your MCP server instructions -- surfaced every session via the MCP
 initialize handshake and re-injected after a compact, so it is already in your
-context. In brief: record with cognition_record as you work, then curate with
-/vibe-curate to add semantic edges (led_to, resolved_by, supersedes, contradicts,
-relates_to). Deterministic part_of edges are created automatically.
+context. In brief: record with cognition_record as you work, then run /vibe-curate to
+launch the background curate-orchestrator agent, which adds semantic edges (led_to,
+resolved_by, supersedes, contradicts, relates_to) -- never author them yourself.
+Deterministic part_of edges are created automatically.
 
 ## Tool groups
 
@@ -137,8 +138,8 @@ The graph for this project is empty. Here is the act-now procedure:
                       detail="<why, and what was rejected>", context="<area, e.g. src/auth>",
                       author="<your name>")
 
-3. Run /vibe-curate to add semantic edges to anything you record. Curation is your
-   job -- no background curator runs automatically.
+3. Run /vibe-curate to launch the background curator on anything you record. Triggering
+   curation is your job -- never author semantic edges yourself.
 
 4. Use cognition_search to verify what is already captured before recording duplicates.
 

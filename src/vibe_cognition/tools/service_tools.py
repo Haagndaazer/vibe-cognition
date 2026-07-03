@@ -76,7 +76,8 @@ def register_service_tools(mcp) -> None:
               loaded_foreign_projects: int,   # count of loaded foreign projects
                                               # (use cognition_list_projects for
                                               # details; absent if no registry)
-              curation: str,  # reminder: curation is agent-driven via /vibe-curate
+              curation: str,  # reminder: /vibe-curate launches the background
+                              # curate-orchestrator agent that does the linking
             }
         """
         lc = get_lifespan(ctx)
@@ -161,8 +162,9 @@ def register_service_tools(mcp) -> None:
         if registry is not None:
             result["loaded_foreign_projects"] = registry.foreign_count()
 
-        # Curation is agent-driven: only deterministic part_of edges are automatic;
-        # semantic edges are created by the agent via the /vibe-curate skill.
-        result["curation"] = "agent-driven via /vibe-curate (no background curator)"
+        # Curation runs via a background curate-orchestrator agent: only deterministic
+        # part_of edges are automatic; semantic edges are created by that agent,
+        # launched via the /vibe-curate skill — never by the main instance directly.
+        result["curation"] = "background curate-orchestrator agent, launched via /vibe-curate"
 
         return result

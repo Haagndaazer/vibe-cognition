@@ -1648,16 +1648,16 @@ def register_cognition_tools(mcp) -> None:
         what failed, what was discovered, assumptions made, constraints identified,
         production incidents, generalized patterns, or episode summaries of completed work.
 
-        CURATION IS YOUR JOB for semantic relationships. Deterministic edges are
-        created automatically ONLY for these pairs sharing a reference: entity<->episode
-        (part_of, ANY shared ref) and document-involving pairs sharing a doc: ref
-        specifically (entity<->document -> part_of; document<->episode -> relates_to).
-        entity<->entity, episode<->episode, and document<->document NEVER auto-link even
-        when they share a reference — e.g. two decisions citing the same commit stay
-        fully edgeless until curation. All semantic relationships (led_to, supersedes,
-        contradicts, resolved_by, relates_to) and any entity<->entity linking are NOT
-        created for you — after recording, run the `/vibe-curate` skill to link the new
-        nodes (or add edges manually with cognition_add_edge).
+        TRIGGERING CURATION IS YOUR JOB for semantic relationships — never author them
+        yourself. Deterministic edges are created automatically ONLY for these pairs
+        sharing a reference: entity<->episode (part_of, ANY shared ref) and
+        document-involving pairs sharing a doc: ref specifically (entity<->document ->
+        part_of; document<->episode -> relates_to). entity<->entity, episode<->episode,
+        and document<->document NEVER auto-link even when they share a reference — e.g.
+        two decisions citing the same commit stay fully edgeless until curation. All
+        semantic relationships (led_to, supersedes, contradicts, resolved_by,
+        relates_to) and any entity<->entity linking are NOT created for you — after
+        recording, run the `/vibe-curate` skill to link the new nodes.
 
         NODE TYPES:
         - decision: A choice between alternatives. Include what was chosen AND rejected.
@@ -2540,12 +2540,13 @@ def register_cognition_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Create a directed edge between two existing cognition nodes.
 
-        Use this to curate relationships directly — either while running the
-        `/vibe-curate` skill or to add a single edge by hand.
+        ONLY the curate-orchestrator agent (launched via /vibe-curate) may use this
+        tool. If you are any other agent — including the main instance — do NOT
+        call it; to get edges created, run /vibe-curate. No manual carve-out.
 
-        EDGE SEMANTICS — when to use each type (ported from the /vibe-curate
-        edge-analyzer subagent's own table, so the direct/manual path isn't
-        guesswork):
+        EDGE SEMANTICS — when to use each type (this table's audience is the
+        curate-orchestrator, including its degraded no-nesting inline mode — not a
+        sanctioned manual path):
 
           led_to       cause -> effect (earlier -> later). A caused or directly
                        motivated B. Requires real evidence of causation, not
@@ -2587,12 +2588,14 @@ def register_cognition_tools(mcp) -> None:
         matcher also covers just duplicates work the server already does
         idempotently. Not blocked, just usually redundant.
 
-        DOCUMENT nodes are intentionally manually-linkable: versioning uses an
-        explicit ``supersedes`` edge between document nodes, and curated
-        ``relates_to`` edges are expected. The deterministic matcher only
-        AUTO-links documents on shared ``doc:`` refs (entity→document ``part_of``,
-        document→episode ``relates_to``); manual/curated edges are never blocked,
-        and a deterministic re-mint never overwrites a same-type manual edge.
+        DOCUMENT nodes need curated edges beyond the deterministic matcher:
+        versioning uses an explicit ``supersedes`` edge between document nodes,
+        and curated ``relates_to`` edges are expected — all authored by the
+        curate-orchestrator like any other semantic edge (documents flow through
+        the same uncurated worklist as everything else). The deterministic
+        matcher only AUTO-links documents on shared ``doc:`` refs (entity→document
+        ``part_of``, document→episode ``relates_to``); a deterministic re-mint
+        never overwrites a same-type curated edge.
 
         Args:
             from_id: Source node ID (must exist)
@@ -2617,12 +2620,16 @@ def register_cognition_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Create multiple edges in one call.
 
+        ONLY the curate-orchestrator agent (launched via /vibe-curate) may use this
+        tool. If you are any other agent — including the main instance — do NOT
+        call it; to get edges created, run /vibe-curate. No manual carve-out.
+
         Each edge in the JSON array needs from_id, to_id, and edge_type.
         Edges are validated individually — invalid ones are skipped and reported.
 
-        EDGE SEMANTICS — when to use each type (ported from the /vibe-curate
-        edge-analyzer subagent's own table, so the direct/manual path isn't
-        guesswork):
+        EDGE SEMANTICS — when to use each type (this table's audience is the
+        curate-orchestrator, including its degraded no-nesting inline mode — not a
+        sanctioned manual path):
 
           led_to       cause -> effect (earlier -> later). A caused or directly
                        motivated B. Requires real evidence of causation, not
@@ -2756,10 +2763,10 @@ def register_cognition_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Get cognition nodes not yet reviewed by the curate skill.
 
-        This is the agent's curation worklist — run `/vibe-curate` to process it.
-        Returns nodes lacking a curated_by_skill_at marker. Nodes with only
-        deterministic (or legacy) edges are still considered uncurated until the
-        curate skill reviews them.
+        This is the curate-orchestrator's worklist — run `/vibe-curate` to launch it
+        and process this list. Returns nodes lacking a curated_by_skill_at marker.
+        Nodes with only deterministic (or legacy) edges are still considered
+        uncurated until the curate-orchestrator reviews them.
 
         Args:
             node_type: Optional filter: decision, fail, discovery, assumption,
@@ -2819,9 +2826,10 @@ def register_cognition_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Mark nodes as reviewed by the curate skill.
 
-        Call after analyzing a batch of nodes, even if no edges were created.
-        Prevents re-processing nodes that were reviewed but had no meaningful
-        relationships.
+        Called ONLY by the curate-orchestrator agent (launched via /vibe-curate)
+        after reviewing a batch, even if no edges were created — marking nodes
+        curated without analysis permanently skips them. If you are any other
+        agent — including the main instance — do NOT call it.
 
         Args:
             node_ids: Comma-separated node IDs to mark as curated

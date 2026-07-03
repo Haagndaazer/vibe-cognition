@@ -1,5 +1,5 @@
 ---
-description: You MUST use this skill whenever you store a document (a client doc, PDF, spec, contract, report, transcript) as project memory, or retrieve/attach one. Storing a document is only half the job — the knowledge inside it connects to the graph ONLY when you record its facts as descriptor nodes that cite the document's returned doc_ref in THEIR references. This skill makes that workflow the default; skipping it leaves an inert, disconnected document. Curation is YOUR job — after recording descriptor nodes you MUST run /vibe-curate.
+description: You MUST use this skill whenever you store a document (a client doc, PDF, spec, contract, report, transcript) as project memory, or retrieve/attach one. Storing a document is only half the job — the knowledge inside it connects to the graph ONLY when you record its facts as descriptor nodes that cite the document's returned doc_ref in THEIR references. This skill makes that workflow the default; skipping it leaves an inert, disconnected document. Curation is YOUR job to TRIGGER — after recording descriptor nodes you MUST run /vibe-curate (launches the background curator); never author semantic edges yourself.
 ---
 
 # Vibe Document — First-Class Document Storage
@@ -60,7 +60,7 @@ The `doc_ref` MUST go in `references`, NOT in `context`. This is the difference 
 (You may include other refs alongside it: `references="doc:1a2b3c4d5e6f, issue:ACME-1"`.)
 
 ### 3. Curate — MANDATORY
-After recording the descriptor nodes, run the `/vibe-curate` skill to add the semantic edges (led_to, resolved_by, supersedes, contradicts, relates_to). Same hard rule as `/vibe-cognition`: recording without curating leaves the new entities semantically disconnected. Don't wait to be asked.
+After recording the descriptor nodes, run the `/vibe-curate` skill to launch the background curator, which adds the semantic edges (led_to, resolved_by, supersedes, contradicts, relates_to). Same hard rule as `/vibe-cognition`: recording without curating leaves the new entities semantically disconnected. Don't wait to be asked, and never author these edges yourself.
 
 ## Retrieving a document
 

@@ -1,5 +1,5 @@
 ---
-description: You MUST use this skill any time you need to retrieve information about the project or write project history to persistent memory, retrieving project information without using this skill will affect the clarity of the research. You must also use this skill when storing memories about the project. Curation is YOUR job — after recording any nodes you MUST run the /vibe-curate skill to link them; there is no automated background curator.
+description: You MUST use this skill any time you need to retrieve information about the project or write project history to persistent memory, retrieving project information without using this skill will affect the clarity of the research. You must also use this skill when storing memories about the project. Curation is YOUR job to TRIGGER — after recording any nodes you MUST run the /vibe-curate skill (launches the background curator); never author semantic edges yourself.
 ---
 
 # Vibe Cognition — Project Knowledge Graph
@@ -20,8 +20,8 @@ description: You MUST use this skill any time you need to retrieve information a
 | `cognition_get_workflow` | Find a workflow procedure by name/topic and return the current HEAD version + chain |
 | `cognition_get_incident_resolution` | Get an incident + its resolutions, follow-ons, and contradictions |
 | `cognition_get_history` | Browse nodes by context area, type, or recency |
-| `cognition_add_edge` | Manually create an edge between two nodes |
-| `cognition_add_edges_batch` | Create multiple edges in one call (max 500) |
+| `cognition_add_edge` | Create an edge between two nodes — ONLY the curate-orchestrator agent (launched via `/vibe-curate`) may use this; never call it yourself |
+| `cognition_add_edges_batch` | Create multiple edges in one call (max 500) — same ONLY-the-curate-orchestrator restriction |
 | `cognition_get_edgeless_nodes` | Find nodes with no edges (need curation) |
 | `cognition_get_neighbors` | Get all connections to a node (all edge types) |
 | `cognition_remove_edge` | Remove a specific edge between two nodes |
@@ -189,12 +189,14 @@ Use these tools to query the cognition graph:
 - **Always include** `references` (issue/PR numbers) so nodes link to their episode and `/vibe-curate` can relate them
 - **After recording:** run `/vibe-curate` to link the new nodes — don't wait to be asked (see Final Step)
 
-## Final Step: Curate the New Nodes — MANDATORY, do it yourself
+## Final Step: Trigger Curation — MANDATORY, do it yourself
 
-**Curation is your responsibility. There is no automated background curator.** If you
-recorded **any** nodes during this turn / unit of work, you **MUST** run the
-`/vibe-curate` skill before you finish responding — **without being asked**. This is the
-step users most often have to remind you about; own it yourself, every time.
+**Triggering curation is your responsibility — never author semantic edges yourself.**
+`/vibe-curate` launches a background curate-orchestrator agent that does the actual
+linking; you do not create `led_to`/`resolved_by`/`supersedes`/`contradicts`/`relates_to`
+edges by hand. If you recorded **any** nodes during this turn / unit of work, you **MUST**
+run the `/vibe-curate` skill before you finish responding — **without being asked**. This
+is the step users most often have to remind you about; own it yourself, every time.
 
 - This is a hard rule, not a suggestion: recording without curating leaves the new
   nodes semantically disconnected (only their deterministic `part_of` edges exist).
@@ -206,7 +208,8 @@ step users most often have to remind you about; own it yourself, every time.
 Deterministic edges (`part_of`, and `relates_to` for document→episode) are the *only*
 edges created automatically (on record). This step adds the **semantic** relationships
 (`led_to`, `resolved_by`, `supersedes`, `contradicts`, `relates_to`) that make the graph
-navigable — and only the agent can do it.
+navigable — only the `/vibe-curate` background curate-orchestrator creates these, never
+the main instance directly.
 
 ## Examples
 

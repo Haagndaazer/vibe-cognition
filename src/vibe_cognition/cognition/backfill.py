@@ -165,7 +165,8 @@ def main(argv: list[str] | None = None):
     print("2. ENTITY nodes for any decisions, discoveries, constraints, or patterns")
     print("   visible in the commit. Keep entity summaries under 250 chars.")
     print("   Use the same references so they link to the episode (deterministic")
-    print("   part_of matching). Then run /vibe-curate to add semantic edges.")
+    print("   part_of matching). Then run /vibe-curate to launch the background")
+    print("   curator that adds semantic edges -- never author them by hand.")
 
 
 if __name__ == "__main__":
