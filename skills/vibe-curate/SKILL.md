@@ -18,7 +18,7 @@ Launches `vibe-cognition:curate-orchestrator` in the background to process every
 
 1. Call `get_status`. If `uncurated` is 0, tell the user "graph is fully curated" and stop — do not launch anything.
 2. **Don't-double-launch guard:** if a curation run was already launched this session and hasn't yet reported completion, don't launch another. Background mode widens the concurrency window — nodes recorded mid-run just stay uncurated until the next launch, which is fine; launching a second orchestrator on top of a still-running one just wastes tokens re-analyzing an overlapping worklist.
-3. Launch `vibe-cognition:curate-orchestrator` via the Agent tool with `run_in_background: true`. Don't pass a `model` override — its frontmatter pin (`sonnet`) is authoritative.
+3. Launch `vibe-cognition:curate-orchestrator` via the Agent tool with `run_in_background: true` and an explicit `model: "sonnet"` override — always pass it, regardless of the orchestrator's own frontmatter pin. **Hard rule:** the orchestrator MUST run on sonnet via this explicit param, never pin-reliance alone (fail f09e770da046) — this cuts both ways, since without the param a pin failure means inheriting the *launching* session's model, which on an Opus/Fable main makes curation drastically more expensive, while a silent downgrade guts review quality.
 4. Tell the user: "Curation launched in background — {N} uncurated nodes. Completion will be reported when it finishes; ground truth in the meantime is `get_status`'s uncurated count."
 
 ## Concurrency
