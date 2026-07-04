@@ -29,6 +29,41 @@ def test_server_instructions_is_non_empty():
     assert len(SERVER_INSTRUCTIONS) > 0
 
 
+# ── DW1: workflows + documents promoted to the pushed layer ──────────────────
+
+
+def test_server_instructions_names_workflow_as_recordable():
+    """Practice 2's record list must include workflow nodes, not just the
+    original five node kinds -- this is the entire point of DW1."""
+    assert "workflows (reusable multi-step procedures)" in SERVER_INSTRUCTIONS
+
+
+def test_server_instructions_names_document_store_as_recordable():
+    """Practice 2 must name cognition_store_document + descriptor-node linking,
+    not just decisions/failures/patterns."""
+    assert "cognition_store_document" in SERVER_INSTRUCTIONS
+    assert "descriptor nodes" in SERVER_INSTRUCTIONS
+    assert "doc_ref" in SERVER_INSTRUCTIONS
+
+
+def test_server_instructions_workflow_retrieval_is_first_class_practice():
+    """cognition_get_workflow must appear as its own numbered practice, not
+    buried in a tacked-on 'Also:' afterthought at the end."""
+    assert "Also:" not in SERVER_INSTRUCTIONS
+    assert "3. CHECK FOR EXISTING WORK FIRST" in SERVER_INSTRUCTIONS
+    assert "cognition_get_workflow" in SERVER_INSTRUCTIONS
+    assert "cognition_list_tasks" in SERVER_INSTRUCTIONS
+
+
+def test_server_instructions_has_four_numbered_practices():
+    """DW1 promotes the workflow/task gate to a first-class practice, so the
+    standing count goes from three to four."""
+    assert "Four standing practices" in SERVER_INSTRUCTIONS
+    for n in ("1. CHECK HISTORY FIRST", "2. RECORD AS YOU WORK",
+              "3. CHECK FOR EXISTING WORK FIRST", "4. VALIDATE SUGGESTIONS AGAINST HISTORY"):
+        assert n in SERVER_INSTRUCTIONS
+
+
 def test_main_emits_session_start_json(tmp_path, monkeypatch):
     """instructions.main(): stdout is a single valid JSON dict with SessionStart shape.
 

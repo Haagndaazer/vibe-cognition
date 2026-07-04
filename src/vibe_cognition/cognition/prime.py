@@ -11,7 +11,7 @@ from pathlib import Path
 
 from ..config import Settings, resolve_repo_path_env
 from .git_hygiene import check_hygiene_state, format_hygiene_announce
-from .models import CognitionNodeType
+from .models import CognitionEdgeType, CognitionNodeType
 from .readme import ONBOARDING_BLOCK
 from .storage import REHYDRATE_FLAG_FILENAME, CognitionStorage
 
@@ -36,6 +36,7 @@ class PrimeConfig:
     prime_incident_days: int = 14
     prime_summary_maxlen: int = 110
     prime_incident_min_severity: str = "high"
+    prime_workflow_limit: int = 5
 
 
 def _truncate(text: str, maxlen: int) -> str:
@@ -112,6 +113,51 @@ def _format_constraints(storage: CognitionStorage, limit: int, maxlen: int = 0) 
     return "## Active Constraints\n" + "\n".join(lines)
 
 
+def _format_workflows(storage: CognitionStorage, limit: int, maxlen: int = 0) -> str:
+    """Format stored workflow HEAD titles (supersession-resolved), capped with the
+    existing overflow idiom. A workflow with an incoming SUPERSEDES edge is an old
+    version (supersedes points newer -> older), so it is excluded here -- only
+    HEADs are shown. Cheap in-memory filter; no embeddings involved."""
+    nodes = storage.get_nodes_by_type(CognitionNodeType.WORKFLOW)
+    heads = [
+        n for n in nodes
+        if not storage.get_predecessors(n["id"], CognitionEdgeType.SUPERSEDES)
+    ]
+    if not heads:
+        return ""
+
+    heads.sort(key=lambda n: n.get("timestamp", ""), reverse=True)
+    shown = heads[:limit]
+    lines = [_format_node(n, maxlen) for n in shown]
+    overflow = len(heads) - len(shown)
+    if overflow > 0:
+        lines.append(f"- +{overflow} more workflows — use cognition_get_workflow")
+    return "## Workflows\n" + "\n".join(lines)
+
+
+def _format_document_count(storage: CognitionStorage) -> str:
+    """One-line stored-document count so agents know the document tools exist,
+    even before they have a reason to call cognition_get_document. Omitted when
+    zero (consistent with every other section's empty-drops-the-section rule).
+
+    HEAD-filtered same as _format_workflows: documents version via SUPERSEDES too
+    (_validate_supersedes_shape legalizes document->document), so a naive raw count
+    would over-report a revised document once per revision instead of once."""
+    nodes = storage.get_nodes_by_type(CognitionNodeType.DOCUMENT)
+    heads = [
+        n for n in nodes
+        if not storage.get_predecessors(n["id"], CognitionEdgeType.SUPERSEDES)
+    ]
+    count = len(heads)
+    if count == 0:
+        return ""
+    noun = "document" if count == 1 else "documents"
+    return (
+        f"{count} stored {noun} — use cognition_search or cognition_get_document "
+        "to retrieve, cognition_store_document to add more."
+    )
+
+
 def _format_patterns(storage: CognitionStorage, limit: int, maxlen: int = 0) -> str:
     """Format recent patterns."""
     nodes = storage.get_recent_nodes(limit=limit, node_type=CognitionNodeType.PATTERN)
@@ -172,6 +218,8 @@ def generate_prime(storage: CognitionStorage, config: PrimeConfig | None = None)
     sections = [
         _format_constraints(storage, config.prime_constraint_limit, maxlen),
         _format_tasks(storage, config.prime_task_cap, maxlen),
+        _format_workflows(storage, config.prime_workflow_limit, maxlen),
+        _format_document_count(storage),
         _format_patterns(storage, config.prime_pattern_limit, maxlen),
         _format_decisions(storage, config.prime_decision_limit, maxlen),
         _format_incidents(storage, config.prime_incident_days, config.prime_incident_min_severity, maxlen),
@@ -297,6 +345,7 @@ def main(argv: list[str] | None = None):
                 prime_incident_days=settings.prime_incident_days,
                 prime_summary_maxlen=settings.prime_summary_maxlen,
                 prime_incident_min_severity=settings.prime_incident_min_severity,
+                prime_workflow_limit=settings.prime_workflow_limit,
             )
         except Exception:  # noqa: BLE001
             config = PrimeConfig()

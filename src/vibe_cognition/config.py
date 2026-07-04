@@ -149,6 +149,10 @@ class Settings(BaseSettings):
         default="high",
         description="Minimum incident severity shown in the prime digest (severity or higher)",
     )
+    prime_workflow_limit: int = Field(
+        default=5,
+        description="Max workflow HEAD titles shown in the session-start prime digest",
+    )
 
     @field_validator("repo_path", mode="before")
     @classmethod
