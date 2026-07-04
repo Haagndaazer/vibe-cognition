@@ -77,9 +77,21 @@ class ChromaDBStorage:
         # inert (the telemetry client is a no-op stub), but chromadb 0.5-0.6.x —
         # which our >=0.5.0 floor permits — actively phoned home gated on
         # exactly this flag, so we set it across the allowed range.
-        self._client = chromadb.PersistentClient(
-            path=str(persist_directory),
-            settings=Settings(anonymized_telemetry=False),
+        # WP-A/WP-C cross-process gate finding: PersistentClient() itself (not
+        # just get_collection/get_or_create_collection below) can raise the
+        # same rust-backend InternalError under genuine concurrent-open
+        # pressure -- observed as "table collections already exists" when N
+        # processes race SharedSystemClient._create_system_if_not_exists
+        # against a BRAND-NEW persist_directory (reproduced under full-suite
+        # system load, not in isolation; see test_chromadb_cross_process.py).
+        # This happens BEFORE self._client exists, so it needs its own retry
+        # wrap rather than reusing the two below (which retry calls made
+        # THROUGH an already-constructed client).
+        self._client = _retry_chromadb_open(
+            lambda: chromadb.PersistentClient(
+                path=str(persist_directory),
+                settings=Settings(anonymized_telemetry=False),
+            )
         )
         collection_meta: dict[str, Any] = {"hnsw:space": "cosine"}
         if embedding_model is not None:

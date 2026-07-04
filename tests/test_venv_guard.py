@@ -1,9 +1,18 @@
-"""WP-B (decision 9022f7de94e9): read-only pre-import venv health guard.
+"""WP-B (decision 9022f7de94e9), reconciled by WP-C: read-only pre-import
+venv health guard.
 
 check()/check_or_exit() are pure and side-effect-free (beyond the print/exit
 in the failure branch), so they're tested directly rather than by actually
 breaking this test venv or reloading the module.
+
+WP-C reconciliation: torch must be PRESENCE-checked only (importlib.util.
+find_spec), never actually imported here -- WP-C moved sentence_transformers/
+torch's ~9.6s import cost off the pre-handshake path into the background
+thread, and a real `import torch` in this guard (which runs at server.py
+module-load, pre-handshake) would completely neutralize that win.
 """
+
+import sys
 
 import pytest
 
@@ -22,9 +31,27 @@ def test_check_healthy_venv_returns_true_no_message():
     assert _venv_guard.check() == (True, "")
 
 
-def test_check_reports_first_broken_module():
-    """A missing/broken module is reported by name, not swallowed."""
-    ok, err = _venv_guard.check(("definitely_not_a_real_module_xyz",))
+def test_check_does_not_actually_import_torch():
+    """WP-C reconciliation: the guard's torch check must be presence-only --
+    proven by confirming torch is NOT in sys.modules as a side effect of
+    check() (this test doesn't import torch itself, so if it shows up, the
+    guard imported it).
+
+    Fails-before (WP-C): a real `import torch` in the guard would completely
+    cancel WP-C's win of moving that ~9.6s cost to the background thread.
+    """
+    was_loaded_before = "torch" in sys.modules
+    _venv_guard.check()
+    if not was_loaded_before:
+        assert "torch" not in sys.modules, (
+            "check() actually imported torch -- this neutralizes WP-C's "
+            "lazy-import win, since the guard runs pre-handshake"
+        )
+
+
+def test_check_reports_first_broken_real_import_module():
+    """A missing/broken REAL-import module is reported by name, not swallowed."""
+    ok, err = _venv_guard.check(real_import_modules=("definitely_not_a_real_module_xyz",))
     assert ok is False
     assert "definitely_not_a_real_module_xyz" in err
 
@@ -33,7 +60,17 @@ def test_check_stops_at_first_failure_does_not_probe_later_modules():
     """Bounded, not exhaustive: the first broken module short-circuits the
     check (matches the READ-ONLY, fast-fail intent -- no reason to keep
     probing once one native dep is confirmed broken)."""
-    ok, err = _venv_guard.check(("definitely_not_a_real_module_xyz", "chromadb"))
+    ok, err = _venv_guard.check(
+        real_import_modules=("definitely_not_a_real_module_xyz", "chromadb")
+    )
+    assert ok is False
+    assert "definitely_not_a_real_module_xyz" in err
+
+
+def test_check_presence_only_module_missing_reported_without_importing():
+    """A missing presence-only module fails the check by name, via find_spec
+    -- never attempted as a real import."""
+    ok, err = _venv_guard.check(presence_only_modules=("definitely_not_a_real_module_xyz",))
     assert ok is False
     assert "definitely_not_a_real_module_xyz" in err
 

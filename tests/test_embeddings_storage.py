@@ -148,6 +148,38 @@ def test_chromadb_storage_construction_survives_transient_internal_error(tmp_pat
     assert state["n"] == 2
 
 
+def test_chromadb_storage_construction_survives_transient_internal_error_from_persistent_client(tmp_path):
+    """WP-A/WP-C cross-process gate finding: chromadb.PersistentClient() ITSELF
+    (not just get_collection/get_or_create_collection) can raise the same
+    rust-backend InternalError under genuine concurrent-open pressure --
+    observed live as "table collections already exists" when N real processes
+    raced SharedSystemClient._create_system_if_not_exists against a brand-new
+    persist_directory (test_chromadb_cross_process.py, under full-suite system
+    load). This happens BEFORE self._client exists, so it needs its own retry
+    wrap distinct from the two call sites made THROUGH an already-constructed
+    client.
+
+    Fails-before: PersistentClient() was called bare -- a transient
+    InternalError there propagated straight out of ChromaDBStorage.__init__.
+    """
+    from vibe_cognition.embeddings import storage as storage_module
+
+    real_persistent_client = storage_module.chromadb.PersistentClient
+    state = {"n": 0}
+
+    def flaky_persistent_client(*args, **kwargs):
+        state["n"] += 1
+        if state["n"] < 2:
+            raise InternalError('simulated: table "collections" already exists')
+        return real_persistent_client(*args, **kwargs)
+
+    with patch.object(storage_module.chromadb, "PersistentClient", flaky_persistent_client):
+        storage = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
+
+    assert storage._collection is not None
+    assert state["n"] == 2
+
+
 def test_flatten_metadata_updated_at_is_timezone_aware(tmp_path):
     """E-7a: _flatten_metadata must produce a timezone-aware ISO timestamp
     (datetime.now(UTC), not datetime.utcnow()).
@@ -178,7 +210,12 @@ def test_revision_pin_forwarded_to_sentence_transformer(tmp_path):
         m = object.__new__(type("FakeST", (), {"encode": lambda s, t, **kw: [[0.0]]}))
         return m
 
-    with patch("vibe_cognition.embeddings.generator.SentenceTransformer", side_effect=fake_st):
+    # WP-C: SentenceTransformer is imported LAZILY inside __init__ (`from
+    # sentence_transformers import SentenceTransformer`), not at generator.py
+    # module scope -- so the patch target is the source module's attribute,
+    # which the lazy import looks up fresh at call time, not a module-local
+    # alias that no longer exists.
+    with patch("sentence_transformers.SentenceTransformer", side_effect=fake_st):
         SentenceTransformersBackend("test-model", revision="abc123")
 
     assert captured_kwargs.get("revision") == "abc123", (
