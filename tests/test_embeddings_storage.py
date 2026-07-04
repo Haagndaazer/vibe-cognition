@@ -2,8 +2,12 @@
 
 from unittest.mock import patch
 
+import pytest
+from chromadb.errors import InternalError
+
 from vibe_cognition.embeddings import ChromaDBStorage
 from vibe_cognition.embeddings.generator import SentenceTransformersBackend
+from vibe_cognition.embeddings.storage import _retry_chromadb_open
 
 
 def test_chromadb_telemetry_disabled(tmp_path):
@@ -60,6 +64,88 @@ def test_count_documents_splits_nodes_and_chunks(tmp_path):
     assert total == 3, f"total wrong: {total}"
     assert chunks == 2, f"is_chunk count wrong: {chunks}"
     assert total - chunks == 1, "node count (total - chunks) wrong"
+
+
+def test_retry_chromadb_open_absorbs_transient_internal_error():
+    """WP-A 1a: bounded retry absorbs a transient chromadb rust-backend
+    InternalError (flake e09d4f4a9a23) and returns the eventual success.
+
+    Fails-before: no retry existed, so a single InternalError propagated
+    straight out of ChromaDBStorage.__init__ and killed the MCP handshake.
+    """
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise InternalError("simulated rust-backend flake")
+        return "ok"
+
+    assert _retry_chromadb_open(flaky) == "ok"
+    assert calls["n"] == 3
+
+
+def test_retry_chromadb_open_bounded_reraises_after_exhausting_attempts():
+    """The retry is BOUNDED -- a persistent InternalError still propagates
+    (never retries forever), so a genuine failure fails diagnosably instead
+    of hanging the handshake indefinitely."""
+
+    def always_broken():
+        raise InternalError("persistent rust-backend failure")
+
+    with pytest.raises(InternalError, match="persistent rust-backend failure"):
+        _retry_chromadb_open(always_broken)
+
+
+def test_retry_chromadb_open_does_not_retry_other_exceptions():
+    """Only InternalError is retried -- any other exception (e.g. the
+    NotFoundError the is_new-collection probe expects on a fresh install)
+    propagates immediately on the FIRST attempt, unretried, so the expected
+    "collection doesn't exist yet" control flow is never delayed."""
+    calls = {"n": 0}
+
+    def not_found():
+        calls["n"] += 1
+        raise ValueError("not an InternalError")
+
+    with pytest.raises(ValueError, match="not an InternalError"):
+        _retry_chromadb_open(not_found)
+    assert calls["n"] == 1
+
+
+def test_chromadb_storage_construction_survives_transient_internal_error(tmp_path):
+    """Integration-level: ChromaDBStorage() itself (the actual pre-yield call
+    site server.py's lifespan hits) absorbs a transient InternalError from
+    get_or_create_collection during construction, not just the bare helper.
+
+    chromadb.PersistentClient is a FACTORY FUNCTION (not a class) that returns
+    a ClientCreator instance, so the flaky behavior is installed as an instance
+    attribute override on the real client PersistentClient produces, rather
+    than patched on a class.
+    """
+    from vibe_cognition.embeddings import storage as storage_module
+
+    real_persistent_client = storage_module.chromadb.PersistentClient
+    state = {"n": 0}
+
+    def flaky_persistent_client(*args, **kwargs):
+        client = real_persistent_client(*args, **kwargs)
+        real_get_or_create = client.get_or_create_collection
+
+        def flaky_get_or_create(*a, **kw):
+            state["n"] += 1
+            if state["n"] < 2:
+                raise InternalError("simulated rust-backend flake")
+            return real_get_or_create(*a, **kw)
+
+        client.get_or_create_collection = flaky_get_or_create
+        return client
+
+    with patch.object(storage_module.chromadb, "PersistentClient", flaky_persistent_client):
+        storage = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
+
+    assert storage._collection is not None
+    assert state["n"] == 2
 
 
 def test_flatten_metadata_updated_at_is_timezone_aware(tmp_path):

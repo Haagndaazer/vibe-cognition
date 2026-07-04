@@ -28,6 +28,17 @@ fi
 VENV_DIR="${PLUGIN_DATA_NATIVE}/.venv"
 STAMP="${VENV_DIR}/.uv-sync-stamp"
 
+# WP-A 1b (decision 9022f7de94e9): timing breadcrumbs around this hook's three
+# `uv run` calls, so hook-vs-server venv overlap is diagnosable (distinguishes
+# H1 venv-lock contention from H5 baseline cold-start tax). stderr only --
+# Claude Code already captures the hook's stderr, and stdout must stay
+# reserved for the hook's JSON output. Tagged by this hook process's OWN pid
+# ($$) -- inherently per-process (stderr, not a shared file), so concurrent
+# hook invocations never collide. Seconds resolution (portable `date +%s`,
+# not GNU-only `%N`) -- this is diagnosing multi-second contention, not
+# sub-second timing.
+_bc() { echo "[vibe-cognition hook] pid=$$ $1 t=$(date +%s)" >&2; }
+
 # ── Step 1: Check for uv ─────────────────────────
 if ! command -v uv &>/dev/null; then
     cat << 'EOF'
@@ -76,12 +87,15 @@ if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$HASH" ]; then
     # 17). The stamp is written ONLY for a verified-importable venv, so a broken
     # venv leaves it unwritten and re-warns on every start until a clean start
     # (all sessions closed) finishes the swap and self-heals.
+    _bc "probe_start"
     if UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
         uv run --no-sync --project "${PLUGIN_ROOT}" \
         python -c "import torch, chromadb" 2>/dev/null; then
+        _bc "probe_done_ok"
         mkdir -p "${VENV_DIR}"
         echo "$HASH" > "$STAMP"
     else
+        _bc "probe_done_fail"
         # WP-11 (c3074f43cd49): the probe fires identically for several distinct
         # root causes, not just the DLL-lock case it originally named -- an
         # interrupted download (network drop) or the 600s hook timeout killing a
@@ -111,18 +125,22 @@ fi
 # otherwise). prime (Step 4) surfaces it, so we never drop project-context
 # injection on the migration session. Guarded for set -e: a failure -> "".
 MCP_JSON="${PROJECT_DIR_NATIVE}/.mcp.json"
+_bc "migrate_mcp_start"
 MIGRATE_NOTE=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
     uv run --no-sync --project "${PLUGIN_ROOT}" \
     python -m vibe_cognition.migrate_mcp "$MCP_JSON" 2>/dev/null) || MIGRATE_NOTE=""
+_bc "migrate_mcp_done"
 
 # ── Step 4: Inject project context (+ any migration note) via prime ──────
 # prime self-guards: it emits output when there is a migration note OR a
 # .cognition/ dir, and exits silently otherwise.
+_bc "prime_start"
 PRIME_OUTPUT=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
     REPO_PATH="${PROJECT_DIR_NATIVE}" \
     VIBE_MIGRATION_NOTE="${MIGRATE_NOTE}" \
     uv run --no-sync --project "${PLUGIN_ROOT}" \
     python -m vibe_cognition.cognition.prime 2>/dev/null) || PRIME_OUTPUT=""
+_bc "prime_done"
 
 if [ -n "$PRIME_OUTPUT" ]; then
     echo "$PRIME_OUTPUT"
