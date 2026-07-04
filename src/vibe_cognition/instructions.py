@@ -35,14 +35,15 @@ from .config import Settings, resolve_repo_path_env
 # THE owning channel for the record->curate loop (WP-7, 9aca47c5803d) — paid most
 # consistently (every session AND every compact) of the three places that used to
 # restate it, so the other two (readme.py's COGNITION_GUIDE, cognition_readme) now
-# point back here instead of duplicating the mechanics. Measured cost: ~370 tokens
-# (char-count/4 estimate; re-measure and update this comment if the text changes
-# materially — the v0.13.0 prime trim accounting did NOT include this constant, see
-# 9aca47c5803d).
+# point back here instead of duplicating the mechanics. Measured cost: ~433 tokens
+# (char-count/4 estimate; re-measured after the DW1 rewrite added workflow/document
+# triggers as a fourth standing practice — was ~370 tokens pre-DW1; re-measure and
+# update this comment again if the text changes materially — the v0.13.0 prime trim
+# accounting did NOT include this constant, see 9aca47c5803d).
 SERVER_INSTRUCTIONS = (
     "Vibe Cognition maintains this project's knowledge graph: the durable, "
     "cross-session record of decisions, failures, discoveries, constraints, "
-    "patterns, and reasoning. Three standing practices keep it valuable for "
+    "patterns, and reasoning. Four standing practices keep it valuable for "
     "non-trivial work:\n"
     "\n"
     "1. CHECK HISTORY FIRST. Before starting a new task or writing a plan, "
@@ -51,11 +52,19 @@ SERVER_INSTRUCTIONS = (
     "\n"
     "2. RECORD AS YOU WORK. Capture cognitive history with cognition_record as "
     "it happens: decisions (with rejected alternatives), failures, non-obvious "
-    "discoveries, constraints, reusable patterns, and an episode when a unit of "
-    "work completes. Include references (issue/PR/commit) so nodes link to "
-    "their episode.\n"
+    "discoveries, constraints, reusable patterns, workflows (reusable "
+    "multi-step procedures), and an episode when a unit of work completes. A "
+    "handed spec/PDF/doc is captured with cognition_store_document, then "
+    "linked via descriptor nodes citing its doc_ref in references. Include "
+    "references (issue/PR/commit) so nodes link to their episode.\n"
     "\n"
-    "3. VALIDATE SUGGESTIONS AGAINST HISTORY. Before proposing an improvement "
+    "3. CHECK FOR EXISTING WORK FIRST. Before picking up work, check "
+    "cognition_list_tasks for the open backlog; before any multi-step task, "
+    "check cognition_get_workflow for an existing procedure -- both tools "
+    "already mandate this; repeated here so the pushed contract doesn't omit "
+    "it.\n"
+    "\n"
+    "4. VALIDATE SUGGESTIONS AGAINST HISTORY. Before proposing an improvement "
     "or fix, query the graph (cognition_search, cognition_get_chain) for how "
     "the current state came to be, and distinguish deliberate decisions (whose "
     "reasons may still hold) from genuine oversights.\n"
@@ -63,12 +72,7 @@ SERVER_INSTRUCTIONS = (
     "After recording, run the /vibe-curate skill to launch the background "
     "curator, which adds semantic edges; only deterministic part_of edges "
     "(from shared references) are automatic. Never author semantic edges "
-    "yourself. For full guidance, use the /vibe-cognition skill.\n"
-    "\n"
-    "Also: check cognition_list_tasks before picking up work (the backlog), and "
-    "cognition_get_workflow before starting any multi-step task (existing "
-    "procedures) -- both tools mandate this themselves; it is repeated here so "
-    "the pushed contract doesn't omit gates the tools declare non-optional."
+    "yourself. For full guidance, use the /vibe-cognition skill."
 )
 
 # Header so the re-injected (post-compact) block is self-explaining when it sits next to
@@ -112,6 +116,7 @@ def main() -> None:
                         prime_incident_days=settings.prime_incident_days,
                         prime_summary_maxlen=settings.prime_summary_maxlen,
                         prime_incident_min_severity=settings.prime_incident_min_severity,
+                        prime_workflow_limit=settings.prime_workflow_limit,
                     )
                 except Exception:  # noqa: BLE001
                     config = PrimeConfig()

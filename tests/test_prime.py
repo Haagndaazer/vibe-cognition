@@ -16,7 +16,12 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from vibe_cognition.cognition import CognitionStorage
-from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
+from vibe_cognition.cognition.models import (
+    CognitionEdge,
+    CognitionEdgeType,
+    CognitionNode,
+    CognitionNodeType,
+)
 from vibe_cognition.cognition.prime import PrimeConfig, _truncate, generate_prime, main
 from vibe_cognition.cognition.readme import ONBOARDING_BLOCK
 from vibe_cognition.config import Settings
@@ -170,6 +175,70 @@ def test_generate_prime_patterns_appear_in_output(tmp_path):
     result = generate_prime(storage)
     assert "## Recent Patterns" in result
     assert "always use uv run for hooks" in result
+
+
+def test_generate_prime_workflow_head_appears_in_output(tmp_path):
+    """generate_prime: a workflow node -> '## Workflows' section with its title."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _add(storage, "w1", CognitionNodeType.WORKFLOW, "deploy to production")
+    result = generate_prime(storage)
+    assert "## Workflows" in result
+    assert "deploy to production" in result
+
+
+def test_generate_prime_superseded_workflow_excluded(tmp_path):
+    """A workflow with an incoming SUPERSEDES edge is an old version -- only the
+    HEAD (the superseding node) is shown, matching cognition_get_workflow's own
+    HEAD-resolution semantics."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _add(storage, "w-old", CognitionNodeType.WORKFLOW, "old deploy steps")
+    _add(storage, "w-new", CognitionNodeType.WORKFLOW, "new deploy steps")
+    storage.add_edge(CognitionEdge(
+        from_id="w-new", to_id="w-old", edge_type=CognitionEdgeType.SUPERSEDES,
+        timestamp=datetime.now(UTC).isoformat(),
+    ))
+    result = generate_prime(storage)
+    assert "new deploy steps" in result
+    assert "old deploy steps" not in result
+
+
+def test_generate_prime_workflow_limit_honored_via_config(tmp_path):
+    """Workflow cap is wired to PrimeConfig.prime_workflow_limit, with the same
+    overflow idiom used by tasks/constraints."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    for i in range(4):
+        _add(storage, f"w{i}", CognitionNodeType.WORKFLOW, f"workflow {i}")
+
+    result = generate_prime(storage, PrimeConfig(prime_workflow_limit=2))
+    assert result.count("[workflow]") == 2
+    assert "+2 more workflows" in result
+
+
+def test_generate_prime_no_workflows_omits_section(tmp_path):
+    """No workflow nodes -> no '## Workflows' header (consistent with every
+    other section's empty-drops-the-section rule)."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _add(storage, "d1", CognitionNodeType.DECISION, "some decision")
+    result = generate_prime(storage)
+    assert "## Workflows" not in result
+
+
+def test_generate_prime_document_count_appears(tmp_path):
+    """Stored document nodes -> a one-line count naming the document tools."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _add(storage, "doc1", CognitionNodeType.DOCUMENT, "spec.pdf")
+    result = generate_prime(storage)
+    assert "1 stored document" in result
+    assert "cognition_store_document" in result
+
+
+def test_generate_prime_zero_documents_omits_count_line(tmp_path):
+    """No document nodes -> no document-count line (consistent with the
+    empty-drops-the-section rule; the empty-graph case is covered separately)."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _add(storage, "d1", CognitionNodeType.DECISION, "some decision")
+    result = generate_prime(storage)
+    assert "stored document" not in result
 
 
 def test_generate_prime_task_cap_honored_via_config(tmp_path):
