@@ -97,6 +97,25 @@ def test_retry_chromadb_open_bounded_reraises_after_exhausting_attempts():
         _retry_chromadb_open(always_broken)
 
 
+def test_retry_chromadb_open_exhaustion_logs_warning(caplog):
+    """A persistent InternalError must log a diagnosable exhaustion warning
+    (attempt count + the underlying error) before re-raising -- a bare
+    re-raised InternalError with no log line reads as an unexplained crash
+    in production, not "retried N times and gave up"."""
+    import logging
+
+    def always_broken():
+        raise InternalError("persistent rust-backend failure")
+
+    with caplog.at_level(logging.WARNING), pytest.raises(InternalError):
+        _retry_chromadb_open(always_broken)
+
+    assert any(
+        "3" in r.message and "persistent rust-backend failure" in r.message
+        for r in caplog.records
+    ), f"no diagnosable exhaustion warning found: {[r.message for r in caplog.records]}"
+
+
 def test_retry_chromadb_open_does_not_retry_other_exceptions():
     """Only InternalError is retried -- any other exception (e.g. the
     NotFoundError the is_new-collection probe expects on a fresh install)

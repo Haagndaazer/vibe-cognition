@@ -16,6 +16,7 @@ explicit ``flush_to_disk()`` step, which server.py calls ONLY from the
 background thread, never from that pre-yield path.
 """
 
+import contextlib
 import os
 import sys
 import tempfile
@@ -48,6 +49,58 @@ def flush_to_disk() -> None:
         log_dir.mkdir(parents=True, exist_ok=True)
         lines = [f"{label} t={t:.3f}" for label, t in breadcrumbs]
         (log_dir / f"pid-{PID}.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+_PRUNE_MAX_AGE_DAYS = 7
+_PRUNE_KEEP_RECENT = 50
+
+
+def prune_old_logs(
+    max_age_days: float = _PRUNE_MAX_AGE_DAYS,
+    keep_recent: int = _PRUNE_KEEP_RECENT,
+) -> None:
+    """Bound the per-PID breadcrumb log directory so it never grows without
+    bound (N concurrent agents x many sessions x every project, in a GLOBAL
+    temp dir, with no cleanup otherwise).
+
+    Call ONLY from the background thread (same constraint as flush_to_disk)
+    -- never on the pre-yield path. Two rules, both keyed off each file's
+    mtime (never filename/PID order, which has no relationship to recency):
+    delete anything older than max_age_days, AND cap the total count at
+    keep_recent (oldest-first eviction beyond the cap). A genuinely fresh
+    file's mtime is always near "now", so it is never older than max_age_days
+    and always ranks at the top of "most recent" -- both rules are safe for a
+    concurrent server's just-written file BY CONSTRUCTION, not by a bolted-on
+    exception.
+
+    CONCURRENCY-SAFE: best-effort throughout. Two servers pruning the same
+    directory at once may both target the same stale file -- deletes are
+    idempotent, so a missing/already-gone file (FileNotFoundError) or a
+    transient lock (PermissionError) is swallowed, never raised.
+    """
+    try:
+        log_dir = Path(tempfile.gettempdir()) / "vibe-cognition-startup"
+        if not log_dir.exists():
+            return
+
+        entries: list[tuple[float, Path]] = []
+        for p in log_dir.glob("pid-*.log"):
+            try:
+                entries.append((p.stat().st_mtime, p))
+            except OSError:
+                continue  # gone already (another process's prune/cleanup) -- fine
+
+        cutoff = time.time() - max_age_days * 86400
+        entries.sort(key=lambda e: e[0], reverse=True)  # newest first
+        to_delete = {p for mtime, p in entries if mtime < cutoff}  # age rule
+        to_delete |= {p for _, p in entries[keep_recent:]}  # keep-N rule (oldest excess)
+
+        for p in to_delete:
+            # Idempotent / racing with another process's prune -- fine either way.
+            with contextlib.suppress(FileNotFoundError, PermissionError, OSError):
+                p.unlink()
     except OSError:
         pass
 

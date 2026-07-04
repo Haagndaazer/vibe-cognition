@@ -290,10 +290,13 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
     breadcrumb up to and including handshake_yield, best-effort on ordering
     against the main thread) and again at the end (captures the model-load +
     sync breadcrumbs too), so the file is useful even if this thread errors
-    partway through.
+    partway through. Also prunes the per-PID log directory here (once per
+    server startup, same off-critical-path constraint) so it never grows
+    unbounded across N concurrent agents x many sessions x every project.
     """
     _startup_timing.stamp("bg_thread_start")
     _startup_timing.flush_to_disk()
+    _startup_timing.prune_old_logs()
 
     try:
         # Home model/dim drift guard (WP-2): a cheap metadata comparison (no

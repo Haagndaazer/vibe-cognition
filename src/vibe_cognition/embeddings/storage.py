@@ -45,6 +45,13 @@ def _retry_chromadb_open(fn: Callable[[], _T]) -> _T:
             if attempt < _CHROMA_RETRY_ATTEMPTS - 1:
                 time.sleep(_CHROMA_RETRY_BASE_DELAY * (2**attempt))
     assert last_exc is not None  # loop always executes >=1 attempt
+    # Exhaustion log (Vince's gate note): a bare re-raised InternalError reads
+    # as an unexplained crash; this names the attempt count so a production
+    # failure is diagnosable exhaustion, not a mystery.
+    logger.warning(
+        f"chromadb open failed after {_CHROMA_RETRY_ATTEMPTS} InternalError "
+        f"retries: {last_exc}"
+    )
     raise last_exc
 
 
