@@ -1667,6 +1667,9 @@ def register_cognition_tools(mcp) -> None:
         - constraint: A hard limitation, scoping exclusion, or defensive rule.
         - incident: A production problem that affected users.
         - pattern: A reusable approach, convention, or anti-pattern.
+        - workflow: A reusable multi-step procedure or runbook — record when you work
+          one out (deploy steps, onboarding, a debugging recipe you'll repeat). See
+          WORKFLOW NODES below for its shape; retrieve with cognition_get_workflow.
         - episode: Full narrative of completed work (Linear task, feature, debugging session).
           Create when a body of work is done — the episode captures the full story.
         - document: NOT creatable here — use cognition_store_document instead (it handles
@@ -1676,17 +1679,17 @@ def register_cognition_tools(mcp) -> None:
           node_type="task" to this tool returns an error, not a task node).
 
         ENTITY NODES (decision, fail, discovery, assumption, constraint, incident, pattern):
+        - summary: MAX 250 chars. Write like a commit message — scannable at a glance.
+          Good: "Double-filter bug: query filters by language after opening language-scoped box"
+          Bad: "Found a bug in the data source that was causing data to be invisible"
+        - detail: 1-3 sentences of rationale. NOT the full story — that goes in an episode.
+
         WORKFLOW NODES (workflow):
         - A step-by-step procedure stored as ONE cohesive unit. Verbose detail (like episode).
           Versioned by supersession: to update, record a NEW workflow node with the full revised
           procedure and add a `supersedes` edge; never edit in place (update_node is blocked).
           summary: Brief title of the procedure. detail: The full procedure, verbose.
           Retrieve with cognition_get_workflow(name_or_topic) to resolve to the current HEAD.
-
-        - summary: MAX 250 chars. Write like a commit message — scannable at a glance.
-          Good: "Double-filter bug: query filters by language after opening language-scoped box"
-          Bad: "Found a bug in the data source that was causing data to be invisible"
-        - detail: 1-3 sentences of rationale. NOT the full story — that goes in an episode.
 
         EPISODE NODES:
         - summary: Brief title of the work (e.g., "LL-298: Data wipe investigation and fix")
@@ -2375,13 +2378,28 @@ def register_cognition_tools(mcp) -> None:
 
         Returns:
             {"head": {id, type, summary, detail, ...}, "chain": [...], "matched": <id>}
-            or {"error": "..."} if no workflow was found or embeddings are not ready.
+            or {"error": "...", "status": ...} on failure. Two DISTINCT failure
+            shapes -- check "status" before concluding no workflow exists:
+            status="loading_embeddings" means the embedding index isn't ready yet
+            (retry in a few seconds; this is NOT evidence that no workflow exists);
+            no "status" key (a plain "No workflow found matching: ..." message)
+            means the search ran and genuinely found nothing.
             "chain" is the full version history (newest first) via get_superseded_chain.
             When project is not None, also includes "project": tag.
         """
         lc = get_lifespan(ctx)
         err = require_embeddings(ctx)
         if err:
+            if err.get("status") == "loading_embeddings":
+                return {
+                    "error": (
+                        "Embeddings are still loading -- retry cognition_get_workflow "
+                        "in a few seconds. This does NOT mean no workflow exists; the "
+                        "graph/history tools work now, but workflow lookup needs the "
+                        "embedding index to be ready."
+                    ),
+                    "status": "loading_embeddings",
+                }
             return err
         if project == "*":
             return {"error": 'project="*" is not supported for single-node tools'}

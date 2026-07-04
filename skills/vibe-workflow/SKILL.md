@@ -1,5 +1,5 @@
 ---
-description: Use this skill to store a how-to procedure as a first-class `workflow` node, or to retrieve/update an existing one. A workflow is a prescriptive, step-by-step procedure stored as ONE cohesive unit — so the full how-to is fetched whole, not reconstructed from scattered nodes. Use /vibe-workflow when codifying a procedure you'll need to repeat (deploy steps, onboarding, release process, debugging runbook).
+description: You MUST use this skill whenever you work out a reusable multi-step procedure worth repeating (deploy steps, onboarding, release process, debugging runbook) — record it as a first-class `workflow` node so the full how-to is fetched whole next time, not reconstructed from scattered nodes or re-worked-out from memory. You MUST also use this skill BEFORE starting any multi-step task, to check cognition_get_workflow for an existing procedure first — skipping this retrieval check means silently reinventing a workflow that already exists. A workflow is versioned by supersession, never edited in place; this skill covers recording, retrieving, and updating one.
 ---
 
 # Vibe Workflow — First-Class Procedure Storage

@@ -292,6 +292,42 @@ def test_cognition_get_workflow_not_ready_returns_error(build_lc, make_ctx, mock
     assert "error" in result
 
 
+def test_cognition_get_workflow_not_ready_distinguishes_retry_from_none_exist(
+    build_lc, make_ctx, mock_mcp, tmp_path,
+):
+    """cognition_get_workflow: the embeddings-loading error must be wrapped LOCALLY with
+    wording that distinguishes it from a genuine "no workflow found" result -- otherwise an
+    agent hitting this during startup could wrongly conclude no workflow exists at all.
+
+    Fails-before (DW3): before the local wrap, this returned the shared require_embeddings
+    text verbatim ("Embedding model is still loading...") with no "does NOT mean no workflow
+    exists" framing, and no way to distinguish it programmatically from a real not-found.
+    """
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=False)
+    ctx = make_ctx(lc)
+
+    result = mock_mcp.tools["cognition_get_workflow"](ctx, name_or_topic="anything")
+    assert result["status"] == "loading_embeddings"
+    assert "retry" in result["error"].lower()
+    assert "does not mean no workflow exists" in result["error"].lower()
+
+
+def test_cognition_get_workflow_genuine_not_found_has_no_loading_status(
+    build_lc, make_ctx, mock_mcp, tmp_path,
+):
+    """cognition_get_workflow: a real "no workflow found" result carries no "status" key,
+    so it's programmatically distinguishable from the loading_embeddings case above."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    ctx = make_ctx(lc)
+
+    result = mock_mcp.tools["cognition_get_workflow"](ctx, name_or_topic="nothing matches this")
+    assert "error" in result
+    assert "status" not in result
+    assert "No workflow found matching" in result["error"]
+
+
 def test_cognition_get_workflow_rejects_star(build_lc, make_ctx, mock_mcp, tmp_path):
     """cognition_get_workflow: project="*" returns error (single-node tools reject star).
 
