@@ -1,5 +1,15 @@
 """FastMCP server for Vibe Cognition — project knowledge graph."""
 
+# FIRST two imports, deliberately, in this order:
+#  1. _startup_timing stamps server_module_import_start as a side effect
+#     (see that module's docstring) before any of the heavier imports below.
+#  2. _venv_guard (WP-B) fail-fasts with a clear message on a broken/missing
+#     venv, BEFORE the `from .embeddings import ...` line below crashes with
+#     a raw ImportError (see that module's docstring for why this can't live
+#     inside main() as originally scoped).
+from . import _startup_timing  # noqa: I001 - ORDER IS LOAD-BEARING, see comment above; do not let isort resort this block
+from . import _venv_guard  # noqa: F401 - imported for its check_or_exit() side effect
+
 import logging
 import threading
 from contextlib import asynccontextmanager
@@ -20,6 +30,8 @@ from .tools.cognition_tools import (
     _node_from_dict,
 )
 from .tools.project_registry import build_registry, compute_model_guard
+
+_startup_timing.stamp("server_module_import_done")
 
 logger = logging.getLogger(__name__)
 
@@ -270,8 +282,21 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
     Semantic curation is NOT done here — it is the agent's job via the
     `/vibe-curate` skill. The only automatic edges are the deterministic
     `part_of` edges created from shared references.
+
+    WP-A 1b (decision 9022f7de94e9): this thread is where startup breadcrumbs
+    get PERSISTED to disk. It starts concurrently with (not blocking) the
+    handshake, so the flush here never touches the synchronous pre-yield path
+    the HEISENBUG GUARD protects. Flushed once immediately (captures every
+    breadcrumb up to and including handshake_yield, best-effort on ordering
+    against the main thread) and again at the end (captures the model-load +
+    sync breadcrumbs too), so the file is useful even if this thread errors
+    partway through. Also prunes the per-PID log directory here (once per
+    server startup, same off-critical-path constraint) so it never grows
+    unbounded across N concurrent agents x many sessions x every project.
     """
-    import time
+    _startup_timing.stamp("bg_thread_start")
+    _startup_timing.flush_to_disk()
+    _startup_timing.prune_old_logs()
 
     try:
         # Home model/dim drift guard (WP-2): a cheap metadata comparison (no
@@ -300,10 +325,10 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
                 logger.warning(f"Home embedding collection drift: {guard_warning}")
 
         # Load embedding model (the bottleneck: 2-30s)
-        t_start = time.monotonic()
+        t_start = _startup_timing.stamp("bg_model_load_start")
         logger.info(f"Background: loading embedding model ({config.embedding_backend})...")
         embedding_generator = EmbeddingGenerator.from_config(config)
-        t_model = time.monotonic()
+        t_model = _startup_timing.stamp("bg_model_loaded")
         logger.info(f"Background: embedding model loaded in {t_model - t_start:.1f}s")
 
         # Populate context
@@ -369,17 +394,23 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
         # window instead of a falsely-confident "ready"; it never gates tool
         # availability.
         context["embedding_sync_done"].set()
+        _startup_timing.stamp("bg_sync_done")
+        _startup_timing.flush_to_disk()
 
     except Exception as e:
         logger.error(f"Background initialization failed: {e}")
         context["embedding_error"] = str(e)
         context["embedding_ready"].set()  # Signal so tools don't hang forever
         context["embedding_sync_done"].set()  # Sync phase is over either way
+        _startup_timing.stamp("bg_thread_error")
+        _startup_timing.flush_to_disk()
 
 
 @asynccontextmanager
 async def lifespan(server: FastMCP):
     """Manage server lifecycle - initialize and cleanup resources."""
+    _startup_timing.stamp("lifespan_enter")
+
     # Load configuration — reads REPO_PATH from env (set by the plugin's
     # mcpServers block in plugin.json; config.py also falls back to
     # CLAUDE_PROJECT_DIR). There is no per-project .mcp.json.
@@ -411,6 +442,7 @@ async def lifespan(server: FastMCP):
 
     # Initialize cognition ChromaDB
     logger.info(f"Initializing cognition ChromaDB at {config.cognition_chromadb_path}...")
+    _startup_timing.stamp("chroma_open_start")
     try:
         cognition_embedding_storage = ChromaDBStorage(
             persist_directory=config.cognition_chromadb_path,
@@ -423,6 +455,7 @@ async def lifespan(server: FastMCP):
             f"Failed to initialize cognition ChromaDB at {config.cognition_chromadb_path}: {e}"
         )
         raise
+    _startup_timing.stamp("chroma_open_done")
 
     # Build project registry — home is always pinned
     loaded_projects = build_registry(
@@ -466,6 +499,7 @@ async def lifespan(server: FastMCP):
     context["_bg_thread"] = bg_thread
 
     logger.info("Vibe Cognition ready (embedding model loading in background)")
+    _startup_timing.stamp("handshake_yield")
 
     yield context
 
@@ -500,7 +534,12 @@ register_all_tools(mcp)
 
 
 def main():
-    """Entry point for the Vibe Cognition MCP server."""
+    """Entry point for the Vibe Cognition MCP server.
+
+    The venv-health guard (WP-B, see _venv_guard.py) already ran at module
+    import time, above -- by the time main() is reached the heavy natives
+    already imported successfully, so this stays a plain mcp.run() call.
+    """
     mcp.run()
 
 

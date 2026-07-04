@@ -361,6 +361,46 @@ def test_no_uv_on_path_emits_warning_and_exits_zero(hook_env):
     assert "requires 'uv'" in result.stdout
 
 
+# ── WP-A 1b (decision 9022f7de94e9): uv-run timing breadcrumbs ───────────────
+
+
+def test_three_uv_run_breadcrumb_pairs_appear_on_stderr(hook_env):
+    """Each of the three `uv run` call sites (health probe, migrate_mcp,
+    prime) must emit a start+done breadcrumb pair to STDERR (never stdout --
+    that must stay reserved for the hook's JSON output), tagged with the
+    hook's own PID.
+
+    Fails-before: no instrumentation existed, so hook-vs-server venv overlap
+    (distinguishing H1 venv-lock contention from H5 baseline cold-start tax)
+    was undiagnosable from a log the user could read.
+    """
+    hook_env.seed("health_probe_exit", "0")
+
+    result = hook_env.run(_SESSION_START)
+
+    assert result.returncode == 0, result.stderr
+    for label in (
+        "probe_start", "probe_done_ok",
+        "migrate_mcp_start", "migrate_mcp_done",
+        "prime_start", "prime_done",
+    ):
+        assert label in result.stderr, f"missing breadcrumb {label!r} in stderr: {result.stderr}"
+        assert label not in result.stdout, f"breadcrumb {label!r} leaked into stdout JSON: {result.stdout}"
+    assert "pid=" in result.stderr
+
+
+def test_probe_failure_breadcrumb_reflects_failure_branch(hook_env):
+    """A failing health probe emits probe_done_fail, not probe_done_ok --
+    the breadcrumb must reflect which branch actually ran."""
+    hook_env.seed("health_probe_exit", "1")
+
+    result = hook_env.run(_SESSION_START)
+
+    assert result.returncode == 0, result.stderr
+    assert "probe_done_fail" in result.stderr
+    assert "probe_done_ok" not in result.stderr
+
+
 # ── reinject-instructions.sh ──────────────────────────────────────────────────
 
 

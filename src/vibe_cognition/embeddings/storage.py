@@ -2,16 +2,57 @@
 
 import contextlib
 import logging
+import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import chromadb
 from chromadb.config import Settings
+from chromadb.errors import InternalError
 
 from ..cognition.git_hygiene import _acquire_lock, _release_lock
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+# Bounded retry for the two synchronous ChromaDB calls in the MCP handshake's
+# pre-yield critical section (server.py lifespan -> ChromaDBStorage.__init__).
+# Small on purpose: this runs BLOCKING on the handshake, so worst-case added
+# latency must stay well under the connect-timeout budget (~0.15s here).
+_CHROMA_RETRY_ATTEMPTS = 3
+_CHROMA_RETRY_BASE_DELAY = 0.05  # seconds
+
+
+def _retry_chromadb_open(fn: Callable[[], _T]) -> _T:
+    """Bounded retry absorbing a transient chromadb rust-backend InternalError
+    (open flake e09d4f4a9a23 — more likely under concurrent opens against the
+    same persist_directory, WP-A decision 9022f7de94e9).
+
+    Retries ONLY ``chromadb.errors.InternalError``. Every other exception
+    (e.g. a genuine ``NotFoundError`` when a collection doesn't exist yet)
+    propagates immediately, unretried — that is expected control flow for
+    the is_new-collection probe below, not a flake, and must not be delayed.
+    """
+    last_exc: InternalError | None = None
+    for attempt in range(_CHROMA_RETRY_ATTEMPTS):
+        try:
+            return fn()
+        except InternalError as e:
+            last_exc = e
+            if attempt < _CHROMA_RETRY_ATTEMPTS - 1:
+                time.sleep(_CHROMA_RETRY_BASE_DELAY * (2**attempt))
+    assert last_exc is not None  # loop always executes >=1 attempt
+    # Exhaustion log (Vince's gate note): a bare re-raised InternalError reads
+    # as an unexplained crash; this names the attempt count so a production
+    # failure is diagnosable exhaustion, not a mystery.
+    logger.warning(
+        f"chromadb open failed after {_CHROMA_RETRY_ATTEMPTS} InternalError "
+        f"retries: {last_exc}"
+    )
+    raise last_exc
 
 
 class ChromaDBStorage:
@@ -43,9 +84,21 @@ class ChromaDBStorage:
         # inert (the telemetry client is a no-op stub), but chromadb 0.5-0.6.x —
         # which our >=0.5.0 floor permits — actively phoned home gated on
         # exactly this flag, so we set it across the allowed range.
-        self._client = chromadb.PersistentClient(
-            path=str(persist_directory),
-            settings=Settings(anonymized_telemetry=False),
+        # WP-A/WP-C cross-process gate finding: PersistentClient() itself (not
+        # just get_collection/get_or_create_collection below) can raise the
+        # same rust-backend InternalError under genuine concurrent-open
+        # pressure -- observed as "table collections already exists" when N
+        # processes race SharedSystemClient._create_system_if_not_exists
+        # against a BRAND-NEW persist_directory (reproduced under full-suite
+        # system load, not in isolation; see test_chromadb_cross_process.py).
+        # This happens BEFORE self._client exists, so it needs its own retry
+        # wrap rather than reusing the two below (which retry calls made
+        # THROUGH an already-constructed client).
+        self._client = _retry_chromadb_open(
+            lambda: chromadb.PersistentClient(
+                path=str(persist_directory),
+                settings=Settings(anonymized_telemetry=False),
+            )
         )
         collection_meta: dict[str, Any] = {"hnsw:space": "cosine"}
         if embedding_model is not None:
@@ -65,7 +118,7 @@ class ChromaDBStorage:
         # unnecessarily (nothing to migrate), and two same-project sessions
         # racing it in the model-load window could both drop+recreate.
         try:
-            self._client.get_collection(name=collection_name)
+            _retry_chromadb_open(lambda: self._client.get_collection(name=collection_name))
             is_new = False
         except Exception:
             is_new = True
@@ -74,9 +127,11 @@ class ChromaDBStorage:
 
         self._collection_name = collection_name
         self._base_meta = collection_meta
-        self._collection = self._client.get_or_create_collection(
-            name=collection_name,
-            metadata=collection_meta,
+        self._collection = _retry_chromadb_open(
+            lambda: self._client.get_or_create_collection(
+                name=collection_name,
+                metadata=collection_meta,
+            )
         )
         logger.info(f"ChromaDB initialized at {persist_directory}")
 

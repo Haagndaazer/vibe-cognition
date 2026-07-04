@@ -6,8 +6,6 @@ import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from sentence_transformers import SentenceTransformer
-
 if TYPE_CHECKING:
     from ..config import Settings
 
@@ -56,10 +54,23 @@ class SentenceTransformersBackend(EmbeddingBackend):
             dimensions: Optional dimension truncation
             revision: HuggingFace Hub revision (branch, tag, or full commit SHA) to pin
                 the remote code loaded via trust_remote_code=True. None = hub HEAD.
+
+        WP-C (decision 9022f7de94e9): sentence_transformers (and the torch it pulls
+        in transitively) is imported HERE, lazily, not at module top -- measured
+        ~9.6-9.7s of the ~10-15s server-module-import cost that used to sit on the
+        MCP handshake's pre-import critical path. This class is only constructed
+        from EmbeddingGenerator.from_config(), which server.py's background thread
+        (_load_embeddings_and_sync) calls AFTER the handshake yields -- so the cost
+        moves off that path entirely without changing when the model actually
+        loads (still backgrounded, same as before this WP).
         """
+        from sentence_transformers import SentenceTransformer
+
         t0 = time.monotonic()
         logger.info(f"Loading model: {model_name}")
-        self._model = SentenceTransformer(model_name, trust_remote_code=True, revision=revision)
+        self._model: SentenceTransformer = SentenceTransformer(
+            model_name, trust_remote_code=True, revision=revision
+        )
         elapsed = time.monotonic() - t0
         self._dimensions = dimensions
         self._lock = threading.Lock()
