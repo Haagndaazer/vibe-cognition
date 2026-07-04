@@ -1,0 +1,41 @@
+# Investigation + Hardening Plan — MCP first-connect reliability (task ced8f0401bd2)
+
+Owner (implementer): Vorpid · Gate: Vince · Priority: high
+Status: APPROVED — ship autonomously (Colton 2026-07-04). Peer-reviewed (Sonnet, conditional-go, corrections folded).
+
+## MANDATE (Colton 2026-07-04)
+Do everything you can to make this more stable to launch. Ship it autonomously. Ensure current use ability remains as-is. Concurrent agents still need to be able to use it at the same time without any issues or collisions — this is a PRIMARY FEATURE of the plugin. We can revert or fix after shipping+testing. Colton won't upgrade other currently running agents until Vince confirms the latest works as intended.
+
+Implications:
+- PRIMARY HARD GATE #1 — concurrency safety. Multiple agents each run their OWN MCP server against the SAME shared venv (${CLAUDE_PLUGIN_DATA}/.venv), the SAME shared ChromaDB, and the SAME shared journal. Nothing here may introduce a collision, lock, or corruption across concurrent server processes. Must be demonstrated with a cross-process concurrency test, not argued.
+- PRIMARY HARD GATE #2 — zero regression. Existing capability stays exactly as-is; full suite stays green; existing concurrent behavior preserved.
+- Autonomous ship: WP-A and WP-B ship TOGETHER this release. Colton's controlled rollout (holds his running fleet on the prior version until confirmation) replaces the human-reproduction gate. Vince still hard-gates the diff (concurrency + regression) before release.
+
+## Root-cause hypotheses (H1/H2 co-primary; H4 closed prior-art; H5 added)
+- H1 (co-primary): server-launch `uv run` (no --no-sync in plugin.json) re-syncs/locks the shared venv concurrently with the hook's uv-run calls -> Windows lock contention -> handshake stalls past connect timeout. Matches recorded venv-contention hypothesis 17a9148fb887.
+- H2 (co-primary, promoted): synchronous ChromaDB open in lifespan blocks the handshake. mcp SDK runs the lifespan async-context to its yield BEFORE handling initialize; server.py lifespan() makes two synchronous unretried chromadb calls (embeddings/storage.py:68 get_collection, :77-80 get_or_create_collection) before yield -> handshake-blocking by construction. Lands on open rust-backend InternalError flake e09d4f4a9a23 (chromadb 1.5.5, Windows).
+- H3: orphan/pileup servers (a54b0191e362) add venv/handle contention.
+- H4 (CLOSED prior-art): git-identity subprocess hang b076d80a7b41 fixed in v0.12.1 (git_identity.py reads config files directly, no subprocess in startup path). Not an open candidate.
+- H5 (added): baseline `uv run` cold-start tax independent of contention — freshness check stat/resolve over ~2-4GB PyTorch tree + Windows Defender scanning -> multi-second latency burning the connect-timeout budget. Distinguished from H1 by hook/server overlap in the breadcrumb timeline; --no-sync also removes it.
+
+## WP-A (ship now, self-verifiable, strictly risk-reducing)
+- 1a. Bounded-retry wrapper around the ChromaDB open (embeddings/storage.py:46-80, the two pre-yield lifespan calls). Targets H2 + flake e09d4f4a9a23. Self-verify by simulating the rust InternalError and confirming retry absorbs it.
+- 1b. Startup breadcrumbs (server start -> uv resolve done -> lifespan enter -> ChromaDB open start/done -> handshake yield -> bg thread/model-loaded); hook also stamps its three uv-run start/end times so hook-vs-server overlap is visible (distinguishes H1 from H5).
+- HEISENBUG GUARD (mandatory): no synchronous flushed disk writes in the pre-yield critical section (that IS the suspect window). Capture in-memory time.monotonic() stamps; defer file write until AFTER yield or a background thread; pre-yield trail goes via the stderr Claude Code already captures (config.py:212 basicConfig targets stderr, separate from stdout JSON-RPC). stdout buffering not a factor (mcp stdio.py:80-81 flushes each write). Breadcrumb log must be CONCURRENCY-SAFE (per-PID file or append-safe), never a shared single file that N servers collide on.
+
+## WP-B (ship this release; concurrency-safe guard is self-verifiable, connect effect confirmed by Colton's rollout)
+- H1/H5 -> add `--no-sync` to the server launch args in plugin.json so the spawn stops re-syncing/locking the venv. MANDATORY PRECONDITION — do NOT ship bare --no-sync: the hook's sync is not guaranteed to finish before Claude Code spawns the server (600s hook timeout for ~8-min first-install syncs implies concurrency; no serialization guarantee documented). Bare --no-sync would make the server launch against an absent/partial venv and fail FAST + DETERMINISTICALLY on first-install/post-update.
+- So --no-sync ships ONLY paired with a READ-ONLY concurrency-safe pre-import guard in server.py main() (~line 502): attempt importing the heavy natives (torch/chromadb); if broken/missing, emit a CLEAR failure message and exit. Do NOT have the server run `uv sync` itself (the hook owns healing with its 600s budget; N concurrent servers + hook all syncing the same venv would collide). Healthy venv (steady-state + every existing install) -> import passes -> server proceeds fast, never touching the venv lock -> strictly BETTER for N concurrent launches.
+
+## Acceptance (blocks release)
+- Concurrency: a cross-process test launching multiple server processes/opens against the same venv + ChromaDB + journal concurrently, asserting no collision/lock/corruption (extend intent of open task c34c788b8d5b). Minimum: in-process concurrent-open + concurrent-append test + a documented manual two-agent check. "Suite passes" alone does NOT satisfy this.
+- Regression: full suite green; no existing test modified to pass; --no-sync guard proven NOT to fire on a healthy venv (existing installs unaffected).
+- Post-ship: Colton tests the shipped build before upgrading his running fleet; revert is the fallback.
+
+## Known-intentional / do NOT "fix"
+- venv at ${CLAUDE_PLUGIN_DATA}/.venv on purpose (outside version-pinned cache; Windows update-lock, v0.6.0 d0362d89d295). Do not relocate.
+- Server is plugin.json-declared, not per-project .mcp.json (a project entry outranks the plugin — a906f12a6ef7). Do not reintroduce a per-project entry.
+- Stamp-gated conditional sync + health probe in session-start.sh is deliberate (pays nothing on the happy path). Instrumentation must not force the probe every start.
+- Embedding model load intentionally backgrounded behind embedding_ready; do not move it into the handshake path.
+
+Version: 0.15.3 (patch). Release = bump pyproject.toml + plugin.json, land on main, push, Loki re-pin.
