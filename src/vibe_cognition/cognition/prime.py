@@ -138,8 +138,17 @@ def _format_workflows(storage: CognitionStorage, limit: int, maxlen: int = 0) ->
 def _format_document_count(storage: CognitionStorage) -> str:
     """One-line stored-document count so agents know the document tools exist,
     even before they have a reason to call cognition_get_document. Omitted when
-    zero (consistent with every other section's empty-drops-the-section rule)."""
-    count = len(storage.get_nodes_by_type(CognitionNodeType.DOCUMENT))
+    zero (consistent with every other section's empty-drops-the-section rule).
+
+    HEAD-filtered same as _format_workflows: documents version via SUPERSEDES too
+    (_validate_supersedes_shape legalizes document->document), so a naive raw count
+    would over-report a revised document once per revision instead of once."""
+    nodes = storage.get_nodes_by_type(CognitionNodeType.DOCUMENT)
+    heads = [
+        n for n in nodes
+        if not storage.get_predecessors(n["id"], CognitionEdgeType.SUPERSEDES)
+    ]
+    count = len(heads)
     if count == 0:
         return ""
     noun = "document" if count == 1 else "documents"

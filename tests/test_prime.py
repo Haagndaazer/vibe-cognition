@@ -241,6 +241,27 @@ def test_generate_prime_zero_documents_omits_count_line(tmp_path):
     assert "stored document" not in result
 
 
+def test_generate_prime_superseded_document_excluded_from_count(tmp_path):
+    """Documents version via SUPERSEDES too (document->document is a legal shape,
+    the prior_version_id re-store path) -- a revised document must count once
+    (its HEAD), not once per revision, mirroring the workflow HEAD-filter.
+
+    Fails-before: _format_document_count raw-counted get_nodes_by_type(DOCUMENT)
+    with no supersession filter, so a document revised once reported "2 stored
+    documents" instead of "1".
+    """
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _add(storage, "doc-old", CognitionNodeType.DOCUMENT, "spec v1.pdf")
+    _add(storage, "doc-new", CognitionNodeType.DOCUMENT, "spec v2.pdf")
+    storage.add_edge(CognitionEdge(
+        from_id="doc-new", to_id="doc-old", edge_type=CognitionEdgeType.SUPERSEDES,
+        timestamp=datetime.now(UTC).isoformat(),
+    ))
+    result = generate_prime(storage)
+    assert "1 stored document" in result
+    assert "2 stored documents" not in result
+
+
 def test_generate_prime_task_cap_honored_via_config(tmp_path):
     """Task cap is wired to PrimeConfig — an explicit override changes the count
     without any env monkeypatching."""
