@@ -6,6 +6,8 @@ import logging
 import secrets
 import socket
 import threading
+import time
+import webbrowser
 from contextlib import ExitStack, suppress
 from importlib import resources
 from pathlib import Path
@@ -104,8 +106,6 @@ def run_dashboard_blocking(
     Blocks until Ctrl-C. Signal handlers work normally because we run
     on the main thread.
     """
-    import webbrowser
-
     token = secrets.token_urlsafe(32)
     chosen_port = _find_free_port(port)
     app, stack = build_app(lifespan_ctx, token)
@@ -143,9 +143,6 @@ def start_dashboard(
     Idempotent — repeat calls return the existing URL.
     Stores `{thread, server, url, token, stack}` in lifespan_ctx["dashboard"].
     """
-    import time
-    import webbrowser
-
     existing = lifespan_ctx.get("dashboard")
     if existing:
         return {

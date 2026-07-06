@@ -1,5 +1,7 @@
 """WP-XP2 tests: project routing, N1 discriminating proof, write-isolation."""
 
+import asyncio
+import functools
 import inspect
 import threading
 from types import SimpleNamespace
@@ -298,13 +300,26 @@ def test_cross_project_id_collision_no_dedup(tmp_path):
 
 
 class _MockMcp:
-    """Minimal MCP collector that captures registered tool functions."""
+    """Minimal MCP collector that captures registered tool functions.
+
+    WP-Wedge-2 §W2-b: every registered tool is now `async def` (dispatch_tool's
+    async wrapper, see tools/dispatch.py) -- asyncio.run() absorbs the sync/
+    async mismatch so this file's sync `def test_...` call sites don't change.
+    Mirrors the identical fix in conftest.py's shared _MockMcp (this class
+    predates that promotion and was never itself replaced by it).
+    """
     def __init__(self):
         self.tools: dict[str, Any] = {}
 
     def tool(self):
         def decorator(fn):
-            self.tools[fn.__name__] = fn
+            if inspect.iscoroutinefunction(fn):
+                @functools.wraps(fn)
+                def sync_shim(*args, **kwargs):
+                    return asyncio.run(fn(*args, **kwargs))
+                self.tools[fn.__name__] = sync_shim
+            else:
+                self.tools[fn.__name__] = fn
             return fn
         return decorator
 

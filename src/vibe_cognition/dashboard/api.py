@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from starlette.concurrency import run_in_threadpool
 from starlette.responses import FileResponse, JSONResponse
 
 from ..cognition import CognitionNodeType, delete_cognition_node
@@ -179,8 +180,6 @@ async def search(request):
     Async because we need request.json(); we then offload the blocking
     embedding+vector work via run_in_threadpool.
     """
-    from starlette.concurrency import run_in_threadpool
-
     lc = _ctx(request)
     try:
         body = await request.json()

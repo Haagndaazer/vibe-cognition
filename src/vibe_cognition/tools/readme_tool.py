@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastmcp import Context
 
 from ..cognition.readme import COGNITION_GETTING_STARTED, COGNITION_GUIDE
+from .dispatch import dispatch_tool
 
 
 def cognition_readme_core() -> dict[str, str]:
@@ -15,7 +16,7 @@ def cognition_readme_core() -> dict[str, str]:
 def register_readme_tool(mcp) -> None:
     """Register the cognition_readme tool with the MCP server."""
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_readme(ctx: Context) -> dict[str, str]:
         """Return the vibe-cognition orientation guide and getting-started procedure.
 

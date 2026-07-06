@@ -787,3 +787,35 @@ async def test_prespawn_happens_before_bg_thread_starts(tmp_path, monkeypatch):
             await asyncio.sleep(0.02)
 
     assert order == ["prespawn", "bg_thread_start"], f"wrong order: {order}"
+
+
+@pytest.mark.asyncio
+async def test_lifespan_wires_configured_watchdog_timeout(tmp_path, monkeypatch):
+    """WP2 §W2-d/AC5: `lifespan()` passes `config.wedge_watchdog_timeout` (env-
+    overridable via WEDGE_WATCHDOG_TIMEOUT) into `_watchdog`'s `timeout=` --
+    not the module-level default. Fails-before: `_watchdog(context)` was called
+    with no explicit timeout, so no env var could ever reach it."""
+    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("EMBEDDING_BACKEND", "ollama")
+    monkeypatch.setenv("WEDGE_WATCHDOG_TIMEOUT", "42")
+
+    captured: dict[str, float] = {}
+    real_watchdog = _watchdog
+
+    async def _capturing_watchdog(context, timeout=None, **kwargs):
+        captured["timeout"] = timeout
+        return await real_watchdog(context, timeout=0.05, poll_interval=0.02)
+
+    monkeypatch.setattr("vibe_cognition.server._watchdog", _capturing_watchdog)
+    monkeypatch.setattr(
+        "vibe_cognition.server.EmbeddingGenerator.from_config",
+        lambda cfg: SimpleNamespace(),
+    )
+
+    async with lifespan(None) as context:  # type: ignore[arg-type]
+        for _ in range(500):
+            if context["embedding_ready"].is_set():
+                break
+            await asyncio.sleep(0.02)
+
+    assert captured["timeout"] == 42.0

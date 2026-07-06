@@ -5,6 +5,8 @@ from typing import Any
 
 from fastmcp import Context
 
+from .dispatch import dispatch_tool
+from .project_registry import LoadedProjects
 from .utils import get_lifespan
 
 logger = logging.getLogger(__name__)
@@ -17,7 +19,7 @@ def register_service_tools(mcp) -> None:
         mcp: FastMCP server instance
     """
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def get_status(ctx: Context) -> dict[str, Any]:
         """Get the current status of the Vibe Cognition server.
 
@@ -84,7 +86,6 @@ def register_service_tools(mcp) -> None:
         config = lc.get("config")
         cognition_storage = lc.get("cognition_storage")
         cognition_embedding_storage = lc.get("cognition_embedding_storage")
-        from .project_registry import LoadedProjects
         registry: LoadedProjects | None = lc.get("loaded_projects")
 
         result: dict[str, Any] = {

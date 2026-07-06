@@ -1,5 +1,6 @@
 """MCP tools for the Cognition History Graph."""
 
+import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -42,6 +43,7 @@ from ..cognition.documents import (
 )
 from ..cognition.prime import SEVERITY_ORDER
 from ..embeddings import ChromaDBStorage, EmbeddingGenerator, adaptive_vector_search
+from .dispatch import dispatch_tool
 from .project_registry import (
     LoadedProjects,
     ProjectEntry,
@@ -435,10 +437,9 @@ def _add_edges_batch_core(storage: CognitionStorage, edges: str) -> dict[str, An
     """Validate + create a batch of edges (testable core of cognition_add_edges_batch).
     Every malformed input is skip-and-reported — no element can crash the batch after
     earlier edges were already committed (T-3)."""
-    import json as _json
     try:
-        edge_list = _json.loads(edges)
-    except _json.JSONDecodeError as e:
+        edge_list = json.loads(edges)
+    except json.JSONDecodeError as e:
         return {"error": f"Invalid JSON: {e}"}
     if not isinstance(edge_list, list):
         return {"error": "Expected a JSON array of edge objects"}
@@ -1648,7 +1649,7 @@ def register_cognition_tools(mcp) -> None:
         mcp: FastMCP server instance
     """
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_record(
         ctx: Context,
         node_type: str,
@@ -1769,7 +1770,7 @@ def register_cognition_tools(mcp) -> None:
             severity, references,
         )
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_add_task(
         ctx: Context,
         summary: str,
@@ -1817,7 +1818,7 @@ def register_cognition_tools(mcp) -> None:
             priority=priority, owner=owner, parent_id=parent_id, references=references,
         )
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_list_tasks(
         ctx: Context,
         status: str | None = None,
@@ -1852,7 +1853,7 @@ def register_cognition_tools(mcp) -> None:
             parent_id=parent_id, include_done=include_done,
         )
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_update_task(
         ctx: Context,
         node_id: str,
@@ -1911,7 +1912,7 @@ def register_cognition_tools(mcp) -> None:
             note=note,
         )
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_store_document(
         ctx: Context,
         title: str,
@@ -1986,7 +1987,7 @@ def register_cognition_tools(mcp) -> None:
             embedding_storage=embedding_storage, generator=generator,
         )
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_get_document(
         ctx: Context,
         node_id: str | None = None,
@@ -2028,7 +2029,7 @@ def register_cognition_tools(mcp) -> None:
             result["freshness"] = "cross-project: unavailable"
         return result
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_get_node(ctx: Context, node_id: str, project: str | None = None) -> dict[str, Any]:
         """Read a single cognition node's FULL narrative by id.
 
@@ -2062,7 +2063,7 @@ def register_cognition_tools(mcp) -> None:
             result["project"] = entries[0].tag
         return result
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_update_node(
         ctx: Context,
         node_id: str,
@@ -2122,7 +2123,7 @@ def register_cognition_tools(mcp) -> None:
             severity=severity,
         )
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_search(
         ctx: Context,
         query: str,
@@ -2311,7 +2312,7 @@ def register_cognition_tools(mcp) -> None:
             result["project_notes"] = project_notes
         return result
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_get_chain(
         ctx: Context,
         node_id: str,
@@ -2350,7 +2351,7 @@ def register_cognition_tools(mcp) -> None:
         result["project"] = entries[0].tag
         return result
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_get_superseded_chain(ctx: Context, node_id: str, project: str | None = None) -> dict[str, Any]:
         """Get a node's version history by following SUPERSEDES edges, newest first.
 
@@ -2377,7 +2378,7 @@ def register_cognition_tools(mcp) -> None:
             return err
         return {"node_id": node_id, "chain": get_superseded_chain(entries[0].storage, node_id), "project": entries[0].tag}
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_get_workflow(
         ctx: Context,
         name_or_topic: str,
@@ -2467,7 +2468,7 @@ def register_cognition_tools(mcp) -> None:
             result["project"] = project_tag
         return result
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_get_incident_resolution(ctx: Context, node_id: str, project: str | None = None) -> dict[str, Any]:
         """Get an incident node plus everything that resolved or relates to it.
 
@@ -2497,7 +2498,7 @@ def register_cognition_tools(mcp) -> None:
         result["project"] = entries[0].tag
         return result
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_get_history(
         ctx: Context,
         context_term: str | None = None,
@@ -2570,7 +2571,7 @@ def register_cognition_tools(mcp) -> None:
             "projects_queried": [e.tag for e in entries],
         }
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_add_edge(
         ctx: Context,
         from_id: str,
@@ -2654,7 +2655,7 @@ def register_cognition_tools(mcp) -> None:
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         return _add_edge_core(storage, from_id, to_id, edge_type, reason, source)
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_add_edges_batch(
         ctx: Context,
         edges: str,
@@ -2726,7 +2727,7 @@ def register_cognition_tools(mcp) -> None:
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         return _add_edges_batch_core(storage, edges)
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_get_edgeless_nodes(
         ctx: Context,
         node_type: str | None = None,
@@ -2795,7 +2796,7 @@ def register_cognition_tools(mcp) -> None:
             "projects_queried": [e.tag for e in entries],
         }
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_get_uncurated_nodes(
         ctx: Context,
         node_type: str | None = None,
@@ -2860,7 +2861,7 @@ def register_cognition_tools(mcp) -> None:
             "projects_queried": [e.tag for e in entries],
         }
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_mark_curated(
         ctx: Context,
         node_ids: str,
@@ -2891,7 +2892,7 @@ def register_cognition_tools(mcp) -> None:
 
         return {"marked": marked, "not_found": not_found}
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_get_neighbors(
         ctx: Context,
         node_id: str,
@@ -2985,7 +2986,7 @@ def register_cognition_tools(mcp) -> None:
 
         return result
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_remove_edge(
         ctx: Context,
         from_id: str,
@@ -3021,7 +3022,7 @@ def register_cognition_tools(mcp) -> None:
 
         return {"removed": True, "from_id": from_id, "to_id": to_id, "edge_type": edge_type}
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_remove_node(
         ctx: Context,
         node_id: str,
@@ -3069,7 +3070,7 @@ def register_cognition_tools(mcp) -> None:
 
         return {"removed": True, **result}
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_reload(ctx: Context) -> dict[str, Any]:
         """Force-reload the cognition graph from the on-disk journal.
 
@@ -3088,7 +3089,7 @@ def register_cognition_tools(mcp) -> None:
 
     # ── Cross-project tools (XP1) ─────────────────────────────────
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_load_project(ctx: Context, path: str) -> dict[str, Any]:
         """Load a foreign cognition project so all read tools can query it.
 
@@ -3133,7 +3134,7 @@ def register_cognition_tools(mcp) -> None:
         """
         return _load_project_core(get_lifespan(ctx), path)
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_unload_project(ctx: Context, project: str) -> dict[str, Any]:
         """Unload a previously loaded foreign project.
 
@@ -3148,7 +3149,7 @@ def register_cognition_tools(mcp) -> None:
         """
         return _unload_project_core(get_lifespan(ctx), project)
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_list_projects(ctx: Context) -> dict[str, Any]:
         """List all loaded cognition projects (home + foreign).
 

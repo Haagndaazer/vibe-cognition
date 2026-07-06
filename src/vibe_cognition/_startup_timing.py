@@ -25,6 +25,7 @@ from pathlib import Path
 
 PID = os.getpid()
 breadcrumbs: list[tuple[str, float]] = []
+_stamped_once: set[str] = set()
 
 
 def stamp(label: str) -> float:
@@ -32,6 +33,51 @@ def stamp(label: str) -> float:
     t = time.monotonic()
     breadcrumbs.append((label, t))
     print(f"[vibe-cognition startup] pid={PID} {label} t={t:.3f}", file=sys.stderr, flush=True)
+    return t
+
+
+def first_occurrence(label: str) -> bool:
+    """True on the first call for a given ``label`` this process, False on
+    every call after. Shared first-occurrence primitive behind ``stamp_once``
+    (WP-Wedge-2 §W2-e) and also used directly to gate a one-time action that
+    ISN'T itself a breadcrumb stamp (§W2-f's dispatch-stall stack dump).
+
+    Safe from ANY thread context: no disk I/O. A race between two threads on
+    the same not-yet-seen label is benign (worst case: the gated action runs
+    twice instead of once), so no lock guards the check.
+    """
+    if label in _stamped_once:
+        return False
+    _stamped_once.add(label)
+    return True
+
+
+def stamp_once(label: str) -> None:
+    """``stamp()`` on only the FIRST call for a given ``label`` per process --
+    for high-frequency call sites (e.g. every dispatched tool call) where a
+    per-invocation stamp would be unbounded, but a first-occurrence-only signal
+    is exactly what's needed (WP-Wedge-2 §W2-e's ``tool_served_degraded``).
+    """
+    if first_occurrence(label):
+        stamp(label)
+
+
+def stamp_and_flush(label: str) -> float:
+    """``stamp()`` + ``flush_to_disk()`` in one call -- WP-Wedge-2 §W2-e: for
+    BG-THREAD-CONTEXT call sites ONLY. A mid-wedge breadcrumb file that only
+    flushes at a few checkpoints under-reports what actually happened
+    (Incident B: the file ended at ``handshake_yield`` even though the stack
+    proved ``import_probe_*``/``bg_model_load_start`` had already run) --
+    flushing after every bg-thread stamp keeps the file a faithful forensic
+    trail even when the thread wedges before reaching its next checkpoint.
+
+    NEVER call this from the event loop or a tool-dispatch/worker thread --
+    disk I/O there is a new freeze/latency source, the same class as WP-Wedge
+    rev-1's PIPE defect. Loop-side and dispatch/worker-side stamps stay plain
+    ``stamp()`` (stderr-only) and ride the next bg-thread flush.
+    """
+    t = stamp(label)
+    flush_to_disk()
     return t
 
 

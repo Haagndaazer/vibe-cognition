@@ -170,3 +170,25 @@ def test_no_git_hygiene_set_true_from_env(tmp_path, monkeypatch):
     monkeypatch.setenv("VIBE_COGNITION_NO_GIT_HYGIENE", "1")
     s = Settings(repo_path=tmp_path)
     assert s.vibe_cognition_no_git_hygiene is True
+
+
+# ── WEDGE_WATCHDOG_TIMEOUT binding (WP-Wedge-2 §W2-d) ────────────────────────
+
+
+def test_wedge_watchdog_timeout_defaults_to_300(tmp_path):
+    """§W2-d/AC5: default raised from 120s to 300s (2.5x observed healthy max
+    119.7s) -- matches server._WATCHDOG_TIMEOUT; keep the two in sync."""
+    s = Settings(repo_path=tmp_path)
+    assert s.wedge_watchdog_timeout == 300.0
+
+
+def test_wedge_watchdog_timeout_overridable_from_env(tmp_path, monkeypatch):
+    """§W2-d/AC5: WEDGE_WATCHDOG_TIMEOUT overrides the default -- env-overridable
+    per existing config conventions (same binding style as embedding_revision et al.).
+
+    Fails-before: the constant lived only as a server.py module-level literal with
+    no Settings field, so no env var could reach it at all.
+    """
+    monkeypatch.setenv("WEDGE_WATCHDOG_TIMEOUT", "600")
+    s = Settings(repo_path=tmp_path)
+    assert s.wedge_watchdog_timeout == 600.0
