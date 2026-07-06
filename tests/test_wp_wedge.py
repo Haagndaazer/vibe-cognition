@@ -753,8 +753,13 @@ async def test_heartbeat_stops_promptly_once_ready_sets():
 
 @pytest.mark.asyncio
 async def test_prespawn_happens_before_bg_thread_starts(tmp_path, monkeypatch):
-    """AC6: the lifespan pre-spawns warm workers BEFORE starting the bg import
-    thread -- pins the ordering `lifespan()` scope §3c1 requires."""
+    """AC6 + WP2 §W2-b (INV-1): the lifespan pre-spawns warm anyio workers AND
+    pre-warms the dedicated dispatch executor BEFORE starting the bg import
+    thread -- pins the ordering both `lifespan()` scope §3c1 and INV-1 require.
+    Fails-before (the gate's MAJOR finding): the original cut of this test only
+    recorded _warm_worker_batch vs bg_thread_start -- prewarm_dispatch_executor
+    ran in the right place by construction but nothing here would have caught
+    a regression that moved or dropped it."""
 
     monkeypatch.setenv("REPO_PATH", str(tmp_path))
     monkeypatch.setenv("EMBEDDING_BACKEND", "ollama")
@@ -764,7 +769,13 @@ async def test_prespawn_happens_before_bg_thread_starts(tmp_path, monkeypatch):
     async def _fake_prespawn(count):
         order.append("prespawn")
 
+    async def _fake_dispatch_prewarm(count=None):
+        order.append("dispatch_prewarm")
+
     monkeypatch.setattr("vibe_cognition.server._warm_worker_batch", _fake_prespawn)
+    monkeypatch.setattr(
+        "vibe_cognition.server.prewarm_dispatch_executor", _fake_dispatch_prewarm
+    )
 
     real_start = threading.Thread.start
 
@@ -786,4 +797,36 @@ async def test_prespawn_happens_before_bg_thread_starts(tmp_path, monkeypatch):
                 break
             await asyncio.sleep(0.02)
 
-    assert order == ["prespawn", "bg_thread_start"], f"wrong order: {order}"
+    assert order == ["prespawn", "dispatch_prewarm", "bg_thread_start"], f"wrong order: {order}"
+
+
+@pytest.mark.asyncio
+async def test_lifespan_wires_configured_watchdog_timeout(tmp_path, monkeypatch):
+    """WP2 §W2-d/AC5: `lifespan()` passes `config.wedge_watchdog_timeout` (env-
+    overridable via WEDGE_WATCHDOG_TIMEOUT) into `_watchdog`'s `timeout=` --
+    not the module-level default. Fails-before: `_watchdog(context)` was called
+    with no explicit timeout, so no env var could ever reach it."""
+    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("EMBEDDING_BACKEND", "ollama")
+    monkeypatch.setenv("WEDGE_WATCHDOG_TIMEOUT", "42")
+
+    captured: dict[str, float] = {}
+    real_watchdog = _watchdog
+
+    async def _capturing_watchdog(context, timeout=None, **kwargs):
+        captured["timeout"] = timeout
+        return await real_watchdog(context, timeout=0.05, poll_interval=0.02)
+
+    monkeypatch.setattr("vibe_cognition.server._watchdog", _capturing_watchdog)
+    monkeypatch.setattr(
+        "vibe_cognition.server.EmbeddingGenerator.from_config",
+        lambda cfg: SimpleNamespace(),
+    )
+
+    async with lifespan(None) as context:  # type: ignore[arg-type]
+        for _ in range(500):
+            if context["embedding_ready"].is_set():
+                break
+            await asyncio.sleep(0.02)
+
+    assert captured["timeout"] == 42.0

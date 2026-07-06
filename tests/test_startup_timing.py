@@ -76,6 +76,50 @@ def test_flush_to_disk_never_raises_on_write_failure(monkeypatch):
     _startup_timing.flush_to_disk()  # must not raise
 
 
+# ── stamp_and_flush / stamp_once (WP-Wedge-2 §W2-e) ─────────────────────────
+
+
+def test_stamp_and_flush_records_and_persists_in_one_call(monkeypatch, tmp_path):
+    """§W2-e: bg-thread call sites use stamp_and_flush so a mid-wedge file
+    reflects every stamp made so far, not just the last checkpoint (Incident
+    B's exact defect -- the file ended at handshake_yield even though the
+    stack proved later stamps had already happened in memory)."""
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    _startup_timing.breadcrumbs.clear()
+
+    _startup_timing.stamp_and_flush("stamp_and_flush_check")
+
+    labels = [label for label, _ in _startup_timing.breadcrumbs]
+    assert "stamp_and_flush_check" in labels
+    log_path = tmp_path / "vibe-cognition-startup" / f"pid-{_startup_timing.PID}.log"
+    assert "stamp_and_flush_check" in log_path.read_text(encoding="utf-8")
+
+
+def test_stamp_once_fires_only_on_first_call_per_label(monkeypatch):
+    monkeypatch.setattr(_startup_timing, "_stamped_once", set())
+    _startup_timing.breadcrumbs.clear()
+
+    _startup_timing.stamp_once("stamp_once_check")
+    _startup_timing.stamp_once("stamp_once_check")
+    _startup_timing.stamp_once("stamp_once_check")
+
+    labels = [label for label, _ in _startup_timing.breadcrumbs]
+    assert labels.count("stamp_once_check") == 1
+
+
+def test_stamp_once_never_touches_disk(monkeypatch):
+    """Must be safe from any thread context (worker/dispatch threads included)
+    -- same HEISENBUG-GUARD-style contract as plain stamp()."""
+    monkeypatch.setattr(_startup_timing, "_stamped_once", set())
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("stamp_once() must never touch disk")
+
+    monkeypatch.setattr(Path, "write_text", _boom)
+    monkeypatch.setattr(Path, "mkdir", _boom)
+    _startup_timing.stamp_once("stamp_once_no_disk_check")  # must not raise
+
+
 # ── prune_old_logs (Vince's gate note: unbounded temp-dir growth) ────────────
 
 

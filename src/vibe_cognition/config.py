@@ -108,6 +108,31 @@ class Settings(BaseSettings):
         ),
     )
 
+    # WP-Wedge-2 §W2-d: watchdog margin, env-overridable per existing
+    # conventions (WEDGE_WATCHDOG_TIMEOUT). Default matches
+    # server._WATCHDOG_TIMEOUT (300.0 = 2.5x the observed healthy load max of
+    # 119.7s) -- keep the two in sync if either changes.
+    wedge_watchdog_timeout: float = Field(
+        default=300.0,
+        description=(
+            "Seconds after bg_model_load_start before the embedding-load "
+            "watchdog fires and signals degraded search. Set via "
+            "WEDGE_WATCHDOG_TIMEOUT env var."
+        ),
+    )
+
+    # WP-Wedge-2 §W2-f: dispatch-stall self-forensics threshold, env-
+    # overridable per existing conventions (DISPATCH_STALL_THRESHOLD).
+    dispatch_stall_threshold: float = Field(
+        default=30.0,
+        description=(
+            "Seconds an in-flight tool dispatch may run during the load "
+            "window or a degraded state before an all-thread stack dump is "
+            "written to stderr (once per process). Set via "
+            "DISPATCH_STALL_THRESHOLD env var."
+        ),
+    )
+
     # Ollama settings (embeddings backend only)
     ollama_base_url: str = Field(
         default="http://localhost:11434",

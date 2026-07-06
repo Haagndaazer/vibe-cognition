@@ -5,6 +5,9 @@ tests (T-1a/b spec). The split between build_lc and make_ctx is intentional (B1)
 build_lc owns the storage/threading state; make_ctx owns only the Context shim.
 """
 
+import asyncio
+import functools
+import inspect
 import threading
 from types import SimpleNamespace
 from typing import Any, cast
@@ -46,6 +49,15 @@ class _TextKeyedGen:
 #
 # Promoted from test_xp2_routing.py:297. Captures registered closures by name
 # via the @mcp.tool() decorator shim without depending on FastMCP internals.
+#
+# WP-Wedge-2 §W2-b: every registered tool is now `async def` (dispatch_tool's
+# async wrapper routing to the dedicated dispatch executor, replacing plain
+# `@mcp.tool()` -- see tools/dispatch.py). mock_mcp.tools[name](ctx, ...) is
+# called synchronously, directly, by hundreds of existing sync `def test_...`
+# functions across the suite; asyncio.run() here is the ONE place that
+# absorbs the sync/async mismatch so none of those call sites need to change.
+# Safe because no test calls mock_mcp.tools[...] from inside an already-
+# running event loop (grep-verified: zero `async def test_` functions do).
 
 class _MockMcp:
     """Minimal MCP stub: .tool() captures registered closures into self.tools."""
@@ -55,7 +67,13 @@ class _MockMcp:
 
     def tool(self):  # type: ignore[override]
         def decorator(fn):
-            self.tools[fn.__name__] = fn
+            if inspect.iscoroutinefunction(fn):
+                @functools.wraps(fn)
+                def sync_shim(*args, **kwargs):
+                    return asyncio.run(fn(*args, **kwargs))
+                self.tools[fn.__name__] = sync_shim
+            else:
+                self.tools[fn.__name__] = fn
             return fn
         return decorator
 

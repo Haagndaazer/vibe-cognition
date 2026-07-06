@@ -54,6 +54,68 @@ def test_get_lifespan_raises_when_request_context_is_none():
         get_lifespan(ctx)
 
 
+# ── tool_served_degraded breadcrumb (WP-Wedge-2 §W2-e) ───────────────────────
+
+
+def _ctx_with_lc(lc: dict) -> Context:
+    return cast(Context, SimpleNamespace(request_context=SimpleNamespace(lifespan_context=lc)))
+
+
+def test_get_lifespan_stamps_tool_served_degraded_when_embedding_error_set(monkeypatch):
+    from vibe_cognition import _startup_timing
+
+    monkeypatch.setattr(_startup_timing, "_stamped_once", set())
+    _startup_timing.breadcrumbs.clear()
+
+    get_lifespan(_ctx_with_lc({"embedding_error": "wedged"}))
+
+    labels = [label for label, _ in _startup_timing.breadcrumbs]
+    assert "tool_served_degraded" in labels
+
+
+def test_get_lifespan_stamps_tool_served_degraded_when_watchdog_fired(monkeypatch):
+    from vibe_cognition import _startup_timing
+
+    monkeypatch.setattr(_startup_timing, "_stamped_once", set())
+    _startup_timing.breadcrumbs.clear()
+
+    get_lifespan(_ctx_with_lc({"watchdog_fired": True}))
+
+    labels = [label for label, _ in _startup_timing.breadcrumbs]
+    assert "tool_served_degraded" in labels
+
+
+def test_get_lifespan_does_not_stamp_when_healthy(monkeypatch):
+    """Fails-before contrast: a healthy lifespan (no error, watchdog never
+    fired) must NOT emit the degraded breadcrumb -- it would be noise, and
+    would falsely mark a process that was never actually degraded."""
+    from vibe_cognition import _startup_timing
+
+    monkeypatch.setattr(_startup_timing, "_stamped_once", set())
+    _startup_timing.breadcrumbs.clear()
+
+    get_lifespan(_ctx_with_lc({"embedding_error": None, "watchdog_fired": False}))
+
+    labels = [label for label, _ in _startup_timing.breadcrumbs]
+    assert "tool_served_degraded" not in labels
+
+
+def test_get_lifespan_stamps_tool_served_degraded_only_once_per_process(monkeypatch):
+    """First-occurrence-only: repeated degraded-state tool calls (the common
+    case -- degraded mode can last 24+ minutes per the WP2 incident evidence)
+    must not spam a stamp per call."""
+    from vibe_cognition import _startup_timing
+
+    monkeypatch.setattr(_startup_timing, "_stamped_once", set())
+    _startup_timing.breadcrumbs.clear()
+
+    for _ in range(5):
+        get_lifespan(_ctx_with_lc({"embedding_error": "wedged"}))
+
+    labels = [label for label, _ in _startup_timing.breadcrumbs]
+    assert labels.count("tool_served_degraded") == 1
+
+
 def test_parse_node_type_valid_none_and_bad():
     """T-6: one parser, one error shape — bad type returns an error dict, never raises
     (the old get_uncurated did a bare CognitionNodeType(node_type) that RAISED)."""

@@ -8,6 +8,7 @@ from typing import Any
 from fastmcp import Context
 
 from ..dashboard.server import DEFAULT_PORT, start_dashboard
+from .dispatch import dispatch_tool
 from .utils import get_lifespan
 
 logger = logging.getLogger(__name__)
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 def register_dashboard_tool(mcp) -> None:
     """Register the cognition_dashboard tool with the MCP server."""
 
-    @mcp.tool()
+    @dispatch_tool(mcp)
     def cognition_dashboard(
         ctx: Context,
         port: int = DEFAULT_PORT,

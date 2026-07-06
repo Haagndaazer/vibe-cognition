@@ -18,11 +18,13 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from contextlib import asynccontextmanager
 from typing import Any
 
 import anyio.to_thread
 from fastmcp import FastMCP
+from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 
 from .cognition import CognitionNodeType, CognitionStorage
 from .cognition.documents import find_orphaned_document_artifacts, read_text_sidecar
@@ -30,6 +32,7 @@ from .config import Settings, setup_logging
 from .embeddings import ChromaDBStorage, EmbeddingGenerator
 from .instructions import SERVER_INSTRUCTIONS
 from .tools import register_all_tools
+from .tools.dispatch import prewarm_dispatch_executor
 from .tools.cognition_tools import (
     _embed_document,
     _embed_entity_node,
@@ -48,7 +51,13 @@ logger = logging.getLogger(__name__)
 # without monkeypatching module state.
 _IMPORT_PROBE_TIMEOUT = 300.0
 _IMPORT_PROBE_RETRY_BACKOFF = 60.0
-_WATCHDOG_TIMEOUT = 120.0
+# WP-Wedge-2 §W2-d: raised from 120s -- observed healthy load max was 119.7s,
+# which fired the watchdog on a legitimately healthy load (pid 44288, harmless
+# via late recovery but noisy, and needlessly puts the degraded branch in
+# play). 300s = 2.5x that observed max. Env-overridable via
+# Settings.wedge_watchdog_timeout (WEDGE_WATCHDOG_TIMEOUT); this constant
+# remains the direct-call default for tests that construct their own context.
+_WATCHDOG_TIMEOUT = 300.0
 _WATCHDOG_POLL_INTERVAL = 5.0
 _HEARTBEAT_INTERVAL = 3.0
 _HEARTBEAT_WARM_COUNT = 4
@@ -86,7 +95,11 @@ def _run_subprocess_import_probe(
         cmd = [sys.executable, "-c", "import sentence_transformers"]
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
-    _startup_timing.stamp("import_probe_start")
+    # WP-Wedge-2 §W2-e: stamp_and_flush, not stamp -- this function only ever
+    # runs on the bg thread (_load_embeddings_and_sync's only caller), so every
+    # stamp here must hit disk immediately or a mid-wedge breadcrumb file
+    # under-reports (Incident B's exact defect).
+    _startup_timing.stamp_and_flush("import_probe_start")
     for attempt in range(2):
         proc = subprocess.Popen(  # noqa: S603 - fixed interpreter + literal script, no shell
             cmd,
@@ -97,12 +110,12 @@ def _run_subprocess_import_probe(
         )
         try:
             proc.wait(timeout=timeout)
-            _startup_timing.stamp("import_probe_ok")
+            _startup_timing.stamp_and_flush("import_probe_ok")
             return True
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-            _startup_timing.stamp("import_probe_killed")
+            _startup_timing.stamp_and_flush("import_probe_killed")
             if attempt == 0:
                 time.sleep(retry_backoff)
     return False
@@ -476,8 +489,7 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
     server startup, same off-critical-path constraint) so it never grows
     unbounded across N concurrent agents x many sessions x every project.
     """
-    _startup_timing.stamp("bg_thread_start")
-    _startup_timing.flush_to_disk()
+    _startup_timing.stamp_and_flush("bg_thread_start")
     _startup_timing.prune_old_logs()
 
     try:
@@ -530,17 +542,21 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
             return
 
         # Load embedding model (the bottleneck: 2-30s)
-        t_start = _startup_timing.stamp("bg_model_load_start")
+        t_start = _startup_timing.stamp_and_flush("bg_model_load_start")
         context["bg_model_load_start_time"] = t_start
         logger.info(f"Background: loading embedding model ({config.embedding_backend})...")
         embedding_generator = EmbeddingGenerator.from_config(config)
-        t_model = _startup_timing.stamp("bg_model_loaded")
+        t_model = _startup_timing.stamp_and_flush("bg_model_loaded")
         logger.info(f"Background: embedding model loaded in {t_model - t_start:.1f}s")
 
         # WP-Wedge §3b: install the generator, late-recovery clear (only if the
         # watchdog fired), and the ready signal all happen ATOMICALLY under the
         # same lock the watchdog's test-and-fire uses (mandatory — see _watchdog's
-        # docstring for the stranding interleaving this closes).
+        # docstring for the stranding interleaving this closes). Stamp INSIDE the
+        # lock (memory-only, doesn't extend the critical section); §W2-e's
+        # flush happens just after release, not inside -- disk I/O has no
+        # business extending a lock the watchdog also needs.
+        late_recovery = False
         wedge_lock: threading.Lock | None = context.get("_wedge_lock")
         with wedge_lock if wedge_lock is not None else contextlib.nullcontext():
             context["embedding_generator"] = embedding_generator
@@ -548,8 +564,11 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
                 context["embedding_error"] = None
                 context["watchdog_fired"] = False
                 _startup_timing.stamp("bg_late_recovery")
+                late_recovery = True
                 logger.info("Background: embedding generator installed after watchdog fired (late recovery)")
             context["embedding_ready"].set()
+        if late_recovery:
+            _startup_timing.flush_to_disk()
         logger.info("All tools now available")
 
         # Run deterministic part_of matching for edgeless nodes
@@ -608,8 +627,7 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
         # window instead of a falsely-confident "ready"; it never gates tool
         # availability.
         context["embedding_sync_done"].set()
-        _startup_timing.stamp("bg_sync_done")
-        _startup_timing.flush_to_disk()
+        _startup_timing.stamp_and_flush("bg_sync_done")
 
     except Exception as e:
         logger.error(f"Background initialization failed: {e}")
@@ -624,8 +642,7 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
             context["embedding_error"] = str(e)
             context["embedding_ready"].set()  # Signal so tools don't hang forever
         context["embedding_sync_done"].set()  # Sync phase is over either way
-        _startup_timing.stamp("bg_thread_error")
-        _startup_timing.flush_to_disk()
+        _startup_timing.stamp_and_flush("bg_thread_error")
 
 
 @asynccontextmanager
@@ -679,6 +696,34 @@ async def lifespan(server: FastMCP):
         raise
     _startup_timing.stamp("chroma_open_done")
 
+    # WP-Wedge-2 §W2-c (INV-2): pre-EXERCISE chromadb's own count/get code
+    # paths pre-yield -- third-party conditional imports (chromadb telemetry/
+    # embedding-function first-use paths) can't be pre-enumerated by grep
+    # alone the way the four known function-body-import sites were (this is
+    # NOT the torch/scipy/sentence_transformers chain -- that stays lazy and
+    # gated on backend, unchanged). Same two calls get_status already makes
+    # in production (a bare count_documents(), then an is_chunk-filtered
+    # count_documents() -- the filtered form calls _collection.get(where=...)
+    # under the hood, but both are COUNT calls at the public API this exists
+    # to exercise), so this exercises exactly the tool-reachable code path,
+    # nothing extra. Chroma
+    # init already does pre-yield disk I/O (HEISENBUG GUARD constrains the
+    # breadcrumb flush path, not startup work per se), so this doesn't cross
+    # a new line. Best-effort + budgeted: a failure or overrun here must
+    # never break startup, only log -- the real calls still run (possibly
+    # un-pre-warmed) once tools actually dispatch.
+    _pre_exercise_start = time.monotonic()
+    try:
+        cognition_embedding_storage.count_documents()
+        cognition_embedding_storage.count_documents(filter={"is_chunk": True})
+    except Exception as e:
+        logger.warning(f"Chroma pre-exercise failed (non-fatal): {e}")
+    _pre_exercise_elapsed = time.monotonic() - _pre_exercise_start
+    if _pre_exercise_elapsed > 0.2:
+        logger.warning(
+            f"Chroma pre-exercise took {_pre_exercise_elapsed:.3f}s (budget 200ms)"
+        )
+
     # Build project registry — home is always pinned
     loaded_projects = build_registry(
         home_path=config.repo_path,
@@ -722,8 +767,16 @@ async def lifespan(server: FastMCP):
     # WP-Wedge §3c: force-spawn warm AnyIO worker threads WHILE spawning is
     # still safe — before the bg import thread opens its wedge window. Pre-yield
     # but touches no disk, so the HEISENBUG GUARD (no disk I/O on this path) is
-    # unaffected.
+    # unaffected. UNCHANGED by WP-Wedge-2 (see §W2-b dispatch.py's module
+    # docstring): this keeps the stdio TRANSPORT's anyio pool warm (reader +
+    # writer), independent of tool dispatch, which no longer uses this pool
+    # at all once the dispatch executor below is warm.
     await _warm_worker_batch(_HEARTBEAT_WARM_COUNT)
+
+    # WP-Wedge-2 §W2-b (INV-1): pre-warm the DEDICATED dispatch executor the
+    # SAME way, same reason -- forces all its threads to exist while spawning
+    # is still safe, so no tool dispatch can ever need Thread.start() again.
+    await prewarm_dispatch_executor()
 
     bg_thread = threading.Thread(
         target=_load_embeddings_and_sync,
@@ -735,7 +788,9 @@ async def lifespan(server: FastMCP):
 
     # WP-Wedge §3b/§3c: armed for the whole load window, cancelled at shutdown
     # (and each exits itself as soon as embedding_ready sets, whichever path).
-    watchdog_task = asyncio.create_task(_watchdog(context))
+    watchdog_task = asyncio.create_task(
+        _watchdog(context, timeout=config.wedge_watchdog_timeout)
+    )
     heartbeat_task = asyncio.create_task(_worker_heartbeat(context))
     context["_watchdog_task"] = watchdog_task
     context["_heartbeat_task"] = heartbeat_task
@@ -772,7 +827,18 @@ async def lifespan(server: FastMCP):
     # Stop dashboard server if running
     if context.get("dashboard"):
         try:
-            from .dashboard.server import stop_dashboard
+            # wp2-import-free: sanctioned -- hoisting this to server.py's module
+            # top level creates a genuine circular import (dashboard.server ->
+            # dashboard.api -> tools.cognition_tools -> tools/__init__.py ->
+            # dashboard_tool.py -> dashboard.server, still mid-init). Provably
+            # safe as-is: dashboard_tool.py's OWN top-level import already
+            # fully loads dashboard.server during server.py's normal module
+            # import (via `from .tools import register_all_tools`, well before
+            # this shutdown code ever runs) -- this is always a sys.modules
+            # cache hit, never a fresh import, regardless of AST appearance.
+            from .dashboard.server import (
+                stop_dashboard,  # wp2-import-free: sanctioned (see comment above)
+            )
             stop_dashboard(context, join_timeout=3.0)
         except Exception as e:
             logger.warning(f"Dashboard shutdown error: {e}")
@@ -786,6 +852,88 @@ async def lifespan(server: FastMCP):
     logger.info("Shutdown complete")
 
 
+def _dump_all_thread_stacks(file) -> None:
+    """Write every live thread's current stack to ``file`` (stderr in
+    production). Uses ``sys._current_frames()`` rather than
+    ``faulthandler.dump_traceback`` -- the latter requires a real OS file
+    descriptor (``.fileno()``), which production stderr has but a captured/
+    wrapped stream (tests, some log-shipping setups) does not; this must work
+    in both."""
+    names = {t.ident: t.name for t in threading.enumerate()}
+    for tid, frame in sys._current_frames().items():
+        print(f"--- thread {names.get(tid, tid)} ---", file=file)
+        print("".join(traceback.format_stack(frame)), file=file)
+    with contextlib.suppress(AttributeError):
+        file.flush()
+
+
+class _DispatchStallForensics(Middleware):
+    """WP-Wedge-2 §W2-f: production self-forensics for a mode-(a) stall
+    (docs/wp-wedge2-plan.md rev 4, replacing WP2-AC2 after the §W2-a negative
+    result -- Incident A's exact blocking site couldn't be pinned from pure
+    Python, so the next REAL occurrence must pin its own stack).
+
+    Detection mechanism (implementer's craft, per the brief): races each
+    tool dispatch against a per-call timeout INSIDE the dispatch seam
+    (FastMCP's public ``on_call_tool`` middleware hook, first-party API, no
+    monkeypatching) rather than a periodic sampling loop -- ties the stall
+    signal exactly to the call that's actually stuck, with zero overhead on
+    the healthy-serving common case (no wrapping/racing at all unless the
+    load window or a degraded state is active). Runs entirely on the event
+    loop; ``asyncio.ensure_future``/``asyncio.wait`` never spawn an OS thread,
+    so this cannot itself trip INV-1.
+
+    Once-per-process and stderr-only are NOT implementer's craft (brief,
+    verbatim): the stack dump never touches disk (thread-context rule, same
+    as loop-side breadcrumbs) and fires at most once per process
+    (``_startup_timing.first_occurrence``, shared primitive with §W2-e's
+    ``tool_served_degraded``). The in-flight call itself is NEVER cancelled
+    (same rule as the heartbeat's cleanup) -- only observed and reported;
+    ``await task`` after the dump still waits for the real result.
+    """
+
+    async def on_call_tool(
+        self,
+        context: MiddlewareContext[Any],
+        call_next: CallNext[Any, Any],
+    ) -> Any:
+        fastmcp_ctx = context.fastmcp_context
+        lc = fastmcp_ctx.lifespan_context if fastmcp_ctx is not None else None
+        if lc is None:
+            return await call_next(context)
+
+        ready: threading.Event | None = lc.get("embedding_ready")
+        loading = ready is not None and not ready.is_set()
+        degraded = bool(lc.get("embedding_error")) or bool(lc.get("watchdog_fired"))
+        if not (loading or degraded):
+            return await call_next(context)
+
+        config = lc.get("config")
+        threshold = getattr(config, "dispatch_stall_threshold", _DISPATCH_STALL_THRESHOLD_DEFAULT)
+
+        task = asyncio.ensure_future(call_next(context))
+        done, _pending = await asyncio.wait({task}, timeout=threshold)
+        if task not in done:
+            if _startup_timing.first_occurrence("dispatch_stall_detected"):
+                tool_name = getattr(context.message, "name", "?")
+                print(
+                    f"[vibe-cognition] DISPATCH STALL: tool={tool_name!r} exceeded "
+                    f"{threshold:.0f}s in flight during a load/degraded window -- "
+                    "dumping all-thread stacks",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                _dump_all_thread_stacks(sys.stderr)
+            await task  # never cancel -- same rule as _worker_heartbeat's cleanup
+        return task.result()
+
+
+# Fallback only for a lifespan context missing "config" (shouldn't happen in
+# a real server; defensive for hand-built test contexts) -- keep in sync with
+# Settings.dispatch_stall_threshold's own default.
+_DISPATCH_STALL_THRESHOLD_DEFAULT = 30.0
+
+
 # Create the MCP server. SERVER_INSTRUCTIONS (single source of truth in instructions.py,
 # also used by the post-compact re-injection hook) is surfaced to the agent every session
 # via the MCP `initialize` handshake ("MCP Server Instructions").
@@ -793,6 +941,10 @@ mcp = FastMCP("Vibe Cognition", instructions=SERVER_INSTRUCTIONS, lifespan=lifes
 
 # Register all tools
 register_all_tools(mcp)
+
+# WP-Wedge-2 §W2-f: dispatch-stall self-forensics, registered once against
+# the module-level server singleton (see _DispatchStallForensics' docstring).
+mcp.add_middleware(_DispatchStallForensics())
 
 
 def main():
