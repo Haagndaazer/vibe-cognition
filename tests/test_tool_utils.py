@@ -73,28 +73,16 @@ def test_get_lifespan_stamps_tool_served_degraded_when_embedding_error_set(monke
     assert "tool_served_degraded" in labels
 
 
-def test_get_lifespan_stamps_tool_served_degraded_when_watchdog_fired(monkeypatch):
-    from vibe_cognition import _startup_timing
-
-    monkeypatch.setattr(_startup_timing, "_stamped_once", set())
-    _startup_timing.breadcrumbs.clear()
-
-    get_lifespan(_ctx_with_lc({"watchdog_fired": True}))
-
-    labels = [label for label, _ in _startup_timing.breadcrumbs]
-    assert "tool_served_degraded" in labels
-
-
 def test_get_lifespan_does_not_stamp_when_healthy(monkeypatch):
-    """Fails-before contrast: a healthy lifespan (no error, watchdog never
-    fired) must NOT emit the degraded breadcrumb -- it would be noise, and
-    would falsely mark a process that was never actually degraded."""
+    """Fails-before contrast: a healthy lifespan (no error) must NOT emit the
+    degraded breadcrumb -- it would be noise, and would falsely mark a
+    process that was never actually degraded."""
     from vibe_cognition import _startup_timing
 
     monkeypatch.setattr(_startup_timing, "_stamped_once", set())
     _startup_timing.breadcrumbs.clear()
 
-    get_lifespan(_ctx_with_lc({"embedding_error": None, "watchdog_fired": False}))
+    get_lifespan(_ctx_with_lc({"embedding_error": None}))
 
     labels = [label for label, _ in _startup_timing.breadcrumbs]
     assert "tool_served_degraded" not in labels

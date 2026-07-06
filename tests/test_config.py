@@ -172,28 +172,6 @@ def test_no_git_hygiene_set_true_from_env(tmp_path, monkeypatch):
     assert s.vibe_cognition_no_git_hygiene is True
 
 
-# ── WEDGE_WATCHDOG_TIMEOUT binding (WP-Wedge-2 §W2-d) ────────────────────────
-
-
-def test_wedge_watchdog_timeout_defaults_to_300(tmp_path):
-    """§W2-d/AC5: default raised from 120s to 300s (2.5x observed healthy max
-    119.7s) -- matches server._WATCHDOG_TIMEOUT; keep the two in sync."""
-    s = Settings(repo_path=tmp_path)
-    assert s.wedge_watchdog_timeout == 300.0
-
-
-def test_wedge_watchdog_timeout_overridable_from_env(tmp_path, monkeypatch):
-    """§W2-d/AC5: WEDGE_WATCHDOG_TIMEOUT overrides the default -- env-overridable
-    per existing config conventions (same binding style as embedding_revision et al.).
-
-    Fails-before: the constant lived only as a server.py module-level literal with
-    no Settings field, so no env var could reach it at all.
-    """
-    monkeypatch.setenv("WEDGE_WATCHDOG_TIMEOUT", "600")
-    s = Settings(repo_path=tmp_path)
-    assert s.wedge_watchdog_timeout == 600.0
-
-
 # ── DISPATCH_STALL_THRESHOLD binding (WP-Wedge-2 §W2-f) ──────────────────────
 
 
@@ -204,11 +182,10 @@ def test_dispatch_stall_threshold_defaults_to_30(tmp_path):
 
 
 def test_dispatch_stall_threshold_overridable_from_env(tmp_path, monkeypatch):
-    """§W2-f: DISPATCH_STALL_THRESHOLD overrides the default -- same binding
-    convention as wedge_watchdog_timeout. All five existing stall-forensics
-    tests (test_wp_wedge2.py) drive the threshold through a bare SimpleNamespace
-    stand-in for config, which never exercises the real Settings()/env path --
-    this is that missing sibling coverage (gate finding, MINOR).
+    """§W2-f: DISPATCH_STALL_THRESHOLD overrides the default. All five existing
+    stall-forensics tests (test_wp_wedge2.py) drive the threshold through a bare
+    SimpleNamespace stand-in for config, which never exercises the real
+    Settings()/env path -- this is that missing sibling coverage (gate finding, MINOR).
 
     Fails-before: without the Settings field, no env var could reach the
     _DispatchStallForensics middleware's threshold read at all.
@@ -216,3 +193,54 @@ def test_dispatch_stall_threshold_overridable_from_env(tmp_path, monkeypatch):
     monkeypatch.setenv("DISPATCH_STALL_THRESHOLD", "45")
     s = Settings(repo_path=tmp_path)
     assert s.dispatch_stall_threshold == 45.0
+
+
+# ── WP-Sidecar config bindings ────────────────────────────────────────────────
+
+
+def test_sidecar_load_timeout_defaults_and_overridable(tmp_path, monkeypatch):
+    s = Settings(repo_path=tmp_path)
+    assert s.sidecar_load_timeout == 180.0
+    monkeypatch.setenv("SIDECAR_LOAD_TIMEOUT", "90")
+    s = Settings(repo_path=tmp_path)
+    assert s.sidecar_load_timeout == 90.0
+
+
+def test_sidecar_request_timeout_defaults_and_overridable(tmp_path, monkeypatch):
+    s = Settings(repo_path=tmp_path)
+    assert s.sidecar_request_timeout == 30.0
+    monkeypatch.setenv("SIDECAR_REQUEST_TIMEOUT", "15")
+    s = Settings(repo_path=tmp_path)
+    assert s.sidecar_request_timeout == 15.0
+
+
+def test_sidecar_mutex_wait_timeout_defaults_and_overridable(tmp_path, monkeypatch):
+    s = Settings(repo_path=tmp_path)
+    assert s.sidecar_mutex_wait_timeout == 300.0
+    monkeypatch.setenv("SIDECAR_MUTEX_WAIT_TIMEOUT", "60")
+    s = Settings(repo_path=tmp_path)
+    assert s.sidecar_mutex_wait_timeout == 60.0
+
+
+def test_sidecar_max_retry_attempts_defaults_and_overridable(tmp_path, monkeypatch):
+    s = Settings(repo_path=tmp_path)
+    assert s.sidecar_max_retry_attempts == 3
+    monkeypatch.setenv("SIDECAR_MAX_RETRY_ATTEMPTS", "5")
+    s = Settings(repo_path=tmp_path)
+    assert s.sidecar_max_retry_attempts == 5
+
+
+def test_sidecar_retry_backoff_seconds_defaults_and_overridable(tmp_path, monkeypatch):
+    s = Settings(repo_path=tmp_path)
+    assert s.sidecar_retry_backoff_seconds == 10.0
+    monkeypatch.setenv("SIDECAR_RETRY_BACKOFF_SECONDS", "2")
+    s = Settings(repo_path=tmp_path)
+    assert s.sidecar_retry_backoff_seconds == 2.0
+
+
+def test_sidecar_periodic_retry_interval_defaults_and_overridable(tmp_path, monkeypatch):
+    s = Settings(repo_path=tmp_path)
+    assert s.sidecar_periodic_retry_interval == 300.0
+    monkeypatch.setenv("SIDECAR_PERIODIC_RETRY_INTERVAL", "120")
+    s = Settings(repo_path=tmp_path)
+    assert s.sidecar_periodic_retry_interval == 120.0

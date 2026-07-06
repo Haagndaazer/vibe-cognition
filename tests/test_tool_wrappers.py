@@ -67,6 +67,41 @@ def test_get_status_shape_and_embedding_loading(tmp_path, mock_mcp, build_lc, ma
     assert "curation" in result
 
 
+def test_get_status_defers_to_sidecar_supervisor_status_while_not_ready(
+    tmp_path, mock_mcp, build_lc, make_ctx
+):
+    """WP-Sidecar §S-d: while not ready and no error, embedding_status reports
+    the sidecar supervisor's own granular status (spawning/loading/waiting-
+    for-load-lock) instead of the generic "loading", when a supervisor is
+    present (the non-ollama backend).
+
+    Fails-before: get_status always reported "loading" regardless, losing
+    the supervisor's more specific state."""
+    from types import SimpleNamespace
+
+    register_service_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=False)
+    lc["_sidecar_supervisor"] = SimpleNamespace(status=lambda: "waiting-for-load-lock")
+    ctx = make_ctx(lc)
+
+    result = mock_mcp.tools["get_status"](ctx)  # type: ignore[arg-type]
+    assert result["embedding_status"] == "waiting-for-load-lock"
+
+
+def test_get_status_falls_back_to_loading_when_no_sidecar_supervisor(
+    tmp_path, mock_mcp, build_lc, make_ctx
+):
+    """The ollama backend has no supervisor at all -- must keep reporting the
+    original, unchanged "loading" (not crash on a missing key)."""
+    register_service_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=False)
+    assert lc.get("_sidecar_supervisor") is None
+    ctx = make_ctx(lc)
+
+    result = mock_mcp.tools["get_status"](ctx)  # type: ignore[arg-type]
+    assert result["embedding_status"] == "loading"
+
+
 def test_get_status_embedding_ready(tmp_path, mock_mcp, build_lc, make_ctx):
     """get_status: embedding_status='ready' when embedding_ready is set.
 

@@ -47,7 +47,15 @@ def register_service_tools(mcp) -> None:
                                 node ids, for diagnosis,
               cognition_embeddings: {nodes, chunks, total}
                                     (or {"error": ...}; 0 if uninitialized),
-              embedding_status: "loading" | "syncing" | "ready" | "error: <detail>".
+              embedding_status: "spawning" | "loading" | "waiting-for-load-lock" |
+                                "syncing" | "ready" | "error: <detail>". The first
+                                three (WP-Sidecar) apply to the non-ollama backend
+                                only: "spawning" while the sidecar subprocess is
+                                starting, "waiting-for-load-lock" while it queues
+                                behind another session's model load on the cross-
+                                process mutex, "loading" once it holds the lock and
+                                is actually loading. ollama (no sidecar) only ever
+                                reports "loading" pre-ready, unchanged.
                                 "syncing" (WP-4, 5340ae677931) means the embedding
                                 model is loaded and tools are usable, but the
                                 historical backfill sync (teammate-pulled nodes
@@ -155,7 +163,13 @@ def register_service_tools(mcp) -> None:
             else:
                 result["embedding_status"] = "ready"
         else:
-            result["embedding_status"] = "loading"
+            # WP-Sidecar §S-d: while not yet ready, the sidecar supervisor
+            # (non-ollama backend only) knows a more granular state than the
+            # generic "loading" -- spawning the subprocess, waiting on the
+            # cross-process load mutex, or actually loading the model.
+            # ollama (no supervisor) keeps its unchanged, simpler "loading".
+            supervisor = lc.get("_sidecar_supervisor")
+            result["embedding_status"] = supervisor.status() if supervisor is not None else "loading"
 
         result["embedding_sync_progress"] = lc.get("embedding_sync_progress")
 

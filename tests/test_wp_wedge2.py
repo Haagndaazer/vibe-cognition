@@ -2,17 +2,15 @@
 in-process import wedge.
 
 Covers WP2-AC1/AC3 (INV-1: spawn-free event loop, this file's §W2-b section)
-and WP2-AC4 (INV-2: import-free tool surface, §W2-c section). The watchdog-
-timeout wiring test (AC5) is in test_wp_wedge.py next to the rest of the
-watchdog tests; the §W2-a repro script (AC2 part ii) and stall-forensics test
-(AC2 part i) are wired in separately per docs/wp-wedge2-plan.md rev 4.
+and WP2-AC4 (INV-2: import-free tool surface, §W2-c section). The stall-
+forensics test (AC2 part i) is wired in here too. The §W2-a repro script
+(AC2 part ii, formerly wp2_mode_a_forensics.py) was RETIRED by WP-Sidecar
+(P0 endgame) -- see the "§W2-a repro: RETIRED" comment below for why its
+premise no longer applies.
 """
 
 import ast
 import asyncio
-import json
-import subprocess
-import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -41,13 +39,17 @@ from vibe_cognition.tools.dispatch import (
 # surface is import-free at runtime," full stop -- so this flags ANY
 # function-body Import/ImportFrom, anywhere under src/vibe_cognition/.
 #
-# Three files are exempt, each for a documented reason -- NOT "not gotten to
+# Four files are exempt, each for a documented reason -- NOT "not gotten to
 # yet":
-#   - embeddings/generator.py: the ONE sanctioned lazy-backend-construction
-#     site (sentence_transformers AND ollama, WP-C's decision 9022f7de94e9)
-#     -- runs on the bg thread via _load_embeddings_and_sync, never on the
-#     tool-dispatch path. Same file WP-Wedge's heavy-chain guard already
-#     sanctions, same underlying reason.
+#   - embeddings/generator.py: OllamaBackend's lazy `import ollama` (WP-C's
+#     decision 9022f7de94e9) -- runs on the bg thread via
+#     _load_embeddings_and_sync, never on the tool-dispatch path.
+#   - embeddings/sidecar.py (WP-Sidecar, P0 endgame): the sentence-
+#     transformers/torch lazy-backend-construction site, moved here from
+#     generator.py -- runs in a SEPARATE SUBPROCESS (never imported by the
+#     server process at all, so INV-2's "the tool surface is import-free at
+#     runtime" doesn't even apply to it structurally), same underlying
+#     reason WP-Wedge's heavy-chain guard sanctions this exact file.
 #   - dashboard/cli.py: a standalone console-script entry point
 #     (`vibe-cognition-dashboard`, pyproject.toml [project.scripts]) -- never
 #     imported by register_all_tools/server.py's import graph, so it never
@@ -58,26 +60,34 @@ from vibe_cognition.tools.dispatch import (
 #
 # Known tradeoff (shared with the heavy-chain guard's own exclusion style): a
 # whole-file exclusion means a NEW, unrelated function-body import added to
-# one of these three files later would go unflagged. The "guard the guard"
+# one of these four files later would go unflagged. The "guard the guard"
 # tests below at least catch the exclusion going silently vacuous (the
 # sanctioned import removed entirely, e.g. by a refactor).
 #
-# A fourth, narrower exception style: a single line carrying the
+# A fifth, narrower exception style: a single line carrying the
 # `wp2-import-free: sanctioned` marker (mirrors ruff's noqa comments --
 # self-documenting, per-line, doesn't blanket-exempt the rest of that file).
-# Used for
-# server.py's shutdown-path `from .dashboard.server import stop_dashboard`:
-# hoisting THAT one to module level creates a genuine circular import
-# (dashboard.server -> dashboard.api -> tools.cognition_tools ->
-# tools/__init__.py -> dashboard_tool.py -> dashboard.server, still
-# mid-init) -- discovered when this guard's own repro-wiring test failed on
-# it. It's provably safe as a function-body import: dashboard_tool.py's own
-# top-level import already fully loads dashboard.server during server.py's
-# normal module import (well before this shutdown code ever runs), so it's
-# always a sys.modules cache hit, never a fresh import.
+# Used for:
+#   - server.py's shutdown-path `from .dashboard.server import stop_dashboard`:
+#     hoisting THAT one to module level creates a genuine circular import
+#     (dashboard.server -> dashboard.api -> tools.cognition_tools ->
+#     tools/__init__.py -> dashboard_tool.py -> dashboard.server, still
+#     mid-init) -- discovered when this guard's own repro-wiring test failed on
+#     it. It's provably safe as a function-body import: dashboard_tool.py's own
+#     top-level import already fully loads dashboard.server during server.py's
+#     normal module import (well before this shutdown code ever runs), so it's
+#     always a sys.modules cache hit, never a fresh import.
+#   - embeddings/sidecar_client.py's `from .generator import EmbeddingGenerator`
+#     (two call sites, SidecarSupervisor.ensure_ready/_recovery_loop): hoisting
+#     to module level creates a genuine circular import (generator.py's
+#     EmbeddingGenerator.from_config constructs a SidecarBackend FROM this
+#     module, at generator.py's own top level) -- always a sys.modules cache
+#     hit, never a fresh import, since generator.py's top-level import already
+#     fully loads sidecar_client.py during the server's normal module import.
 
 _IMPORT_FREE_SANCTIONED_FILES = {
     Path("src", "vibe_cognition", "embeddings", "generator.py"),
+    Path("src", "vibe_cognition", "embeddings", "sidecar.py"),
     Path("src", "vibe_cognition", "dashboard", "cli.py"),
     Path("src", "vibe_cognition", "instructions.py"),
 }
@@ -126,7 +136,7 @@ def test_tool_surface_has_no_function_body_imports_outside_sanctioned_files():
     """WP2-AC4 (INV-2): after handshake_yield, nothing a tool handler or the
     dispatch path executes may trigger import machinery -- no module under
     src/vibe_cognition/ may import ANYTHING inside a function body, outside
-    the three sanctioned files above.
+    the four sanctioned files above.
 
     Fixes the four known §2.3 sites (service_tools.py:87's
     `from .project_registry import LoadedProjects`, cognition_tools.py's
@@ -232,7 +242,6 @@ def _loading_lc(threshold: float) -> dict:
     return {
         "embedding_ready": threading.Event(),  # unset -- the load window
         "embedding_error": None,
-        "watchdog_fired": False,
         "config": SimpleNamespace(dispatch_stall_threshold=threshold),
     }
 
@@ -288,7 +297,6 @@ async def test_stall_forensics_does_not_engage_when_healthy(monkeypatch, capsys)
     lc = {
         "embedding_ready": ready,
         "embedding_error": None,
-        "watchdog_fired": False,
         "config": SimpleNamespace(dispatch_stall_threshold=0.01),
     }
 
@@ -306,7 +314,7 @@ async def test_stall_forensics_does_not_engage_when_healthy(monkeypatch, capsys)
 @pytest.mark.asyncio
 async def test_stall_forensics_engages_on_degraded_state_even_when_ready(monkeypatch, capsys):
     """The OTHER half of the scoping condition: embedding_ready IS set, but
-    embedding_error is set (or watchdog_fired) -- degraded, not loading --
+    embedding_error is set -- degraded, not loading --
     must still engage the stall race."""
     monkeypatch.setattr(_startup_timing, "_stamped_once", set())
     ready = threading.Event()
@@ -314,7 +322,6 @@ async def test_stall_forensics_engages_on_degraded_state_even_when_ready(monkeyp
     lc = {
         "embedding_ready": ready,
         "embedding_error": "wedged",
-        "watchdog_fired": False,
         "config": SimpleNamespace(dispatch_stall_threshold=0.05),
     }
 
@@ -348,38 +355,24 @@ async def test_stall_forensics_dumps_at_most_once_per_process(monkeypatch, capsy
     assert err.count("DISPATCH STALL") == 1
 
 
-# ── §W2-a repro wired in as WP2-AC2(ii) regression coverage ─────────────────
-
-
-def test_import_lock_class_repro_passes_on_current_main(tmp_path):
-    """WP2-AC2(ii): the §W2-a repro script (subprocess-isolated, real dispatch,
-    real module name) passes on current main for the four cleared sites. It
-    guards the plain-import-lock CLASS going forward -- it does NOT claim to
-    reproduce Incident A (see the script's own module docstring for why: the
-    §W2-a forensics finding was negative, and the likely real mechanism, the
-    Windows OS loader lock, can't be reproduced from pure Python either way).
-
-    Slow (~10-20s: a real subprocess importing sentence_transformers/torch/
-    scipy fresh) -- this is inherent to the fidelity requirement, not
-    incidental.
-    """
-    script = Path(__file__).parent / "wp2_mode_a_forensics.py"
-    repo_dir = tmp_path / "wp2_repro_repo"
-
-    result = subprocess.run(
-        [sys.executable, str(script), str(repo_dir)],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-
-    assert result.returncode == 0, (
-        f"import-lock-class repro failed (stdout below) -- a function-body "
-        f"import was reintroduced that collides with a bg-thread import lock:\n"
-        f"{result.stdout}\n---stderr---\n{result.stderr}"
-    )
-    payload = json.loads(result.stdout)
-    assert all(r["ok"] for r in payload), payload
+# ── §W2-a repro: RETIRED by WP-Sidecar (P0 endgame) ─────────────────────────
+#
+# tests/wp2_mode_a_forensics.py and its wrapper test used to live here,
+# guarding the plain-import-lock CLASS: could a function-body import on the
+# tool surface collide with CPython's per-module import lock while the bg
+# thread was mid-import of the real sentence_transformers/scipy chain in
+# THIS SAME PROCESS? WP-Sidecar removes the premise entirely -- the heavy
+# chain is no longer imported in the server process AT ALL (it lives in the
+# sidecar subprocess, embeddings/sidecar.py), so there is no in-process
+# bg-thread import left for a tool-surface import to ever collide with. The
+# script's own repro (patching a real module's loader, driving real dispatch
+# while EmbeddingGenerator.from_config blocks in-process) no longer engages:
+# from_config's sentence-transformers branch now talks to the sidecar over
+# IPC instead of importing anything itself. Deleted rather than kept as dead
+# weight; the underlying regression class (no function-body import anywhere
+# outside the sanctioned sites) stays covered by
+# test_tool_surface_has_no_function_body_imports_outside_sanctioned_files
+# above, which is unaffected by this retirement.
 
 
 # ── §W2-b: INV-1 spawn-free event loop (WP2-AC1, WP2-AC3) ───────────────────
@@ -453,27 +446,24 @@ async def test_ac1_every_tool_returns_within_bound_during_the_load_window(
 
 
 @pytest.mark.asyncio
-async def test_ac1_every_tool_returns_within_bound_in_the_watchdog_fired_state(
+async def test_ac1_every_tool_returns_within_bound_in_the_sidecar_degraded_state(
     tmp_path, monkeypatch
 ):
-    """WP2-AC1, the OTHER required state: once the watchdog has fired
-    (embedding_error set, watchdog_fired True -- production hung specifically
-    in this post-fire window per Incident A), every tool STILL returns within
-    10s via real dispatch -- the degraded-serving contract, not just the
-    loading contract."""
+    """WP2-AC1, the OTHER required state -- WP-Sidecar's replacement for the
+    old watchdog-fired scenario (the watchdog itself is subsumed; see
+    test_wp_sidecar.py's docstring for the full replacement mapping): once
+    the sidecar supervisor has exhausted its in-budget retries and degraded
+    (embedding_error set), every tool STILL returns within 10s via real
+    dispatch -- the degraded-serving contract, not just the loading
+    contract."""
     monkeypatch.setenv("REPO_PATH", str(tmp_path))
-    monkeypatch.setenv("EMBEDDING_BACKEND", "ollama")
-    monkeypatch.setenv("WEDGE_WATCHDOG_TIMEOUT", "0.05")
+    monkeypatch.setenv("EMBEDDING_BACKEND", "sentence-transformers")
+    monkeypatch.setenv("SIDECAR_MAX_RETRY_ATTEMPTS", "1")
+    monkeypatch.setenv("SIDECAR_RETRY_BACKOFF_SECONDS", "0")
 
-    release = threading.Event()
+    from vibe_cognition.embeddings.sidecar_client import SidecarSupervisor
 
-    def _slow_from_config(cfg):
-        release.wait(timeout=30)
-        return SimpleNamespace()
-
-    monkeypatch.setattr(
-        "vibe_cognition.server.EmbeddingGenerator.from_config", _slow_from_config
-    )
+    monkeypatch.setattr(SidecarSupervisor, "_attempt_load", lambda self: False)
 
     with patch(
         "vibe_cognition.tools.dashboard_tool.start_dashboard",
@@ -487,18 +477,15 @@ async def test_ac1_every_tool_returns_within_bound_in_the_watchdog_fired_state(
         async with Client(mcp) as client:
             lc = mcp._lifespan_result
             for _ in range(500):
-                if lc.get("watchdog_fired") or lc.get("embedding_error"):
+                if lc.get("embedding_error"):
                     break
                 await asyncio.sleep(0.02)
-            assert lc.get("watchdog_fired") or lc.get(
-                "embedding_error"
-            ), "watchdog never fired -- test setup invalid"
+            assert lc.get("embedding_error"), "sidecar never degraded -- test setup invalid"
 
             results = await _call_all_tools(client)
-    release.set()
 
     failures = _failures(results)
-    assert not failures, f"tool(s) failed/hung in the watchdog-fired state: {failures}"
+    assert not failures, f"tool(s) failed/hung in the sidecar-degraded state: {failures}"
 
 
 @pytest.mark.asyncio

@@ -4,7 +4,7 @@ from typing import Any
 
 from fastmcp import Context
 
-from .. import _startup_timing
+from .. import _heavy_import_guard, _startup_timing
 
 
 def get_lifespan(ctx: Context) -> dict[str, Any]:
@@ -15,18 +15,25 @@ def get_lifespan(ctx: Context) -> dict[str, Any]:
     WP-Wedge-2 §W2-e: every tool calls this first, making it the natural choke
     point for the ``tool_served_degraded`` breadcrumb -- first occurrence per
     process, when dispatch reaches a tool while the session is in a degraded
-    state (``embedding_error`` set, or the watchdog already fired). Reaching
-    this line already proves dispatch itself isn't hung, which is exactly the
-    "degraded but serving" signal fleet logs need to distinguish from a real
-    hang. ``stamp_once`` never touches disk (worker-thread-context safe); it
-    rides the next bg-thread flush.
+    state (``embedding_error`` set). Reaching this line already proves
+    dispatch itself isn't hung, which is exactly the "degraded but serving"
+    signal fleet logs need to distinguish from a real hang. ``stamp_once``
+    never touches disk (worker-thread-context safe); it rides the next
+    bg-thread flush.
+
+    WP-Sidecar §S-c: same choke point doubles as the "first tool call"
+    moment for the runtime heavy-import invariant check (first occurrence
+    per process -- a sys.modules scan is cheap, but there is no reason to
+    repeat it on every single dispatch).
     """
     rc = ctx.request_context
     if rc is None:  # pragma: no cover - defensive; not reachable inside a tool call
         raise RuntimeError("no request context")
     lc = rc.lifespan_context
-    if lc.get("embedding_error") or lc.get("watchdog_fired"):
+    if lc.get("embedding_error"):
         _startup_timing.stamp_once("tool_served_degraded")
+    if _startup_timing.first_occurrence("heavy_import_guard_checked_first_tool_call"):
+        _heavy_import_guard.check_and_log("first_tool_call")
     return lc
 
 

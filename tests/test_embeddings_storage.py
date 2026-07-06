@@ -6,7 +6,7 @@ import pytest
 from chromadb.errors import InternalError
 
 from vibe_cognition.embeddings import ChromaDBStorage
-from vibe_cognition.embeddings.generator import SentenceTransformersBackend
+from vibe_cognition.embeddings.sidecar import SentenceTransformersBackend
 from vibe_cognition.embeddings.storage import _retry_chromadb_open
 
 

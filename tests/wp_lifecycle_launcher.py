@@ -1,9 +1,10 @@
 """WP-Lifecycle (P1, docs/wp-lifecycle-plan.md rev 3): standalone launcher for
 WPL-AC1/AC2/AC3's subprocess-real integration tests.
 
-NOT collected directly by pytest (no test_ prefix) -- same convention as
-tests/wp2_mode_a_forensics.py. Run via a REAL `uv run ... python <this
-path>` invocation (test_wp_lifecycle_integration.py drives this), matching
+NOT collected directly by pytest (no test_ prefix) -- a standalone support
+script, same convention as this repo's other subprocess-driven test
+harnesses. Run via a REAL `uv run ... python <this path>` invocation
+(test_wp_lifecycle_integration.py drives this), matching
 plugin.json's launch shape exactly: disposable ancestor -> uv -> this
 script -- so the ancestor-watch is exercised against the real client->uv->
 python topology (spawning python directly would make WPL-AC1/AC2
