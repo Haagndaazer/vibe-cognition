@@ -45,9 +45,14 @@ misses). The server must guarantee its own exit two independent ways:
    available: WP-Sidecar reuses this with parent=server, no intermediary).
    OpenProcess specifics (all requirements, not suggestions):
    - Rights: `SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION` only.
-   - NULL return because the pid is already gone → the ancestor is dead;
-     exit NOW. ACCESS_DENIED on a live process → fall back to slow polling
-     of pid liveness; do NOT exit and do NOT crash the watch.
+   - NULL return because the pid is already gone: for the DIRECT parent (uv)
+     → genuinely orphaned, exit NOW. For the GRANDPARENT → do NOT exit (a
+     future launch shim that legitimately exits after spawning uv would
+     otherwise brick every server in an insta-exit churn loop); arm degraded
+     (uv watch + pipe watch only) and breadcrumb the resolved ancestor chain
+     (pids + image names) so a topology surprise is diagnosable, not fatal.
+     ACCESS_DENIED on a live process → fall back to slow polling of pid
+     liveness; do NOT exit and do NOT crash the watch.
    - PID-reuse guard: validate via `GetProcessTimes` that the opened
      process's creation time is EARLIER than our own start time (a reused
      pid is necessarily younger than us); validation logic unit-tested even
@@ -66,7 +71,10 @@ misses). The server must guarantee its own exit two independent ways:
    polls the stdin handle via `PeekNamedPipe` (detects ERROR_BROKEN_PIPE on
    client close without consuming data), armed pre-yield alongside the
    ancestor watch; on broken pipe → give graceful shutdown a 5s grace →
-   `os._exit(0)`. Coordinate with WP-Wedge-2's transport work — do not
+   `os._exit(0)`. Arm ONLY if `GetFileType(stdin) == FILE_TYPE_PIPE` — a
+   console/dev run has FILE_TYPE_CHAR stdin where PeekNamedPipe errors
+   immediately; skip the watch there (breadcrumbed), never exit on it.
+   Coordinate with WP-Wedge-2's transport work — do not
    double-build; if INV-1 changes how stdin is read, hook the same place,
    but the loop-independence property is non-negotiable.
 

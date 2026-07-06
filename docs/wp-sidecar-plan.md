@@ -51,8 +51,13 @@ sidecar entry module does, and it is never imported server-side").
   thread), whose kill demonstrably closes handles and unblocks a stuck
   write; no reads or writes on the loop; no unbounded buffers.
 - **Protocol surface (small, boring):** `load(model, dims)` → ok/err;
-  `generate(texts: list, input_type)` → vectors; `ping` → ok. Bulk/batch is a
-  list argument, not a second protocol. Version/model are pinned in the load
+  `generate(texts: list, input_type)` → vectors; `ping` → ok. Plus one state
+  signal so the supervisor can tell queue-wait from wedge (without it,
+  "load timeout runs OUTSIDE the lock wait" is unimplementable): the sidecar
+  emits `{"event": "lock_wait"}` / `{"event": "lock_acquired"}` (or `ping`
+  returns current state), and the supervisor's load-timeout clock starts at
+  `lock_acquired`; §S-d's `waiting-for-load-lock` status reads the same
+  signal. Bulk/batch is a list argument, not a second protocol. Version/model are pinned in the load
   call; a protocol-version field guards plugin-update skew (server and
   sidecar spawn from the same installed tree, but a running server may
   outlive an update — reject on mismatch and respawn).
@@ -101,9 +106,15 @@ sidecar entry module does, and it is never imported server-side").
   not the wedge source), the graph, the journal, all tools, WP-Wedge-2's
   spawn-free dispatch and import-free surface (they remain the backstop for
   whatever new first-use import surprises exist).
-- **Ollama backend:** untouched — it already talks to an external process
-  over HTTP; the sidecar path is for the sentence-transformers backend only.
-  Backend selection logic stays where it is.
+- **Ollama backend:** untouched structurally — it already talks to an
+  external process over HTTP; the sidecar path is for the sentence-
+  transformers backend only. Backend selection logic stays where it is.
+  BUT: the watchdog being collapsed covers BOTH backends today, and the
+  ollama branch has its own lazy import (generator.py:116) plus an HTTP
+  dependency on a possibly-hung local daemon. Either retain a trivial load
+  bound for the ollama branch, or verify and state that its load is already
+  bounded by client-side HTTP timeouts — and the five-test replacement must
+  account for the ollama branch explicitly.
 
 ## 3. Scope
 
@@ -145,7 +156,8 @@ sidecar entry module does, and it is never imported server-side").
   wedged at load (simulated with a blocking stub sidecar) → supervisor kills
   at timeout, retries, then degrades; server dispatch stays instant
   throughout (reuse WP-Wedge-2's AC1 harness against the stub-wedged
-  sidecar).
+  sidecar — pin the exact fixture/file name from the landed Wedge-2 tree at
+  dispatch time; it has been renamed once already).
 - **WPS-AC4:** two concurrent sidecars (two server processes) serialize their
   loads on the named mutex — second waits, both succeed, waiting is not
   killed as wedged (integration test with two real subprocesses). PLUS the
