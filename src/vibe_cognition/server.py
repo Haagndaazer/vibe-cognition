@@ -787,8 +787,20 @@ async def lifespan(server: FastMCP):
     # closure) is the loop-independent secondary path -- the MCP-conventional
     # stdin-EOF shutdown rides the event loop and is exactly what a frozen
     # loop can never fire.
-    lifecycle.arm_ancestor_watch()
-    lifecycle.arm_stdin_watch()
+    # Defensive degrade-don't-abort (gate finding): an unexpected failure
+    # arming either watch (e.g. thread creation itself failing under extreme
+    # resource exhaustion) must not crash the ENTIRE server startup over an
+    # optional safety net -- consistent with this WP's own degraded-arm
+    # philosophy elsewhere (NULL-grandparent, ACCESS_DENIED) of "even if
+    # part of this doesn't work, keep serving."
+    try:
+        lifecycle.arm_ancestor_watch()
+    except Exception as e:
+        logger.warning(f"Failed to arm ancestor-death watch (non-fatal): {e}")
+    try:
+        lifecycle.arm_stdin_watch()
+    except Exception as e:
+        logger.warning(f"Failed to arm stdin-pipe watch (non-fatal): {e}")
 
     bg_thread = threading.Thread(
         target=_load_embeddings_and_sync,

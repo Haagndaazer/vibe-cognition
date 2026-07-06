@@ -72,6 +72,7 @@ if _IS_WINDOWS:
 
     _WAIT_OBJECT_0 = 0x00000000
     _WAIT_TIMEOUT = 0x00000102
+    _WAIT_FAILED = 0xFFFFFFFF
 
     _ERROR_ACCESS_DENIED = 5
     _ERROR_INVALID_PARAMETER = 87
@@ -315,7 +316,7 @@ def arm_ancestor_watch(
         elif parent_result.access_denied:
             # Can't get a wait handle, but the pid is alive -- degrade to
             # slow polling for this ancestor rather than failing the watch.
-            watched_handles.append(("poll", own_parent_pid))
+            watched_handles.append(["poll", None, own_parent_pid])
         else:
             handle = parent_result.handle
             if is_younger_than_self(handle) is True:
@@ -327,7 +328,7 @@ def arm_ancestor_watch(
                     f"direct parent pid {own_parent_pid} reused by a younger process",
                 )
                 return None
-            watched_handles.append(("wait", handle))
+            watched_handles.append(["wait", handle, own_parent_pid])
 
             if depth >= 2:
                 grandparent_pid = get_parent_pid_via_handle(handle)
@@ -345,7 +346,7 @@ def arm_ancestor_watch(
                         chain_breadcrumb.append("grandparent=GONE(degraded)")
                         degraded = True
                     elif gp_result.access_denied:
-                        watched_handles.append(("poll", grandparent_pid))
+                        watched_handles.append(["poll", None, grandparent_pid])
                     else:
                         gp_handle = gp_result.handle
                         image = _query_image_name(gp_handle)
@@ -358,34 +359,53 @@ def arm_ancestor_watch(
                         else:
                             if image:
                                 chain_breadcrumb.append(f"grandparent_image={image}")
-                            watched_handles.append(("wait", gp_handle))
+                            watched_handles.append(["wait", gp_handle, grandparent_pid])
 
     def _watch() -> None:
-        wait_handles = [h for kind, h in watched_handles if kind == "wait"]
-        poll_pids = [pid for kind, pid in watched_handles if kind == "poll"]
+        # Mutable per-entry [kind, handle_or_None, pid] lists (not tuples) --
+        # a WAIT_FAILED result flips affected entries from "wait" to "poll"
+        # in place, degrading the watch instead of silently disabling it.
+        entries = [list(e) for e in watched_handles]
 
-        if not wait_handles and not poll_pids:
+        if not entries:
             return
 
-        array_type = wintypes.HANDLE * len(wait_handles) if wait_handles else None
-        handle_array = array_type(*wait_handles) if wait_handles else None
-
         while True:
-            if wait_handles:
-                timeout_ms = int(_POLL_INTERVAL_SECONDS * 1000) if poll_pids else 0xFFFFFFFF
+            wait_entries = [e for e in entries if e[0] == "wait"]
+            poll_entries = [e for e in entries if e[0] == "poll"]
+
+            if wait_entries:
+                handle_array = (wintypes.HANDLE * len(wait_entries))(*(e[1] for e in wait_entries))
+                timeout_ms = int(_POLL_INTERVAL_SECONDS * 1000) if poll_entries else 0xFFFFFFFF
                 result = _kernel32.WaitForMultipleObjects(
-                    len(wait_handles), handle_array, False, timeout_ms
+                    len(wait_entries), handle_array, False, timeout_ms
                 )
-                if _WAIT_OBJECT_0 <= result < _WAIT_OBJECT_0 + len(wait_handles):
+                if _WAIT_OBJECT_0 <= result < _WAIT_OBJECT_0 + len(wait_entries):
                     exit_fn("parent_death_exit", "watched ancestor handle signaled")
                     return
-                # WAIT_TIMEOUT with poll_pids present -> fall through to poll.
-            if poll_pids:
-                for pid in poll_pids:
-                    if not _pid_is_alive(pid):
-                        exit_fn("parent_death_exit", f"polled ancestor pid {pid} no longer alive")
+                if result == _WAIT_FAILED:
+                    # A WAIT_FAILED result returns near-instantly -- retrying
+                    # the same WaitForMultipleObjects call would busy-loop
+                    # forever with zero effective monitoring, silently
+                    # disabling the primary guarantee. We can't tell WHICH
+                    # handle failed, so degrade all of them to polling by
+                    # their pid instead.
+                    sys.stderr.write(
+                        "[vibe-lifecycle] WaitForMultipleObjects failed "
+                        f"(GetLastError={ctypes.get_last_error()}); degrading "
+                        f"{len(wait_entries)} handle(s) to polling\n"
+                    )
+                    sys.stderr.flush()
+                    for e in wait_entries:
+                        e[0] = "poll"
+                    continue
+                # WAIT_TIMEOUT with poll_entries present -> fall through to poll.
+            if poll_entries:
+                for e in poll_entries:
+                    if not _pid_is_alive(e[2]):
+                        exit_fn("parent_death_exit", f"polled ancestor pid {e[2]} no longer alive")
                         return
-                if not wait_handles:
+                if not wait_entries:
                     time.sleep(_POLL_INTERVAL_SECONDS)
 
     thread = threading.Thread(target=_watch, daemon=True, name="vibe-ancestor-watch")

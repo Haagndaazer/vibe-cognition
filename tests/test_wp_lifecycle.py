@@ -14,11 +14,13 @@ Windows-only subprocess-real WPL-AC1/AC2/AC3.
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 from types import SimpleNamespace
 
 import pytest
 
+from vibe_cognition import lifecycle
 from vibe_cognition.server import _load_embeddings_and_sync, lifespan
 
 
@@ -88,3 +90,57 @@ async def test_both_watches_armed_before_bg_thread_starts(tmp_path, monkeypatch)
         "stdin_watch_armed",
         "bg_thread_start",
     ], f"wrong order: {order}"
+
+
+def test_arm_ancestor_watch_posix_detects_reparenting(monkeypatch):
+    """§L-a POSIX fallback: os.getppid() changes the instant the real parent
+    dies (reparented to the reaper) -- a slow poll is sufficient; this is
+    deliberately NOT over-engineered relative to the Windows path.
+
+    Moved here from test_lifecycle.py (gate finding, CHEAP): that file's
+    module-level pytestmark skips the whole file on non-Windows, silently
+    contradicting this test's own claim to run regardless -- since
+    arm_ancestor_watch_posix is pure Python (no ctypes), it belongs in this
+    platform-independent file instead, where it genuinely runs everywhere."""
+    exits = []
+    ppids = iter([100, 100, 999])  # unchanged, unchanged, then changed
+
+    monkeypatch.setattr(os, "getppid", lambda: next(ppids))
+    monkeypatch.setattr(lifecycle, "_POLL_INTERVAL_SECONDS", 0.02)
+
+    thread = lifecycle.arm_ancestor_watch_posix(exit_fn=lambda r, d="": exits.append((r, d)))
+    thread.join(timeout=2.0)
+    assert len(exits) == 1
+    assert exits[0][0] == "parent_death_exit"
+
+
+@pytest.mark.asyncio
+async def test_watch_arming_failure_degrades_startup_instead_of_crashing_it(tmp_path, monkeypatch):
+    """Gate item 6 (defensive degrade-don't-abort): an unexpected exception
+    arming either watch (e.g. thread creation itself failing) must not crash
+    the entire server startup over an optional safety net -- lifespan() must
+    still reach handshake_yield and start the bg thread.
+
+    Fails-before: without the try/except in server.py, this raises out of
+    lifespan() and the `async with lifespan(None)` block below never even
+    enters -- the whole server fails to start over a non-essential watch."""
+    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("EMBEDDING_BACKEND", "ollama")
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated: can't start new thread")
+
+    monkeypatch.setattr("vibe_cognition.lifecycle.arm_ancestor_watch", _boom)
+    monkeypatch.setattr("vibe_cognition.lifecycle.arm_stdin_watch", _boom)
+
+    def _fast_generator(cfg):
+        return SimpleNamespace()
+
+    monkeypatch.setattr("vibe_cognition.server.EmbeddingGenerator.from_config", _fast_generator)
+
+    async with lifespan(None) as context:  # type: ignore[arg-type]
+        for _ in range(500):
+            if context["embedding_ready"].is_set():
+                break
+            await asyncio.sleep(0.02)
+        assert context["embedding_ready"].is_set(), "startup must still complete despite the watch failures"

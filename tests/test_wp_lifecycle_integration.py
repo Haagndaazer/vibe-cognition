@@ -34,7 +34,14 @@ _UV_EXE = shutil.which("uv") or "uv"
 _EXIT_BOUND_SECONDS = 5.0
 _TEST_SLACK_SECONDS = 3.0  # process-spawn/OS-scheduling noise allowance on top of the spec bound
 _POLL_INTERVAL_SECONDS = 0.1
-_ARM_TIMEOUT_SECONDS = 60.0  # `uv run` cold-resolve + Python startup can be slow the first time
+# Gate finding (MANDATORY): this used to equal pyproject's global
+# pytest-timeout (60s), and each AC calls the wait-helper 2-3x sequentially --
+# on a slow runner pytest-timeout would hard-kill the whole test opaquely
+# before any individual wait's own bound was reached, instead of one of our
+# own assertions failing cleanly. Dropped to 20s AND each AC test below
+# carries an explicit @pytest.mark.timeout override sized for its own
+# worst-case sum, so the budget is self-consistent end to end.
+_ARM_TIMEOUT_SECONDS = 20.0
 
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _STILL_ACTIVE = 259
@@ -189,6 +196,7 @@ def _cleanup(ancestor: subprocess.Popen, leaf_pid: int | None) -> None:
 # ── WPL-AC1: ancestor death, healthy bg thread ───────────────────────────────
 
 
+@pytest.mark.timeout(90)  # 2 sequential 20s waits + exit-bound poll (~8s) + margin
 def test_wpl_ac1_server_exits_within_bound_when_disposable_ancestor_dies(lifecycle_env):
     """Real uv-run-intermediary topology (disposable -> uv -> python, exactly
     plugin.json's shape): kill the disposable ancestor; the leaf server
@@ -235,6 +243,7 @@ def test_wpl_ac1_server_exits_within_bound_when_disposable_ancestor_dies(lifecyc
 # ── WPL-AC2: ancestor death, bg thread PERMANENTLY WEDGED ────────────────────
 
 
+@pytest.mark.timeout(120)  # 3 sequential 20s waits + exit-bound poll (~8s) + margin
 def test_wpl_ac2_server_still_exits_within_bound_when_bg_thread_is_wedged(lifecycle_env):
     """Same topology as AC1, but with the bg thread wedged mid-import
     (EmbeddingGenerator.from_config blocked forever) via
@@ -295,6 +304,7 @@ def test_wpl_ac2_server_still_exits_within_bound_when_bg_thread_is_wedged(lifecy
 # ── WPL-AC3: stdin closed, ancestor stays ALIVE, event loop PERMANENTLY FROZEN
 
 
+@pytest.mark.timeout(120)  # 3 sequential 20s waits + exit-bound poll (~8s) + margin
 def test_wpl_ac3_server_exits_within_grace_when_stdin_closes_and_loop_is_frozen(lifecycle_env):
     """Close the leaf server's stdin WITHOUT killing its ancestor (the
     disposable process stays alive throughout -- proves the exit is

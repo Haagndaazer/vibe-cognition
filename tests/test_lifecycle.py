@@ -195,7 +195,10 @@ def test_arm_ancestor_watch_grandparent_gone_at_arm_time_is_degraded_not_fatal(m
     direct-parent NULL would insta-exit every server whose launch topology
     has any disposable process above uv -- a churn loop, not a fix."""
     exits = []
-    real_handle = lifecycle._kernel32.GetCurrentProcess()
+    # A REAL (non-pseudo) handle -- WaitForMultipleObjects rejects
+    # GetCurrentProcess()'s pseudo handle outright (ERROR_INVALID_HANDLE),
+    # a real Win32 constraint the gate's WAIT_FAILED fix surfaced.
+    real_handle = lifecycle._kernel32.OpenProcess(lifecycle._PROCESS_ACCESS, False, os.getpid())
     parent_pid = 4242
     grandparent_pid = 9999
 
@@ -228,11 +231,56 @@ def test_arm_ancestor_watch_grandparent_gone_at_arm_time_is_degraded_not_fatal(m
         pass
 
 
+def test_arm_ancestor_watch_grandparent_reused_is_degraded_not_fatal(monkeypatch):
+    """Sibling of the grandparent-gone case (gate finding, CHEAP -- this
+    matrix cell had no dedicated coverage): a grandparent pid that resolves
+    and OPENS successfully but turns out to be reused (younger than us) must
+    be degraded the same way as grandparent-gone -- untrustworthy, not
+    treated as a live ancestor, but also NOT fatal (only the direct-parent
+    case exits immediately on reuse)."""
+    exits = []
+    # Two DISTINCT real handles (both to our own pid, via separate OpenProcess
+    # calls) -- closing the grandparent's handle on reuse-detection must not
+    # invalidate the parent's still-active wait handle.
+    parent_handle = lifecycle._kernel32.OpenProcess(lifecycle._PROCESS_ACCESS, False, os.getpid())
+    grandparent_handle = lifecycle._kernel32.OpenProcess(
+        lifecycle._PROCESS_ACCESS, False, os.getpid()
+    )
+    parent_pid = 4242
+    grandparent_pid = 9999
+
+    def fake_get_parent_pid(handle):
+        return grandparent_pid if handle is parent_handle else parent_pid
+
+    def fake_open_ancestor(pid):
+        if pid == parent_pid:
+            return lifecycle._OpenResult(handle=parent_handle)
+        assert pid == grandparent_pid
+        return lifecycle._OpenResult(handle=grandparent_handle)
+
+    def fake_is_younger(handle):
+        # The parent's handle must check as NOT reused (so we proceed to
+        # resolve the grandparent at all); the grandparent's handle checks
+        # as reused.
+        return handle is grandparent_handle
+
+    monkeypatch.setattr(lifecycle, "get_parent_pid_via_handle", fake_get_parent_pid)
+    monkeypatch.setattr(lifecycle, "_open_ancestor", fake_open_ancestor)
+    monkeypatch.setattr(lifecycle, "is_younger_than_self", fake_is_younger)
+    monkeypatch.setattr(lifecycle, "_query_image_name", lambda h: "reused.exe")
+
+    thread = lifecycle.arm_ancestor_watch(depth=2, exit_fn=lambda r, d="": exits.append((r, d)))
+    time.sleep(0.3)
+    assert exits == [], "degraded arm (reused grandparent) must never exit"
+    assert thread is not None and thread.is_alive()
+    assert _startup_timing.breadcrumbs[-1][0] == "parent_watch_armed_degraded"
+
+
 def test_arm_ancestor_watch_full_chain_resolves_cleanly_no_exit(monkeypatch):
     """The happy path: both parent and grandparent resolve and open cleanly
     -- armed, not degraded, no exit."""
     exits = []
-    real_handle = lifecycle._kernel32.GetCurrentProcess()
+    real_handle = lifecycle._kernel32.OpenProcess(lifecycle._PROCESS_ACCESS, False, os.getpid())
     parent_pid = 111
     grandparent_pid = 222
 
@@ -271,24 +319,44 @@ def test_arm_ancestor_watch_access_denied_falls_back_to_polling_and_still_exits(
     assert "polled" in exits[0][1]
 
 
-# ── POSIX fallback (pure Python -- exercised regardless of skip marker) ──────
+def test_watch_thread_degrades_to_polling_on_wait_failed_instead_of_busy_looping(monkeypatch):
+    """Gate finding (MANDATORY): a WAIT_FAILED result from
+    WaitForMultipleObjects was previously indistinguishable from a benign
+    timeout -- with no poll fallback present, the loop would re-issue an
+    INFINITE wait in a tight silent retry (WAIT_FAILED returns near-
+    instantly), permanently disabling the primary guarantee with zero
+    signal. Must instead degrade the affected handle(s) to polling.
 
-
-def test_arm_ancestor_watch_posix_detects_reparenting(monkeypatch):
-    """os.getppid() changes the instant the real parent dies (reparented to
-    the reaper) -- a slow poll is sufficient; this is deliberately NOT
-    over-engineered relative to the Windows path."""
+    Fails-before: without the explicit WAIT_FAILED check, this test's
+    call_count would climb into the thousands within the join timeout
+    (a busy-loop) and exit_fn would never fire."""
     exits = []
-    ppids = iter([100, 100, 999])  # unchanged, unchanged, then changed
+    call_count = {"n": 0}
+    real_handle = lifecycle._kernel32.OpenProcess(lifecycle._PROCESS_ACCESS, False, os.getpid())
 
-    monkeypatch.setattr(os, "getppid", lambda: next(ppids))
+    def fake_wait(count, handle_array, wait_all, timeout_ms):
+        call_count["n"] += 1
+        return lifecycle._WAIT_FAILED
+
+    monkeypatch.setattr(lifecycle, "get_parent_pid_via_handle", lambda h: 4242)
+    monkeypatch.setattr(
+        lifecycle, "_open_ancestor", lambda pid: lifecycle._OpenResult(handle=real_handle)
+    )
+    monkeypatch.setattr(lifecycle, "is_younger_than_self", lambda h: False)
+    monkeypatch.setattr(lifecycle._kernel32, "WaitForMultipleObjects", fake_wait)
+    monkeypatch.setattr(lifecycle, "_pid_is_alive", lambda pid: False)
     monkeypatch.setattr(lifecycle, "_POLL_INTERVAL_SECONDS", 0.02)
 
-    thread = lifecycle.arm_ancestor_watch_posix(exit_fn=lambda r, d="": exits.append((r, d)))
+    thread = lifecycle.arm_ancestor_watch(depth=1, exit_fn=lambda r, d="": exits.append((r, d)))
+    assert thread is not None
     thread.join(timeout=2.0)
-    assert len(exits) == 1
-    assert exits[0][0] == "parent_death_exit"
 
+    assert len(exits) == 1, f"expected exactly one exit via the poll fallback, got {exits}"
+    assert "polled" in exits[0][1]
+    assert call_count["n"] == 1, (
+        f"WaitForMultipleObjects called {call_count['n']} times -- should degrade to "
+        "polling after the first WAIT_FAILED, never retry the wait itself"
+    )
 
 # ── arm_stdin_watch: console-skip gate + broken-pipe detection ──────────────
 
