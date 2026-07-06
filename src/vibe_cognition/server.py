@@ -752,12 +752,15 @@ async def lifespan(server: FastMCP):
     # WP-Wedge cleanup, NOT a wedge mitigation: both tasks self-exit once
     # embedding_ready sets, so this cancel is a no-op in the common (already-
     # finished) case; it only matters for a shutdown that races a STILL-RUNNING
-    # (not wedged) load window, e.g. the server exits mid-load. If the bg thread
-    # is genuinely wedged in a native DLL load, the event loop itself is frozen
-    # (the Windows loader lock blocks new-thread creation process-wide), so this
-    # cleanup code never gets scheduled to run at all -- cancellation cannot
-    # reach into that. Never touches disk either way, so no HEISENBUG GUARD
-    # concern.
+    # load window, e.g. the server exits mid-load. A bg thread genuinely wedged
+    # in a native DLL load leaves the event loop ALIVE (see _watchdog's
+    # docstring -- py-spy confirmed this on the incident processes), so this
+    # cleanup runs fine and cancels the watchdog/heartbeat tasks normally even
+    # then. The loop only freezes if something ON the loop attempts
+    # Thread.start() during the wedge (a heartbeat tick, or tool dispatch
+    # needing a fresh worker) -- in THAT case this shutdown code is what never
+    # gets scheduled to run, same as everything else on the loop. Never
+    # touches disk either way, so no HEISENBUG GUARD concern.
     for task in (context.get("_watchdog_task"), context.get("_heartbeat_task")):
         if task is not None:
             task.cancel()
