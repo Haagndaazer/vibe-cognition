@@ -1,8 +1,11 @@
 # WP-Lifecycle (P1): orphan servers must die with their parent
 
-Status: rev 2 — Vince, 2026-07-06. Rev 1 review FAIL (1 BLOCKER / 2 MAJOR /
+Status: rev 3 — Vince, 2026-07-06. Rev 1 review FAIL (1 BLOCKER / 2 MAJOR /
 2 MINOR: uv-intermediary topology, OpenProcess semantics, loop-independent
-EOF detection, os._exit guarantees, harness pin) folded in.
+EOF detection, os._exit guarantees, harness pin) folded in; rev 2→3
+verification-pass amendments (grandparent-gone anti-churn rule, GetFileType
+pipe gate). Header previously mis-said "rev 2" at the rev-3 commit —
+corrected post-hoc (flagged by Vorpid during implementation).
 Implementer: Vorpid, AFTER WP-Wedge-2 gates. Branch: `wp-lifecycle` in a
 worktree at `C:\Users\colto\Documents\Projects\Worktrees\vibe-cognition`.
 Graph task: a54b0191e362 (raised to high).
