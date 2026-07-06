@@ -31,6 +31,7 @@ from .cognition.documents import find_orphaned_document_artifacts, read_text_sid
 from .config import Settings, setup_logging
 from .embeddings import ChromaDBStorage, EmbeddingGenerator
 from .instructions import SERVER_INSTRUCTIONS
+from . import lifecycle
 from .tools import register_all_tools
 from .tools.dispatch import prewarm_dispatch_executor
 from .tools.cognition_tools import (
@@ -777,6 +778,29 @@ async def lifespan(server: FastMCP):
     # SAME way, same reason -- forces all its threads to exist while spawning
     # is still safe, so no tool dispatch can ever need Thread.start() again.
     await prewarm_dispatch_executor()
+
+    # WP-Lifecycle §L-a/§L-c: arm both self-exit watches BEFORE the bg import
+    # thread starts -- same reasoning as the warm-ups above, so the watch
+    # threads' OS threads exist before any loader-lock wedge can block thread
+    # creation. §L-a (ancestor-death) is the primary guarantee (works even
+    # mid-wedge, since it doesn't ride the event loop); §L-b (stdin-pipe-
+    # closure) is the loop-independent secondary path -- the MCP-conventional
+    # stdin-EOF shutdown rides the event loop and is exactly what a frozen
+    # loop can never fire.
+    # Defensive degrade-don't-abort (gate finding): an unexpected failure
+    # arming either watch (e.g. thread creation itself failing under extreme
+    # resource exhaustion) must not crash the ENTIRE server startup over an
+    # optional safety net -- consistent with this WP's own degraded-arm
+    # philosophy elsewhere (NULL-grandparent, ACCESS_DENIED) of "even if
+    # part of this doesn't work, keep serving."
+    try:
+        lifecycle.arm_ancestor_watch()
+    except Exception as e:
+        logger.warning(f"Failed to arm ancestor-death watch (non-fatal): {e}")
+    try:
+        lifecycle.arm_stdin_watch()
+    except Exception as e:
+        logger.warning(f"Failed to arm stdin-pipe watch (non-fatal): {e}")
 
     bg_thread = threading.Thread(
         target=_load_embeddings_and_sync,
