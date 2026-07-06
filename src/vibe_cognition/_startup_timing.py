@@ -100,7 +100,13 @@ def flush_to_disk() -> None:
 
 
 _PRUNE_MAX_AGE_DAYS = 7
-_PRUNE_KEEP_RECENT = 50
+# WP-Lifecycle §L-d: bumped 50 -> 200. The orphan-churn incident this WP
+# fixes produced startup counts far above what 50 assumed (a single session
+# re-accumulated 4 wedged pairs within 50 minutes via pure hang->reconnect
+# churn) -- each file is a few bytes of text, so a wider margin costs nothing
+# and buys real forensic headroom against the next churn spiral, even though
+# this WP's whole point is to make that spiral not recur.
+_PRUNE_KEEP_RECENT = 200
 
 
 def prune_old_logs(

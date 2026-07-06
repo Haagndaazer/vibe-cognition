@@ -146,6 +146,15 @@ def test_prune_removes_files_older_than_max_age_days(monkeypatch, tmp_path):
     assert fresh.exists(), "a fresh file must survive the age rule"
 
 
+def test_prune_default_keep_recent_is_200():
+    """WP-Lifecycle §L-d: bumped from 50 -> 200 -- the orphan-churn incident
+    this WP fixes produced startup counts far above what 50 assumed (4
+    wedged pairs within 50 minutes via pure hang->reconnect churn). Pins the
+    module-level default so a future silent revert doesn't quietly shrink
+    the forensic retention window back down."""
+    assert _startup_timing._PRUNE_KEEP_RECENT == 200
+
+
 def test_prune_caps_total_count_via_keep_recent(monkeypatch, tmp_path):
     """keep-N rule: with more files than keep_recent (all within max_age_days),
     only the keep_recent MOST RECENT (by mtime) survive."""
