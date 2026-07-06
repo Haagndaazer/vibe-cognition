@@ -57,9 +57,19 @@ logger = logging.getLogger(__name__)
 def _embeddings_ready(lc: dict[str, Any]) -> bool:
     """True when the embedding model is loaded and didn't error — the boolean form
     of require_embeddings (which returns a tool error dict). Used by the internal
-    record/update paths to decide whether to embed inline or defer to the sync."""
+    record/update paths to decide whether to embed inline or defer to the sync.
+
+    WP-Wedge state contract (AC4): also requires ``embedding_generator`` to be
+    installed — ready-set + no-error but generator still ``None`` is the
+    watchdog-fired-but-not-yet-late-recovered tuple, and must read as not-ready
+    here too (require_embeddings' sibling check), never as a false green light."""
     event = lc.get("embedding_ready")
-    return bool(event and event.is_set() and not lc.get("embedding_error"))
+    return bool(
+        event
+        and event.is_set()
+        and not lc.get("embedding_error")
+        and lc.get("embedding_generator") is not None
+    )
 
 
 def _embed_entity_node(
@@ -186,7 +196,6 @@ def _record_node(
     lc = get_lifespan(ctx)
     storage: CognitionStorage = lc["cognition_storage"]
     embedding_storage: ChromaDBStorage = lc["cognition_embedding_storage"]
-    generator: EmbeddingGenerator = lc["embedding_generator"]
 
     # Parse comma-separated strings into lists
     context_list = [c.strip() for c in context.split(",") if c.strip()] if context else []
@@ -251,7 +260,13 @@ def _record_node(
 
     # Embed and upsert to ChromaDB (skip if model not loaded yet — startup sync catches it later).
     # Workflows chunk the full body for searchability; all other types use a single node vector.
+    # WP-Wedge (AC4): re-read the generator HERE, at the gate, rather than an early
+    # capture at function entry — a watchdog-fired -> late-recovery sequence can
+    # install the real generator between entry and this check, and an early-captured
+    # local would still be the stale None, AttributeError-ing inside the embed call
+    # even though _embeddings_ready just confirmed the generator is live.
     if _embeddings_ready(lc):
+        generator: EmbeddingGenerator = lc["embedding_generator"]
         if node_type == CognitionNodeType.WORKFLOW:
             _embed_workflow(embedding_storage, generator, node)
         else:
@@ -1171,7 +1186,6 @@ def _add_task(
     lc = get_lifespan(ctx)
     storage: CognitionStorage = lc["cognition_storage"]
     embedding_storage: ChromaDBStorage = lc["cognition_embedding_storage"]
-    generator: EmbeddingGenerator = lc["embedding_generator"]
 
     # Validate the parent BEFORE creating the node, so a bad parent_id never leaves an
     # orphan task behind. Parent must exist AND be a task.
@@ -1230,7 +1244,10 @@ def _add_task(
 
     # Embed (single node vector; status/owner surfaced by _embed_entity_node). Skip if the
     # model isn't loaded yet — the startup sync backfills it.
+    # WP-Wedge (AC4): read the generator fresh HERE, at the gate — see _record_node's
+    # matching comment for why an early capture at function entry is unsafe.
     if _embeddings_ready(lc):
+        generator: EmbeddingGenerator = lc["embedding_generator"]
         _embed_entity_node(embedding_storage, generator, node)
 
     return _get_node(storage, node_id)
@@ -1875,12 +1892,16 @@ def register_cognition_tools(mcp) -> None:
             for a non-task id, an illegal/invalid status, a bad re-parent, or no fields.
         """
         lc = get_lifespan(ctx)
+        # WP-Wedge (AC4): compute readiness FIRST, then read the generator
+        # conditioned on it — never subscript the generator before the ready
+        # check (that ordering is exactly the stale-capture pattern AC4 closes).
+        ready = _embeddings_ready(lc)
         return _update_task(
             lc["cognition_storage"],
             lc["cognition_embedding_storage"],
-            lc["embedding_generator"],
+            lc["embedding_generator"] if ready else None,
             node_id=node_id,
-            embeddings_ready=_embeddings_ready(lc),
+            embeddings_ready=ready,
             status=status,
             priority=priority,
             owner=owner,
@@ -2087,12 +2108,14 @@ def register_cognition_tools(mcp) -> None:
             {"error": ...} if the node is absent or no editable field was given.
         """
         lc = get_lifespan(ctx)
+        # WP-Wedge (AC4): same ready-then-read ordering as cognition_update_task.
+        ready = _embeddings_ready(lc)
         return _update_node(
             lc["cognition_storage"],
             lc["cognition_embedding_storage"],
-            lc["embedding_generator"],
+            lc["embedding_generator"] if ready else None,
             node_id=node_id,
-            embeddings_ready=_embeddings_ready(lc),
+            embeddings_ready=ready,
             summary=summary,
             detail=detail,
             context=context,

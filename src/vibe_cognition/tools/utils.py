@@ -29,4 +29,13 @@ def require_embeddings(ctx: Context) -> dict[str, Any] | None:
     error = lc.get("embedding_error")
     if error:
         return {"error": f"Embedding model failed to load: {error}", "status": "embedding_error"}
+    if lc.get("embedding_generator") is None:
+        # WP-Wedge state contract (AC4): ready set + no error but the generator not
+        # yet installed is the watchdog-fired-but-not-yet-late-recovered tuple — read
+        # as not-ready, never as a green light with nothing to embed with.
+        return {
+            "error": "Embedding model is still loading. Graph and cognition history "
+                     "tools are available now. Try again in a few seconds.",
+            "status": "loading_embeddings",
+        }
     return None

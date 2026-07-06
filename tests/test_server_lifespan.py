@@ -78,6 +78,11 @@ def test_broken_embedding_backend_degrades_gracefully_not_a_handshake_crash(tmp_
     from vibe_cognition.config import Settings
 
     monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    # WP-Wedge: backend=ollama skips the §3a subprocess import probe (irrelevant
+    # here -- it only guards the sentence-transformers backend's heavy import),
+    # keeping this test focused and fast. EmbeddingGenerator.from_config is
+    # mocked wholesale below regardless of backend, so the boom still fires.
+    monkeypatch.setenv("EMBEDDING_BACKEND", "ollama")
     config = Settings()
 
     def _boom(*args, **kwargs):

@@ -10,11 +10,18 @@
 from . import _startup_timing  # noqa: I001 - ORDER IS LOAD-BEARING, see comment above; do not let isort resort this block
 from . import _venv_guard  # noqa: F401 - imported for its check_or_exit() side effect
 
+import asyncio
+import contextlib
 import logging
+import os
+import subprocess
+import sys
 import threading
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
+import anyio.to_thread
 from fastmcp import FastMCP
 
 from .cognition import CognitionNodeType, CognitionStorage
@@ -34,6 +41,173 @@ from .tools.project_registry import build_registry, compute_model_guard
 _startup_timing.stamp("server_module_import_done")
 
 logger = logging.getLogger(__name__)
+
+# ── WP-Wedge (P0): bound the bg-thread heavy-import wedge ──────────────────
+# Tunables are plain module constants but every helper below takes them as
+# parameters too, so tests can drive fast/parameterized variants (AC1/AC2/AC6)
+# without monkeypatching module state.
+_IMPORT_PROBE_TIMEOUT = 300.0
+_IMPORT_PROBE_RETRY_BACKOFF = 60.0
+_WATCHDOG_TIMEOUT = 120.0
+_WATCHDOG_POLL_INTERVAL = 5.0
+_HEARTBEAT_INTERVAL = 3.0
+_HEARTBEAT_WARM_COUNT = 4
+
+
+def _run_subprocess_import_probe(
+    cmd: list[str] | None = None,
+    timeout: float = _IMPORT_PROBE_TIMEOUT,
+    retry_backoff: float = _IMPORT_PROBE_RETRY_BACKOFF,
+) -> bool:
+    """WP-Wedge §3a: pay the heavy native-import cost (Defender scan, disk I/O,
+    OS file-cache warm) in a THROWAWAY SUBPROCESS before doing the same import
+    for real in-process. On Windows this import can wedge for minutes inside a
+    native DLL load (``create_module``, observed via py-spy on two live-wedged
+    servers) -- while wedged in-process, the bg thread holds the Windows loader
+    lock (blocking new-thread creation process-wide) and every per-module import
+    lock in the chain, freezing tool dispatch server-wide. Paying that cost out
+    of process first shrinks the in-process import window from minutes to
+    milliseconds (warm OS file cache, warm Defender verdict).
+
+    ``stdin``/``stdout``/``stderr`` are ALL ``DEVNULL`` -- load-bearing, not a
+    style choice. This repo was already burned by the PIPE variant: a piped
+    subprocess in this same detached-server context blocks forever in the pipe
+    drain, where ``timeout=`` cannot fire (see ``cognition/git_identity.py``'s
+    WHY NO SUBPROCESS docstring, the v0.12.1 incident). Only the return code
+    is ever consumed; never reintroduce a pipe here "to see the error text".
+
+    Returns True if the probe subprocess exited (any exit code) within
+    ``timeout`` on the first OR the retried attempt -- i.e. it is now safe to
+    attempt the in-process import. False means it wedged twice in a row (the
+    full ``timeout + retry_backoff + timeout`` bound elapsed); the caller must
+    degrade WITHOUT attempting the in-process import this session.
+    """
+    if cmd is None:
+        cmd = [sys.executable, "-c", "import sentence_transformers"]
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+    _startup_timing.stamp("import_probe_start")
+    for attempt in range(2):
+        proc = subprocess.Popen(  # noqa: S603 - fixed interpreter + literal script, no shell
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+        try:
+            proc.wait(timeout=timeout)
+            _startup_timing.stamp("import_probe_ok")
+            return True
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            _startup_timing.stamp("import_probe_killed")
+            if attempt == 0:
+                time.sleep(retry_backoff)
+    return False
+
+
+async def _warm_worker_batch(count: int = _HEARTBEAT_WARM_COUNT) -> None:
+    """Force-spawn/keep-warm ``count`` AnyIO worker threads concurrently — a
+    single submission only keeps AnyIO's LIFO-reused head warm, so a batch is
+    required to keep the whole small pool warm (WP-Wedge §3c)."""
+    await asyncio.gather(*(anyio.to_thread.run_sync(lambda: None) for _ in range(count)))
+
+
+async def _worker_heartbeat(
+    context: dict[str, Any],
+    interval: float = _HEARTBEAT_INTERVAL,
+    batch_size: int = _HEARTBEAT_WARM_COUNT,
+) -> None:
+    """WP-Wedge §3c: keep ``batch_size`` AnyIO worker threads warm for the
+    whole embedding-load window. AnyIO idles a worker out after 10s
+    (``MAX_IDLE_TIME``); a tick that finds no idle worker would spawn one via
+    ``Thread.start()`` ON THE EVENT-LOOP THREAD, which under a held loader
+    lock would freeze the loop and disable the §3b watchdog with it.
+
+    Each tick's batch runs as its own task (not awaited inline) so the tick
+    cadence isn't stretched by how long ``to_thread.run_sync`` takes to get
+    scheduled. The in-flight guard SKIPS a tick outright when the previous
+    batch hasn't finished (worker starvation, or a residual in-process wedge)
+    rather than stacking a second spawn-triggering batch on top of the first.
+    Exits as soon as ``embedding_ready`` sets (either the normal-load or the
+    watchdog/probe-degrade path) — it exists only for the load window.
+    """
+    ready: threading.Event = context["embedding_ready"]
+    inflight = False
+    pending: asyncio.Task | None = None
+
+    async def _run_batch() -> None:
+        nonlocal inflight
+        try:
+            await _warm_worker_batch(batch_size)
+        finally:
+            inflight = False
+
+    try:
+        while not ready.is_set():
+            await asyncio.sleep(interval)
+            if ready.is_set():
+                break
+            if inflight:
+                continue  # previous batch still in flight -- skip, don't stack
+            inflight = True
+            pending = asyncio.create_task(_run_batch())
+    finally:
+        if pending is not None and not pending.done():
+            pending.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pending
+
+
+async def _watchdog(
+    context: dict[str, Any],
+    timeout: float = _WATCHDOG_TIMEOUT,
+    poll_interval: float = _WATCHDOG_POLL_INTERVAL,
+) -> None:
+    """WP-Wedge §3b: bound the mid-session freeze from an in-process import
+    wedge the §3a probe didn't fully avoid. Fires (signal, never kill — a
+    thread stuck in ``LoadLibrary`` cannot be killed and its locks cannot be
+    released) ``timeout`` seconds after ``bg_model_load_start`` if the bg
+    thread still hasn't finished. The event loop stays alive even when the bg
+    thread is wedged (py-spy confirmed on the incident processes), so this
+    task keeps running and can signal degraded-search even though the bg
+    thread itself cannot be recovered from here.
+
+    The clock starts at ``bg_model_load_start``, NOT at task-start — a
+    legitimately slow (but bounded) §3a probe must never trip this; while
+    ``bg_model_load_start_time`` is still unset, re-arm and check again later.
+
+    Atomicity rule (mandatory, see module docs / WP brief §3b): this
+    test-and-fire and the bg thread's complete/except paths each run under
+    the SAME ``context["_wedge_lock"]``. Without it there is a stranding
+    interleaving: bg reads ``watchdog_fired`` as False → this fires in that
+    same instant (ready not yet set) → bg proceeds without clearing → a
+    healthy, generator-installed session fails every gated call forever on a
+    stale ``embedding_error``. The critical section is tiny and bounded, so
+    holding the lock briefly on the event loop is acceptable.
+    """
+    ready: threading.Event = context["embedding_ready"]
+    lock: threading.Lock = context["_wedge_lock"]
+    while not ready.is_set():
+        start = context.get("bg_model_load_start_time")
+        if start is None:
+            await asyncio.sleep(poll_interval)
+            continue
+        remaining = timeout - (time.monotonic() - start)
+        if remaining > 0:
+            await asyncio.sleep(min(remaining, poll_interval))
+            continue
+        with lock:
+            if not ready.is_set():
+                context["watchdog_fired"] = True
+                context["embedding_error"] = (
+                    "embedding load slow/wedged; search temporarily degraded"
+                )
+                ready.set()
+                _startup_timing.stamp("watchdog_fired")
+        return
 
 
 def _missing_deterministic_edge(cognition_storage: CognitionStorage, node_id: str, references: list) -> bool:
@@ -324,18 +498,50 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
             if guard in ("dim-mismatch", "model-mismatch"):
                 logger.warning(f"Home embedding collection drift: {guard_warning}")
 
+        # WP-Wedge §3a: subprocess-warm the heavy native import chain BEFORE doing
+        # it for real in-process, so a Windows DLL-load wedge pays its cost in a
+        # throwaway subprocess instead of holding this process's loader lock +
+        # import locks. Only the sentence-transformers backend touches
+        # sentence_transformers/torch/scipy at all — gated on backend so an
+        # ollama-configured server (which never constructs
+        # SentenceTransformersBackend) never pays the probe's worst-case ~11min
+        # bound for an import it doesn't need.
+        if config.embedding_backend != "ollama" and not _run_subprocess_import_probe():
+            logger.error(
+                "Background: embedding import probe wedged twice; degrading "
+                "without attempting the in-process import this session"
+            )
+            context["embedding_error"] = (
+                "embedding import wedged twice (probe killed at "
+                f"{_IMPORT_PROBE_TIMEOUT:.0f}s); search degraded — reduce "
+                "concurrent sessions or reconnect"
+            )
+            context["embedding_ready"].set()
+            context["embedding_sync_done"].set()
+            _startup_timing.flush_to_disk()
+            return
+
         # Load embedding model (the bottleneck: 2-30s)
         t_start = _startup_timing.stamp("bg_model_load_start")
+        context["bg_model_load_start_time"] = t_start
         logger.info(f"Background: loading embedding model ({config.embedding_backend})...")
         embedding_generator = EmbeddingGenerator.from_config(config)
         t_model = _startup_timing.stamp("bg_model_loaded")
         logger.info(f"Background: embedding model loaded in {t_model - t_start:.1f}s")
 
-        # Populate context
-        context["embedding_generator"] = embedding_generator
-
-        # Signal that embedding-dependent tools are ready
-        context["embedding_ready"].set()
+        # WP-Wedge §3b: install the generator, late-recovery clear (only if the
+        # watchdog fired), and the ready signal all happen ATOMICALLY under the
+        # same lock the watchdog's test-and-fire uses (mandatory — see _watchdog's
+        # docstring for the stranding interleaving this closes).
+        wedge_lock: threading.Lock | None = context.get("_wedge_lock")
+        with wedge_lock if wedge_lock is not None else contextlib.nullcontext():
+            context["embedding_generator"] = embedding_generator
+            if context.get("watchdog_fired"):
+                context["embedding_error"] = None
+                context["watchdog_fired"] = False
+                _startup_timing.stamp("bg_late_recovery")
+                logger.info("Background: embedding generator installed after watchdog fired (late recovery)")
+            context["embedding_ready"].set()
         logger.info("All tools now available")
 
         # Run deterministic part_of matching for edgeless nodes
@@ -399,8 +605,16 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
 
     except Exception as e:
         logger.error(f"Background initialization failed: {e}")
-        context["embedding_error"] = str(e)
-        context["embedding_ready"].set()  # Signal so tools don't hang forever
+        # WP-Wedge §3b clobber-guard: under the SAME lock as the watchdog and the
+        # success path's late-recovery, so a genuine error can never race a
+        # concurrent watchdog fire into an inconsistent tuple. A genuine error
+        # here always wins — it is NEVER cleared by anything downstream (the
+        # late-recovery clear only lives in the success path, which this
+        # exception means we never reached).
+        wedge_lock: threading.Lock | None = context.get("_wedge_lock")
+        with wedge_lock if wedge_lock is not None else contextlib.nullcontext():
+            context["embedding_error"] = str(e)
+            context["embedding_ready"].set()  # Signal so tools don't hang forever
         context["embedding_sync_done"].set()  # Sync phase is over either way
         _startup_timing.stamp("bg_thread_error")
         _startup_timing.flush_to_disk()
@@ -486,9 +700,22 @@ async def lifespan(server: FastMCP):
         # intentional). get_status derives "syncing" from ready-but-not-done.
         "embedding_sync_done": threading.Event(),
         "embedding_sync_progress": None,
+        # WP-Wedge: shared lock for the watchdog <-> bg-thread atomicity rule
+        # (§3b), the late-recovery flag, and the bg thread's own load-start
+        # timestamp (read by the watchdog to arm its clock at bg_model_load_start,
+        # not at task-start — a legitimately slow §3a probe must never trip it).
+        "_wedge_lock": threading.Lock(),
+        "watchdog_fired": False,
+        "bg_model_load_start_time": None,
     }
 
     # ── Background init (2-30s for model, then sync + curation) ────
+
+    # WP-Wedge §3c: force-spawn warm AnyIO worker threads WHILE spawning is
+    # still safe — before the bg import thread opens its wedge window. Pre-yield
+    # but touches no disk, so the HEISENBUG GUARD (no disk I/O on this path) is
+    # unaffected.
+    await _warm_worker_batch(_HEARTBEAT_WARM_COUNT)
 
     bg_thread = threading.Thread(
         target=_load_embeddings_and_sync,
@@ -498,6 +725,13 @@ async def lifespan(server: FastMCP):
     bg_thread.start()
     context["_bg_thread"] = bg_thread
 
+    # WP-Wedge §3b/§3c: armed for the whole load window, cancelled at shutdown
+    # (and each exits itself as soon as embedding_ready sets, whichever path).
+    watchdog_task = asyncio.create_task(_watchdog(context))
+    heartbeat_task = asyncio.create_task(_worker_heartbeat(context))
+    context["_watchdog_task"] = watchdog_task
+    context["_heartbeat_task"] = heartbeat_task
+
     logger.info("Vibe Cognition ready (embedding model loading in background)")
     _startup_timing.stamp("handshake_yield")
 
@@ -506,6 +740,17 @@ async def lifespan(server: FastMCP):
     # ── Cleanup ───────────────────────────────────────────────────
 
     logger.info("Shutting down Vibe Cognition...")
+
+    # WP-Wedge: both tasks self-exit once embedding_ready sets, so this is a
+    # no-op in the common case; cancel defensively for a shutdown that races
+    # the load window (never touches disk, so no HEISENBUG GUARD concern).
+    for task in (context.get("_watchdog_task"), context.get("_heartbeat_task")):
+        if task is not None:
+            task.cancel()
+    for task in (context.get("_watchdog_task"), context.get("_heartbeat_task")):
+        if task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     # Stop dashboard server if running
     if context.get("dashboard"):
