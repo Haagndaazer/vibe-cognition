@@ -155,6 +155,14 @@ async def _worker_heartbeat(
             inflight = True
             pending = asyncio.create_task(_run_batch())
     finally:
+        # Benign-case cleanup ONLY, not a wedge mitigation: anyio's to_thread.run_sync
+        # defaults to abandon_on_cancel=False, so cancelling `pending` while a batch is
+        # genuinely stuck in Thread.start() under the loader lock does NOT interrupt
+        # it -- cancellation just waits for the thread call to finish before
+        # propagating. And if the loop itself is frozen by that same wedge, this
+        # `finally` never gets scheduled to run at all. This only matters for the
+        # ordinary case: the heartbeat's own task is cancelled (e.g. server shutdown)
+        # while its last batch is still healthily in flight.
         if pending is not None and not pending.done():
             pending.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -741,9 +749,15 @@ async def lifespan(server: FastMCP):
 
     logger.info("Shutting down Vibe Cognition...")
 
-    # WP-Wedge: both tasks self-exit once embedding_ready sets, so this is a
-    # no-op in the common case; cancel defensively for a shutdown that races
-    # the load window (never touches disk, so no HEISENBUG GUARD concern).
+    # WP-Wedge cleanup, NOT a wedge mitigation: both tasks self-exit once
+    # embedding_ready sets, so this cancel is a no-op in the common (already-
+    # finished) case; it only matters for a shutdown that races a STILL-RUNNING
+    # (not wedged) load window, e.g. the server exits mid-load. If the bg thread
+    # is genuinely wedged in a native DLL load, the event loop itself is frozen
+    # (the Windows loader lock blocks new-thread creation process-wide), so this
+    # cleanup code never gets scheduled to run at all -- cancellation cannot
+    # reach into that. Never touches disk either way, so no HEISENBUG GUARD
+    # concern.
     for task in (context.get("_watchdog_task"), context.get("_heartbeat_task")):
         if task is not None:
             task.cancel()

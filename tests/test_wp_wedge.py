@@ -8,8 +8,10 @@ and AC6 (heartbeat lifecycle). AC5 (the pinned whole-repo gate command) is run
 separately, not from within this file.
 """
 
+import ast
 import asyncio
 import contextlib
+import re
 import sys
 import threading
 import time
@@ -462,7 +464,91 @@ def test_update_task_and_update_node_do_not_read_stale_generator(
     assert r2.get("reembed") == "deferred"
 
 
-# ── AC3: import-collision across every registered tool ──────────────────────
+# ── AC3: import-collision, static half + runtime half ───────────────────────
+#
+# Per Vince's gate review (HOLD on the first cut): a synthetic-name meta_path
+# hook alone can't catch AC3's actual regression -- a future tool adding a
+# real `import scipy` at module level runs before any finder installs, and a
+# name-based hook that isn't watching the real names never sees it either way.
+# AC3 is split into two complementary tests:
+#   - static (authoring-time): AST-walk every module under src/vibe_cognition/
+#     and assert no import of the real heavy names outside the one sanctioned
+#     site. Catches a module-level OR unexercised-branch import regardless of
+#     whether any test happens to invoke the code that triggers it.
+#   - runtime (below): proves tool DISPATCH survives an unrelated import being
+#     blocked mid-flight elsewhere in the process -- a real property, but a
+#     narrower one than "no tool imports the heavy chain" (that's the static
+#     test's job).
+
+_HEAVY_IMPORT_RE = re.compile(r"^(torch|scipy|sentence_transformers|transformers|sklearn)(\.|$)")
+
+# The ONE sanctioned site: WP-C's lazy import of sentence_transformers (which
+# pulls in torch transitively), inside SentenceTransformersBackend.__init__,
+# loaded only from the bg thread after the MCP handshake yields. server.py's
+# §3a probe command and _venv_guard.py's find_spec presence-check are NOT
+# actual Import/ImportFrom AST nodes (a subprocess argv string and an
+# importlib.util.find_spec call, respectively), so they never need listing
+# here -- an AST walk over Import/ImportFrom nodes naturally never sees them.
+_SANCTIONED_HEAVY_IMPORT_FILES = {
+    Path("src", "vibe_cognition", "embeddings", "generator.py"),
+}
+
+
+def _iter_heavy_imports(tree: ast.AST):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if _HEAVY_IMPORT_RE.match(alias.name):
+                    yield node.lineno, alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module and _HEAVY_IMPORT_RE.match(node.module):
+            yield node.lineno, node.module
+
+
+def test_no_module_imports_the_heavy_embedding_chain_outside_the_sanctioned_site():
+    """AC3 (static half): no module under src/vibe_cognition/ may `import` or
+    `from ... import` torch|scipy|sentence_transformers|transformers|sklearn
+    -- module-level OR inside a function body -- outside embeddings/generator.py
+    (WP-C's lazy __init__ import). Catches what a runtime dispatch test can't:
+    a module-level eager import (already executed before any test-installed
+    hook exists) or an import hidden in a branch no test happens to exercise.
+
+    Fails-before: N/A -- added per Vince's WP-Wedge gate review (the first AC3
+    cut, a runtime-only synthetic-name hook, could never catch this class of
+    regression at all).
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    src_root = repo_root / "src" / "vibe_cognition"
+    sanctioned = {repo_root / p for p in _SANCTIONED_HEAVY_IMPORT_FILES}
+
+    violations = []
+    for py_file in sorted(src_root.rglob("*.py")):
+        if py_file in sanctioned:
+            continue
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+        for lineno, name in _iter_heavy_imports(tree):
+            violations.append(f"{py_file.relative_to(repo_root)}:{lineno} imports {name!r}")
+
+    assert not violations, (
+        "heavy embedding-chain import found outside the sanctioned site "
+        "(embeddings/generator.py) -- this reintroduces the WP-C wedge risk "
+        "on a path the §3a probe doesn't cover:\n" + "\n".join(violations)
+    )
+
+
+def test_sanctioned_file_actually_contains_the_expected_lazy_import():
+    """Guard the guard: if embeddings/generator.py's lazy import is ever
+    removed entirely, the exclusion above must not silently make this file's
+    coverage vacuous."""
+    repo_root = Path(__file__).resolve().parents[1]
+    generator_py = repo_root / "src" / "vibe_cognition" / "embeddings" / "generator.py"
+    tree = ast.parse(generator_py.read_text(encoding="utf-8"), filename=str(generator_py))
+
+    assert list(_iter_heavy_imports(tree)), (
+        "expected sentence_transformers to still be imported (lazily) in "
+        "embeddings/generator.py -- if it moved, update "
+        "_SANCTIONED_HEAVY_IMPORT_FILES to match"
+    )
+
 
 _FAKE_HEAVY_MODULE = "_wp_wedge_test_fake_heavy_import_target"
 
@@ -520,18 +606,24 @@ _TOOL_ARGS: dict[str, dict] = {
 }
 
 
-def test_every_registered_tool_responds_within_10s_during_simulated_import_wedge(
+def test_tool_dispatch_completes_while_an_unrelated_import_is_blocked_midflight(
     tmp_path, mock_mcp, build_lc, make_ctx
 ):
-    """AC3: with a fake bg thread holding a per-module import lock on a heavy
-    name, invoke every registered tool (embeddings NOT ready -- the load
-    window) each in its own thread with join(timeout=10). No tool may touch
-    the blocked import at all (gated tools short-circuit on pure in-memory
-    checks), so none may hang regardless of the simulated wedge.
+    """AC3 (runtime half): with a fake bg thread holding a per-module import
+    lock on a name (synthetic, not the real torch/scipy/sentence_transformers
+    -- those are very likely already cached in sys.modules by other tests in
+    this shared pytest process, and evicting+reimporting a real C-extension
+    mid-suite risks destabilizing unrelated tests), invoke every registered
+    tool (embeddings NOT ready -- the load window) each in its own thread with
+    join(timeout=10).
 
-    Fails-before: N/A (this is a fresh regression guard) -- pins that no
-    tool's call path performs an eager heavy import while not-ready, so a
-    future change can't silently reintroduce the collision this WP bounds.
+    This proves tool DISPATCH itself never blocks on an unrelated in-flight
+    import elsewhere in the process -- every tool bails via pure in-memory
+    checks (embedding_ready/embedding_error reads), never by touching the
+    blocked name. It does NOT prove "no tool imports the heavy chain" on its
+    own (a synthetic name can't stand in for that) -- see
+    test_no_module_imports_the_heavy_embedding_chain_outside_the_sanctioned_site
+    above for that half; together the two cover AC3.
     """
     from unittest.mock import patch
 
