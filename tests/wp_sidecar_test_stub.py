@@ -24,10 +24,8 @@ import sys
 import threading
 import time
 
-sys.path.insert(0, r"C:\Users\colto\Documents\Projects\Worktrees\vibe-cognition\src")
-
-from vibe_cognition import lifecycle  # noqa: E402
-from vibe_cognition.embeddings import _load_mutex, _sidecar_protocol  # noqa: E402
+from vibe_cognition import lifecycle
+from vibe_cognition.embeddings import _load_mutex, _sidecar_protocol
 
 _MODE = os.environ.get("WP_SIDECAR_STUB_MODE", "normal")
 _LOAD_DELAY = float(os.environ.get("WP_SIDECAR_STUB_LOAD_DELAY", "0"))

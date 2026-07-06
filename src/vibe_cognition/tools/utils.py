@@ -32,6 +32,12 @@ def get_lifespan(ctx: Context) -> dict[str, Any]:
     lc = rc.lifespan_context
     if lc.get("embedding_error"):
         _startup_timing.stamp_once("tool_served_degraded")
+        supervisor = lc.get("_sidecar_supervisor")
+        if supervisor is not None:
+            # WP-Sidecar: dispatch reaching a tool call while degraded IS an
+            # embedding demand arriving -- poke the recovery loop's lazy-
+            # on-demand leg rather than waiting for its next periodic tick.
+            supervisor.notify_demand()
     if _startup_timing.first_occurrence("heavy_import_guard_checked_first_tool_call"):
         _heavy_import_guard.check_and_log("first_tool_call")
     return lc
@@ -49,6 +55,8 @@ def require_embeddings(ctx: Context) -> dict[str, Any] | None:
         }
     error = lc.get("embedding_error")
     if error:
+        # notify_demand() already fired inside get_lifespan() above (the
+        # universal per-tool-call choke point) -- no need to repeat it here.
         return {"error": f"Embedding model failed to load: {error}", "status": "embedding_error"}
     if lc.get("embedding_generator") is None:
         # WP-Wedge state contract (AC4): ready set + no error but the generator not

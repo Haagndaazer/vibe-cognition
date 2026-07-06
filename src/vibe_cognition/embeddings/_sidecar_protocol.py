@@ -26,10 +26,17 @@ import json
 from typing import Any
 
 # Bumped whenever the wire shape changes. Server and sidecar spawn from the
-# same installed tree, but a running server may outlive a plugin update --
-# the sidecar rejects a mismatched version on "load" so the client can
-# respawn (picking up whatever's on disk NOW) instead of silently
-# miscommunicating with stale-vs-fresh code on either end.
+# same installed tree, but a running server process may outlive a plugin
+# update on disk -- every FRESH sidecar spawn re-reads whatever's on disk
+# NOW, while the server's own PROTOCOL_VERSION stays fixed in that already-
+# running process's memory until the server itself restarts. The sidecar
+# rejects a mismatched version on "load" so the two sides fail loudly
+# (bounded degrade) instead of silently miscommunicating with stale-vs-fresh
+# code on either end -- NOT a self-healing "respawn and it clears up": a
+# server-side skew respawns the SAME mismatch every attempt (the sidecar's
+# code, and therefore its version, doesn't change between respawns; only
+# the server restarting does), so this degrades bounded until the server
+# process itself restarts, same as any other exhausted-retry-budget failure.
 PROTOCOL_VERSION = 1
 
 _LOCK_EVENTS = frozenset(

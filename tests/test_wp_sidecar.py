@@ -166,10 +166,20 @@ def test_sidecar_killed_mid_request_returns_error_then_respawn_recovers(tmp_path
             f"generate() took {elapsed:.1f}s -- must fail fast on a dead process, not hang"
         )
 
-        # The supervisor marks itself degraded on that failure; a lazy
-        # recovery attempt (as require_embeddings/get_lifespan would trigger)
-        # must bring it back.
+        # The supervisor marks itself degraded on that failure -- and, per
+        # the gate BLOCKER 1(b) fix, must ALSO write context["embedding_error"]
+        # in that same except path. Without it, get_status still says "ready"
+        # and require_embeddings doesn't gate, even though _degraded is True
+        # (the post-ready flavor of the lying-status-tuple class _wedge_lock
+        # existed to prevent).
         assert supervisor._degraded is True
+        assert context["embedding_error"] is not None, (
+            "a live generate() failure must write embedding_error, not just flip _degraded"
+        )
+        assert "error:" in supervisor.status(), f"status() must reflect the live failure, got {supervisor.status()!r}"
+
+        # A lazy recovery attempt (as require_embeddings/get_lifespan would
+        # trigger via notify_demand()) must bring it back.
         recovered = supervisor._attempt_load()
         assert recovered is True, "respawn after the kill must succeed"
     finally:
@@ -210,10 +220,12 @@ def test_wedged_load_degrades_after_in_budget_retries_exhausted(tmp_path, monkey
 
 
 def test_lazy_recovery_clears_error_and_updates_context_on_next_demand(tmp_path, monkeypatch):
-    """WP-Sidecar's replacement for WP-Wedge's late-recovery guarantee:
-    after degrading, a LATER successful attempt (triggered via notify_demand
-    + the recovery loop, or a direct retry) must clear embedding_error and
-    install a working generator -- recovery is never permanent."""
+    """WP-Sidecar's replacement for WP-Wedge's late-recovery guarantee: after
+    degrading, notify_demand() (the lazy-on-demand leg require_embeddings/
+    get_lifespan pokes on every degraded tool call) must wake the REAL
+    _recovery_loop thread and have IT clear embedding_error and install a
+    working generator end to end -- not a hand-copied inline stand-in for
+    what recovery is supposed to do."""
     spawn_calls = {"n": 0}
     real_spawn = _make_stub_spawn(mode="wedge_forever")
 
@@ -229,6 +241,9 @@ def test_lazy_recovery_clears_error_and_updates_context_on_next_demand(tmp_path,
         sidecar_load_timeout=0.5,
         sidecar_max_retry_attempts=2,
         sidecar_retry_backoff_seconds=0.05,
+        # long enough that the periodic tick can't be what recovers this --
+        # only notify_demand() waking the loop early should.
+        sidecar_periodic_retry_interval=60.0,
     )
     context = {"embedding_ready": threading.Event(), "embedding_error": None, "embedding_generator": None}
     supervisor = SidecarSupervisor(config, context)
@@ -237,20 +252,87 @@ def test_lazy_recovery_clears_error_and_updates_context_on_next_demand(tmp_path,
         supervisor.ensure_ready()
         assert context["embedding_error"] is not None, "must degrade first (2 wedged attempts exhaust the budget)"
 
-        recovered = supervisor._attempt_load()
-        assert recovered is True
-        with supervisor._state_lock:
-            context["embedding_generator"] = EmbeddingGenerator(
-                __import__(
-                    "vibe_cognition.embeddings.sidecar_client", fromlist=["SidecarBackend"]
-                ).SidecarBackend(supervisor)
-            )
-            context["embedding_error"] = None
-            supervisor._degraded = False
+        supervisor.notify_demand()
 
-        assert context["embedding_error"] is None
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and context["embedding_error"] is not None:
+            time.sleep(0.05)
+
+        assert context["embedding_error"] is None, "notify_demand() must wake the recovery loop and clear the error"
+        assert supervisor._degraded is False
         vector = context["embedding_generator"].generate("recovered")
         assert isinstance(vector, list) and vector
+    finally:
+        supervisor.shutdown()
+
+
+# ── Protocol version skew (gate finding, MAJOR) ──────────────────────────────
+
+
+def test_protocol_version_mismatch_rejects_without_the_heavy_import_and_stays_alive(monkeypatch):
+    """A client whose _sidecar_protocol module still carries a stale
+    PROTOCOL_VERSION (simulating a server process that outlived a plugin
+    update on disk) talking to a REAL, freshly-spawned embeddings/sidecar.py
+    process (which always re-reads whatever's on disk NOW) gets a clean
+    error response, not a crash or a hang. The mismatch is caught in
+    sidecar.py's dispatch BEFORE _do_load ever runs, so no heavy
+    sentence_transformers/torch import is triggered -- this test is fast and
+    needs no real model. Uses send() (not send_load()) deliberately: a
+    rejected-before-_do_load response never emits a lock event, so
+    send_load()'s clock-started wait would time out waiting for one instead
+    of surfacing the real error."""
+    from vibe_cognition.embeddings import _sidecar_protocol
+
+    monkeypatch.setattr(_sidecar_protocol, "PROTOCOL_VERSION", _sidecar_protocol.PROTOCOL_VERSION + 999)
+
+    proc = _SidecarProcess(
+        python_exe=sys.executable,
+        module="vibe_cognition.embeddings.sidecar",
+        env=dict(os.environ),
+    )
+    try:
+        with pytest.raises(SidecarError, match="protocol_version_mismatch"):
+            proc.send("load", {"model_name": "unused", "mutex_wait_timeout": 5.0}, timeout=10.0)
+        assert proc.poll() is None, "a version mismatch must not crash the sidecar process"
+    finally:
+        proc.kill()
+
+
+def test_protocol_version_skew_degrades_bounded_and_never_self_heals_via_respawn(tmp_path, monkeypatch):
+    """The full supervisor path: a stale client PROTOCOL_VERSION exhausts
+    the retry budget against REAL (unmocked _spawn -- targets the real
+    embeddings/sidecar.py entry module) freshly-spawned sidecars and
+    degrades, same as any other exhausted-retry-budget failure -- proving
+    the fixed docstring's claim that a version skew can never self-heal by
+    respawning (every fresh spawn re-reads the SAME current-on-disk code and
+    hits the identical mismatch, since only the CLIENT's own version is
+    stale). A follow-up recovery attempt must fail identically, not silently
+    "succeed" against a version it can't actually talk to."""
+    from vibe_cognition.embeddings import _sidecar_protocol
+
+    monkeypatch.setattr(_sidecar_protocol, "PROTOCOL_VERSION", _sidecar_protocol.PROTOCOL_VERSION + 999)
+
+    config = _make_settings(
+        tmp_path,
+        sidecar_load_timeout=5.0,
+        sidecar_mutex_wait_timeout=5.0,
+        sidecar_max_retry_attempts=2,
+        sidecar_retry_backoff_seconds=0.1,
+    )
+    context = {"embedding_ready": threading.Event(), "embedding_error": None, "embedding_generator": None}
+    supervisor = SidecarSupervisor(config, context)
+
+    try:
+        t0 = time.monotonic()
+        supervisor.ensure_ready()
+        elapsed = time.monotonic() - t0
+
+        assert elapsed < 15.0, f"ensure_ready() took {elapsed:.1f}s -- must be bounded by the retry budget"
+        assert context["embedding_error"] is not None
+        assert supervisor._degraded is True
+
+        recovered_again = supervisor._attempt_load()
+        assert recovered_again is False, "a version skew must fail identically on every fresh spawn, never self-heal"
     finally:
         supervisor.shutdown()
 

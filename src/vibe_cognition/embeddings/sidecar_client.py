@@ -190,7 +190,14 @@ class _SidecarProcess:
         another session's load must not count as wedged (§2). Bounded
         overall by mutex_wait_timeout (bounds the wait for one of those
         three events, with slack for the round trip) + load_timeout (bounds
-        the model load itself, from that point)."""
+        the model load itself, from that point).
+
+        A response can also arrive WITHOUT any lock event ever firing --
+        e.g. a protocol_version_mismatch rejection, answered before the
+        sidecar ever touches the mutex. Waiting for clock_started first
+        unconditionally would misread that as a wedged lock wait for the
+        full mutex_wait_timeout + 15.0s instead of surfacing the real error
+        promptly, so the two are raced instead of sequenced."""
         request_id, event, box = self._register()
         clock_started = threading.Event()
 
@@ -210,12 +217,19 @@ class _SidecarProcess:
             except queue.Full as e:
                 raise SidecarError("sidecar outbound queue full -- writer thread appears stuck (load)") from e
 
-            # Bound the wait for a lock event with generous slack over the
-            # sidecar's own mutex_wait_timeout (its round trip + our IPC).
-            if not clock_started.wait(timeout=mutex_wait_timeout + 15.0):
-                raise SidecarError("sidecar never signaled lock acquisition (mutex wait timeout exceeded)")
+            # Race the lock event against the response event itself (a
+            # rejection answered before the mutex is ever touched sets
+            # `event`, never `clock_started`) -- whichever fires first wins.
+            deadline = time.monotonic() + mutex_wait_timeout + 15.0
+            while not clock_started.is_set() and not event.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise SidecarError("sidecar never signaled lock acquisition (mutex wait timeout exceeded)")
+                clock_started.wait(timeout=min(0.05, remaining))
+                if event.is_set():
+                    break
 
-            if not event.wait(timeout=load_timeout):
+            if not event.is_set() and not event.wait(timeout=load_timeout):
                 raise SidecarError(f"sidecar load timed out ({load_timeout}s after lock acquisition)")
         finally:
             self._event_callback = outer_callback
@@ -251,7 +265,6 @@ class SidecarSupervisor:
         self._state_lock = threading.RLock()
         self._process: _SidecarProcess | None = None
         self._degraded = False
-        self._loading = False
         self._last_lock_event: str | None = None
         self._shutdown_event = threading.Event()
         self._demand_event = threading.Event()
@@ -277,8 +290,16 @@ class SidecarSupervisor:
         """One spawn+load attempt. Kills+discards the process on ANY
         failure (timeout or error response) so the next attempt starts
         fresh (probe-style kill+wait, matching WP-Wedge's now-subsumed
-        _run_subprocess_import_probe)."""
-        proc = self._spawn()
+        _run_subprocess_import_probe). The spawn itself (Popen) is inside
+        this same failure boundary -- a transient OSError spawning the
+        subprocess is a failed attempt like any other, consumed by the
+        retry budget rather than propagating out of ensure_ready()."""
+        try:
+            proc = self._spawn()
+        except OSError as e:
+            _startup_timing.stamp("sidecar_spawn_failed")
+            sys.stderr.write(f"[vibe-sidecar-client] spawn failed: {e!r}\n")
+            return False
         with self._state_lock:
             self._process = proc
         try:
@@ -398,15 +419,21 @@ class SidecarSupervisor:
                 {"texts": texts, "input_type": "query" if is_query else "document"},
                 timeout=self._config.sidecar_request_timeout,
             )
-        except SidecarError:
+        except SidecarError as e:
             # Round-trip timeout owned by the supervisor, not the requesting
             # thread: kill so the NEXT call (or the recovery loop) starts
-            # fresh, and mark degraded so get_status reflects reality.
+            # fresh, and mark degraded so get_status/require_embeddings both
+            # reflect reality -- this is the post-ready flavor of the same
+            # lying-status-tuple class _wedge_lock existed to prevent: a live
+            # failure that flips _degraded without also writing
+            # embedding_error would leave get_status saying "ready" and every
+            # tool call raising SidecarError raw instead of a clean gate.
             proc.kill()
             with self._state_lock:
                 if self._process is proc:
                     self._process = None
                 self._degraded = True
+                self._context["embedding_error"] = str(e)
             raise
 
     # ── status / shutdown ────────────────────────────────────────────────

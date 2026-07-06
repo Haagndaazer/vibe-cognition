@@ -104,6 +104,57 @@ def test_get_lifespan_stamps_tool_served_degraded_only_once_per_process(monkeypa
     assert labels.count("tool_served_degraded") == 1
 
 
+# ── WP-Sidecar gate fix: notify_demand() wiring (BLOCKER 1) ─────────────────
+
+
+class _FakeSupervisor:
+    def __init__(self):
+        self.notify_demand_calls = 0
+
+    def notify_demand(self) -> None:
+        self.notify_demand_calls += 1
+
+
+def test_get_lifespan_pokes_sidecar_supervisor_notify_demand_when_degraded(monkeypatch):
+    """WP-Sidecar gate BLOCKER 1: dispatch reaching a tool call while degraded
+    IS an embedding demand arriving -- the plan's 'lazy respawn on next
+    embedding demand' leg must actually fire, not just the 300s periodic
+    tick. Before this fix notify_demand() had zero call sites."""
+    from vibe_cognition import _startup_timing
+
+    monkeypatch.setattr(_startup_timing, "_stamped_once", set())
+    _startup_timing.breadcrumbs.clear()
+
+    supervisor = _FakeSupervisor()
+    get_lifespan(_ctx_with_lc({"embedding_error": "wedged", "_sidecar_supervisor": supervisor}))
+
+    assert supervisor.notify_demand_calls == 1
+
+
+def test_get_lifespan_does_not_poke_notify_demand_when_healthy(monkeypatch):
+    from vibe_cognition import _startup_timing
+
+    monkeypatch.setattr(_startup_timing, "_stamped_once", set())
+    _startup_timing.breadcrumbs.clear()
+
+    supervisor = _FakeSupervisor()
+    get_lifespan(_ctx_with_lc({"embedding_error": None, "_sidecar_supervisor": supervisor}))
+
+    assert supervisor.notify_demand_calls == 0
+
+
+def test_get_lifespan_tolerates_missing_sidecar_supervisor_key(monkeypatch):
+    """The ollama backend's lifespan context never sets _sidecar_supervisor --
+    degraded dispatch there must not crash looking for a poke target that
+    doesn't exist."""
+    from vibe_cognition import _startup_timing
+
+    monkeypatch.setattr(_startup_timing, "_stamped_once", set())
+    _startup_timing.breadcrumbs.clear()
+
+    get_lifespan(_ctx_with_lc({"embedding_error": "wedged"}))  # no _sidecar_supervisor key at all
+
+
 def test_parse_node_type_valid_none_and_bad():
     """T-6: one parser, one error shape — bad type returns an error dict, never raises
     (the old get_uncurated did a bare CognitionNodeType(node_type) that RAISED)."""
