@@ -702,8 +702,11 @@ async def lifespan(server: FastMCP):
     # alone the way the four known function-body-import sites were (this is
     # NOT the torch/scipy/sentence_transformers chain -- that stays lazy and
     # gated on backend, unchanged). Same two calls get_status already makes
-    # in production (bare count, then an is_chunk-filtered get), so this
-    # exercises exactly the tool-reachable code path, nothing extra. Chroma
+    # in production (a bare count_documents(), then an is_chunk-filtered
+    # count_documents() -- the filtered form calls _collection.get(where=...)
+    # under the hood, but both are COUNT calls at the public API this exists
+    # to exercise), so this exercises exactly the tool-reachable code path,
+    # nothing extra. Chroma
     # init already does pre-yield disk I/O (HEISENBUG GUARD constrains the
     # breadcrumb flush path, not startup work per se), so this doesn't cross
     # a new line. Best-effort + budgeted: a failure or overrun here must

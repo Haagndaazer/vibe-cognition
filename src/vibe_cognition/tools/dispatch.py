@@ -98,6 +98,21 @@ def dispatch_tool(mcp) -> Callable[[F], F]:
     tool_decorator = mcp.tool()
 
     def _decorator(fn: F) -> F:
+        if asyncio.iscoroutinefunction(fn):
+            # run_in_executor would call fn(*args, **kwargs) on a worker
+            # thread, get back a coroutine object (never run), and hand THAT
+            # to the executor's future as the "result" -- silently wrong,
+            # not an error, and easy to miss in review. Fail loud at
+            # registration time instead: every tool this decorator wraps
+            # must be a plain sync function.
+            raise TypeError(
+                f"dispatch_tool cannot wrap {fn.__name__!r}: it is already an "
+                "async def. dispatch_tool routes sync tool bodies to the "
+                "dedicated executor via run_in_executor -- an async function "
+                "would return an un-awaited coroutine as its 'result'. "
+                "Register async tools with @mcp.tool() directly instead."
+            )
+
         @functools.wraps(fn)
         async def _async_dispatch(*args: Any, **kwargs: Any) -> Any:
             loop = asyncio.get_running_loop()

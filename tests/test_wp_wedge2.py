@@ -196,8 +196,8 @@ async def test_lifespan_pre_exercises_chroma_count_and_get_before_yield(tmp_path
     monkeypatch.setattr(ChromaDBStorage, "count_documents", _tracking_count_documents)
 
     async with lifespan(None) as context:  # type: ignore[arg-type]
-        assert None in calls, "bare count() was not pre-exercised"
-        assert {"is_chunk": True} in calls, "is_chunk-filtered get() was not pre-exercised"
+        assert None in calls, "bare count_documents() was not pre-exercised"
+        assert {"is_chunk": True} in calls, "is_chunk-filtered count_documents() was not pre-exercised"
         assert context["embedding_ready"] is not None  # sanity: context is real
 
 
@@ -511,7 +511,17 @@ async def test_ac3_dispatch_storm_causes_zero_thread_start_from_loop_thread(
     Thread.start() calls from the event-loop thread, and every call
     completes. Instruments Thread.start() and records the CALLING thread
     (a bare thread census is contaminated by legitimate test-side threads --
-    only loop-thread spawns matter for INV-1)."""
+    only loop-thread spawns matter for INV-1).
+
+    Honest disclosure (gate finding, MINOR): ``Client(mcp)`` is FastMCP's
+    IN-MEMORY ``FastMCPTransport`` (anyio memory streams) -- it never touches
+    the real stdio transport's ``anyio.wrap_file``/``AsyncFile`` read/write
+    path, so this test proves the DISPATCH half of INV-1's zero-spawn claim
+    only. The transport-WRITE half (every MCP response write needing an
+    anyio worker) has zero coverage in this harness; it stays covered ONLY by
+    WP-Wedge v1's retained, unchanged warm-pool/heartbeat keeping anyio's
+    pool warm, not by a zero-spawn proof here.
+    """
     monkeypatch.setenv("REPO_PATH", str(tmp_path))
     monkeypatch.setenv("EMBEDDING_BACKEND", "ollama")
 
@@ -668,3 +678,24 @@ def test_dispatch_tool_preserves_signature_and_docstring_for_schema_introspectio
     assert inspect.signature(wrapped) == inspect.signature(original)
     assert wrapped.__doc__ == "Original docstring."
     assert wrapped.__name__ == "original"
+
+
+def test_dispatch_tool_rejects_an_already_async_function():
+    """§W2-b gate finding (MINOR): dispatch_tool must fail LOUD at
+    registration time if handed an async def -- run_in_executor would call it
+    on a worker thread, get back an un-awaited coroutine object, and hand
+    THAT to the executor future as the tool's "result" silently. Every
+    dispatch_tool-wrapped function must be a plain sync function."""
+
+    class _RecordingMcp:
+        def tool(self):
+            def decorator(fn):
+                return fn
+
+            return decorator
+
+    async def already_async(ctx):
+        return {}
+
+    with pytest.raises(TypeError, match="already an async def"):
+        dispatch_tool(_RecordingMcp())(already_async)

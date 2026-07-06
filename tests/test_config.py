@@ -192,3 +192,27 @@ def test_wedge_watchdog_timeout_overridable_from_env(tmp_path, monkeypatch):
     monkeypatch.setenv("WEDGE_WATCHDOG_TIMEOUT", "600")
     s = Settings(repo_path=tmp_path)
     assert s.wedge_watchdog_timeout == 600.0
+
+
+# ── DISPATCH_STALL_THRESHOLD binding (WP-Wedge-2 §W2-f) ──────────────────────
+
+
+def test_dispatch_stall_threshold_defaults_to_30(tmp_path):
+    """§W2-f: default matches _DispatchStallForensics' documented threshold."""
+    s = Settings(repo_path=tmp_path)
+    assert s.dispatch_stall_threshold == 30.0
+
+
+def test_dispatch_stall_threshold_overridable_from_env(tmp_path, monkeypatch):
+    """§W2-f: DISPATCH_STALL_THRESHOLD overrides the default -- same binding
+    convention as wedge_watchdog_timeout. All five existing stall-forensics
+    tests (test_wp_wedge2.py) drive the threshold through a bare SimpleNamespace
+    stand-in for config, which never exercises the real Settings()/env path --
+    this is that missing sibling coverage (gate finding, MINOR).
+
+    Fails-before: without the Settings field, no env var could reach the
+    _DispatchStallForensics middleware's threshold read at all.
+    """
+    monkeypatch.setenv("DISPATCH_STALL_THRESHOLD", "45")
+    s = Settings(repo_path=tmp_path)
+    assert s.dispatch_stall_threshold == 45.0
