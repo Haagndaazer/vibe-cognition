@@ -136,11 +136,24 @@ an epic. This WP makes the current architecture honest about degraded mode.
 Incident A's exact block point is unknown; INV-2's design should be informed,
 not guessed. Build the faithful repro (see AC fidelity note below), drive
 `get_status` and a representative tool set in loading AND post-watchdog-fired
-states, capture the blocking stack. If live wedged specimens still exist
-(2604, or old-code 11596/10380), py-spy them for corroboration. Deliverable:
-the stack + which import/lock, as a For-the-record item. If the finding
-contradicts INV-2 (i.e., the block is NOT import-machinery), HOLD and report
-to Vince before implementing §W2-c.
+states, capture the blocking stack. If live wedged specimens still exist,
+py-spy them for corroboration. Deliverable: the stack + which import/lock, as
+a For-the-record item. If the finding contradicts INV-2 (i.e., the block is
+NOT import-machinery), HOLD and report to Vince before implementing §W2-c.
+
+**OUTCOME (2026-07-06, Vorpid, ratified by Vince):** NEGATIVE. A fidelity-
+compliant repro (subprocess-isolated, real FastMCP in-memory dispatch, bg
+thread blocked mid-`exec_module` of a real not-yet-imported module) could NOT
+hang `get_status`/`cognition_search`/`cognition_add_task`/
+`cognition_get_history` — all returned ~30ms. The four known function-body
+import sites test clean under the only simulation buildable in pure Python
+(per-module import lock). The native OS-loader-lock class — the likely
+Incident-A mechanism — is not reproducible from pure Python for mode (a) any
+more than for mode (b). Consequence: Incident A's site stays unpinned;
+WP2-AC2 is REPLACED by §W2-f (production self-forensics) so the next real
+occurrence pins itself. INV-1/INV-2 proceed as defense-in-depth on the
+strength of Incident B (photographed) plus the eliminated import-machinery
+class.
 
 ### §W2-b — INV-1: spawn-free event loop
 As in §3 Direction: dispatch seam + transport cover + post-handshake
@@ -165,6 +178,15 @@ breadcrumb flush path, not startup work per se.)
 noisy, and it needlessly puts the degraded branch in play). Raise the default
 to **300s** (observed healthy max 119.7s × 2.5) and make it env-overridable
 per existing config conventions. Late-recovery semantics unchanged.
+
+### §W2-f — Dispatch-stall self-forensics (added at the §W2-a negative)
+As specified in WP2-AC2(i): a loop-side monitor (the existing watchdog task is
+a natural home) that, when a dispatched tool call is in flight past the
+threshold during the load window or degraded state, dumps all-thread stacks
+to stderr once per process. This converts the next un-reproducible production
+stall into a pinned stack in the client MCP logs. Detection mechanism
+(in-flight registry around the dispatch seam vs. sampling) is implementer's
+craft; the once-per-process bound and stderr-only rule are not.
 
 ### §W2-e — Breadcrumb fidelity
 1. Flush after every stamp **made from the bg thread** (Incident B's file hid
@@ -218,11 +240,21 @@ for these ACs. Requirements:
   (the ≥2×-capacity storm belongs to WP2-AC3, whose bound is completion +
   zero spawns, not wall clock); `cognition_dashboard` patched as in the
   existing dispatch test so the 10s bound can't fail for unrelated reasons.
-- **WP2-AC2:** the faithful simulation reproduces the mode-(a) signature on
-  unfixed main (test fails pre-fix / passes post-fix). Where a permanently-
-  failing-on-main test can't live in the suite, a pinned demonstration is
-  acceptable ONLY if reproducible: exact commands + pre/post SHAs in the PR
-  body, and Vince INDEPENDENTLY RERUNS it at the gate (see §10).
+- **WP2-AC2 (replaced after the §W2-a negative — see outcome note):** two
+  parts. (i) **Stall self-forensics (§W2-f):** when any in-flight tool
+  dispatch exceeds a threshold (default 30s, env-overridable) while the load
+  window or degraded state is active, dump all-thread stacks via
+  `sys._current_frames()`/`faulthandler` to STDERR, once per process
+  (bounded). Stderr lands in the client MCP logs, so the next production
+  mode-(a) occurrence delivers its own pinned blocking stack. Thread-context
+  rule applies: stderr only — NEVER an inline breadcrumb-file flush from the
+  loop or a worker. Tested in-suite with a deliberately-blocked tool.
+  (ii) **Regression coverage for the import-lock class:** the §W2-a repro
+  script is wired into the suite (subprocess-isolated, real dispatch, real
+  module name). It passes on current main for the four cleared sites — its
+  docstring must say it guards the plain-import-lock CLASS (it fails if
+  someone adds a colliding function-body import later), and must NOT claim to
+  reproduce Incident A.
 - **WP2-AC3 (INV-1):** under a dispatch storm (≥ 2× pool capacity concurrent
   tool calls) during the wedge simulation, zero `Thread.start()` calls are
   executed from the event-loop thread (instrument `Thread.start` and record
@@ -300,6 +332,6 @@ hang" language without these qualifiers.
 
 At the reported SHA, in an isolated worktree with import provenance: full
 suite + ruff; strong-form tautology check (targeted reversion so WP2 tests
-fail on assertions, not collection); independent rerun of the WP2-AC2
-demonstration (pre/post SHAs, exact commands from the PR body); adversarial
-subagent review of the diff. Any commit after the pinned SHA voids approval.
+fail on assertions, not collection); independent rerun of the §W2-a repro
+script and the WP2-AC2 stall-forensics test; adversarial subagent review of
+the diff. Any commit after the pinned SHA voids approval.
