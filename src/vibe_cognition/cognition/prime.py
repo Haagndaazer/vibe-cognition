@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ..config import Settings, resolve_repo_path_env
 from .git_hygiene import check_hygiene_state, format_hygiene_announce
+from .git_identity import resolve_git_identity
 from .models import CognitionEdgeType, CognitionNodeType
 from .readme import ONBOARDING_BLOCK
 from .storage import REHYDRATE_FLAG_FILENAME, CognitionStorage
@@ -37,6 +38,16 @@ class PrimeConfig:
     prime_summary_maxlen: int = 110
     prime_incident_min_severity: str = "high"
     prime_workflow_limit: int = 5
+
+    # WP-P13n-2: personalization knobs (see Settings for the full description of
+    # each field — these defaults must match Settings' the same way the trim
+    # knobs above do).
+    prime_personalize: str = "auto"
+    prime_your_tasks_cap: int = 5
+    prime_team_critical_cap: int = 5
+    prime_your_episode_limit: int = 5
+    prime_your_decision_limit: int = 5
+    prime_your_discovery_limit: int = 5
 
 
 def _truncate(text: str, maxlen: int) -> str:
@@ -100,10 +111,154 @@ def _format_tasks(storage: CognitionStorage, cap: int, maxlen: int = 0) -> str:
     return "## Open Tasks\n" + "\n".join(lines)
 
 
+# ── WP-P13n-2: personalization ──────────────────────────────────────────────
+#
+# Email is the ONLY match key (decision, doc:aa047b0b0e0a) — owner/author are
+# free text and are never matched, to avoid both false-positive name collisions
+# and silently dropping agent-owned tasks that have no human name to match.
+
+
+def _node_email(node: dict) -> str:
+    """The stamped identity email for personalization matching: `recorded_by.email`
+    (every non-task node, via _record_node) if present, else `created_by.email`
+    (task nodes, which carry created_by instead of recorded_by). Never falls back
+    to `author`/`owner` — those are caller-provided free text, not server-resolved."""
+    meta = node.get("metadata", {})
+    recorded = meta.get("recorded_by")
+    if isinstance(recorded, dict) and recorded.get("email"):
+        return recorded["email"]
+    created = meta.get("created_by")
+    if isinstance(created, dict) and created.get("email"):
+        return created["email"]
+    return ""
+
+
+def _distinct_stamped_emails(storage: CognitionStorage) -> set[str]:
+    """Every non-empty stamped email in the graph, for the multi-user auto-detect.
+
+    An empty email (unconfigured git identity) is excluded from the count itself
+    -- a solo user who sets `user.email` partway through their history must not
+    flip the graph to "multi-user" just because some nodes predate the config."""
+    return {email for n in storage.get_all_nodes() if (email := _node_email(n))}
+
+
+def _should_personalize(storage: CognitionStorage, config: PrimeConfig, current_email: str) -> bool:
+    """Whether this prime run personalizes, per `config.prime_personalize`.
+
+    No resolvable current-user email means there's nothing to match against --
+    global digest regardless of mode. 'off' is always global; 'on' is always
+    personalized (once an email exists); 'auto' personalizes only when the graph
+    has more than one distinct stamped email (a solo graph's output must stay
+    byte-identical to the pre-WP-P13n-2 global digest)."""
+    if not current_email or config.prime_personalize == "off":
+        return False
+    if config.prime_personalize == "on":
+        return True
+    return len(_distinct_stamped_emails(storage)) > 1
+
+
+def _task_matches_email(node: dict, email: str) -> bool:
+    """A task is "yours" if you created it OR currently hold the claim -- either
+    stamp is server-resolved (WP-P13n-1), never the free-text `owner`."""
+    meta = node.get("metadata", {})
+    for key in ("created_by", "claimed_by"):
+        stamp = meta.get(key)
+        if isinstance(stamp, dict) and stamp.get("email") == email:
+            return True
+    return False
+
+
+def _open_tasks(storage: CognitionStorage) -> list[dict]:
+    nodes = storage.get_nodes_by_type(CognitionNodeType.TASK)
+    return [
+        n for n in nodes
+        if n.get("metadata", {}).get("status", "open") not in _TASK_CLOSED_STATUSES
+    ]
+
+
+def _sort_tasks(nodes: list[dict]) -> list[dict]:
+    """Same two-pass stable sort as _format_tasks: recency desc, then priority asc."""
+    nodes = sorted(nodes, key=lambda n: n.get("timestamp", ""), reverse=True)
+    nodes.sort(key=lambda n: SEVERITY_ORDER.get(n.get("severity", "normal"), 2))
+    return nodes
+
+
+def _format_your_tasks(
+    storage: CognitionStorage, cap: int, current_email: str, maxlen: int = 0
+) -> tuple[str, set[str]]:
+    """'Your Open Tasks': open tasks you created or currently claim, capped.
+
+    Returns (section_text, all_your_task_ids) -- the FULL id set (not just the
+    shown/capped subset) so _format_team_critical can exclude every task that's
+    already yours, including ones past the cap (already accounted for by the
+    overflow line here, not worth re-surfacing under Team Critical too)."""
+    mine = [n for n in _open_tasks(storage) if _task_matches_email(n, current_email)]
+    if not mine:
+        return "", set()
+
+    mine_sorted = _sort_tasks(mine)
+    shown = mine_sorted[:cap]
+    lines = [_format_task(n, maxlen) for n in shown]
+    overflow = len(mine_sorted) - len(shown)
+    if overflow > 0:
+        lines.append(f"- +{overflow} more of your open tasks — use cognition_list_tasks")
+    return "## Your Open Tasks\n" + "\n".join(lines), {n["id"] for n in mine}
+
+
+def _format_team_critical(
+    storage: CognitionStorage, cap: int, exclude_ids: set[str], maxlen: int = 0
+) -> str:
+    """'Team Critical': open critical/high tasks not already shown under Your
+    Open Tasks -- other people's (or unclaimed) urgent work."""
+    critical = [
+        n for n in _open_tasks(storage)
+        if n["id"] not in exclude_ids and n.get("severity") in ("critical", "high")
+    ]
+    if not critical:
+        return ""
+
+    shown = _sort_tasks(critical)[:cap]
+    lines = [_format_task(n, maxlen) for n in shown]
+    overflow = len(critical) - len(shown)
+    if overflow > 0:
+        lines.append(f"- +{overflow} more critical/high tasks — use cognition_list_tasks")
+    return "## Team Critical\n" + "\n".join(lines)
+
+
+def _format_your_activity(
+    storage: CognitionStorage, config: PrimeConfig, current_email: str, maxlen: int = 0
+) -> str:
+    """'Your Recent Activity': your own most recent episodes, decisions, and
+    discoveries (recorded_by.email match), each type capped independently and
+    grouped in that order under one header."""
+    groups = (
+        (CognitionNodeType.EPISODE, config.prime_your_episode_limit),
+        (CognitionNodeType.DECISION, config.prime_your_decision_limit),
+        (CognitionNodeType.DISCOVERY, config.prime_your_discovery_limit),
+    )
+    lines: list[str] = []
+    for node_type, limit in groups:
+        mine = [n for n in storage.get_nodes_by_type(node_type) if _node_email(n) == current_email]
+        mine.sort(key=lambda n: n.get("timestamp", ""), reverse=True)
+        lines.extend(_format_node(n, maxlen) for n in mine[:limit])
+    if not lines:
+        return ""
+    return "## Your Recent Activity\n" + "\n".join(lines)
+
+
 def _format_constraints(storage: CognitionStorage, limit: int, maxlen: int = 0) -> str:
-    """Format active constraints, sorted by severity, dropping only `low` (C2)."""
+    """Format active constraints, sorted by severity, dropping only `low` (C2).
+
+    HEAD-filtered like _format_workflows (task 0d7e84d52537, folded into
+    WP-P13n-2 per the personalized-prime scope decision): a constraint with an
+    incoming SUPERSEDES edge is an old version and is excluded -- only the
+    superseding HEAD is shown, so a revised constraint doesn't duplicate."""
     nodes = storage.get_nodes_by_type(CognitionNodeType.CONSTRAINT)
-    nodes = [n for n in nodes if n.get("severity") != "low"]
+    nodes = [
+        n for n in nodes
+        if n.get("severity") != "low"
+        and not storage.get_predecessors(n["id"], CognitionEdgeType.SUPERSEDES)
+    ]
     if not nodes:
         return ""
 
@@ -201,12 +356,20 @@ def _format_incidents(
     return "## Recent Incidents\n" + "\n".join(lines)
 
 
-def generate_prime(storage: CognitionStorage, config: PrimeConfig | None = None) -> str:
+def generate_prime(
+    storage: CognitionStorage,
+    config: PrimeConfig | None = None,
+    current_email: str | None = None,
+) -> str:
     """Generate the prime markdown output.
 
     Args:
         storage: Hydrated CognitionStorage instance
         config: Trim knobs; defaults to PrimeConfig() (the trimmed target shape)
+        current_email: The resolved git identity's email (WP-P13n-2), or None/""
+            when unresolvable. Gates personalization -- see `_should_personalize`.
+            Global-only sections (constraints, workflows, documents, patterns,
+            decisions, incidents) are unaffected either way.
 
     Returns:
         Markdown string with project context
@@ -215,15 +378,29 @@ def generate_prime(storage: CognitionStorage, config: PrimeConfig | None = None)
         config = PrimeConfig()
 
     maxlen = config.prime_summary_maxlen
-    sections = [
-        _format_constraints(storage, config.prime_constraint_limit, maxlen),
-        _format_tasks(storage, config.prime_task_cap, maxlen),
+    personalize = _should_personalize(storage, config, current_email or "")
+
+    sections = [_format_constraints(storage, config.prime_constraint_limit, maxlen)]
+
+    if personalize:
+        your_tasks, mine_ids = _format_your_tasks(
+            storage, config.prime_your_tasks_cap, current_email or "", maxlen
+        )
+        sections.append(your_tasks)
+        sections.append(_format_team_critical(storage, config.prime_team_critical_cap, mine_ids, maxlen))
+    else:
+        sections.append(_format_tasks(storage, config.prime_task_cap, maxlen))
+
+    if personalize:
+        sections.append(_format_your_activity(storage, config, current_email or "", maxlen))
+
+    sections.extend([
         _format_workflows(storage, config.prime_workflow_limit, maxlen),
         _format_document_count(storage),
         _format_patterns(storage, config.prime_pattern_limit, maxlen),
         _format_decisions(storage, config.prime_decision_limit, maxlen),
         _format_incidents(storage, config.prime_incident_days, config.prime_incident_min_severity, maxlen),
-    ]
+    ])
 
     body = "\n\n".join(s for s in sections if s)
     if not body:
@@ -346,10 +523,19 @@ def main(argv: list[str] | None = None):
                 prime_summary_maxlen=settings.prime_summary_maxlen,
                 prime_incident_min_severity=settings.prime_incident_min_severity,
                 prime_workflow_limit=settings.prime_workflow_limit,
+                prime_personalize=settings.prime_personalize,
+                prime_your_tasks_cap=settings.prime_your_tasks_cap,
+                prime_team_critical_cap=settings.prime_team_critical_cap,
+                prime_your_episode_limit=settings.prime_your_episode_limit,
+                prime_your_decision_limit=settings.prime_your_decision_limit,
+                prime_your_discovery_limit=settings.prime_your_discovery_limit,
             )
         except Exception:  # noqa: BLE001
             config = PrimeConfig()
-        sections.append(generate_prime(storage, config))  # type: ignore[arg-type]
+        # resolve_git_identity is file-read-only and never raises (v0.12.1 P0
+        # contract) -- no try/except needed around it, unlike Settings() above.
+        current_email = resolve_git_identity(repo_path).get("email") or None
+        sections.append(generate_prime(storage, config, current_email))  # type: ignore[arg-type]
 
     output = {
         "hookSpecificOutput": {

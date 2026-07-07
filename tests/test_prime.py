@@ -31,12 +31,28 @@ from vibe_cognition.config import Settings
 
 def _add(storage: CognitionStorage, node_id: str, ntype: CognitionNodeType,
          summary: str, *, severity: str | None = None, timestamp: str | None = None,
+         metadata: dict | None = None,
          ) -> None:
     ts = timestamp or datetime.now(UTC).isoformat()
     storage.add_node(CognitionNode(
         id=node_id, type=ntype, summary=summary, detail="d",
         context=[], references=[], severity=severity, timestamp=ts, author="t",
+        metadata=metadata or {},
     ))
+
+
+def _task(storage: CognitionStorage, node_id: str, summary: str, *, severity: str | None = None,
+          timestamp: str | None = None, created_by: dict | None = None,
+          claimed_by: dict | None = None, status: str = "open") -> None:
+    """Seed a task node with WP-P13n-1 provenance stamps (created_by/claimed_by),
+    for WP-P13n-2 email-matching tests."""
+    meta: dict = {"status": status}
+    if created_by is not None:
+        meta["created_by"] = created_by
+    if claimed_by is not None:
+        meta["claimed_by"] = claimed_by
+    _add(storage, node_id, CognitionNodeType.TASK, summary, severity=severity,
+         timestamp=timestamp, metadata=meta)
 
 
 # ── _truncate ─────────────────────────────────────────────────────────────────
@@ -274,6 +290,202 @@ def test_generate_prime_task_cap_honored_via_config(tmp_path):
     assert "+2 more open tasks" in result
 
 
+def test_generate_prime_constraints_supersession_head_filter(tmp_path):
+    """WP-P13n-2 folded fix (task 0d7e84d52537): a constraint with an incoming
+    SUPERSEDES edge is an old version -- only the HEAD is shown, mirroring the
+    existing workflow HEAD-filter. Fails-before: the old code raw-counted
+    get_nodes_by_type(CONSTRAINT) with no supersession filter, so both the old
+    and new constraint appeared (duplicate/contradictory guidance at session
+    start)."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _add(storage, "c-old", CognitionNodeType.CONSTRAINT, "old install-mechanics rule", severity="high")
+    _add(storage, "c-new", CognitionNodeType.CONSTRAINT, "new install-mechanics rule", severity="high")
+    storage.add_edge(CognitionEdge(
+        from_id="c-new", to_id="c-old", edge_type=CognitionEdgeType.SUPERSEDES,
+        timestamp=datetime.now(UTC).isoformat(),
+    ))
+    result = generate_prime(storage)
+    assert "new install-mechanics rule" in result
+    assert "old install-mechanics rule" not in result
+
+
+# ── WP-P13n-2: personalization ──────────────────────────────────────────────
+
+ME = {"name": "Alice", "email": "alice@x.com"}
+TEAMMATE = {"name": "Bob", "email": "bob@x.com"}
+
+
+def test_generate_prime_solo_graph_stays_global_auto_mode(tmp_path):
+    """Solo graph (<=1 distinct stamped email) in 'auto' mode: output is the
+    unchanged global digest, byte-identical to passing current_email=None,
+    even though a resolvable current_email IS passed. This is the acceptance
+    criterion's "solo output byte-identical" pin."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t1", "solo task", severity="high", created_by=ME)
+
+    with_email = generate_prime(storage, current_email=ME["email"])
+    without_email = generate_prime(storage, current_email=None)
+    assert with_email == without_email
+    assert "## Your Open Tasks" not in with_email
+    assert "## Open Tasks" in with_email
+
+
+def test_generate_prime_multiuser_auto_detect_personalizes(tmp_path):
+    """>1 distinct stamped email in the graph flips 'auto' mode to personalized:
+    the single 'Open Tasks' section is replaced by 'Your Open Tasks' + 'Team
+    Critical'."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t-mine", "my task", severity="normal", created_by=ME)
+    _task(storage, "t-theirs", "teammate task", severity="normal", created_by=TEAMMATE)
+
+    result = generate_prime(storage, current_email=ME["email"])
+    assert "## Your Open Tasks" in result
+    assert "## Open Tasks\n" not in result  # the un-split global header must not also appear
+
+
+def test_generate_prime_no_email_stays_global_no_crash(tmp_path):
+    """Unresolvable identity (empty/None email) -> global digest, no personal
+    sections, no crash -- even in a multi-user graph and even with mode 'on'."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t-mine", "my task", created_by=ME)
+    _task(storage, "t-theirs", "teammate task", created_by=TEAMMATE)
+
+    result = generate_prime(storage, PrimeConfig(prime_personalize="on"), current_email=None)
+    assert "## Your Open Tasks" not in result
+    assert "## Open Tasks" in result
+
+
+def test_generate_prime_personalize_off_forces_global_even_multiuser(tmp_path):
+    """config.prime_personalize='off' always yields the global digest, even
+    with a multi-user graph and a resolvable current_email."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t-mine", "my task", created_by=ME)
+    _task(storage, "t-theirs", "teammate task", created_by=TEAMMATE)
+
+    result = generate_prime(storage, PrimeConfig(prime_personalize="off"), current_email=ME["email"])
+    assert "## Your Open Tasks" not in result
+    assert "## Open Tasks" in result
+
+
+def test_generate_prime_personalize_on_forces_personalized_even_solo(tmp_path):
+    """config.prime_personalize='on' personalizes even a solo graph, as long as
+    current_email resolves."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t1", "solo task", created_by=ME)
+
+    result = generate_prime(storage, PrimeConfig(prime_personalize="on"), current_email=ME["email"])
+    assert "## Your Open Tasks" in result
+
+
+def test_your_open_tasks_matches_email_only_not_owner_name(tmp_path):
+    """Peer-review should-fix, closed in this WP: owner is free-text display-only
+    and must NEVER be matched -- only created_by.email / claimed_by.email. A task
+    whose owner name happens to equal the current user's name, but whose
+    created_by/claimed_by emails don't match, must NOT appear under Your Open
+    Tasks."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t-mine", "my task", created_by=ME)
+    _task(storage, "t-theirs", "teammate task", created_by=TEAMMATE)
+    _add(
+        storage, "t-owner-name-only", CognitionNodeType.TASK, "owner-name-matches only",
+        metadata={"status": "open", "owner": "Alice", "created_by": TEAMMATE},
+    )
+
+    result = generate_prime(storage, current_email=ME["email"])
+    assert "my task" in result
+    assert "owner-name-matches only" not in result
+
+
+def test_your_open_tasks_matches_via_claimed_by(tmp_path):
+    """A task created by a teammate but claimed by the current user (WP-P13n-1
+    claimed_by) counts as "yours" too -- created_by OR claimed_by, either one.
+
+    Uses prime_personalize="on" rather than relying on auto-detect: both tasks
+    here are created_by TEAMMATE (only the claim differs), so the multi-user
+    auto-detect signal -- which is recorded_by.email/created_by.email only, by
+    design (see _node_email) -- would see a single distinct email and stay
+    global. That's tested separately; this test isolates claimed_by-matching."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t-claimed", "claimed by me", created_by=TEAMMATE, claimed_by=ME)
+    _task(storage, "t-theirs", "not mine", created_by=TEAMMATE)
+
+    result = generate_prime(storage, PrimeConfig(prime_personalize="on"), current_email=ME["email"])
+    assert "claimed by me" in result
+    assert "not mine" not in result
+
+
+def test_team_critical_excludes_tasks_already_shown_under_your_open_tasks(tmp_path):
+    """A high/critical task that's already 'yours' appears once, under Your Open
+    Tasks -- never duplicated under Team Critical."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t-mine-critical", "my critical task", severity="critical", created_by=ME)
+    _task(storage, "t-theirs-normal", "teammate normal task", severity="normal", created_by=TEAMMATE)
+
+    result = generate_prime(storage, current_email=ME["email"])
+    assert result.count("my critical task") == 1
+    assert "## Team Critical" not in result  # no OTHER critical/high task exists
+
+
+def test_team_critical_shows_other_high_severity_tasks(tmp_path):
+    """A teammate's high/critical task, not claimed/created by the current user,
+    surfaces under Team Critical when personalized."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t-mine", "my task", severity="normal", created_by=ME)
+    _task(storage, "t-theirs-critical", "teammate critical task", severity="critical", created_by=TEAMMATE)
+
+    result = generate_prime(storage, current_email=ME["email"])
+    assert "## Team Critical" in result
+    assert "teammate critical task" in result
+
+
+def test_your_recent_activity_matches_recorded_by_email(tmp_path):
+    """'Your Recent Activity' shows your own episodes/decisions/discoveries
+    (recorded_by.email match) and excludes a teammate's, even though both are
+    present in a multi-user graph."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t-mine", "my task", created_by=ME)
+    _task(storage, "t-theirs", "teammate task", created_by=TEAMMATE)
+    _add(storage, "e-mine", CognitionNodeType.EPISODE, "my episode", metadata={"recorded_by": ME})
+    _add(storage, "e-theirs", CognitionNodeType.EPISODE, "teammate episode", metadata={"recorded_by": TEAMMATE})
+    _add(storage, "dec-mine", CognitionNodeType.DECISION, "my decision", metadata={"recorded_by": ME})
+    _add(storage, "disc-mine", CognitionNodeType.DISCOVERY, "my discovery", metadata={"recorded_by": ME})
+
+    result = generate_prime(storage, current_email=ME["email"])
+    assert "## Your Recent Activity" in result
+    assert "my episode" in result
+    assert "my decision" in result
+    assert "my discovery" in result
+    assert "teammate episode" not in result
+
+
+def test_your_recent_activity_per_type_cap(tmp_path):
+    """Each type in 'Your Recent Activity' is capped independently via its own
+    config knob."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t-mine", "my task", created_by=ME)
+    _task(storage, "t-theirs", "teammate task", created_by=TEAMMATE)
+    for i in range(4):
+        _add(storage, f"e{i}", CognitionNodeType.EPISODE, f"my episode {i}", metadata={"recorded_by": ME})
+
+    result = generate_prime(
+        storage, PrimeConfig(prime_your_episode_limit=2), current_email=ME["email"],
+    )
+    assert result.count("[episode]") == 2
+
+
+def test_generate_prime_your_activity_omitted_when_no_matching_activity(tmp_path):
+    """Personalized mode with no activity of the current user's own -> no 'Your
+    Recent Activity' header at all (consistent with the empty-drops-the-section
+    rule used everywhere else)."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t-mine", "my task", created_by=ME)
+    _task(storage, "t-theirs", "teammate task", created_by=TEAMMATE)
+    _add(storage, "e-theirs", CognitionNodeType.EPISODE, "teammate episode", metadata={"recorded_by": TEAMMATE})
+
+    result = generate_prime(storage, current_email=ME["email"])
+    assert "## Your Recent Activity" not in result
+
+
 # ── main() — hook payload ─────────────────────────────────────────────────────
 
 
@@ -339,6 +551,54 @@ def test_main_migration_note_prepended(tmp_path, monkeypatch):
     note_pos = ctx.index("Removed stale MCP entry")
     onboard_pos = ctx.index(ONBOARDING_BLOCK[:30])
     assert note_pos < onboard_pos, "migration note must appear before the body"
+
+
+# ── main() — WP-P13n-2 identity wiring ────────────────────────────────────────
+
+
+def test_main_personalizes_when_identity_resolves_and_graph_is_multiuser(tmp_path, monkeypatch):
+    """main() end-to-end: resolve_git_identity resolving the current user's
+    email, in a multi-user graph, personalizes the injected prime -- exercising
+    the real main()->generate_prime wiring, not just generate_prime directly."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t-mine", "my task", created_by=ME)
+    _task(storage, "t-theirs", "teammate task", created_by=TEAMMATE)
+
+    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.delenv("VIBE_MIGRATION_NOTE", raising=False)
+    monkeypatch.setattr("vibe_cognition.cognition.prime.resolve_git_identity", lambda repo: ME)
+
+    buf = io.StringIO()
+    monkeypatch.setattr("sys.stdout", buf)
+    main(argv=[])
+
+    ctx = json.loads(buf.getvalue())["hookSpecificOutput"]["additionalContext"]
+    assert "## Your Open Tasks" in ctx
+    assert "my task" in ctx
+
+
+def test_main_unconfigured_identity_falls_back_to_global_no_crash(tmp_path, monkeypatch):
+    """main() end-to-end: an unresolvable identity (empty email, e.g. a fresh
+    machine with no git user.email configured) degrades to the global digest --
+    no personal sections, no crash -- even though the graph IS multi-user."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t-mine", "my task", created_by=ME)
+    _task(storage, "t-theirs", "teammate task", created_by=TEAMMATE)
+
+    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.delenv("VIBE_MIGRATION_NOTE", raising=False)
+    monkeypatch.setattr(
+        "vibe_cognition.cognition.prime.resolve_git_identity",
+        lambda repo: {"name": "unknown", "email": ""},
+    )
+
+    buf = io.StringIO()
+    monkeypatch.setattr("sys.stdout", buf)
+    main(argv=[])  # must not raise
+
+    ctx = json.loads(buf.getvalue())["hookSpecificOutput"]["additionalContext"]
+    assert "## Your Open Tasks" not in ctx
+    assert "## Open Tasks" in ctx
 
 
 # ── argparse / --help correctness (WP-13, 4aaef22e25ea) ──────────────────────
