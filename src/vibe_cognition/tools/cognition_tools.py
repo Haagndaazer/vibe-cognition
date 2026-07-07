@@ -241,6 +241,11 @@ def _record_node(
                 "supersedes/duplicate note"
             )
 
+    # WP-P13n-1: server-stamped provenance — "whose machine/git identity recorded
+    # this", distinct from `author` (who dictated the record, caller-provided free
+    # text). Same resolve_git_identity used by _add_task's created_by (file-read
+    # only, never subprocess — v0.12.1 P0).
+    recorded_by = resolve_git_identity(storage.cognition_dir.parent)
     node = CognitionNode(
         id=node_id,
         type=node_type,
@@ -251,6 +256,7 @@ def _record_node(
         severity=severity,
         timestamp=timestamp,
         author=author,
+        metadata={"recorded_by": recorded_by},
     )
     # WP-ID: mint a collision-free id under the lock (global fix). Rebind node_id to
     # the returned id BEFORE the embedding upsert + edges + result — else a salted node
@@ -1414,7 +1420,15 @@ def _update_task(
       - map priority→severity and summary/detail to top-level fields via storage.update_node;
       - RE-EMBED ONCE explicitly via _embed_entity_node on the fresh node (NOT via
         _update_node) so search/metadata reflect the new lifecycle, deferred if the model
-        isn't ready."""
+        isn't ready.
+
+    claimed_by (WP-P13n-1) strictly mirrors the ``by`` of the last ACTUAL ->in_progress
+    transition — a call that passes ``status="in_progress"`` while the task is ALREADY
+    in_progress is a same-status no-op (the transition branch below is skipped entirely,
+    same as it always was for the transitions log), so it never re-stamps claimed_by even
+    when combined with another field that DOES apply (e.g. owner=/priority=). A takeover
+    of claimed_by requires a real transition (blocked/open -> in_progress); this is
+    deliberate, not an oversight."""
     node = storage.get_node(node_id)
     if node is None:
         return {"error": f"Node '{node_id}' does not exist"}
@@ -1468,6 +1482,12 @@ def _update_task(
                 entry["note"] = note
             metadata["status"] = status
             metadata["transitions"] = [*metadata.get("transitions", []), entry]
+            # WP-P13n-1: claiming a task (-> in_progress) stamps who claimed it,
+            # server-resolved (same identity as the transition's `by`, no second
+            # resolve). Re-claiming (blocked/open -> in_progress again) re-stamps;
+            # every other transition leaves claimed_by untouched.
+            if status == "in_progress":
+                metadata["claimed_by"] = by
             metadata_changed = True
 
     # --- owner (empty string clears) ---

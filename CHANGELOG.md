@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-07-07
+
+**WP-P13n-1: server-stamped provenance.**
+
+### Added
+- **`recorded_by`** — every `cognition_record` write now stamps `metadata.recorded_by = {name, email}`, resolved server-side via `resolve_git_identity` (file-read only, never subprocess — v0.12.1 P0 contract). `author` is unchanged (still caller-supplied free text).
+- **`claimed_by`** — `cognition_update_task` stamps `metadata.claimed_by = {name, email}` on an actual `status -> in_progress` transition. Re-claiming (e.g. `blocked -> in_progress` again) re-stamps to the new claimer; a same-status `in_progress` call — even combined with another field that does apply, like `owner=` — is a no-op transition and leaves `claimed_by` untouched (a takeover requires a real transition).
+
 ## [0.14.0] — 2026-07-02
 
 **Fable-audit burndown (39 tasks): journal integrity, tool-surface honesty, docs, skills, install robustness, data integrity.**
