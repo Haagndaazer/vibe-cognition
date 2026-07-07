@@ -80,7 +80,14 @@ journal-flush commit on main + /vibe-curate.
     a manual /mcp reconnect; the client's "Terminating MCP server process
     tree" sometimes fails to reap (3 same-morning hangs all traced to
     pre-venv-sync servers; venv synced 09:08:36, last old spawn 09:08:33);
-    clean instance close DOES reap.
+    clean instance close DOES reap. Second, tighter variant pinned at the
+    0.16.0 rollout (2026-07-06 evening): server spawned 18:27:48 FROM the
+    0.16.0 --directory, but the SessionStart hook's uv sync flipped the
+    venv's editable install 0.15.6→0.16.0 at 18:27:50 — Python bound
+    site-packages at interpreter startup 2s earlier, so a server launched
+    from the NEW plugin root ran the OLD code (probe breadcrumbs present,
+    which 0.16.0 deletes). Server spawn races the SessionStart venv sync;
+    launch-directory version ≠ imported-code version.
 17. discovery: concurrent model loads are the wedge trigger — 27s healthy
     load vs 1,463s under stampede; orphan churn is self-sustaining (each
     wedged orphan adds the disk pressure that wedges the next load).
