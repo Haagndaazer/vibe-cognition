@@ -1420,7 +1420,15 @@ def _update_task(
       - map priority→severity and summary/detail to top-level fields via storage.update_node;
       - RE-EMBED ONCE explicitly via _embed_entity_node on the fresh node (NOT via
         _update_node) so search/metadata reflect the new lifecycle, deferred if the model
-        isn't ready."""
+        isn't ready.
+
+    claimed_by (WP-P13n-1) strictly mirrors the ``by`` of the last ACTUAL ->in_progress
+    transition — a call that passes ``status="in_progress"`` while the task is ALREADY
+    in_progress is a same-status no-op (the transition branch below is skipped entirely,
+    same as it always was for the transitions log), so it never re-stamps claimed_by even
+    when combined with another field that DOES apply (e.g. owner=/priority=). A takeover
+    of claimed_by requires a real transition (blocked/open -> in_progress); this is
+    deliberate, not an oversight."""
     node = storage.get_node(node_id)
     if node is None:
         return {"error": f"Node '{node_id}' does not exist"}

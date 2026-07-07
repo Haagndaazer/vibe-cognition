@@ -476,6 +476,41 @@ def test_add_task_has_no_claimed_by_at_creation(build_lc, make_ctx, mock_mcp, tm
     assert "claimed_by" not in t["metadata"]
 
 
+def test_update_task_same_status_combo_does_not_restamp_claimed_by(
+    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+):
+    """A same-status status='in_progress' call COMBINED with another field that DOES
+    apply (owner=) succeeds overall (the owner edit isn't gated on status change) but
+    must NOT silently re-stamp claimed_by to whoever made the combo call — the status
+    branch is a no-op when status == current, same as it's always been for the
+    transitions log, so claimed_by stays at the original claimer.
+
+    Fails-before (gate-review addendum): a naive "stamp claimed_by whenever
+    status=='in_progress' was passed" (rather than gating on status != current) would
+    silently hand the task to the combo caller without a real transition.
+    """
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Original Claimer", "email": "orig@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Combo Caller", "email": "combo@x.com"},
+    )
+    up = mock_mcp.tools["cognition_update_task"](
+        ctx, node_id=t["id"], status="in_progress", owner="new-owner",
+    )
+    assert "error" not in up, up
+    assert up["metadata"]["owner"] == "new-owner"  # the combo field DID apply
+    assert up["metadata"]["claimed_by"] == {"name": "Original Claimer", "email": "orig@x.com"}
+
+
 def test_update_task_reopen_allowed(build_lc, make_ctx, mock_mcp, tmp_path):
     """done -> open (reopen) is a legal transition."""
     register_cognition_tools(mock_mcp)
