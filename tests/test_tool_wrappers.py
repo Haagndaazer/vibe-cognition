@@ -509,6 +509,82 @@ def test_cognition_record_valid_type_returns_node_shape(tmp_path, mock_mcp, buil
     assert storage.has_node(result["id"])
 
 
+# ── cognition_record wrapper — server-stamped recorded_by (WP-P13n-1) ─────────
+
+
+def test_cognition_record_stamps_recorded_by(tmp_path, mock_mcp, build_lc, make_ctx, monkeypatch):
+    """_record_node stamps metadata.recorded_by from server-resolved git identity —
+    distinct from `author` (client-supplied free text, left untouched).
+
+    Fails-before: if recorded_by wasn't stamped at all, or if stamping it clobbered
+    the caller-supplied author.
+    """
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Server Resolved", "email": "srv@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    ctx = make_ctx(lc)
+
+    result = mock_mcp.tools["cognition_record"](  # type: ignore[arg-type]
+        ctx, node_type="decision", summary="s", detail="d", context="", author="Client Author",
+    )
+    assert "error" not in result, result
+    node = lc["cognition_storage"].get_node(result["id"])
+    assert node is not None
+    assert node["metadata"]["recorded_by"] == {"name": "Server Resolved", "email": "srv@x.com"}
+    assert node["author"] == "Client Author"  # author stays free text, untouched
+
+
+def test_cognition_record_recorded_by_survives_identity_failure(
+    tmp_path, mock_mcp, build_lc, make_ctx, monkeypatch
+):
+    """A total git-identity failure (no config file, getpass raising) must never raise
+    or block cognition_record — recorded_by degrades to the same {name: "unknown",
+    email: ""} fallback resolve_git_identity itself guarantees (v0.12.1 P0 contract),
+    exercised end-to-end through the real write path rather than mocked away.
+    """
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "does-not-exist"))
+
+    def _boom():
+        raise OSError("no user env")
+
+    monkeypatch.setattr("vibe_cognition.cognition.git_identity.getpass.getuser", _boom)
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    ctx = make_ctx(lc)
+
+    result = mock_mcp.tools["cognition_record"](  # type: ignore[arg-type]
+        ctx, node_type="decision", summary="s", detail="d", context="", author="t",
+    )
+    assert "error" not in result, result
+    node = lc["cognition_storage"].get_node(result["id"])
+    assert node is not None
+    assert node["metadata"]["recorded_by"] == {"name": "unknown", "email": ""}
+
+
+def test_old_journal_node_without_recorded_by_loads_unchanged(tmp_path):
+    """A node journaled before WP-P13n-1 (no recorded_by key at all) loads fine —
+    metadata is absent-safe (storage.py:1175's `.get("metadata", {})` round-trip),
+    no crash and no retroactive injection of the new key.
+
+    Fails-before: a reader that assumed recorded_by always present would KeyError
+    on pre-existing journal data.
+    """
+    storage = CognitionStorage(tmp_path / ".cognition")
+    old_node = CognitionNode(
+        id="legacy1", type=CognitionNodeType.DECISION, summary="pre-P13n decision",
+        detail="d", context=[], references=[], timestamp="2026-01-01T00:00:00+00:00",
+        author="t",  # no metadata kwarg — mirrors a node written before this WP
+    )
+    storage.add_node(old_node)
+
+    fetched = storage.get_node("legacy1")
+    assert fetched is not None
+    assert "recorded_by" not in fetched.get("metadata", {})
+
+
 # ── require_embeddings gate (both paths) ──────────────────────────────────────
 
 

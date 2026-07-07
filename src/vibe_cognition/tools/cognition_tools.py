@@ -241,6 +241,11 @@ def _record_node(
                 "supersedes/duplicate note"
             )
 
+    # WP-P13n-1: server-stamped provenance — "whose machine/git identity recorded
+    # this", distinct from `author` (who dictated the record, caller-provided free
+    # text). Same resolve_git_identity used by _add_task's created_by (file-read
+    # only, never subprocess — v0.12.1 P0).
+    recorded_by = resolve_git_identity(storage.cognition_dir.parent)
     node = CognitionNode(
         id=node_id,
         type=node_type,
@@ -251,6 +256,7 @@ def _record_node(
         severity=severity,
         timestamp=timestamp,
         author=author,
+        metadata={"recorded_by": recorded_by},
     )
     # WP-ID: mint a collision-free id under the lock (global fix). Rebind node_id to
     # the returned id BEFORE the embedding upsert + edges + result — else a salted node
@@ -1468,6 +1474,12 @@ def _update_task(
                 entry["note"] = note
             metadata["status"] = status
             metadata["transitions"] = [*metadata.get("transitions", []), entry]
+            # WP-P13n-1: claiming a task (-> in_progress) stamps who claimed it,
+            # server-resolved (same identity as the transition's `by`, no second
+            # resolve). Re-claiming (blocked/open -> in_progress again) re-stamps;
+            # every other transition leaves claimed_by untouched.
+            if status == "in_progress":
+                metadata["claimed_by"] = by
             metadata_changed = True
 
     # --- owner (empty string clears) ---

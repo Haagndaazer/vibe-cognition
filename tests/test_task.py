@@ -395,6 +395,87 @@ def test_create_list_update_status_done_flow(build_lc, make_ctx, mock_mcp, tmp_p
     assert mock_mcp.tools["cognition_list_tasks"](ctx, include_done=True)["count"] == 1
 
 
+def test_update_task_claim_stamps_claimed_by(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
+    """cognition_update_task(status='in_progress') stamps metadata.claimed_by from
+    server-resolved git identity, distinct from created_by (the original creator).
+
+    Fails-before: if claiming didn't stamp claimed_by, or stamped the wrong identity.
+    """
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Claimer", "email": "claimer@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+
+    up = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+    assert "error" not in up, up
+    assert up["metadata"]["claimed_by"] == {"name": "Claimer", "email": "claimer@x.com"}
+
+
+def test_update_task_reclaim_restamps_claimed_by(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
+    """Losing and re-claiming a task (in_progress -> blocked -> in_progress) re-stamps
+    claimed_by to the new claimer's identity — it's not sticky to the first claim."""
+    calls = {"name": "First Claimer", "email": "first@x.com"}
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: calls,
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="blocked")
+
+    calls = {"name": "Second Claimer", "email": "second@x.com"}
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: calls,
+    )
+    up = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+    assert up["metadata"]["claimed_by"] == {"name": "Second Claimer", "email": "second@x.com"}
+
+
+def test_update_task_non_claim_transitions_leave_claimed_by_untouched(
+    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+):
+    """A transition that isn't '-> in_progress' (e.g. in_progress -> done) must not
+    touch claimed_by — it stays at whoever last claimed the task.
+
+    Fails-before: if claimed_by were stamped on every transition instead of only
+    the claim transition, or cleared on a non-claim transition.
+    """
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Claimer", "email": "claimer@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Someone Else", "email": "else@x.com"},
+    )
+    done = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="done")
+    assert done["metadata"]["claimed_by"] == {"name": "Claimer", "email": "claimer@x.com"}
+
+
+def test_add_task_has_no_claimed_by_at_creation(build_lc, make_ctx, mock_mcp, tmp_path):
+    """A freshly created (open) task has no claimed_by yet — only claiming sets it."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    assert "claimed_by" not in t["metadata"]
+
+
 def test_update_task_reopen_allowed(build_lc, make_ctx, mock_mcp, tmp_path):
     """done -> open (reopen) is a legal transition."""
     register_cognition_tools(mock_mcp)
