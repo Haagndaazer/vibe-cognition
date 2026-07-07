@@ -223,6 +223,44 @@ class Settings(BaseSettings):
         description="Max workflow HEAD titles shown in the session-start prime digest",
     )
 
+    # WP-P13n-2: per-git-user prime personalization. Global sections (constraints,
+    # workflows, documents, patterns, decisions, incidents) are unaffected; these
+    # knobs only govern the personalized task split + the new "Your Recent Activity"
+    # section, both gated on `prime_personalize` and a resolvable git email.
+    prime_personalize: Literal["auto", "on", "off"] = Field(
+        default="auto",
+        description=(
+            "Prime personalization mode. 'auto': personalize only when the graph "
+            "has more than one distinct stamped git-identity email (a solo graph "
+            "gets the unchanged global digest); 'on': force personalized sections "
+            "whenever the current git identity resolves an email; 'off': always "
+            "the global digest. Set via PRIME_PERSONALIZE env var."
+        ),
+    )
+    prime_your_tasks_cap: int = Field(
+        default=5,
+        description="Max tasks shown in 'Your Open Tasks' (personalized mode)",
+    )
+    prime_team_critical_cap: int = Field(
+        default=5,
+        description=(
+            "Max tasks shown in 'Team Critical' (personalized mode): open "
+            "critical/high tasks not already listed under 'Your Open Tasks'"
+        ),
+    )
+    prime_your_episode_limit: int = Field(
+        default=5,
+        description="Max of your own recent episodes shown in 'Your Recent Activity'",
+    )
+    prime_your_decision_limit: int = Field(
+        default=5,
+        description="Max of your own recent decisions shown in 'Your Recent Activity'",
+    )
+    prime_your_discovery_limit: int = Field(
+        default=5,
+        description="Max of your own recent discoveries shown in 'Your Recent Activity'",
+    )
+
     @field_validator("repo_path", mode="before")
     @classmethod
     def validate_repo_path(cls, v: str | Path) -> Path:

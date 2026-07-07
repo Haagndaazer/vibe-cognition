@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-07-07
+
+**WP-P13n-2: personalized session-start prime digest.**
+
+### Added
+- **Personalization** — when the graph shows more than one distinct stamped git identity (auto-detected; override via `PRIME_PERSONALIZE=auto|on|off`), the prime digest splits the task section into **Your Open Tasks** (tasks you created or currently claim — `created_by`/`claimed_by` email match, see the `claimed_by` contract in [0.17.0]) and **Team Critical** (other open critical/high tasks), and adds a new **Your Recent Activity** section (your own recent episodes, decisions, and discoveries). Active Constraints, Workflows, Documents, Patterns, Decisions, and Incidents stay global in every mode. Matching is email-only — never name/owner — and case-insensitive (`casefold`); stamps themselves remain stored verbatim. A solo graph, or an unresolvable identity, always gets the unchanged global digest.
+
+### Fixed
+- **`_format_constraints`** now HEAD-filters superseded constraints (a constraint with an incoming `SUPERSEDES` edge is excluded, mirroring `_format_workflows`' existing filter), so a revised constraint no longer duplicates alongside its replacement. Applies globally, regardless of personalization mode.
+
 ## [0.17.0] — 2026-07-07
 
 **WP-P13n-1: server-stamped provenance.**
