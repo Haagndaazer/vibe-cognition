@@ -1,10 +1,10 @@
 """Embedding generator with pluggable backends for local embedding generation."""
 
 import logging
-import threading
-import time
-from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
+
+from ._backend import EmbeddingBackend
+from .sidecar_client import SidecarBackend, get_or_create_standalone_supervisor
 
 if TYPE_CHECKING:
     from ..config import Settings
@@ -12,95 +12,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # WP-13 (9cb745be2570): nomic-family task-specific prefixes. Module-level (not a
-# SentenceTransformersBackend attribute) because they are NOMIC-specific, not
-# sentence-transformers-specific -- OllamaBackend needs the SAME two strings when
-# its configured model is also nomic (the default for both backends), not a
-# second, independently-drifting copy. Neither backend actually gates on model
-# name today (both apply these unconditionally to whatever model is configured)
-# -- that's a pre-existing simplification for the ST backend this mirrors exactly,
-# not a new rule invented here.
+# backend-class attribute) because they are NOMIC-specific, not sentence-
+# transformers-specific -- OllamaBackend needs the SAME two strings when its
+# configured model is also nomic (the default for both backends), not a
+# second, independently-drifting copy (embeddings/sidecar.py's
+# SentenceTransformersBackend imports these from here too). Neither backend
+# actually gates on model name today (both apply these unconditionally to
+# whatever model is configured) -- a pre-existing simplification this mirrors
+# exactly, not a new rule invented here.
 NOMIC_DOCUMENT_PREFIX = "search_document: "
 NOMIC_QUERY_PREFIX = "search_query: "
-
-
-class EmbeddingBackend(ABC):
-    """Abstract base class for embedding backends."""
-
-    @abstractmethod
-    def encode(self, texts: list[str], is_query: bool = False) -> list[list[float]]:
-        """Encode texts into embeddings.
-
-        Args:
-            texts: List of texts to encode
-            is_query: Whether the texts are queries (vs documents)
-
-        Returns:
-            List of embedding vectors
-        """
-        pass
-
-
-class SentenceTransformersBackend(EmbeddingBackend):
-    """Embedding backend using sentence-transformers library."""
-
-    DOCUMENT_PREFIX = NOMIC_DOCUMENT_PREFIX
-    QUERY_PREFIX = NOMIC_QUERY_PREFIX
-
-    def __init__(self, model_name: str, dimensions: int | None = None, revision: str | None = None):
-        """Initialize the sentence-transformers backend.
-
-        Args:
-            model_name: Name of the model to use (e.g., 'nomic-ai/nomic-embed-text-v1.5')
-            dimensions: Optional dimension truncation
-            revision: HuggingFace Hub revision (branch, tag, or full commit SHA) to pin
-                the remote code loaded via trust_remote_code=True. None = hub HEAD.
-
-        WP-C (decision 9022f7de94e9): sentence_transformers (and the torch it pulls
-        in transitively) is imported HERE, lazily, not at module top -- measured
-        ~9.6-9.7s of the ~10-15s server-module-import cost that used to sit on the
-        MCP handshake's pre-import critical path. This class is only constructed
-        from EmbeddingGenerator.from_config(), which server.py's background thread
-        (_load_embeddings_and_sync) calls AFTER the handshake yields -- so the cost
-        moves off that path entirely without changing when the model actually
-        loads (still backgrounded, same as before this WP).
-        """
-        from sentence_transformers import SentenceTransformer
-
-        t0 = time.monotonic()
-        logger.info(f"Loading model: {model_name}")
-        self._model: SentenceTransformer = SentenceTransformer(
-            model_name, trust_remote_code=True, revision=revision
-        )
-        elapsed = time.monotonic() - t0
-        self._dimensions = dimensions
-        self._lock = threading.Lock()
-        logger.info(f"Model loaded successfully ({elapsed:.1f}s)")
-
-    def encode(self, texts: list[str], is_query: bool = False) -> list[list[float]]:
-        """Encode texts into embeddings.
-
-        Args:
-            texts: List of texts to encode
-            is_query: Whether the texts are queries (vs documents)
-
-        Returns:
-            List of embedding vectors
-        """
-        if not texts:
-            return []
-
-        # Add task-specific prefixes for nomic models
-        prefix = self.QUERY_PREFIX if is_query else self.DOCUMENT_PREFIX
-        prefixed = [prefix + t for t in texts]
-
-        with self._lock:
-            embeddings = self._model.encode(prefixed, convert_to_numpy=True)
-
-        # Truncate to specified dimensions if set
-        if self._dimensions:
-            embeddings = embeddings[:, : self._dimensions]
-
-        return embeddings.tolist()
 
 
 class OllamaBackend(EmbeddingBackend):
@@ -175,11 +96,19 @@ class EmbeddingGenerator:
                 base_url=config.ollama_base_url,
             )
         else:
-            backend = SentenceTransformersBackend(
-                model_name=config.embedding_model,
-                dimensions=config.embedding_dimensions,
-                revision=config.embedding_revision,
-            )
+            # WP-Sidecar: the sentence-transformers backend is now a thin
+            # proxy over the sidecar client -- the actual model/torch import
+            # lives entirely in the sidecar subprocess (embeddings/sidecar.py),
+            # never here. Blocks (bounded by the in-budget retry window),
+            # same shape as the old direct SentenceTransformersBackend()
+            # construction this replaces. Uses a STANDALONE supervisor (no
+            # request-scoped context to attach to here) -- the real MCP
+            # server never reaches this branch; lifespan()/_load_embeddings_
+            # and_sync drive a context-attached supervisor directly instead,
+            # so its lazy-recovery updates the real, live server state.
+            supervisor = get_or_create_standalone_supervisor(config)
+            supervisor.ensure_ready()
+            backend = SidecarBackend(supervisor)
 
         return cls(backend)
 

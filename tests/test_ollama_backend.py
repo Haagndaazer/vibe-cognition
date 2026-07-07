@@ -87,7 +87,7 @@ def test_encode_returns_embeddings_in_order():
 
 def test_prefix_constants_match_sentence_transformers_backend():
     """Same source of truth, not a second independently-drifting copy."""
-    from vibe_cognition.embeddings.generator import SentenceTransformersBackend
+    from vibe_cognition.embeddings.sidecar import SentenceTransformersBackend
 
     assert NOMIC_DOCUMENT_PREFIX == SentenceTransformersBackend.DOCUMENT_PREFIX
     assert NOMIC_QUERY_PREFIX == SentenceTransformersBackend.QUERY_PREFIX

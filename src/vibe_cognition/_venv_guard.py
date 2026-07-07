@@ -19,16 +19,20 @@ an import Python was already about to do.
 
 WP-C RECONCILIATION (decision 9022f7de94e9): torch is checked by PRESENCE
 ONLY (``importlib.util.find_spec``), never actually imported here. WP-C made
-torch/sentence_transformers a LAZY import (moved into
-``SentenceTransformersBackend.__init__``, loaded in the background thread
-AFTER the handshake) specifically to get its ~9.6s import cost off the
-pre-handshake path -- if this guard still did a REAL ``import torch`` at
-module load, that win would be completely neutralized (module import would
-be just as slow as before WP-C). chromadb, in contrast, stays a REAL import:
-``server.py``'s lifespan opens ChromaDB pre-yield regardless (WP-A), so
-paying that cost here is free -- there is no path where the guard runs but
-the real ChromaDB open doesn't. A torch DLL that's actually broken is instead
-caught later, in the background thread, where it hits the EXISTING
+torch/sentence_transformers a LAZY import specifically to get its ~9.6s
+import cost off the pre-handshake path -- if this guard still did a REAL
+``import torch`` at module load, that win would be completely neutralized
+(module import would be just as slow as before WP-C). WP-Sidecar (P0
+endgame) moved the actual import out of the server process entirely, into
+``embeddings/sidecar.py``'s ``SentenceTransformersBackend.__init__`` (a
+separate subprocess) -- this presence-only check still catches the SAME
+broken-venv class of problem early, before the server even reaches
+``main()``, since the sidecar spawns from this identical installed tree.
+chromadb, in contrast, stays a REAL import: ``server.py``'s lifespan opens
+ChromaDB pre-yield regardless (WP-A), so paying that cost here is free --
+there is no path where the guard runs but the real ChromaDB open doesn't. A
+torch DLL that's actually broken is instead caught later, when the sidecar
+supervisor's load attempt fails, where it hits the EXISTING
 ``embedding_error`` graceful-degradation path (``embedding_ready`` still
 gets set so tools don't hang; ``get_status`` surfaces the error) -- strictly
 better than today, not a regression, since torch was never checked at all

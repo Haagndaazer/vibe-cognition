@@ -108,19 +108,6 @@ class Settings(BaseSettings):
         ),
     )
 
-    # WP-Wedge-2 §W2-d: watchdog margin, env-overridable per existing
-    # conventions (WEDGE_WATCHDOG_TIMEOUT). Default matches
-    # server._WATCHDOG_TIMEOUT (300.0 = 2.5x the observed healthy load max of
-    # 119.7s) -- keep the two in sync if either changes.
-    wedge_watchdog_timeout: float = Field(
-        default=300.0,
-        description=(
-            "Seconds after bg_model_load_start before the embedding-load "
-            "watchdog fires and signals degraded search. Set via "
-            "WEDGE_WATCHDOG_TIMEOUT env var."
-        ),
-    )
-
     # WP-Wedge-2 §W2-f: dispatch-stall self-forensics threshold, env-
     # overridable per existing conventions (DISPATCH_STALL_THRESHOLD).
     dispatch_stall_threshold: float = Field(
@@ -130,6 +117,63 @@ class Settings(BaseSettings):
             "window or a degraded state before an all-thread stack dump is "
             "written to stderr (once per process). Set via "
             "DISPATCH_STALL_THRESHOLD env var."
+        ),
+    )
+
+    # WP-Sidecar (P0 endgame): the heavy torch/scipy/sentence_transformers
+    # import lives in a child process the server supervises, never in-process
+    # -- these bound that supervision, all env-overridable per existing
+    # conventions.
+    sidecar_load_timeout: float = Field(
+        default=180.0,
+        description=(
+            "Seconds a single sidecar load attempt (spawn + mutex wait + "
+            "model load) may run before the supervisor kills it as wedged. "
+            "Generous by design -- the server no longer cares how slow a "
+            "load is, only whether it's making progress. Set via "
+            "SIDECAR_LOAD_TIMEOUT env var."
+        ),
+    )
+    sidecar_request_timeout: float = Field(
+        default=30.0,
+        description=(
+            "Seconds a single generate/ping request to a live sidecar may "
+            "run before the supervisor treats it as failed and kills the "
+            "sidecar. Set via SIDECAR_REQUEST_TIMEOUT env var."
+        ),
+    )
+    sidecar_mutex_wait_timeout: float = Field(
+        default=300.0,
+        description=(
+            "Seconds the sidecar waits to acquire the cross-process model-"
+            "load mutex before proceeding WITHOUT it (stampede risk beats "
+            "never loading). Set via SIDECAR_MUTEX_WAIT_TIMEOUT env var."
+        ),
+    )
+    sidecar_max_retry_attempts: int = Field(
+        default=3,
+        description=(
+            "In-budget kill+respawn attempts before the supervisor degrades "
+            "(after which recovery is lazy-on-demand + slow periodic retry, "
+            "never permanent). Set via SIDECAR_MAX_RETRY_ATTEMPTS env var."
+        ),
+    )
+    sidecar_retry_backoff_seconds: float = Field(
+        default=10.0,
+        description=(
+            "Seconds to wait between in-budget retry attempts. Set via "
+            "SIDECAR_RETRY_BACKOFF_SECONDS env var."
+        ),
+    )
+    sidecar_periodic_retry_interval: float = Field(
+        default=300.0,
+        description=(
+            "Seconds between slow periodic recovery attempts once degraded "
+            "-- production evidence says wedged loads eventually succeed, "
+            "so recovery must never be permanent. Also the max delay before "
+            "an on-demand recovery attempt is woken early by an actual "
+            "embedding request. Set via SIDECAR_PERIODIC_RETRY_INTERVAL "
+            "env var."
         ),
     )
 

@@ -1,11 +1,18 @@
 """WP-Wedge (P0, docs/wp-wedge-plan.md rev 3): bound the bg-thread heavy-import
 wedge that intermittently freezes a live MCP session on Windows.
 
-Covers AC1 (subprocess import probe, kill + retry-success), AC2 (watchdog +
-late recovery, incl. clobber-guard and stranding-interleaving variants), AC3
-(import-collision across every registered tool), AC4 (state-contract tuple),
-and AC6 (heartbeat lifecycle). AC5 (the pinned whole-repo gate command) is run
-separately, not from within this file.
+WP-Sidecar (P0 endgame) subsumed AC1 (the subprocess import probe) and AC2
+(the watchdog + late recovery) entirely -- the heavy import no longer
+happens in this process at all, so there is nothing left to probe or watch
+a timeout on here. Their coverage is replaced by
+tests/test_wp_sidecar.py's supervisor-equivalent tests (kill+respawn+
+backoff, degrade, lazy/periodic recovery), called out explicitly per the
+WP2-AC6 precedent (WP-Wedge-2 replacing WP-Wedge's own probe similarly).
+
+This file now covers: AC3 (import-collision across every registered tool,
+static heavy-chain guard flipped to sidecar.py as the sole sanctioned site),
+AC4 (state-contract tuple), and AC6 (heartbeat lifecycle). AC5 (the pinned
+whole-repo gate command) is run separately, not from within this file.
 """
 
 import ast
@@ -14,362 +21,19 @@ import contextlib
 import re
 import sys
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from vibe_cognition.embeddings import ChromaDBStorage
 from vibe_cognition.server import (
     _load_embeddings_and_sync,
-    _run_subprocess_import_probe,
-    _watchdog,
     _worker_heartbeat,
     lifespan,
 )
 from vibe_cognition.tools import register_all_tools
 from vibe_cognition.tools.cognition_tools import _embeddings_ready
 from vibe_cognition.tools.utils import require_embeddings
-
-# ── AC1: subprocess import probe ─────────────────────────────────────────────
-
-
-def _write_marker_script(tmp_path: Path, marker: Path) -> Path:
-    """A script that blocks forever on its FIRST run (creating `marker`) and
-    exits immediately on any run after `marker` already exists -- simulates
-    "wedged once, recovers on retry" without needing two different commands."""
-    script = tmp_path / "probe_script.py"
-    script.write_text(
-        "import pathlib, sys, time\n"
-        f"p = pathlib.Path({str(marker)!r})\n"
-        "if p.exists():\n"
-        "    sys.exit(0)\n"
-        "p.write_text('x')\n"
-        "time.sleep(9999)\n",
-        encoding="utf-8",
-    )
-    return script
-
-
-def test_probe_kills_and_gives_up_after_two_timeouts(tmp_path):
-    """AC1: a probe command that blocks forever is killed at the parameterized
-    timeout, retried once after the parameterized backoff, and killed again ->
-    returns False. Fails-before: no probe existed at all (the in-process import
-    ran unbounded on the loader-lock-holding thread)."""
-    script = tmp_path / "blocks_forever.py"
-    script.write_text("import time\ntime.sleep(9999)\n", encoding="utf-8")
-
-    t0 = time.monotonic()
-    ok = _run_subprocess_import_probe(
-        cmd=[sys.executable, str(script)], timeout=0.3, retry_backoff=0.2,
-    )
-    elapsed = time.monotonic() - t0
-
-    assert ok is False
-    # Two timeouts + one backoff, bounded -- not the unbounded hang this WP fixes.
-    assert elapsed < 3.0, f"probe took {elapsed:.2f}s -- should be bounded to ~0.8s"
-
-
-def test_probe_recovers_on_retry_after_first_timeout(tmp_path):
-    """AC1 recovery variant: first attempt wedges and is killed; the retried
-    attempt succeeds -> True, safe to proceed with the in-process import."""
-    marker = tmp_path / "recovers_marker"
-    script = _write_marker_script(tmp_path, marker)
-
-    ok = _run_subprocess_import_probe(
-        cmd=[sys.executable, str(script)], timeout=0.3, retry_backoff=0.1,
-    )
-
-    assert ok is True
-
-
-def test_probe_succeeds_immediately_when_import_is_fast(tmp_path):
-    """Sunny-day: a command that exits promptly (any exit code) counts as
-    success -- only a genuine timeout is treated as a wedge."""
-    script = tmp_path / "fast_fail.py"
-    script.write_text("import sys\nsys.exit(1)\n", encoding="utf-8")
-
-    ok = _run_subprocess_import_probe(cmd=[sys.executable, str(script)], timeout=5.0)
-
-    assert ok is True
-
-
-def test_load_embeddings_gives_up_without_in_process_import_after_two_wedges(
-    tmp_path, monkeypatch
-):
-    """AC1: when the probe wedges twice, `_load_embeddings_and_sync` must
-    degrade WITHOUT ever attempting the real in-process import, and all gated
-    tools must respond promptly (< 2s) afterward -- session survives degraded,
-    never hangs."""
-    from vibe_cognition.config import Settings
-
-    monkeypatch.setenv("REPO_PATH", str(tmp_path))
-    monkeypatch.setenv("EMBEDDING_BACKEND", "sentence-transformers")
-    config = Settings()
-
-    # The probe's own kill/retry mechanics are covered directly by
-    # test_probe_kills_and_gives_up_after_two_timeouts; here we only need the
-    # WIRING in _load_embeddings_and_sync -- a probe that reports "gave up" --
-    # to prove the in-process import is never attempted and the session degrades.
-    probe_calls = {"n": 0}
-
-    def _fake_probe(cmd=None, timeout=None, retry_backoff=None):
-        probe_calls["n"] += 1
-        return False
-
-    monkeypatch.setattr("vibe_cognition.server._run_subprocess_import_probe", _fake_probe)
-
-    called = {"from_config": False}
-
-    def _boom(*a, **k):
-        called["from_config"] = True
-        raise AssertionError("in-process import must never be attempted after a double wedge")
-
-    monkeypatch.setattr("vibe_cognition.server.EmbeddingGenerator.from_config", _boom)
-
-    context = {
-        "cognition_storage": None,
-        "cognition_embedding_storage": ChromaDBStorage(persist_directory=tmp_path / "chromadb"),
-        "loaded_projects": None,
-        "embedding_ready": threading.Event(),
-        "embedding_sync_done": threading.Event(),
-        "embedding_error": None,
-        "embedding_generator": None,
-        "_wedge_lock": threading.Lock(),
-        "watchdog_fired": False,
-        "bg_model_load_start_time": None,
-    }
-
-    t0 = time.monotonic()
-    _load_embeddings_and_sync(config, context)
-    elapsed = time.monotonic() - t0
-
-    assert called["from_config"] is False
-    assert context["embedding_generator"] is None
-    assert context["embedding_ready"].is_set()
-    assert context["embedding_sync_done"].is_set()
-    assert "wedged twice" in context["embedding_error"]
-    assert elapsed < 3.0
-
-    # All tools must respond promptly now -- gate check is a pure in-memory read.
-    t1 = time.monotonic()
-    lc = {"embedding_ready": context["embedding_ready"], "embedding_error": context["embedding_error"],
-          "embedding_generator": context["embedding_generator"]}
-    assert _embeddings_ready(lc) is False
-    assert time.monotonic() - t1 < 2.0
-
-
-# ── AC2: watchdog + late recovery ────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_watchdog_fires_after_timeout_when_bg_thread_never_finishes():
-    """AC2: watchdog fires at the parameterized T if bg_model_load_start_time
-    is set but embedding_ready never fires -- sets error+ready+watchdog_fired."""
-    context = {
-        "embedding_ready": threading.Event(),
-        "_wedge_lock": threading.Lock(),
-        "watchdog_fired": False,
-        "bg_model_load_start_time": time.monotonic(),
-        "embedding_error": None,
-    }
-
-    await _watchdog(context, timeout=0.15, poll_interval=0.03)
-
-    assert context["embedding_ready"].is_set()
-    assert context["watchdog_fired"] is True
-    assert context["embedding_error"] == "embedding load slow/wedged; search temporarily degraded"
-
-
-@pytest.mark.asyncio
-async def test_watchdog_never_fires_while_probe_still_running():
-    """AC2 ordering contract: while bg_model_load_start_time is still None (the
-    probe hasn't finished), the watchdog must re-arm rather than fire -- a
-    legitimately slow, bounded probe must never trip it."""
-    context = {
-        "embedding_ready": threading.Event(),
-        "_wedge_lock": threading.Lock(),
-        "watchdog_fired": False,
-        "bg_model_load_start_time": None,
-        "embedding_error": None,
-    }
-
-    async def _finish_soon():
-        await asyncio.sleep(0.2)
-        context["embedding_ready"].set()
-
-    finisher = asyncio.create_task(_finish_soon())
-    await asyncio.wait_for(
-        _watchdog(context, timeout=0.05, poll_interval=0.02), timeout=2.0
-    )
-    await finisher
-
-    assert context["watchdog_fired"] is False, "must not fire while the probe window is unbounded-but-unstarted"
-    assert context["embedding_error"] is None
-
-
-@pytest.mark.asyncio
-async def test_watchdog_late_recovery_installs_generator_and_clears_error(tmp_path, monkeypatch):
-    """AC2: watchdog fires first (bg thread still "wedged" in the in-process
-    import); once the bg thread finishes normally, the SAME lock's atomicity
-    installs the generator, clears the watchdog's placeholder error, and
-    clears watchdog_fired -- session ends ready and error-free."""
-    from vibe_cognition.config import Settings
-
-    monkeypatch.setenv("REPO_PATH", str(tmp_path))
-    monkeypatch.setenv("EMBEDDING_BACKEND", "ollama")  # skip §3a probe -- orthogonal to this AC
-    config = Settings()
-
-    release = threading.Event()
-    sentinel_generator = SimpleNamespace(name="real-generator")
-
-    def _slow_from_config(cfg):
-        release.wait(timeout=10)
-        return sentinel_generator
-
-    monkeypatch.setattr("vibe_cognition.server.EmbeddingGenerator.from_config", _slow_from_config)
-
-    context = {
-        "cognition_storage": None,
-        "cognition_embedding_storage": ChromaDBStorage(persist_directory=tmp_path / "chromadb"),
-        "loaded_projects": None,
-        "embedding_ready": threading.Event(),
-        "embedding_sync_done": threading.Event(),
-        "embedding_error": None,
-        "embedding_generator": None,
-        "_wedge_lock": threading.Lock(),
-        "watchdog_fired": False,
-        "bg_model_load_start_time": None,
-    }
-
-    bg_thread = threading.Thread(target=_load_embeddings_and_sync, args=(config, context), daemon=True)
-    bg_thread.start()
-
-    await _watchdog(context, timeout=0.1, poll_interval=0.02)
-
-    assert context["watchdog_fired"] is True
-    assert context["embedding_generator"] is None, "bg thread is still blocked on `release`"
-
-    release.set()
-    bg_thread.join(timeout=10)
-    assert not bg_thread.is_alive()
-
-    assert context["embedding_generator"] is sentinel_generator
-    assert context["embedding_error"] is None
-    assert context["watchdog_fired"] is False
-
-
-@pytest.mark.asyncio
-async def test_watchdog_clobber_guard_genuine_error_after_fire_is_not_cleared(tmp_path, monkeypatch):
-    """AC2 clobber-guard variant: the bg thread raises a GENUINE error after the
-    watchdog already fired -- the except path's real error must stand, never
-    be silently cleared by anything (there is no late-recovery path for a
-    genuine failure)."""
-    from vibe_cognition.config import Settings
-
-    monkeypatch.setenv("REPO_PATH", str(tmp_path))
-    monkeypatch.setenv("EMBEDDING_BACKEND", "ollama")
-    config = Settings()
-
-    release = threading.Event()
-
-    def _slow_then_raises(cfg):
-        release.wait(timeout=10)
-        raise RuntimeError("genuine failure after wedge")
-
-    monkeypatch.setattr("vibe_cognition.server.EmbeddingGenerator.from_config", _slow_then_raises)
-
-    context = {
-        "cognition_storage": None,
-        "cognition_embedding_storage": ChromaDBStorage(persist_directory=tmp_path / "chromadb"),
-        "loaded_projects": None,
-        "embedding_ready": threading.Event(),
-        "embedding_sync_done": threading.Event(),
-        "embedding_error": None,
-        "embedding_generator": None,
-        "_wedge_lock": threading.Lock(),
-        "watchdog_fired": False,
-        "bg_model_load_start_time": None,
-    }
-
-    bg_thread = threading.Thread(target=_load_embeddings_and_sync, args=(config, context), daemon=True)
-    bg_thread.start()
-
-    await _watchdog(context, timeout=0.1, poll_interval=0.02)
-    assert context["watchdog_fired"] is True
-
-    release.set()
-    bg_thread.join(timeout=10)
-    assert not bg_thread.is_alive()
-
-    assert context["embedding_generator"] is None
-    assert context["embedding_error"] == "genuine failure after wedge", (
-        "the genuine except-path error must stand, not be cleared/overwritten "
-        "by the watchdog's placeholder"
-    )
-
-
-@pytest.mark.asyncio
-async def test_watchdog_stranding_interleaving_never_leaves_ready_no_error_no_generator(
-    tmp_path, monkeypatch
-):
-    """AC2 stranding-interleaving variant: drive the watchdog's fire and the bg
-    thread's normal completion at a near-simultaneous race, repeatedly. The
-    lock must make the transition atomic -- the forbidden tuple (ready=True,
-    error=None, generator=None) must NEVER be observable, and the session must
-    never end stranded (ready + error but a generator that never installs)."""
-    from vibe_cognition.config import Settings
-
-    monkeypatch.setenv("REPO_PATH", str(tmp_path))
-    monkeypatch.setenv("EMBEDDING_BACKEND", "ollama")
-    config = Settings()
-
-    for _ in range(15):
-        sentinel_generator = SimpleNamespace()
-        release = threading.Event()
-
-        def _from_config(cfg, _release=release, _gen=sentinel_generator):
-            _release.wait(timeout=10)
-            return _gen
-
-        monkeypatch.setattr("vibe_cognition.server.EmbeddingGenerator.from_config", _from_config)
-
-        context = {
-            "cognition_storage": None,
-            "cognition_embedding_storage": ChromaDBStorage(persist_directory=tmp_path / f"chromadb_{_}"),
-            "loaded_projects": None,
-            "embedding_ready": threading.Event(),
-            "embedding_sync_done": threading.Event(),
-            "embedding_error": None,
-            "embedding_generator": None,
-            "_wedge_lock": threading.Lock(),
-            "watchdog_fired": False,
-            "bg_model_load_start_time": time.monotonic(),
-        }
-
-        bg_thread = threading.Thread(target=_load_embeddings_and_sync, args=(config, context), daemon=True)
-        # Race: release the bg thread and arm a near-simultaneous watchdog deadline together.
-        bg_thread.start()
-        watchdog_task = asyncio.create_task(_watchdog(context, timeout=0.01, poll_interval=0.005))
-        await asyncio.sleep(0.005)
-        release.set()
-
-        await watchdog_task
-        bg_thread.join(timeout=10)
-        assert not bg_thread.is_alive()
-
-        ready = context["embedding_ready"].is_set()
-        error = context["embedding_error"]
-        generator = context["embedding_generator"]
-
-        assert ready is True
-        assert not (error is None and generator is None), (
-            f"stranded tuple observed: ready={ready} error={error} generator={generator}"
-        )
-        if error is None:
-            assert generator is sentinel_generator
-
 
 # ── AC4: state-contract tuple (ready, no error, generator=None) ─────────────
 
@@ -482,15 +146,18 @@ def test_update_task_and_update_node_do_not_read_stale_generator(
 
 _HEAVY_IMPORT_RE = re.compile(r"^(torch|scipy|sentence_transformers|transformers|sklearn)(\.|$)")
 
-# The ONE sanctioned site: WP-C's lazy import of sentence_transformers (which
-# pulls in torch transitively), inside SentenceTransformersBackend.__init__,
-# loaded only from the bg thread after the MCP handshake yields. server.py's
-# §3a probe command and _venv_guard.py's find_spec presence-check are NOT
-# actual Import/ImportFrom AST nodes (a subprocess argv string and an
-# importlib.util.find_spec call, respectively), so they never need listing
-# here -- an AST walk over Import/ImportFrom nodes naturally never sees them.
+# WP-Sidecar (P0 endgame) FLIPS this: the sanctioned site moves from
+# embeddings/generator.py to embeddings/sidecar.py -- the server process may
+# never import the heavy chain ANYWHERE now; only the sidecar entry module
+# (a separate subprocess, never imported server-side) does. generator.py's
+# SentenceTransformersBackend moved to sidecar.py verbatim; generator.py now
+# only constructs a SidecarBackend proxy (no heavy import at all). server.py's
+# _venv_guard.py's find_spec presence-check is NOT an actual Import/
+# ImportFrom AST node (an importlib.util.find_spec call), so it never needs
+# listing here -- an AST walk over Import/ImportFrom nodes naturally never
+# sees it.
 _SANCTIONED_HEAVY_IMPORT_FILES = {
-    Path("src", "vibe_cognition", "embeddings", "generator.py"),
+    Path("src", "vibe_cognition", "embeddings", "sidecar.py"),
 }
 
 
@@ -505,12 +172,13 @@ def _iter_heavy_imports(tree: ast.AST):
 
 
 def test_no_module_imports_the_heavy_embedding_chain_outside_the_sanctioned_site():
-    """AC3 (static half): no module under src/vibe_cognition/ may `import` or
-    `from ... import` torch|scipy|sentence_transformers|transformers|sklearn
-    -- module-level OR inside a function body -- outside embeddings/generator.py
-    (WP-C's lazy __init__ import). Catches what a runtime dispatch test can't:
-    a module-level eager import (already executed before any test-installed
-    hook exists) or an import hidden in a branch no test happens to exercise.
+    """AC3 (static half) / WPS-AC1: no module under src/vibe_cognition/ may
+    `import` or `from ... import` torch|scipy|sentence_transformers|
+    transformers|sklearn -- module-level OR inside a function body -- outside
+    embeddings/sidecar.py (the ONLY process allowed to touch the heavy chain
+    after WP-Sidecar). Catches what a runtime dispatch test can't: a module-
+    level eager import (already executed before any test-installed hook
+    exists) or an import hidden in a branch no test happens to exercise.
 
     Fails-before: N/A -- added per Vince's WP-Wedge gate review (the first AC3
     cut, a runtime-only synthetic-name hook, could never catch this class of
@@ -530,22 +198,23 @@ def test_no_module_imports_the_heavy_embedding_chain_outside_the_sanctioned_site
 
     assert not violations, (
         "heavy embedding-chain import found outside the sanctioned site "
-        "(embeddings/generator.py) -- this reintroduces the WP-C wedge risk "
-        "on a path the §3a probe doesn't cover:\n" + "\n".join(violations)
+        "(embeddings/sidecar.py) -- this reintroduces the WP-C wedge risk "
+        "in the SERVER PROCESS, exactly what WP-Sidecar exists to prevent:\n"
+        + "\n".join(violations)
     )
 
 
 def test_sanctioned_file_actually_contains_the_expected_lazy_import():
-    """Guard the guard: if embeddings/generator.py's lazy import is ever
+    """Guard the guard: if embeddings/sidecar.py's lazy import is ever
     removed entirely, the exclusion above must not silently make this file's
     coverage vacuous."""
     repo_root = Path(__file__).resolve().parents[1]
-    generator_py = repo_root / "src" / "vibe_cognition" / "embeddings" / "generator.py"
-    tree = ast.parse(generator_py.read_text(encoding="utf-8"), filename=str(generator_py))
+    sidecar_py = repo_root / "src" / "vibe_cognition" / "embeddings" / "sidecar.py"
+    tree = ast.parse(sidecar_py.read_text(encoding="utf-8"), filename=str(sidecar_py))
 
     assert list(_iter_heavy_imports(tree)), (
         "expected sentence_transformers to still be imported (lazily) in "
-        "embeddings/generator.py -- if it moved, update "
+        "embeddings/sidecar.py -- if it moved, update "
         "_SANCTIONED_HEAVY_IMPORT_FILES to match"
     )
 
@@ -798,35 +467,3 @@ async def test_prespawn_happens_before_bg_thread_starts(tmp_path, monkeypatch):
             await asyncio.sleep(0.02)
 
     assert order == ["prespawn", "dispatch_prewarm", "bg_thread_start"], f"wrong order: {order}"
-
-
-@pytest.mark.asyncio
-async def test_lifespan_wires_configured_watchdog_timeout(tmp_path, monkeypatch):
-    """WP2 §W2-d/AC5: `lifespan()` passes `config.wedge_watchdog_timeout` (env-
-    overridable via WEDGE_WATCHDOG_TIMEOUT) into `_watchdog`'s `timeout=` --
-    not the module-level default. Fails-before: `_watchdog(context)` was called
-    with no explicit timeout, so no env var could ever reach it."""
-    monkeypatch.setenv("REPO_PATH", str(tmp_path))
-    monkeypatch.setenv("EMBEDDING_BACKEND", "ollama")
-    monkeypatch.setenv("WEDGE_WATCHDOG_TIMEOUT", "42")
-
-    captured: dict[str, float] = {}
-    real_watchdog = _watchdog
-
-    async def _capturing_watchdog(context, timeout=None, **kwargs):
-        captured["timeout"] = timeout
-        return await real_watchdog(context, timeout=0.05, poll_interval=0.02)
-
-    monkeypatch.setattr("vibe_cognition.server._watchdog", _capturing_watchdog)
-    monkeypatch.setattr(
-        "vibe_cognition.server.EmbeddingGenerator.from_config",
-        lambda cfg: SimpleNamespace(),
-    )
-
-    async with lifespan(None) as context:  # type: ignore[arg-type]
-        for _ in range(500):
-            if context["embedding_ready"].is_set():
-                break
-            await asyncio.sleep(0.02)
-
-    assert captured["timeout"] == 42.0
