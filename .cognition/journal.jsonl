@@ -1885,3 +1885,45 @@
 {"action": "add_edge", "data": {"from_id": "0d7e84d52537", "to_id": "9060900f9773", "edge_type": "part_of", "timestamp": "2026-07-07T21:41:50.648685+00:00", "source": "task-parent", "reason": null}}
 {"action": "remove_edge", "data": {"from_id": "0d7e84d52537", "to_id": "77a17aeb314e", "edge_type": "part_of"}}
 {"action": "update_node", "data": {"id": "0d7e84d52537", "metadata": {"status": "open", "created_by": {"name": "Colton Dyck", "email": "colton.dyck@acryliccode.com"}, "owner": null, "parent_id": "9060900f9773", "transitions": [{"status": "open", "at": "2026-07-02T17:52:54.417567+00:00", "by": {"name": "Colton Dyck", "email": "colton.dyck@acryliccode.com"}}]}}}
+{"action": "update_node", "data": {"id": "85edb105103c", "metadata": {"status": "in_progress", "created_by": {"name": "Colton Dyck", "email": "colton.dyck@acryliccode.com"}, "owner": "Vorpid", "parent_id": "404c963b37a7", "transitions": [{"status": "open", "at": "2026-07-07T21:41:12.988061+00:00", "by": {"name": "Colton Dyck", "email": "colton.dyck@acryliccode.com"}}, {"status": "in_progress", "at": "2026-07-07T21:43:09.647046+00:00", "by": {"name": "Colton Dyck", "email": "colton.dyck@acryliccode.com"}}]}}}
+{"action": "add_edge", "data": {"from_id": "4090e95809bb", "to_id": "72b9ac10524d", "edge_type": "led_to", "timestamp": "2026-07-07T21:48:19.045045+00:00", "source": "curate-skill", "reason": "v0.15.3 wedge incident directly motivated the WP-Wedge design decision"}}
+{"action": "add_edge", "data": {"from_id": "3a0455e38032", "to_id": "3fe19a88b3f4", "edge_type": "led_to", "timestamp": "2026-07-07T21:48:19.061733+00:00", "source": "curate-skill", "reason": "Same-day post-fix wedge (probe ok 7.3s yet in-process load 1463s) led directly to the discovery that the probe premise was false"}}
+{"action": "add_edge", "data": {"from_id": "3fe19a88b3f4", "to_id": "79af24452c6b", "edge_type": "led_to", "timestamp": "2026-07-07T21:48:19.076136+00:00", "source": "curate-skill", "reason": "Discovery that the probe premise was false motivated the stronger WP-Wedge-2 design (INV-1/INV-2)"}}
+{"action": "add_edge", "data": {"from_id": "79af24452c6b", "to_id": "ddaf8b4cb145", "edge_type": "led_to", "timestamp": "2026-07-07T21:48:19.090312+00:00", "source": "curate-skill", "reason": "WP-Wedge-2 design motivated the full three-layer program ordering decision"}}
+{"action": "add_edge", "data": {"from_id": "42cf3d3e68ac", "to_id": "ac456c33bbce", "edge_type": "led_to", "timestamp": "2026-07-07T21:48:19.103351+00:00", "source": "curate-skill", "reason": "Contextvar-propagation discovery is the cited evidence generalized into the mock-tests-cannot-catch-dispatch-defects pattern"}}
+{"action": "add_edge", "data": {"from_id": "b1ed939c95a7", "to_id": "8a8acf7d55fa", "edge_type": "relates_to", "timestamp": "2026-07-07T21:48:19.116258+00:00", "source": "curate-skill", "reason": "Pseudo-handle rejection by WaitForMultipleObjects explains the mechanism behind the test doubles silently passing on WAIT_FAILED"}}
+{"action": "add_edge", "data": {"from_id": "fa36e23ab619", "to_id": "1ce50f54b9a9", "edge_type": "relates_to", "timestamp": "2026-07-07T21:48:19.131220+00:00", "source": "curate-skill", "reason": "WP-Wedge-2 and WP-Lifecycle are the next two phases of the same P0 program, per the program-ordering decision"}}
+{"action": "add_edge", "data": {"from_id": "b1d92b63c711", "to_id": "60ec6a38f861", "edge_type": "led_to", "timestamp": "2026-07-07T21:48:19.143562+00:00", "source": "curate-skill", "reason": "Concurrent-load-stampede discovery is explicit direct evidence motivating WP-Sidecar's machine-wide load mutex design"}}
+{"action": "add_edge", "data": {"from_id": "b1d92b63c711", "to_id": "ddaf8b4cb145", "edge_type": "relates_to", "timestamp": "2026-07-07T21:48:19.154862+00:00", "source": "curate-skill", "reason": "Both articulate the self-sustaining orphan-churn mechanism, from evidence and strategic-response angles respectively"}}
+{"action": "add_edge", "data": {"from_id": "60ec6a38f861", "to_id": "9873b833aafb", "edge_type": "led_to", "timestamp": "2026-07-07T21:48:19.167074+00:00", "source": "curate-skill", "reason": "WP-Sidecar's per-server design explicitly identified the one-torch-heap-per-session cost that motivated this follow-up task"}}
+{"action": "add_edge", "data": {"from_id": "4163f54f2848", "to_id": "fa36e23ab619", "edge_type": "relates_to", "timestamp": "2026-07-07T21:48:19.179876+00:00", "source": "curate-skill", "reason": "Task explicitly names INV-1 (from WP-Wedge-2) as the risk class it mirrors on the dashboard's separate uvicorn loop"}}
+{"action": "add_edge", "data": {"from_id": "bfb34715d609", "to_id": "404c963b37a7", "edge_type": "led_to", "timestamp": "2026-07-07T21:48:19.192476+00:00", "source": "curate-skill", "reason": "Colton's approval decision directly led to creation of the WP-P13n epic umbrella task"}}
+{"action": "update_node", "data": {"id": "4090e95809bb", "curated_by_skill_at": "2026-07-07T21:48:25.697986+00:00"}}
+{"action": "update_node", "data": {"id": "3a0455e38032", "curated_by_skill_at": "2026-07-07T21:48:25.713457+00:00"}}
+{"action": "update_node", "data": {"id": "3fe19a88b3f4", "curated_by_skill_at": "2026-07-07T21:48:25.727112+00:00"}}
+{"action": "update_node", "data": {"id": "72b9ac10524d", "curated_by_skill_at": "2026-07-07T21:48:25.741997+00:00"}}
+{"action": "update_node", "data": {"id": "79af24452c6b", "curated_by_skill_at": "2026-07-07T21:48:25.756314+00:00"}}
+{"action": "update_node", "data": {"id": "ddaf8b4cb145", "curated_by_skill_at": "2026-07-07T21:48:25.769472+00:00"}}
+{"action": "update_node", "data": {"id": "d61bd5b70298", "curated_by_skill_at": "2026-07-07T21:48:25.784570+00:00"}}
+{"action": "update_node", "data": {"id": "fa36e23ab619", "curated_by_skill_at": "2026-07-07T21:48:25.802509+00:00"}}
+{"action": "update_node", "data": {"id": "1ce50f54b9a9", "curated_by_skill_at": "2026-07-07T21:48:25.817425+00:00"}}
+{"action": "update_node", "data": {"id": "cf5b061a2fe5", "curated_by_skill_at": "2026-07-07T21:48:25.831596+00:00"}}
+{"action": "update_node", "data": {"id": "26b571fcbe03", "curated_by_skill_at": "2026-07-07T21:48:25.843760+00:00"}}
+{"action": "update_node", "data": {"id": "42cf3d3e68ac", "curated_by_skill_at": "2026-07-07T21:48:25.858289+00:00"}}
+{"action": "update_node", "data": {"id": "b1ed939c95a7", "curated_by_skill_at": "2026-07-07T21:48:25.870641+00:00"}}
+{"action": "update_node", "data": {"id": "8a8acf7d55fa", "curated_by_skill_at": "2026-07-07T21:48:25.884424+00:00"}}
+{"action": "update_node", "data": {"id": "ac456c33bbce", "curated_by_skill_at": "2026-07-07T21:48:25.898705+00:00"}}
+{"action": "update_node", "data": {"id": "1073ed6f052c", "curated_by_skill_at": "2026-07-07T21:48:25.910090+00:00"}}
+{"action": "update_node", "data": {"id": "b1d92b63c711", "curated_by_skill_at": "2026-07-07T21:48:25.923936+00:00"}}
+{"action": "update_node", "data": {"id": "60ec6a38f861", "curated_by_skill_at": "2026-07-07T21:48:25.937147+00:00"}}
+{"action": "update_node", "data": {"id": "9873b833aafb", "curated_by_skill_at": "2026-07-07T21:48:25.950400+00:00"}}
+{"action": "update_node", "data": {"id": "4163f54f2848", "curated_by_skill_at": "2026-07-07T21:48:25.964629+00:00"}}
+{"action": "update_node", "data": {"id": "45f70931ef70", "curated_by_skill_at": "2026-07-07T21:48:25.976020+00:00"}}
+{"action": "update_node", "data": {"id": "25e3e5f87865", "curated_by_skill_at": "2026-07-07T21:48:25.988037+00:00"}}
+{"action": "update_node", "data": {"id": "593e1e3a084b", "curated_by_skill_at": "2026-07-07T21:48:26.002480+00:00"}}
+{"action": "update_node", "data": {"id": "6cfb182067ab", "curated_by_skill_at": "2026-07-07T21:48:26.016188+00:00"}}
+{"action": "update_node", "data": {"id": "bfb34715d609", "curated_by_skill_at": "2026-07-07T21:48:26.030333+00:00"}}
+{"action": "update_node", "data": {"id": "404c963b37a7", "curated_by_skill_at": "2026-07-07T21:48:26.043698+00:00"}}
+{"action": "update_node", "data": {"id": "85edb105103c", "curated_by_skill_at": "2026-07-07T21:48:26.056485+00:00"}}
+{"action": "update_node", "data": {"id": "9060900f9773", "curated_by_skill_at": "2026-07-07T21:48:26.068943+00:00"}}
+{"action": "update_node", "data": {"id": "85edb105103c", "metadata": {"status": "blocked", "created_by": {"name": "Colton Dyck", "email": "colton.dyck@acryliccode.com"}, "owner": "Vorpid", "parent_id": "404c963b37a7", "transitions": [{"status": "open", "at": "2026-07-07T21:41:12.988061+00:00", "by": {"name": "Colton Dyck", "email": "colton.dyck@acryliccode.com"}}, {"status": "in_progress", "at": "2026-07-07T21:43:09.647046+00:00", "by": {"name": "Colton Dyck", "email": "colton.dyck@acryliccode.com"}}, {"status": "blocked", "at": "2026-07-07T21:50:14.327519+00:00", "by": {"name": "Colton Dyck", "email": "colton.dyck@acryliccode.com"}, "note": "Diff complete, pinned gates green at ca8c747a16406e3ac4bdecfbd1e646ee50aa97c1 on wp-p13n-1. Awaiting Vince's gate review — status set to blocked as a stand-in for \"awaiting review\" (no such task status exists)."}]}}}
