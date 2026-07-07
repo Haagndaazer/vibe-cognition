@@ -486,6 +486,50 @@ def test_generate_prime_your_activity_omitted_when_no_matching_activity(tmp_path
     assert "## Your Recent Activity" not in result
 
 
+def test_your_open_tasks_matches_case_insensitively(tmp_path):
+    """Email matching is case-insensitive (casefold): a task stamped with a
+    differently-cased email than the resolved current_email must still land
+    under Your Open Tasks, not silently vanish. Peer-review-confirmed defect,
+    fixed on top of 5364163 -- fails-before at that commit (exact match only)."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    me_uppercased = {"name": "Alice", "email": "Alice@X.COM"}
+    _task(storage, "t-mine", "my task differently cased", created_by=me_uppercased)
+    _task(storage, "t-theirs", "teammate task", created_by=TEAMMATE)
+
+    result = generate_prime(storage, current_email=ME["email"])  # "alice@x.com"
+    assert "## Your Open Tasks" in result
+    assert "my task differently cased" in result
+
+
+def test_solo_graph_two_casings_of_one_email_stays_global_under_auto(tmp_path):
+    """A solo user whose stamped emails vary only in casing (e.g. across two
+    machines) must NOT false-trip the multi-user auto-detect into personalizing
+    -- casefolded, both stamps count as ONE distinct email. Fails-before at
+    5364163 (exact-match distinct-count sees two)."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    me_uppercased = {"name": "Alice", "email": "ALICE@X.COM"}
+    _task(storage, "t1", "task one", created_by=ME)
+    _task(storage, "t2", "task two", created_by=me_uppercased)
+
+    result = generate_prime(storage, current_email=ME["email"])
+    assert "## Your Open Tasks" not in result
+    assert "## Open Tasks" in result
+
+
+def test_your_recent_activity_matches_cross_case(tmp_path):
+    """'Your Recent Activity' matches recorded_by.email case-insensitively too.
+    Fails-before at 5364163."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    me_uppercased = {"name": "Alice", "email": "ALICE@X.COM"}
+    _task(storage, "t-mine", "my task", created_by=ME)
+    _task(storage, "t-theirs", "teammate task", created_by=TEAMMATE)
+    _add(storage, "e-mine", CognitionNodeType.EPISODE, "my cross-case episode", metadata={"recorded_by": me_uppercased})
+
+    result = generate_prime(storage, current_email=ME["email"])
+    assert "## Your Recent Activity" in result
+    assert "my cross-case episode" in result
+
+
 # ── main() — hook payload ─────────────────────────────────────────────────────
 
 

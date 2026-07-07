@@ -119,17 +119,20 @@ def _format_tasks(storage: CognitionStorage, cap: int, maxlen: int = 0) -> str:
 
 
 def _node_email(node: dict) -> str:
-    """The stamped identity email for personalization matching: `recorded_by.email`
-    (every non-task node, via _record_node) if present, else `created_by.email`
-    (task nodes, which carry created_by instead of recorded_by). Never falls back
-    to `author`/`owner` — those are caller-provided free text, not server-resolved."""
+    """The stamped identity email for personalization matching, casefolded (never
+    `.lower()` — casefold is the correct Unicode-aware match normalization):
+    `recorded_by.email` (every non-task node, via _record_node) if present, else
+    `created_by.email` (task nodes, which carry created_by instead of
+    recorded_by). Never falls back to `author`/`owner` — those are
+    caller-provided free text, not server-resolved. The stamp itself (WP-P13n-1
+    provenance record) is untouched; this is a match-time normalization only."""
     meta = node.get("metadata", {})
     recorded = meta.get("recorded_by")
     if isinstance(recorded, dict) and recorded.get("email"):
-        return recorded["email"]
+        return recorded["email"].casefold()
     created = meta.get("created_by")
     if isinstance(created, dict) and created.get("email"):
-        return created["email"]
+        return created["email"].casefold()
     return ""
 
 
@@ -159,11 +162,16 @@ def _should_personalize(storage: CognitionStorage, config: PrimeConfig, current_
 
 def _task_matches_email(node: dict, email: str) -> bool:
     """A task is "yours" if you created it OR currently hold the claim -- either
-    stamp is server-resolved (WP-P13n-1), never the free-text `owner`."""
+    stamp is server-resolved (WP-P13n-1), never the free-text `owner`. Matched
+    case-insensitively (casefold, not lower) on both sides -- `email` is already
+    casefolded by the single normalization point in `generate_prime`, but this
+    function casefolds the stamp (and re-casefolds `email`) so it's correct
+    called in isolation too."""
     meta = node.get("metadata", {})
+    email = email.casefold()
     for key in ("created_by", "claimed_by"):
         stamp = meta.get(key)
-        if isinstance(stamp, dict) and stamp.get("email") == email:
+        if isinstance(stamp, dict) and stamp.get("email") and stamp["email"].casefold() == email:
             return True
     return False
 
@@ -236,6 +244,7 @@ def _format_your_activity(
         (CognitionNodeType.DECISION, config.prime_your_decision_limit),
         (CognitionNodeType.DISCOVERY, config.prime_your_discovery_limit),
     )
+    current_email = current_email.casefold()
     lines: list[str] = []
     for node_type, limit in groups:
         mine = [n for n in storage.get_nodes_by_type(node_type) if _node_email(n) == current_email]
@@ -368,8 +377,13 @@ def generate_prime(
         config: Trim knobs; defaults to PrimeConfig() (the trimmed target shape)
         current_email: The resolved git identity's email (WP-P13n-2), or None/""
             when unresolvable. Gates personalization -- see `_should_personalize`.
-            Global-only sections (constraints, workflows, documents, patterns,
-            decisions, incidents) are unaffected either way.
+            Matched case-insensitively (casefolded once here, the single
+            normalization point) against stamped emails, which are themselves
+            casefolded by `_node_email`/`_task_matches_email` -- stamps stay
+            stored verbatim (WP-P13n-1 provenance untouched); this is a
+            prime.py match-time-only normalization. Global-only sections
+            (constraints, workflows, documents, patterns, decisions,
+            incidents) are unaffected either way.
 
     Returns:
         Markdown string with project context
@@ -378,13 +392,14 @@ def generate_prime(
         config = PrimeConfig()
 
     maxlen = config.prime_summary_maxlen
-    personalize = _should_personalize(storage, config, current_email or "")
+    current_email = (current_email or "").casefold()
+    personalize = _should_personalize(storage, config, current_email)
 
     sections = [_format_constraints(storage, config.prime_constraint_limit, maxlen)]
 
     if personalize:
         your_tasks, mine_ids = _format_your_tasks(
-            storage, config.prime_your_tasks_cap, current_email or "", maxlen
+            storage, config.prime_your_tasks_cap, current_email, maxlen
         )
         sections.append(your_tasks)
         sections.append(_format_team_critical(storage, config.prime_team_critical_cap, mine_ids, maxlen))
@@ -392,7 +407,7 @@ def generate_prime(
         sections.append(_format_tasks(storage, config.prime_task_cap, maxlen))
 
     if personalize:
-        sections.append(_format_your_activity(storage, config, current_email or "", maxlen))
+        sections.append(_format_your_activity(storage, config, current_email, maxlen))
 
     sections.extend([
         _format_workflows(storage, config.prime_workflow_limit, maxlen),
