@@ -298,6 +298,56 @@ def test_fallback_d_compound_stamped_no_from_agent_key_no_person_node(tmp_path):
     embed.close()
 
 
+def test_fallback_e_unknown_seniority_tier_is_neutral_not_a_crash(tmp_path):
+    """C1 cross-version doctrine (Vince gate finding): a person node stamped with a
+    seniority tier this build doesn't know (a newer plugin version's "principal",
+    a hand-edited journal, a cross-version team) must never crash cognition_search
+    with a KeyError -- it degrades to the neutral multiplier while the RAW tier
+    string still surfaces verbatim in weight.seniority/basis (visible, not hidden,
+    never silently coerced to a penalty)."""
+    s = CognitionStorage(tmp_path / "cog")
+    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    s.add_node(_person("pprincipal", "principal@x.com", "principal"))
+    s.add_node(_entity("n1", recorded_by={"name": "P", "email": "principal@x.com"}, from_agent=False))
+    _upsert(embed, "n1", [1.0, 0.0, 0.0], from_agent=False)
+    gen = cast(EmbeddingGenerator, _FixedGen([1.0, 0.0, 0.0]))
+
+    res = _search_cognition(s, embed, gen, "q", limit=10)  # must not raise KeyError
+    hit = res["results"][0]
+    assert hit["weight"] == {
+        "multiplier": 1.0, "seniority": "principal", "from_agent": False,
+        "basis": "human:principal",
+    }
+    embed.close()
+
+
+def test_fallback_f_person_node_missing_seniority_key_treated_as_unregistered(tmp_path):
+    """C1 cross-version doctrine (Vince gate finding): a person node predating the
+    seniority field (older schema) must never crash the person-scan with a
+    KeyError -- it's treated exactly like no matching person node at all
+    (human:unregistered), not surfaced as a fake seniority value."""
+    s = CognitionStorage(tmp_path / "cog")
+    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    s.add_node(CognitionNode(
+        id="pold", type=CognitionNodeType.PERSON, summary="Old — eng", detail="",
+        context=[], references=[], timestamp="2026-07-15T00:00:00+00:00", author="Old",
+        metadata={
+            "person": {"email": "old@x.com", "name": "Old", "role": "eng", "reports_to_email": ""},
+            "profile_history": [], "recorded_by": {"name": "Old", "email": "old@x.com"}, "from_agent": False,
+        },
+    ))
+    s.add_node(_entity("n1", recorded_by={"name": "O", "email": "old@x.com"}, from_agent=False))
+    _upsert(embed, "n1", [1.0, 0.0, 0.0], from_agent=False)
+    gen = cast(EmbeddingGenerator, _FixedGen([1.0, 0.0, 0.0]))
+
+    res = _search_cognition(s, embed, gen, "q", limit=10)  # must not raise KeyError
+    hit = res["results"][0]
+    assert hit["weight"] == {
+        "multiplier": 1.0, "seniority": None, "from_agent": False, "basis": "human:unregistered",
+    }
+    embed.close()
+
+
 # ── Visibility ────────────────────────────────────────────────────────────────
 
 

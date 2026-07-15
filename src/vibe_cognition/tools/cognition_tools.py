@@ -574,11 +574,19 @@ def _person_seniority_map(storage: CognitionStorage) -> dict[str, str]:
     the exact accidentally-quadratic shape C2 exists to catch). A read-only cache of
     data immutable for the call's duration (person nodes don't change mid-search) --
     contrast TC10's ``excluded_count``, which is per-round OUTPUT and must NOT be
-    cached this way; this caches INPUTS, never outputs."""
-    return {
-        person["metadata"]["person"]["email"]: person["metadata"]["person"]["seniority"]
-        for person in storage.get_nodes_by_type(CognitionNodeType.PERSON)
-    }
+    cached this way; this caches INPUTS, never outputs.
+
+    C1 cross-version doctrine: a person node missing ``seniority`` (older schema,
+    hand-edited journal) maps to ``None`` here rather than raising -- readers
+    degrade on unknown/absent vocab, never crash."""
+    result: dict[str, str] = {}
+    for person in storage.get_nodes_by_type(CognitionNodeType.PERSON):
+        info = person["metadata"].get("person", {})
+        email = info.get("email")
+        seniority = info.get("seniority")
+        if email and seniority is not None:
+            result[email] = seniority
+    return result
 
 
 def _hit_weight(
@@ -593,7 +601,13 @@ def _hit_weight(
     (dashboard/api.py): a stamped identity with no matching person node is a KNOWN,
     unrostered author (``"human:unregistered"``), not ``"unverified"`` (no stamp at
     all) -- conflating the two is the improvisation the battle plan forbids.
-    Precedence: exempt type > agent origin > stamp presence > person registration."""
+    Precedence: exempt type > agent origin > stamp presence > person registration.
+
+    C1 cross-version doctrine: an out-of-vocabulary seniority (a newer tier this
+    build doesn't know, e.g. a future "principal") never crashes and never gets a
+    penalty -- it maps to the neutral multiplier while the RAW seniority string is
+    still surfaced verbatim in ``weight.seniority``/``basis`` (visible, not
+    hidden)."""
     seniority = person_seniority.get(email)
     if node_type in _NEVER_EXCLUDED_SEARCH_TYPES:
         return {
@@ -618,7 +632,7 @@ def _hit_weight(
         }
     if seniority is not None:
         return {
-            "multiplier": _SENIORITY_MULTIPLIERS[seniority],
+            "multiplier": _SENIORITY_MULTIPLIERS.get(seniority, 1.0),
             "seniority": seniority,
             "from_agent": from_agent,
             "basis": f"human:{seniority}",
