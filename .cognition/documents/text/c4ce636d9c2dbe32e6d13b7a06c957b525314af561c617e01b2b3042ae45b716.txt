@@ -1,0 +1,60 @@
+# Scope: WP-TC15 — Curation-containment observability (get_status surfaces out-of-curation edge writes)
+
+Status: APPROVED after corrections (peer-review rev 1 APPROVE-WITH-CORRECTIONS — 1 HIGH: get_statistics return-type widening for pyright ratchet; 3 MINOR: docs citation, baseline narrative, bump-coordination mechanism — all applied). Load-bearing claim VERIFIED by reviewer against code: per-edge `source` survives replay into the MultiDiGraph edge_data that get_statistics's existing loop (storage.py:637 `for _, _, edge_data in self._graph.edges(data=True)`) already walks. Vorpid implements; Vince gates. Epic cedf4a8457e9; task 31f7a638ad2b (floating small, low severity). Ruling baked into the task: the containment rule (ONLY curate-orchestrator calls add_edge/add_edges_batch/mark_curated) stays docs-only; this WP adds the MINIMAL observability version — the server counts semantic-edge writes that occur outside a curation run and surfaces the count in get_status. NO token handshake / auth — PERMANENTLY REJECTED (adversarial threat model out of scope; local trust domain, accidental misuse only). Scope is EDGE writes per the task text — mark_curated misuse is out of scope (it surfaces indirectly via uncurated-count anomalies).
+
+## PROBLEM
+
+Containment is a documented convention with zero visibility: if a main-session agent hand-authors edges via cognition_add_edge/add_edges_batch (accidental misuse — the exact failure the constraint exists to prevent), nothing surfaces it. The graph's semantic-edge provenance quietly degrades and nobody notices until edge quality complaints appear.
+
+## CURRENT MECHANICS (haiku-verified citations, at pin ~761f407)
+
+- EVERY edge carries a `source` string, journaled and replayed faithfully: CognitionEdge.source (models.py:98), persisted in the add_edge journal entry (storage.py:270), replayed with legacy fallback to "curator" when absent (storage.py:1204), present in graph edge_data (storage.py:277).
+- Complete producer enumeration (survey-verified; no other edge-writing code paths exist, dashboard has none, remove_edge only deletes):
+  - `create_deterministic_edges` → part_of/relates_to, source="deterministic" (storage.py:822) — internal, no tool.
+  - `cognition_add_edge` → source param, default "manual" (cognition_tools.py:3724, :3730).
+  - `cognition_add_edges_batch` → per-edge source from input, default "batch" (cognition_tools.py:487, :526).
+  - `_add_task` / `cognition_update_task` task parenting → part_of, source="task-parent" (cognition_tools.py:1493, :1649).
+- Curation-run producers set explicit sources: Step 2 edge pass source="curate-skill" (curate-orchestrator.md:61), Step 3 conflict pass source="curate-conflict" (:91). Step 4 cluster pass sets NO source → its part_of edges default to "batch" (survey finding) — conflates legitimate curation output with the exact bucket this WP counts as violations.
+- Legacy value: "curator" — older journals' curation edges (models.py:98 comment; replay fallback storage.py:1204).
+- get_status (service_tools.py:23-185) builds `cognition_graph` with per-node-type and per-edge-type counts (dynamic — no pre-enumerated set); new top-level/sub-dict keys have been added additively across WPs with no versioning scheme (callers must tolerate new keys). The `curation` key is currently a static how-to string.
+- No existing counters, no run-marker state, no containment tests (survey: "docs-only today").
+
+## DESIGN
+
+**Principle: derive, don't track.** The journal already records every edge's source; the count is computed at read time from replayed graph state. No write-path changes, no new persistence, no lifespan state, no run marker — restart-proof and identical on every clone by construction (journal-carried). This is the entire mechanism; anything stateful was rejected below.
+
+**Source taxonomy (pinned).**
+- CURATION-LEGITIMATE: "deterministic", "task-parent", "curate-skill", "curate-conflict", "curate-cluster" (new, see below), "curator" (legacy curation default — exempting it prevents every pre-existing graph from showing a scary false baseline).
+- OUTSIDE-CURATION (the counted set): "manual", "batch", and ANY unknown/other value (conservative: an unrecognized producer is by definition not a known-legitimate one; a future legit producer must be added to the exempt set deliberately, in code, with a CHANGELOG note).
+- Missing source in a replayed entry → replay already defaults it to "curator" (storage.py:1204) → legitimate; no new handling.
+
+**get_status change (the feature).** `cognition_graph` gains TWO keys:
+- `edge_sources`: dict — a histogram of ALL edge sources present, dynamic like the existing per-edge-type counts (full transparency; makes any count interpretable at a glance).
+- `edges_outside_curation`: int — sum over the OUTSIDE set above (the at-a-glance signal the task text asks for).
+Computed in the same pass that already iterates edges for the per-type counts — get_statistics's loop at storage.py:637 (`for _, _, edge_data in self._graph.edges(data=True)`; MultiDiGraph yields every parallel edge with its own source attr) — ONE pass, no second O(edges) walk. Type widening (peer-review HIGH): get_statistics is typed `-> dict[str, int]` (storage.py:615); nesting `edge_sources: dict[str,int]` as a value breaks that annotation and FAILS pyright's ratchet CI (ci.yml:82-83 vs .github/pyright-baseline.txt — reviewer reproduced the exact reportArgumentType error). Widen the return annotation (e.g. `dict[str, int | dict[str, int]]`) or return the histogram via a sibling structure — implementer's choice, but the annotation change is REQUIRED, and pyright parity with main stays a gate criterion. The static `curation` string is UNCHANGED (it documents the launch path, different job).
+
+**Orchestrator Step 4 fix (conflation repair, same WP).** agents/curate-orchestrator.md Step 4 (:111): cluster part_of edges MUST set source="curate-cluster" explicitly (one instruction edit mirroring Step 2's :61 and Step 3's :91 wording). "curate-cluster" joins the exempt set. Going forward, a "batch" edge really is an anomaly. The agent .md change ships in the same WP because shipping the counter WITHOUT it would false-positive the very next cluster-producing curation run. Day-one baseline (peer-review measured, real journal): edges_outside_curation = 85 — 84 "batch" + 1 "manual". Narrative corrected per review: those 84 batch edges are HISTORICAL Step-2-STYLE semantic edges (led_to/relates_to/resolved_by/supersedes, dated 2026-06-22→07-01) that predate consistent curate-skill tagging — NOT cluster edges; the Step 4 fix prevents FUTURE conflation but does not and cannot shrink this baseline. Disclosed, NOT remediated (no journal rewriting, ever); the `edge_sources` histogram makes the baseline legible.
+
+**Trust model (document verbatim).** `source` is caller-declared. A deliberately spoofed source="curate-skill" defeats the counter — IN SCOPE to ignore: the ruled threat model is accidental misuse in a local trust domain (a well-meaning agent calling add_edge with defaults), and the defaults are exactly what the counter catches. Auth/handshake designs are permanently rejected; do not revisit.
+
+**What does NOT change.** No write-path behavior (all tools write exactly as before). No journal format change (no new action types). No dashboard change. No prime change. mark_curated untouched. The containment constraint text itself unchanged (still docs-first; this is a smoke detector, not a lock).
+
+## ACCEPTANCE
+
+- Histogram: graph with edges of every known source value → `edge_sources` exact per-source counts; edge with an unknown source ("mystery-tool") → appears in histogram AND counted in `edges_outside_curation`.
+- Count: manual + batch + unknown counted; deterministic/task-parent/curate-skill/curate-conflict/curate-cluster/curator NOT counted; zero-edge graph → `edge_sources` {} and count 0 (keys PRESENT, absent-key discipline does not apply here — get_status always reports both).
+- Legacy: replayed journal entry with NO source field → "curator" via existing fallback → not counted (fails-before: this test must fail if someone counts missing-source as outside).
+- Single-pass: no additional full edge iteration beyond the existing stats pass (code-review criterion, not a timed test).
+- Orchestrator .md: Step 4 sets source="curate-cluster"; wording mirrors Step 2/3's source lines. (Agent .md is prompt-content — the gate check is textual, plus the exempt set includes "curate-cluster" in code.)
+- Fails-before on: outside-count computation (manual edge → count 1), unknown-source conservatism, curator-legacy exemption.
+- Tool-surface audit: get_status IS an MCP tool and its output shape changes → run the RECURRING tool-surface self-sufficiency audit (workflow node) — the new keys must be self-explanatory from the tool description/docstring alone; update the get_status docstring to name both keys and the exempt/counted taxonomy.
+- Docs (peer-review corrected — README has NO "containment" paragraph; zero grep matches): the curate-orchestrator exclusive-edge-write descriptions at README.md:315 and readme.py:20 (COGNITION_GUIDE) each gain the observability sentence; SKILL.md if it mentions the edge-write reservation; CHANGELOG [Unreleased].
+- Gate: standard — isolated worktree, pinned commit, independent pytest+ruff + PYRIGHT PARITY with main (the HIGH finding makes pyright load-bearing for this WP), off-limits untouched, journal untouched on branch. Version bump (peer-review corrected — explicit owner + mechanism): NEITHER WP branch carries the bump; after the SECOND of TC14/TC15 merges, VINCE requests a standalone 0.24.0 bump commit from Vorpid directly on a short bump branch (pyproject.toml + plugin.json + uv.lock + CHANGELOG release-stamp), gated and merged like any WP — this removes the double-/missed-bump race entirely.
+
+## REJECTED ALTERNATIVES (record)
+
+Token handshake / curation-run auth: permanently rejected by ruling (adversarial model out of scope) — do not revisit. Lifespan-state run flag ("curation in progress"): lost on restart, races multiple sessions, and adds the first stateful coupling between get_status and tool-call ordering — the derive-don't-track principle beats it. New journal action per violation: permanent per-violation records scale with misuse velocity and add a journal format change for what a read-time derivation gives free. Machine-local counter file (.last-rehydrate.json pattern): per-machine view of a cross-machine property (the journal syncs; the counter should match on every clone). Counting mark_curated misuse: out of task scope (task text says edge writes). Timestamp-window heuristics ("recent mark_curated ⇒ inside a run"): racy (survey: Step 2 writes edges BEFORE mark_curated), and the source field makes them unnecessary.
+
+## KNOWN LIMITS (document)
+
+Caller-declared source: deliberate spoofing invisible (ruled out of scope). Historical baseline: pre-TC15 "manual"/"batch" edges count forever — the histogram makes the baseline legible; no journal rewriting. The counter is graph-wide, not windowed — it answers "how many ever", not "how many since yesterday" (a TC14-digest-style delta was considered and dropped: get_status is stateless and the histogram plus journal timestamps let a human answer the delta question when it matters). Unknown-source conservatism means a future legitimate producer shows as violations until its source joins the exempt set in code — deliberate, forces the addition to be a reviewed decision.
