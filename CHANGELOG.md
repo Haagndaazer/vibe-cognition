@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**WP-TC5 + WP-TC6: identity node layer (person nodes + agent-origin provenance).**
+
+### Added
+- **`person` node type** — models a HUMAN identity (name, role, seniority, `reports_to_email`); agent identity is never persisted here, it lives in teammate-comms. Updated **in place** (never supersession-versioned) with an append-only `metadata.profile_history` audit trail (`{changed: {field: {from, to}}, at, by}` per edit). Email is the identity key (casefolded) — one person node per email, enforced. New tools: `cognition_register_person` (omit `email` to self-register via the server-resolved git identity; pass one to register someone else, trust-based), `cognition_update_person` (anyone may update anyone — the audit trail is the control), `cognition_get_person`, `cognition_list_people`. `reports_to_email` may point at an unregistered email (legal, dangling — surfaced as `reports_to_registered: false`); self-reporting and cycles are rejected. Graph-inert in the deterministic matcher; searchable via `cognition_search(node_type="person")`.
+- **`from_agent` provenance bool** — `cognition_record`, `cognition_add_task`, `cognition_store_document`, `cognition_register_person`, and `cognition_update_person` now accept `from_agent: bool = True`, stamped as `metadata.from_agent`. Default `true` ("via agent" — an undeclared write is honestly agent-originated); set `false` only when a human explicitly dictated/authored the content themselves. Surfaces in `cognition_search` results, `cognition_get_node`, and `cognition_list_tasks` rows; a pre-existing node has no `from_agent` key, which reads as unknown — never coerced to `true`/`false`.
+
+### Fixed
+- The startup embedding-sync reconciler (`_sync_cognition_embeddings`) now tolerates a node type it doesn't recognize (e.g. a newer client wrote a node type this server predates) — one bad node is logged and skipped instead of aborting the whole sync batch and silently starving every node behind it in iteration order (the exact defect this WP's peer review traced in an older version's sync).
+
+### Upgrade note
+If you share a graph with teammates, **upgrade promptly** once person nodes start landing. An older client's startup embedding sync has no per-node type tolerance: the first `person` node it encounters raises inside its sync loop, and every node behind it in iteration order silently never gets embedded — recurring on every restart until that client upgrades. Journal replay itself is unaffected (old and new clients both read `type` as a raw string); this only degrades local search coverage on a stale client.
+
 ## [0.18.0] — 2026-07-07
 
 **WP-P13n-2: personalized session-start prime digest.**

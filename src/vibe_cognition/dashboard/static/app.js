@@ -11,6 +11,7 @@ const TYPE_COLORS = {
   episode: "#b6bdc9",
   workflow: "#e87ecb",
   task: "#ffd166",
+  person: "#7ee787",
 };
 
 const TOKEN = new URL(location.href).searchParams.get("token") || "";

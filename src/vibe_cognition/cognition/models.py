@@ -33,6 +33,19 @@ class CognitionNodeType(str, Enum):  # noqa: UP042
     # metadata and edited in place via cognition_update_task. Graph-inert in the matcher
     # (its parent hierarchy is an explicit part_of edge, not reference-matched).
     TASK = "task"
+    # A HUMAN identity (never an agent — agent identity lives in teammate-comms, not
+    # here). Concise (single entity vector), UPDATED IN PLACE (not supersession-
+    # versioned) with an append-only metadata.profile_history audit trail. Graph-inert
+    # in the matcher (WP-TC5) — created/edited only via the dedicated
+    # cognition_register_person/cognition_update_person tools, never cognition_record.
+    PERSON = "person"
+
+
+# Seniority vocabulary (WP-TC5, pinned by Colton — not up for relitigation): a closed
+# set, highest-to-lowest. cognition_register_person/cognition_update_person validate
+# against this (casefolded); the ordering is canonical so downstream retrieval
+# weighting (WP-TC9) imports this constant rather than re-declaring the vocabulary.
+SENIORITY_LEVELS: tuple[str, ...] = ("owner", "senior", "mid", "junior")
 
 
 class CognitionEdgeType(str, Enum):  # noqa: UP042  (see CognitionNodeType above)
