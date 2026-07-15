@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from vibe_cognition.cognition import (
@@ -24,6 +25,7 @@ from vibe_cognition.cognition import (
 from vibe_cognition.cognition.documents import (
     blob_rel_path,
     documents_dir,
+    sha256_bytes,
     text_sidecar_path,
 )
 from vibe_cognition.dashboard.server import (
@@ -170,6 +172,32 @@ class TestAuth:
         r = c.get("/api/graph", headers={**_hdr(), "host": "[::1]:7842"})
         assert r.status_code == 200, \
             "IPv6 loopback host [::1]: should be accepted by middleware (was 403)"
+
+
+class TestRouteTable:
+    """WP-DashV2 acceptance: read-only surface -- no new non-GET route joins
+    the two pre-existing ones (DELETE /api/node/{id}, the only mutation; POST
+    /api/search, a read-only query pre-dating this WP). The two new endpoints
+    (/api/workflows, /api/activity) and the extended /api/documents must not
+    add POST/PUT/PATCH/DELETE."""
+
+    _PRE_EXISTING_NON_GET = [
+        ("/api/node/{node_id}", ("DELETE",)),
+        ("/api/search", ("POST",)),
+    ]
+
+    def test_no_new_non_get_routes(self, lifespan_ctx):
+        app, stack = build_app(lifespan_ctx, token="testtok")
+        try:
+            non_get_routes = sorted(
+                (r.path, tuple(sorted(r.methods - {"HEAD", "OPTIONS"})))
+                for r in app.routes
+                if isinstance(r, Route) and r.methods and (r.methods - {"GET", "HEAD", "OPTIONS"})
+            )
+            assert non_get_routes == sorted(self._PRE_EXISTING_NON_GET), \
+                f"unexpected non-GET route(s): {non_get_routes}"
+        finally:
+            stack.close()
 
 
 class TestGraphAPI:
@@ -612,6 +640,313 @@ class TestDocuments:
         r = c.get("/api/document/dllink01/download?token=testtok")
         assert r.status_code == 404, "symlink escaping documents_dir was served"
         assert "LINK SECRET" not in r.text
+
+
+class TestWorkflowsAPI:
+    """WP-DashV2: GET /api/workflows — HEAD-only cards with inline version chains."""
+
+    def _wf(self, node_id, summary, timestamp, author="Colton"):
+        return CognitionNode(
+            id=node_id, type=CognitionNodeType.WORKFLOW, summary=summary, detail="d",
+            context=[], references=[], timestamp=timestamp, author=author, metadata={},
+        )
+
+    def test_no_token_rejected(self, client):
+        c, _ = client
+        assert c.get("/api/workflows").status_code == 403
+
+    def test_zero_workflow_graph(self, client):
+        c, _ = client  # base fixture graph has only a decision + a discovery
+        r = c.get("/api/workflows", headers=_hdr())
+        assert r.status_code == 200
+        assert r.json() == {"workflows": [], "count": 0}
+
+    def test_single_version_chain_of_one(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._wf("wf1", "Deploy process", datetime.now(UTC).isoformat()))
+
+        body = c.get("/api/workflows", headers=_hdr()).json()
+        assert body["count"] == 1
+        wf = body["workflows"][0]
+        assert wf["id"] == "wf1"
+        assert wf["summary"] == "Deploy process"
+        assert len(wf["chain"]) == 1
+        assert wf["chain"][0]["id"] == "wf1"
+
+    def test_superseded_workflow_absent_as_card_present_in_chain_newest_first(self, client):
+        """Fails-before: the HEAD filter must exclude the non-HEAD version from
+        the top-level workflows list; the chain must be newest -> oldest
+        including the HEAD itself."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        now = datetime.now(UTC)
+        s.add_node(self._wf("wfv1", "Deploy v1", (now - timedelta(days=2)).isoformat()))
+        s.add_node(self._wf("wfv2", "Deploy v2", now.isoformat()))
+        # SUPERSEDES points newer -> older ("B replaces A": edge is B -> A;
+        # cognition_tools.py:3741/3824, prime.py:331). wfv2 is newer, so it
+        # supersedes wfv1.
+        s.add_edge(CognitionEdge(
+            from_id="wfv2", to_id="wfv1", edge_type=CognitionEdgeType.SUPERSEDES,
+            timestamp=now.isoformat(), source="test",
+        ))
+
+        body = c.get("/api/workflows", headers=_hdr()).json()
+        ids = {w["id"] for w in body["workflows"]}
+        assert ids == {"wfv2"}, "superseded (non-HEAD) workflow must not appear as a top-level card"
+        head = next(w for w in body["workflows"] if w["id"] == "wfv2")
+        assert [c_["id"] for c_ in head["chain"]] == ["wfv2", "wfv1"]
+
+    def test_branch_warned_chain_does_not_crash(self, client):
+        """A HEAD with 2 OUTGOING SUPERSEDES edges (it claims to replace two
+        different older nodes) must be tolerated by get_superseded_chain's own
+        walk -- mirrors its ``len(successors) > 1`` warning path (first match,
+        warns, never raises/500s). get_workflow_head's predecessor-side
+        tolerance is a different code path this endpoint never calls (it only
+        checks get_predecessors(..., SUPERSEDES) for the HEAD filter), so the
+        branching that matters here is on the successor (chain-walk) side.
+        wfhead has zero incoming SUPERSEDES, so it stays the sole HEAD."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        now = datetime.now(UTC)
+        s.add_node(self._wf("wfhead", "Head", now.isoformat()))
+        s.add_node(self._wf("wfolda", "Old A", (now - timedelta(days=1)).isoformat()))
+        s.add_node(self._wf("wfoldb", "Old B", (now - timedelta(days=1)).isoformat()))
+        s.add_edge(CognitionEdge(
+            from_id="wfhead", to_id="wfolda", edge_type=CognitionEdgeType.SUPERSEDES,
+            timestamp=now.isoformat(), source="test",
+        ))
+        s.add_edge(CognitionEdge(
+            from_id="wfhead", to_id="wfoldb", edge_type=CognitionEdgeType.SUPERSEDES,
+            timestamp=now.isoformat(), source="test",
+        ))
+
+        r = c.get("/api/workflows", headers=_hdr())
+        assert r.status_code == 200
+        body = r.json()
+        assert body["count"] == 1
+        assert body["workflows"][0]["id"] == "wfhead"
+
+
+class TestDocumentsFreshnessAndCitations:
+    """WP-DashV2: GET /api/documents gains freshness + cited_by per row."""
+
+    def test_no_token_rejected(self, client):
+        c, _ = client
+        assert c.get("/api/documents").status_code == 403
+
+    def test_reference_mode_with_path_unchanged(self, client, tmp_path):
+        c, lc = client
+        s = lc["cognition_storage"]
+        src = tmp_path / "source.txt"
+        src.write_bytes(b"original content")
+        sha = sha256_bytes(b"original content")
+        s.add_node(_doc_node("freshok1", "Ref unchanged", {
+            "mode": "reference", "path": str(src), "sha256": sha,
+        }, "doc:aaaaaaaaaaaa"))
+
+        docs = {d["node_id"]: d for d in c.get("/api/documents", headers=_hdr()).json()["documents"]}
+        assert docs["freshok1"]["freshness"] == "unchanged"
+
+    def test_reference_mode_with_path_modified_fails_before(self, client, tmp_path):
+        """Fails-before: must fail if the row's freshness were computed as
+        anything other than 'modified' once the source content diverges from
+        the stored sha256."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        src = tmp_path / "source.txt"
+        src.write_bytes(b"original content")
+        sha = sha256_bytes(b"original content")
+        s.add_node(_doc_node("freshmod1", "Ref modified", {
+            "mode": "reference", "path": str(src), "sha256": sha,
+        }, "doc:bbbbbbbbbbbb"))
+        src.write_bytes(b"edited content, same-ish size")
+
+        docs = {d["node_id"]: d for d in c.get("/api/documents", headers=_hdr()).json()["documents"]}
+        assert docs["freshmod1"]["freshness"] == "modified"
+
+    def test_reference_mode_with_path_missing(self, client, tmp_path):
+        c, lc = client
+        s = lc["cognition_storage"]
+        src = tmp_path / "source.txt"
+        src.write_bytes(b"gone soon")
+        sha = sha256_bytes(b"gone soon")
+        s.add_node(_doc_node("freshmiss1", "Ref missing", {
+            "mode": "reference", "path": str(src), "sha256": sha,
+        }, "doc:cccccccccccc"))
+        src.unlink()
+
+        docs = {d["node_id"]: d for d in c.get("/api/documents", headers=_hdr()).json()["documents"]}
+        assert docs["freshmiss1"]["freshness"] == "missing"
+
+    def test_copy_mode_freshness_null_even_with_path_key_retained(self, client, tmp_path):
+        """Peer-review H1: a copy-mode doc stored via file_path retains a path
+        key (cognition_tools._store_document sets it independent of
+        store_copy) -- freshness must still be null, gated on mode alone."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        src = tmp_path / "source.pdf"
+        src.write_bytes(b"%PDF-ish")
+        sha = sha256_bytes(b"%PDF-ish")
+        s.add_node(_doc_node("freshcopy1", "Copy with path", {
+            "mode": "copy", "path": str(src), "sha256": sha, "blob_path": "xx/" + sha + ".pdf",
+        }, "doc:dddddddddddd"))
+
+        docs = {d["node_id"]: d for d in c.get("/api/documents", headers=_hdr()).json()["documents"]}
+        assert docs["freshcopy1"]["freshness"] is None
+
+    def test_reference_mode_no_path_key_freshness_null(self, client):
+        """Peer-review H2: reference mode stored via content_text (no path key
+        at all — a common state, not just legacy) must render null, not the
+        misleading 'unchanged' that freshness_by_rehash's own no-path default
+        would otherwise imply was a real check."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(_doc_node("freshnopath1", "Ref no path", {
+            "mode": "reference", "sha256": "e" * 64,
+        }, "doc:eeeeeeeeeeee"))
+
+        docs = {d["node_id"]: d for d in c.get("/api/documents", headers=_hdr()).json()["documents"]}
+        assert docs["freshnopath1"]["freshness"] is None
+
+    def test_cited_by_correct_direction_fails_before(self, client):
+        """Fails-before: cited_by must count entity nodes citing the document
+        via a PART_OF edge INTO it (entity_id -> document_id, the direction
+        _deterministic_edge_for_pair mints) -- a backwards edge walk would
+        report 0 here instead of 1."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        doc = _doc_node("cited01", "Cited doc", {"mode": "reference", "sha256": "f" * 64}, "doc:ffffffffffff")
+        s.add_node(doc)
+        citer = CognitionNode(
+            id="citer01", type=CognitionNodeType.DECISION, summary="Cites the doc",
+            detail="see doc:ffffffffffff", context=[], references=["doc:ffffffffffff"],
+            timestamp=datetime.now(UTC).isoformat(), author="Colton",
+        )
+        # storage.add_node only indexes references -- it never mints edges itself;
+        # the MCP tool layer calls create_deterministic_edges(node_id) explicitly
+        # after add_node (cognition_tools.py:306/1168), so tests must do the same.
+        s.add_node(citer)
+        s.create_deterministic_edges(citer.id)
+
+        docs = {d["node_id"]: d for d in c.get("/api/documents", headers=_hdr()).json()["documents"]}
+        assert docs["cited01"]["cited_by"] == 1
+
+    def test_zero_citations(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(_doc_node("uncited01", "Uncited doc", {
+            "mode": "reference", "sha256": "0" * 64,
+        }, "doc:000000000000"))
+
+        docs = {d["node_id"]: d for d in c.get("/api/documents", headers=_hdr()).json()["documents"]}
+        assert docs["uncited01"]["cited_by"] == 0
+
+
+class TestActivityAPI:
+    """WP-DashV2: GET /api/activity — chronological feed across 8 entity types."""
+
+    def _n(self, node_id, ntype, summary, timestamp, **meta):
+        return CognitionNode(
+            id=node_id, type=ntype, summary=summary, detail="d", context=[], references=[],
+            timestamp=timestamp, author="Colton", metadata=meta,
+        )
+
+    def test_no_token_rejected(self, client):
+        c, _ = client
+        assert c.get("/api/activity").status_code == 403
+
+    def test_type_set_exact_task_document_workflow_person_excluded(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        now = datetime.now(UTC).isoformat()
+        for ntype, _included in (
+            (CognitionNodeType.EPISODE, True), (CognitionNodeType.DECISION, True),
+            (CognitionNodeType.FAIL, True), (CognitionNodeType.DISCOVERY, True),
+            (CognitionNodeType.INCIDENT, True), (CognitionNodeType.CONSTRAINT, True),
+            (CognitionNodeType.PATTERN, True), (CognitionNodeType.ASSUMPTION, True),
+            (CognitionNodeType.TASK, False), (CognitionNodeType.DOCUMENT, False),
+            (CognitionNodeType.WORKFLOW, False),
+        ):
+            node_id = f"act-{ntype.value}"
+            if ntype == CognitionNodeType.TASK:
+                s.add_node(CognitionNode(
+                    id=node_id, type=ntype, summary=f"a {ntype.value}", detail="d",
+                    context=[], references=[], timestamp=now, author="Colton",
+                    metadata={"status": "open"},
+                ))
+            else:
+                s.add_node(self._n(node_id, ntype, f"a {ntype.value}", now))
+
+        body = c.get("/api/activity", headers=_hdr()).json()
+        types_seen = {r["type"] for r in body["activity"]}
+        assert types_seen == {
+            "episode", "decision", "fail", "discovery", "incident",
+            "constraint", "pattern", "assumption",
+        }
+        assert "task" not in types_seen and "document" not in types_seen and "workflow" not in types_seen
+
+    def test_newest_first(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        now = datetime.now(UTC)
+        s.add_node(self._n("actold", CognitionNodeType.DECISION, "Older", (now - timedelta(days=2)).isoformat()))
+        s.add_node(self._n("actnew", CognitionNodeType.DECISION, "Newer", now.isoformat()))
+
+        rows = c.get("/api/activity", headers=_hdr()).json()["activity"]
+        ids = [r["id"] for r in rows]
+        assert ids.index("actnew") < ids.index("actold")
+
+    def test_rows_carry_recorded_by_and_author_separately(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._n(
+            "actprov", CognitionNodeType.EPISODE, "Provenance row",
+            datetime.now(UTC).isoformat(),
+            recorded_by={"name": "Vince", "email": "v@x.com"}, from_agent=True,
+        ))
+
+        row = next(r for r in c.get("/api/activity", headers=_hdr()).json()["activity"] if r["id"] == "actprov")
+        assert row["recorded_by"] == {"name": "Vince", "email": "v@x.com"}
+        assert row["author"] == "Colton"
+        assert row["from_agent"] is True
+
+    def test_limit_and_cap_enforced(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        now = datetime.now(UTC)
+        for i in range(10):
+            s.add_node(self._n(f"actlim{i}", CognitionNodeType.DECISION, f"row {i}",
+                                (now - timedelta(minutes=i)).isoformat()))
+
+        body = c.get("/api/activity?limit=3", headers=_hdr()).json()
+        assert body["count"] == 3
+        assert len(body["activity"]) == 3
+
+        over = c.get("/api/activity?limit=99999", headers=_hdr()).json()
+        assert len(over["activity"]) <= 500
+
+    def test_recent_excluded_type_flood_does_not_displace_included_rows_fails_before(self, client):
+        """Peer-review H3: the N-per-type merge means a flood of recent TASK
+        nodes (excluded from the feed) must never crowd out genuinely-recent
+        DECISION rows within a small limit window -- fails-before against a
+        naive 'fetch all types, filter afterward' implementation, which would
+        have already discarded the decision rows before the type filter runs."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        now = datetime.now(UTC)
+        s.add_node(self._n("floodtarget", CognitionNodeType.DECISION, "Must survive",
+                            (now - timedelta(days=1)).isoformat()))
+        for i in range(20):
+            s.add_node(CognitionNode(
+                id=f"floodtask{i}", type=CognitionNodeType.TASK, summary=f"flood {i}",
+                detail="d", context=[], references=[], timestamp=now.isoformat(),
+                author="Colton", metadata={"status": "open"},
+            ))
+
+        body = c.get("/api/activity?limit=5", headers=_hdr()).json()
+        ids = {r["id"] for r in body["activity"]}
+        assert "floodtarget" in ids
 
 
 class TestStats:
@@ -1142,13 +1477,11 @@ class TestFrontendStructure:
         with resources.as_file(traversable) as path:
             return (path / name).read_text(encoding="utf-8")
 
-    def test_nav_rail_has_three_v1_views(self):
+    def test_nav_rail_has_six_v2_views(self):
+        """WP-DashV2: Workflows/Documents/Activity join the V1 nav rail
+        (overview/board/graph) -- six entries total, none removed."""
         html = self._read("index.html")
-        assert 'data-v="workflows"' not in html and 'data-view="workflows"' not in html, \
-            "Workflows is V2 scope (brief OUT list) -- must not appear in the V1 nav rail"
-        assert 'data-v="documents"' not in html and 'data-view="documents"' not in html
-        assert 'data-v="activity"' not in html and 'data-view="activity"' not in html
-        for view in ("overview", "board", "graph"):
+        for view in ("overview", "board", "workflows", "documents", "activity", "graph"):
             assert f'data-view="{view}"' in html, f"nav rail missing {view}"
 
     def test_drawer_is_shared_not_inline(self):

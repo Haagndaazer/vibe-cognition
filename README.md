@@ -176,15 +176,18 @@ semantic search on it is disabled (structural reads still work) — the load res
 
 ## Dashboard
 
-The dashboard is a local, read-only web view of the cognition graph, organized like a project-management tool rather than a picture of a graph. A left nav rail switches between three views, and every view opens nodes in a shared detail drawer on the right:
+The dashboard is a local, read-only web view of the cognition graph, organized like a project-management tool rather than a picture of a graph. A left nav rail switches between six views, and every view opens nodes in a shared detail drawer on the right:
 
 - **Overview** (default) — stat tiles (open/in-progress/blocked tasks, done this week, documents, workflows), active constraints, a needs-attention list (stale claims, blocked tasks), recent episodes, and recent high-severity incidents (last 14 days).
 - **Board** — a kanban view of tasks (Open / In Progress / Blocked / Done, done capped to the most recent 20 with cancelled behind a toggle), with a tree-view toggle for the epic/subtask hierarchy. Cards show priority, creator, claimant, and claim age.
+- **Workflows** — a card grid of HEAD-only workflows (superseded versions never appear as top-level cards); each card's version chain renders inline as clickable hops ("v3 ⟵ v2 ⟵ v1"), each reopening the drawer on that version.
+- **Documents** — a table of stored documents with mode, size, stored date, a freshness badge (unchanged/modified/missing for reference-mode docs with a source path; null/"n/a" for copy-mode docs and path-less reference docs, since neither has anything to re-check), a cited-by count derived from the graph's `part_of` edges, and a download link.
+- **Activity** — a chronological feed across episodes, decisions, fails, discoveries, incidents, constraints, patterns, and assumptions (tasks, documents, workflows, and people are covered by their own views), with client-side type and author filters. Fetches on tab activation only — it does not join the 30-second poll.
 - **Graph** — the original interactive force-directed constellation, kept for curation debugging (spotting edgeless clusters). It's lazy-loaded: nothing is fetched or constructed until you open the tab, and the 30-second auto-refresh updates it in place rather than rebuilding it.
 
 The shared **detail drawer** (opened from a Board card, a Graph node, or any list row) shows the full node — summary, detail, references — plus a provenance block (who recorded/created/claimed it, with a visually distinct dashed "unverified" chip for older nodes that predate server-resolved identity and only have a free-text author), a task's transition timeline, related nodes grouped by edge type, and a conflict banner when the node is contradicted or superseded by a newer version. A global header keeps semantic search, the embedding-status banner, refresh, and stats — unchanged from before the redesign.
 
-Documents and Workflows browsing (dedicated views, freshness/citation metadata) and an Activity feed are not yet in the dashboard — planned for a later pass; `/api/documents` and `/api/document/{id}/download` still work if called directly. The dashboard has no write path beyond node delete (it has no per-request viewer identity, so any other write would stamp misleading provenance).
+The dashboard has no write path beyond node delete (it has no per-request viewer identity, so any other write would stamp misleading provenance).
 
 It runs on `127.0.0.1` and is protected by a per-session token included in the URL. No data leaves your machine.
 

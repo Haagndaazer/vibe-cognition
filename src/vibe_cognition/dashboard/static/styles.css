@@ -178,6 +178,36 @@ ul.plain li.clickable:hover { background: var(--panel-2); }
 
 .warnbanner { background: var(--warn-bg); border: 1px solid var(--warn-bd); border-radius: 8px; padding: 8px 12px; margin: 8px 0; font-size: 12.5px; }
 
+/* ── Workflows library (WP-DashV2) ───────────────────────────────────── */
+.cardgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.cardgrid-item.clickable { cursor: pointer; }
+.cardgrid-item.clickable:hover { border-color: var(--accent); }
+.cardgrid-item .sum { font-size: 14px; line-height: 1.35; }
+.chainstrip { display: flex; align-items: center; flex-wrap: wrap; gap: 2px; }
+.chainstrip .node-ref { cursor: pointer; }
+.chainstrip .node-ref:hover { border-color: var(--accent); color: var(--text); }
+
+/* ── Documents table (WP-DashV2) ─────────────────────────────────────── */
+.datatable { width: 100%; border-collapse: collapse; font-size: 13px; }
+.datatable th {
+  text-align: left; padding: 8px 10px; color: var(--muted); font-size: 11px;
+  text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--border);
+}
+.datatable td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.datatable tr:hover { background: var(--panel-2); }
+.datatable .clickable-cell { cursor: pointer; color: var(--accent); }
+
+/* ── Activity feed (WP-DashV2) ───────────────────────────────────────── */
+#activity-filters { margin-bottom: 12px; align-items: center; }
+.chipfilter { display: flex; flex-wrap: wrap; gap: 6px; }
+.filterchip { cursor: pointer; }
+.filterchip:hover { color: var(--text); }
+.filterchip.active { background: var(--panel-2); color: var(--text); border-color: var(--accent); }
+#activity-author-filter {
+  padding: 4px 10px; background: var(--panel-2); border: 1px solid var(--border);
+  border-radius: 6px; color: var(--text); font: inherit; font-size: 12px; max-width: 220px;
+}
+
 /* ── Graph tab ────────────────────────────────────────────────────────── */
 #view-graph { height: calc(100vh - 90px); display: flex; flex-direction: column; }
 #cy { background: #0c0e13; border: 1px solid var(--border); border-radius: 10px; flex: 1; min-height: 0; }

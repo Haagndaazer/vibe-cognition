@@ -22,6 +22,9 @@
       <div class="brand">vibe-cognition<small>project dashboard</small></div>
       <button class="nav-btn active" data-view="overview" type="button">▦ Overview</button>
       <button class="nav-btn" data-view="board" type="button">☰ Board</button>
+      <button class="nav-btn" data-view="workflows" type="button">⧉ Workflows</button>
+      <button class="nav-btn" data-view="documents" type="button">▤ Documents</button>
+      <button class="nav-btn" data-view="activity" type="button">◷ Activity</button>
       <button class="nav-btn" data-view="graph" type="button">✳ Graph</button>
       <div class="nav-foot">read-only</div>
     </nav>
@@ -64,6 +67,33 @@
           </h2>
           <div class="board" id="board-columns"></div>
           <ul class="tree" id="board-tree" hidden></ul>
+        </section>
+
+        <section class="view" id="view-workflows">
+          <h2>Workflows</h2>
+          <div class="cardgrid" id="workflows-grid"></div>
+        </section>
+
+        <section class="view" id="view-documents">
+          <h2>Documents</h2>
+          <table class="datatable" id="documents-table">
+            <thead>
+              <tr>
+                <th>Filename</th><th>Mode</th><th>Size</th><th>Stored</th>
+                <th>Freshness</th><th>Cited by</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="documents-tbody"></tbody>
+          </table>
+        </section>
+
+        <section class="view" id="view-activity">
+          <h2>Activity</h2>
+          <div class="row" id="activity-filters">
+            <div class="chipfilter" id="activity-type-filter"></div>
+            <input id="activity-author-filter" type="text" placeholder="Filter by author…" autocomplete="off" />
+          </div>
+          <ul class="plain" id="activity-list"></ul>
         </section>
 
         <section class="view" id="view-graph">

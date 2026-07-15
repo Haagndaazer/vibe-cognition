@@ -16,7 +16,8 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import FileResponse, JSONResponse
 
 from ..cognition import CognitionEdgeType, CognitionNodeType, delete_cognition_node
-from ..cognition.documents import documents_dir, text_sidecar_path
+from ..cognition.documents import documents_dir, freshness_by_rehash, text_sidecar_path
+from ..cognition.queries import get_superseded_chain
 from ..cognition.task_meta import _task_claimed_at  # WP-TC16: relocated (was cognition_tools)
 from ..embeddings import adaptive_vector_search
 from ..tools.cognition_tools import _reembed_replayed_nodes
@@ -31,6 +32,24 @@ _STALE_CLAIM_DAYS = 5
 _DONE_THIS_WEEK_DAYS = 7
 _RECENT_INCIDENT_DAYS = 14
 _HIGH_SEVERITIES = frozenset({"critical", "high"})
+
+# WP-DashV2: Activity feed type set (peer-review H4 — five named in the design
+# doc's §4.5 prose plus constraint/pattern/assumption by elimination against
+# models.py's 12-type enum: task/document/workflow/person are owned by other
+# views, no SUMMARY type exists). Deliberately unfiltered by HEAD/supersession
+# (unlike Overview's active-constraints view) — this is a chronological record.
+_ACTIVITY_NODE_TYPES = (
+    CognitionNodeType.EPISODE,
+    CognitionNodeType.DECISION,
+    CognitionNodeType.FAIL,
+    CognitionNodeType.DISCOVERY,
+    CognitionNodeType.INCIDENT,
+    CognitionNodeType.CONSTRAINT,
+    CognitionNodeType.PATTERN,
+    CognitionNodeType.ASSUMPTION,
+)
+_ACTIVITY_DEFAULT_LIMIT = 100
+_ACTIVITY_MAX_LIMIT = 500
 
 _UNSAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 _SAFE_MEDIA_TYPE = re.compile(r"^[\w.+-]+/[\w.+-]+$")  # strict type/subtype, no params/CRLF
@@ -83,6 +102,34 @@ def _document_blob_path(cognition_dir: Path, node: dict[str, Any]) -> Path | Non
     if not candidate.is_relative_to(docs):
         return None
     return candidate
+
+
+def _document_freshness(meta: dict[str, Any]) -> str | None:
+    """Dashboard freshness badge for one document's metadata (WP-DashV2,
+    peer-review-corrected null semantics — distinct from
+    cognition_get_document's tool-facing default):
+
+    - mode == "copy" -> null. EXPLICIT mode gate, not path-absence: a
+      copy-mode doc stored via file_path RETAINS its path key
+      (cognition_tools._store_document sets path independent of
+      store_copy), so checking path-presence alone would wrongly compute
+      a verdict for it.
+    - mode == "reference" with no path key (stored via content_text — a
+      common state, not just legacy) -> null. No source file exists to
+      check; documents.freshness_by_rehash's own "unchanged" default for
+      this state implies a check that never ran, and the badge must not
+      repeat that implication.
+    - mode == "reference" WITH a path -> "unchanged" | "modified" |
+      "missing" via the shared full re-hash (documents.freshness_by_rehash
+      — single-implementation doctrine, same logic cognition_get_document
+      uses). KNOWN COST: O(referenced file bytes) per row; no caching
+      (a stale badge defeats the badge) — fine at current scale.
+    """
+    if meta.get("mode") == "copy":
+        return None
+    if not meta.get("path"):
+        return None
+    return freshness_by_rehash(meta)
 
 
 def _embedding_status(lc: dict[str, Any]) -> tuple[bool, str | None]:
@@ -468,7 +515,14 @@ def get_overview(request):
 
 
 def list_documents(request):
-    """List stored document nodes (metadata only — never the text or blob bytes)."""
+    """List stored document nodes (metadata only — never the text or blob bytes).
+
+    WP-DashV2 additions per row: freshness (see _document_freshness) and
+    cited_by (int — count of entity/document nodes citing this document via
+    a PART_OF edge INTO it; _deterministic_edge_for_pair mints entity/doc
+    part_of as entity_id -> document_id, so get_predecessors on the document
+    node returns the citing sources — storage.py:702-747, esp. :736-740).
+    """
     lc = _ctx(request)
     storage = lc["cognition_storage"]
     out = []
@@ -486,9 +540,84 @@ def list_documents(request):
             "indexed_text_chars": meta.get("indexed_text_chars"),
             "timestamp": n.get("timestamp", ""),
             "has_blob": _document_has_blob(n),
+            "freshness": _document_freshness(meta),
+            "cited_by": len(storage.get_predecessors(n["id"], CognitionEdgeType.PART_OF)),
         })
     out.sort(key=lambda d: d["timestamp"], reverse=True)  # newest first
     return JSONResponse({"documents": out})
+
+
+def get_workflows(request):
+    """List HEAD-only workflow cards, each with its version chain inline
+    (WP-DashV2). A HEAD workflow has no incoming SUPERSEDES edge — mirrors
+    get_overview's workflow_head_count filter and prime.py's _format_workflows
+    semantics. Superseded (non-HEAD) workflows appear ONLY inside a HEAD's
+    chain, never as a top-level card. One get_superseded_chain walk per HEAD
+    (chains are short by construction — versioning is manual and rare), no
+    N+1 HTTP round-trips from the frontend.
+    """
+    lc = _ctx(request)
+    storage = lc["cognition_storage"]
+    workflows = storage.get_nodes_by_type(CognitionNodeType.WORKFLOW)
+    heads = [
+        w for w in workflows
+        if not storage.get_predecessors(w["id"], CognitionEdgeType.SUPERSEDES)
+    ]
+
+    out = []
+    for w in heads:
+        chain = get_superseded_chain(storage, w["id"])
+        out.append({
+            "id": w["id"],
+            "summary": w.get("summary"),
+            "author": w.get("author"),
+            "timestamp": w.get("timestamp"),
+            "chain": [
+                {"id": c["id"], "summary": c.get("summary"), "timestamp": c.get("timestamp")}
+                for c in chain
+            ],
+        })
+    out.sort(key=lambda w: w.get("timestamp") or "", reverse=True)
+    return JSONResponse({"workflows": out, "count": len(out)})
+
+
+def get_activity(request):
+    """Chronological activity feed across entity node types (WP-DashV2).
+
+    Merge shape (peer-review H3, pinned): storage.get_recent_nodes takes ONE
+    node_type or None=all — this is N per-type calls (one per type in
+    _ACTIVITY_NODE_TYPES), merged and re-sliced to the overall limit. NOT a
+    single all-types call filtered afterward: with that approach, a recent
+    flood of an EXCLUDED type (tasks especially, the most active) would
+    displace genuinely-recent included rows out of the fetch window before
+    filtering ever saw them.
+
+    Rows reuse _entity_row verbatim (same shape as Overview's recent_episodes/
+    recent_incidents) so recorded_by and author stay separate fields — the
+    client's trust-class rendering (identityChipHTML) needs both, never a
+    pre-collapsed author string.
+
+    Deliberately unfiltered by HEAD/supersession and un-deduped against other
+    views (e.g. Overview's active-constraints is HEAD-filtered; this shows
+    ALL constraint nodes) — a chronological record, not a standing-priorities
+    view; an entity can legitimately appear in both.
+    """
+    lc = _ctx(request)
+    storage = lc["cognition_storage"]
+    try:
+        limit = int(request.query_params.get("limit", _ACTIVITY_DEFAULT_LIMIT))
+    except (TypeError, ValueError):
+        limit = _ACTIVITY_DEFAULT_LIMIT
+    limit = max(1, min(limit, _ACTIVITY_MAX_LIMIT))
+
+    rows = []
+    for node_type in _ACTIVITY_NODE_TYPES:
+        rows.extend(
+            _entity_row(n) for n in storage.get_recent_nodes(limit=limit, node_type=node_type)
+        )
+    rows.sort(key=lambda r: r.get("timestamp") or "", reverse=True)
+    rows = rows[:limit]
+    return JSONResponse({"activity": rows, "count": len(rows)})
 
 
 def download_document(request):
