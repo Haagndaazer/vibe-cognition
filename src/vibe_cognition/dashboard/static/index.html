@@ -25,6 +25,7 @@
       <button class="nav-btn" data-view="workflows" type="button">⧉ Workflows</button>
       <button class="nav-btn" data-view="documents" type="button">▤ Documents</button>
       <button class="nav-btn" data-view="activity" type="button">◷ Activity</button>
+      <button class="nav-btn" data-view="people" type="button">☺ People</button>
       <button class="nav-btn" data-view="graph" type="button">✳ Graph</button>
       <div class="nav-foot">read-only</div>
     </nav>
@@ -94,6 +95,11 @@
             <input id="activity-author-filter" type="text" placeholder="Filter by author…" autocomplete="off" />
           </div>
           <ul class="plain" id="activity-list"></ul>
+        </section>
+
+        <section class="view" id="view-people">
+          <h2>People</h2>
+          <div class="cardgrid" id="people-grid"></div>
         </section>
 
         <section class="view" id="view-graph">

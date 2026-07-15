@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**WP-DashV3: dashboard team-cognition wiring — People view, seniority chips, list-level conflict flags (phase V3 of 3, final).**
+
+### Added
+- **`GET /api/people` + People view** — one `PERSON`-type scan, sorted by name. `reports_to_registered` is derived from a casefolded-email set built ONCE from that same scan (O(1) membership per row) rather than mirroring `cognition_list_people`'s per-row `_find_person_by_email` rescan (O(N²) — a separate pre-existing nit, out of scope here). Frontend: a card grid (name, role · seniority, email, reports-to — a dangling manager email renders as an "unregistered" chip rather than crashing) with a "view activity" shortcut that switches to Activity pre-filtered to that person's name (reuses the existing client-side author filter, no new endpoint).
+- **Seniority chips** on every resolved (server-stamped) identity render — Board cards, Activity rows, and the drawer's provenance block — via a client-side roster join: `app.js` fetches `/api/people` ONCE lazily (first render that needs it), caches it in a module-level map keyed by casefolded email, and never refetches it on view switches or the 30s poll (unlike `boardTasksCache`/`activityCache`, which legitimately refetch per activation). Chip style is SOLID, never dashed — the mockup's dashed `.chip.seniority` collides with the reserved `.chip.person.unverified` signal, so copying it verbatim would make a fully-verified identity read as unverified. Trust boundary: an unverified free-text author NEVER gets a seniority chip, even if its name happens to match a registered person — the lookup is only reachable from the resolved-identity branch of `identityChipHTML`.
+- **`conflicted: bool`** on `/api/tasks` and `/api/activity` rows (`_is_conflicted` in `api.py`), rendered as a ⚠ indicator on Board cards and Activity rows. Direction semantics (peer-review BLOCKING catch): `contradicts` edges are stored ONE-WAY with ARBITRARY direction (no reciprocal edge is ever minted), so membership is bidirectional — incoming OR outgoing contradicts, checked separately since an incoming-only implementation flags only one side of every pair. `supersedes` stays incoming-only: a node with an outgoing supersedes edge is the newer version and is not itself in conflict. Overview's constraint/attention lists are deliberately unchanged (they're already HEAD-filtered; adding the flag there would invite confusion) — `_entity_row` takes `storage` as an opt-in parameter so only `/api/activity`'s calls gain the field.
+- **Drawer conflict-banner direction repair** (same WP, same class of fix as the row-level flag): the V1 `conflictBannerHTML` had the identical incoming-only gap — a node on the outgoing side of a contradicts edge showed no banner at all. Now scans `node.successors` too, with distinct wording ("contradicts [id]" for outgoing vs. the existing "contradicted by [id]" for incoming) so the direction stays legible. Supersedes banner handling is unchanged (incoming-only is correct there).
+
+### Notes
+- No MCP tool changed (dashboard-only) — no tool-surface audit required. No prime/storage changes at all this WP — `/api/people` scans person nodes via the existing `get_nodes_by_type`. Search-overlay seniority-weight labeling (design doc §5 item 4) is explicitly deferred — not in scope for this phase.
+- This closes the three-phase dashboard redesign (V1 Overview/Board/Graph, V2 Workflows/Documents/Activity, V3 this WP) and task 30fabf12c81b. No version bump on this branch — 0.26.0 candidate; bump timing decided at merge.
+
 ## [0.25.0] — 2026-07-15
 
 **WP-DashV2: dashboard Workflows library, Documents table, Activity feed (phase V2 of 3).**
