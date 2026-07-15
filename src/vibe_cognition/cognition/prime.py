@@ -15,6 +15,7 @@ from .git_identity import resolve_git_identity
 from .models import CognitionEdgeType, CognitionNodeType
 from .readme import ONBOARDING_BLOCK
 from .storage import REHYDRATE_FLAG_FILENAME, CognitionStorage
+from .task_meta import _task_claimed_at
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "normal": 2, "low": 3}
 
@@ -71,6 +72,11 @@ class PrimeConfig:
 
     # WP-TC7: new-user onboarding notice.
     prime_onboard: bool = True
+
+    # WP-TC16: role-aware prime (manager rollup / subordinate view) knobs.
+    prime_stale_claim_days: int = 7
+    prime_rollup_cap: int = 5
+    prime_manager_decision_limit: int = 3
 
 
 def _truncate(text: str, maxlen: int) -> str:
@@ -411,6 +417,191 @@ def _has_person_node(storage: CognitionStorage, email: str) -> bool:
     return False
 
 
+# ── WP-TC16: role-aware prime (manager rollup / subordinate view) ──────────────
+#
+# Reporting relationship (reports_to_email) is DISTINCT from person.role (a
+# free-text job title) — never conflate the two. Graph owns HUMAN roles only;
+# agent roles stay in teammate-comms (ruling 6be2e867f91e).
+
+
+@dataclass(frozen=True)
+class _RoleContext:
+    """Result of ONE person-node scan (WP-TC16) -- built once per prime run and
+    threaded into both the manager-rollup and subordinate-decisions sections, so
+    a middle manager's prime never re-scans person nodes for the second section."""
+
+    my_person: dict | None
+    direct_reports: list[dict]
+    my_manager_email: str  # casefolded; "" when absent
+
+
+def _derive_role(storage: CognitionStorage, current_email: str) -> _RoleContext:
+    """Resolve `current_email` (already casefolded by generate_prime's single
+    normalization point) into a `_RoleContext` via ONE `get_nodes_by_type(PERSON)`
+    scan: `my_person` (a person node whose stored, already-casefolded email
+    matches), `direct_reports` (person nodes whose `reports_to_email` matches
+    `current_email`), and `my_manager_email` (my_person's own `reports_to_email`,
+    already casefolded at write time -- see `_register_person`/`_update_person`).
+    MANAGER role iff `direct_reports` non-empty; SUBORDINATE role iff
+    `my_manager_email` non-empty; both may hold (middle manager). An empty
+    `current_email` short-circuits to an all-empty context without scanning."""
+    my_person: dict | None = None
+    direct_reports: list[dict] = []
+    if not current_email:
+        return _RoleContext(my_person, direct_reports, "")
+    for n in storage.get_nodes_by_type(CognitionNodeType.PERSON):
+        person = n.get("metadata", {}).get("person", {})
+        if person.get("email") == current_email:
+            my_person = n
+        if person.get("reports_to_email") == current_email:
+            direct_reports.append(n)
+    my_manager_email = ""
+    if my_person is not None:
+        my_manager_email = my_person.get("metadata", {}).get("person", {}).get("reports_to_email") or ""
+    return _RoleContext(my_person, direct_reports, my_manager_email)
+
+
+def _parse_iso_datetime(value: str) -> datetime | None:
+    """Parse an ISO timestamp, tolerating a NAIVE (no-tzinfo) string -- treated
+    as UTC -- from a replayed or hand-edited journal. Write paths always stamp
+    aware timestamps, but replay validates nothing; a naive-but-valid string
+    parses fine via `fromisoformat` and would otherwise raise `TypeError` (not
+    `ValueError`) on the aware-naive subtraction downstream, crashing
+    `generate_prime` for every user of that graph (same class as WP-TC9's
+    98dcca4 lesson: write-side validation is not protection against replay).
+    Returns `None` only for a genuinely unparseable string."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _humanize_claim_age(claimed_at: str | None) -> str:
+    """`claimed_at` (an ISO timestamp, or None for a legacy/unattributed claim) as
+    a compact human age string, day granularity -- "0d" for same-day. None input
+    (never dereferenced as a stale check here; staleness is the caller's job)
+    renders as "unknown age" so a legacy row is still readable, never crashes."""
+    if not claimed_at:
+        return "unknown age"
+    claimed = _parse_iso_datetime(claimed_at)
+    if claimed is None:
+        return "unknown age"
+    days = max(0, (datetime.now(UTC) - claimed).days)
+    return f"{days}d"
+
+
+def _format_your_team(
+    storage: CognitionStorage, config: PrimeConfig, role: _RoleContext, maxlen: int = 0
+) -> str:
+    """'Your Team' (MANAGER role, personalized-only): one TASK scan bucketed by
+    claimant email among direct reports. In-progress rows show claimant + claim
+    age; a row is STALE iff claim age is strictly greater than
+    `config.prime_stale_claim_days` (exactly-N-days-old is NOT stale; a null/
+    legacy claimed_at is NEVER stale -- unverifiable is not the same as stale,
+    the standing doctrine). Blocked rows always show. Unclaimed/unstamped tasks
+    never appear (attribution doctrine). Capped at `config.prime_rollup_cap`
+    TOTAL rows: stale first (most actionable), then blocked, then in-progress,
+    recency-desc within each group; an overflow line names the remainder."""
+    report_names: dict[str, str] = {}
+    for p in role.direct_reports:
+        info = p.get("metadata", {}).get("person", {})
+        email = info.get("email") or ""
+        if email:
+            report_names[email] = info.get("name") or email
+    if not report_names:
+        return ""
+
+    stale_cutoff = timedelta(days=config.prime_stale_claim_days)
+    now = datetime.now(UTC)
+
+    stale_rows: list[tuple[dict, str]] = []
+    blocked_rows: list[tuple[dict, str]] = []
+    fresh_rows: list[tuple[dict, str]] = []
+    for n in storage.get_nodes_by_type(CognitionNodeType.TASK):
+        meta = n.get("metadata", {})
+        claimed_by = meta.get("claimed_by")
+        raw_claimant_email = claimed_by.get("email") if isinstance(claimed_by, dict) else None
+        # claimed_by.email is a verbatim git-config provenance stamp, never
+        # casefolded at write time (unlike person emails) -- casefold here at
+        # read time, matching the _task_matches_email/_node_email precedent,
+        # so a mixed-case git config still matches the casefolded report_names keys.
+        claimant_email = raw_claimant_email.casefold() if raw_claimant_email else None
+        if not claimant_email or claimant_email not in report_names:
+            continue
+        status = meta.get("status", "open")
+        if status == "blocked":
+            blocked_rows.append((n, claimant_email))
+        elif status == "in_progress":
+            claimed_at = _task_claimed_at(meta.get("transitions", []))
+            is_stale = False
+            if claimed_at:
+                parsed_claimed_at = _parse_iso_datetime(claimed_at)
+                if parsed_claimed_at is not None:
+                    is_stale = (now - parsed_claimed_at) > stale_cutoff
+            (stale_rows if is_stale else fresh_rows).append((n, claimant_email))
+
+    if not stale_rows and not blocked_rows and not fresh_rows:
+        return ""
+
+    def _recency_desc(rows: list[tuple[dict, str]]) -> list[tuple[dict, str]]:
+        return sorted(rows, key=lambda pair: pair[0].get("timestamp", ""), reverse=True)
+
+    ordered = _recency_desc(stale_rows) + _recency_desc(blocked_rows) + _recency_desc(fresh_rows)
+    total = len(ordered)
+    shown = ordered[: config.prime_rollup_cap]
+
+    lines: list[str] = []
+    for n, claimant_email in shown:
+        summary = _truncate(n.get("summary", "No summary"), maxlen)
+        name = report_names.get(claimant_email, claimant_email)
+        meta = n.get("metadata", {})
+        if meta.get("status") == "blocked":
+            lines.append(f"- {summary} ({name}, blocked)")
+        else:
+            claimed_at = _task_claimed_at(meta.get("transitions", []))
+            age = _humanize_claim_age(claimed_at)
+            lines.append(f"- {summary} ({name}, claimed {age})")
+
+    overflow = total - len(shown)
+    if overflow > 0:
+        lines.append(f"- +{overflow} more of your team's tasks — use cognition_list_tasks")
+    return "## Your Team\n" + "\n".join(lines)
+
+
+def _format_manager_decisions(
+    storage: CognitionStorage, config: PrimeConfig, role: _RoleContext, maxlen: int = 0
+) -> str:
+    """'Your Manager's Recent Decisions' (SUBORDINATE role, personalized-only):
+    decision nodes whose `_node_email` matches `role.my_manager_email`, newest
+    first, capped at `config.prime_manager_decision_limit`. Deliberately NO
+    HEAD-filter -- mirrors `_format_decisions` exactly (the global Recent
+    Decisions model has no supersedes check either), so a superseded decision
+    can legitimately appear here too, same as in the global section. This is a
+    KNOWN, documented overlap with global Recent Decisions -- deduping would
+    silently change the global section's own semantics, so it is left alone.
+    A dangling manager email (no person node registered for it) still works:
+    decisions filter by the stamped email string, and the manager's name comes
+    from the decision's own `recorded_by`, not from a person-node lookup.
+    "Own claims" -- the other half of the manager/subordinate ruling -- is
+    ALREADY covered by 'Your Open Tasks' claimed_by branch (WP-P13n-2); this
+    section does not duplicate that."""
+    if not role.my_manager_email:
+        return ""
+    mine = [
+        n for n in storage.get_nodes_by_type(CognitionNodeType.DECISION)
+        if _node_email(n) == role.my_manager_email
+    ]
+    if not mine:
+        return ""
+    mine.sort(key=lambda n: n.get("timestamp", ""), reverse=True)
+    shown = mine[: config.prime_manager_decision_limit]
+    lines = [_format_node(n, maxlen) for n in shown]
+    return "## Your Manager's Recent Decisions\n" + "\n".join(lines)
+
+
 def _onboarding_notice(storage: CognitionStorage, config: PrimeConfig, current_email: str) -> str:
     """The new-user onboarding notice (WP-TC7), or "" when it should not fire.
 
@@ -472,6 +663,12 @@ def generate_prime(
         sections.append(_format_tasks(storage, config.prime_task_cap, maxlen))
 
     if personalize:
+        # WP-TC16: pinned order Team Critical -> Your Team -> Your Manager's
+        # Recent Decisions -> Your Recent Activity. Role derivation is ONE
+        # person-node scan shared by both sections (a middle manager gets both).
+        role = _derive_role(storage, current_email)
+        sections.append(_format_your_team(storage, config, role, maxlen))
+        sections.append(_format_manager_decisions(storage, config, role, maxlen))
         sections.append(_format_your_activity(storage, config, current_email, maxlen))
 
     sections.extend([
@@ -610,6 +807,9 @@ def main(argv: list[str] | None = None):
                 prime_your_decision_limit=settings.prime_your_decision_limit,
                 prime_your_discovery_limit=settings.prime_your_discovery_limit,
                 prime_onboard=settings.prime_onboard,
+                prime_stale_claim_days=settings.prime_stale_claim_days,
+                prime_rollup_cap=settings.prime_rollup_cap,
+                prime_manager_decision_limit=settings.prime_manager_decision_limit,
             )
         except Exception:  # noqa: BLE001
             config = PrimeConfig()

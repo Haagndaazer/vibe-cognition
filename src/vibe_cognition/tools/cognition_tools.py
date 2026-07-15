@@ -43,6 +43,12 @@ from ..cognition.documents import (
     write_text_sidecar,
 )
 from ..cognition.prime import SEVERITY_ORDER, _node_email
+
+# WP-TC16 re-export: keeps tests/test_task.py:32-37's direct
+# `from ...cognition_tools import _task_claimed_at` path valid; the
+# implementation itself lives in task_meta.py (shared with prime, which
+# cannot import cognition_tools).
+from ..cognition.task_meta import _task_claimed_at  # noqa: F401
 from ..embeddings import ChromaDBStorage, EmbeddingGenerator, adaptive_vector_search
 from .dispatch import dispatch_tool
 from .project_registry import (
@@ -1379,18 +1385,6 @@ def _task_ancestor_ids(storage: CognitionStorage, start_id: str) -> set[str]:
         ancestors.add(parent)
         current = parent
     return ancestors
-
-
-def _task_claimed_at(transitions: list[dict[str, Any]]) -> str | None:
-    """The `at` of the LATEST ->in_progress transition (mirrors claimed_by's semantics
-    in _update_task: a takeover re-stamps both together). Null when no such entry
-    exists (legacy). Shared by _update_task and the dashboard — single implementation
-    (WP-TC4 design 5), no second hand-rolled copy."""
-    claimed_at = None
-    for tr in transitions:
-        if tr.get("status") == "in_progress":
-            claimed_at = tr.get("at")
-    return claimed_at
 
 
 def _task_closer(transitions: list[dict[str, Any]]) -> dict[str, Any] | None:

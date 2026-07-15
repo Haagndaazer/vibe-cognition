@@ -464,6 +464,28 @@ padded. Person data is only as fresh as the team keeps it — nothing enforces i
 the onboarding notice below
 reduces how often it goes stale.
 
+**Role-aware session-start prime.** `reports_to_email` on a person node (a
+REPORTING relationship — distinct from the free-text `person.role` job title) drives
+two personalized sections when it resolves the current session's identity into a
+manager or subordinate relationship: `## Your Team` (manager role — a direct
+report's `in_progress` claim shows the claimant and claim age, `blocked` claims
+always show, and a claim is **stale** once its age is *strictly greater than*
+`prime_stale_claim_days`, default 7 — exactly 7 days old is not yet stale, and a
+null/legacy `claimed_at` with no recorded `in_progress` transition is never stale;
+capped at `prime_rollup_cap`, default 5, stale rows first) and `## Your Manager's
+Recent Decisions` (subordinate role — the manager's decisions, newest first,
+capped at `prime_manager_decision_limit`, default 3, deliberately with **no**
+supersession/HEAD filter, mirroring the global `## Recent Decisions` section's own
+unfiltered model). Sections self-gate on role existence — there is no separate
+on/off knob; `PRIME_PERSONALIZE=off` disables them along with every other
+personalized section. A middle manager (has both direct reports and a manager) gets
+both sections, in the pinned order Team Critical → Your Team → Your Manager's
+Recent Decisions → Your Recent Activity. Your own claimed tasks are unaffected —
+they already surface under `## Your Open Tasks`, not a new section. Single-manager
+assumption: `reports_to_email` is one string; matrixed/multi-manager orgs are out of
+scope. A user with no person node, no reports either direction, or personalization
+off sees byte-identical output to before this feature existed.
+
 **New-user onboarding notice.** When a session's git identity resolves to an email
 with no matching person node yet, the session-start prime digest opens with a `## New
 Here?` notice prompting the agent to ask the human for their name, role, seniority,

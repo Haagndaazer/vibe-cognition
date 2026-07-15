@@ -423,14 +423,28 @@ def test_your_open_tasks_matches_via_claimed_by(tmp_path):
     here are created_by TEAMMATE (only the claim differs), so the multi-user
     auto-detect signal -- which is recorded_by.email/created_by.email only, by
     design (see _node_email) -- would see a single distinct email and stay
-    global. That's tested separately; this test isolates claimed_by-matching."""
+    global. That's tested separately; this test isolates claimed_by-matching.
+
+    WP-TC16 extension (brief: "own-claims mapping documented (no new section)"):
+    the manager/subordinate ruling's "own claims" half is already delivered by
+    this exact claimed_by branch -- no new section duplicates it. Registering ME
+    as a manager (with an unrelated direct report) proves that mapping still
+    holds now that '## Your Team' exists: ME's own claim stays under Your Open
+    Tasks, and is not also/instead surfaced under Your Team (which lists direct
+    REPORTS' claims, never the manager's own)."""
     storage = CognitionStorage(tmp_path / ".cognition")
     _task(storage, "t-claimed", "claimed by me", created_by=TEAMMATE, claimed_by=ME)
     _task(storage, "t-theirs", "not mine", created_by=TEAMMATE)
+    _person(storage, "p-me", ME["email"], name="Alice")
+    _person(storage, "p-report", "carol@x.com", name="Carol", reports_to_email=ME["email"])
 
     result = generate_prime(storage, PrimeConfig(prime_personalize="on"), current_email=ME["email"])
     assert "claimed by me" in result
     assert "not mine" not in result
+    assert "## Your Open Tasks" in result
+    your_team_idx = result.find("## Your Team")
+    if your_team_idx != -1:
+        assert result.index("claimed by me") < your_team_idx
 
 
 def test_your_open_tasks_matches_via_assigned_to(tmp_path):
@@ -588,11 +602,21 @@ def test_your_recent_activity_matches_cross_case(tmp_path):
 # ── WP-TC7: onboarding notice ────────────────────────────────────────────────
 
 
-def _person(storage: CognitionStorage, node_id: str, email: str, *, name: str = "Someone") -> None:
-    """Seed a minimal person node — only the fields _has_person_node reads."""
+def _person(
+    storage: CognitionStorage, node_id: str, email: str, *, name: str = "Someone",
+    reports_to_email: str = "",
+) -> None:
+    """Seed a minimal person node — the fields _has_person_node/_derive_role read.
+
+    WP-TC16: gained `reports_to_email` (default "", matching a real person node's
+    always-present-but-possibly-empty field) so the same helper serves both the
+    onboarding tests (which never set it) and the role-derivation tests."""
     _add(
         storage, node_id, CognitionNodeType.PERSON, f"person: {name}",
-        metadata={"person": {"email": email.casefold(), "name": name, "role": "engineer"}},
+        metadata={"person": {
+            "email": email.casefold(), "name": name, "role": "engineer",
+            "reports_to_email": reports_to_email.casefold(),
+        }},
     )
 
 

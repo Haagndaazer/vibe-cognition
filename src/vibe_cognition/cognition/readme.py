@@ -118,6 +118,20 @@ below every human seniority tier), human:<seniority> (stamped + registered perso
 human:unregistered (stamped, no matching person node), unverified (no stamp at all).
 cognition_get_workflow's internal match search shares this path and inherits it too.
 
+## Session-start prime: role-aware sections
+
+A person node's reports_to_email (a REPORTING relationship, distinct from the
+free-text person.role job title) drives two personalized prime sections: managers
+get "Your Team" (direct reports' in-progress claims -- claimant + age, stale ones
+first, blocked claims; a claim is stale once its age is strictly greater than
+prime_stale_claim_days, default 7 -- exactly 7 days old is not stale, and a null/
+legacy claimed_at is never stale) right after Team Critical; subordinates get
+"Your Manager's Recent Decisions" (no HEAD-filter, same as the global Recent
+Decisions model) right after that. A middle manager gets both. No new section for
+your OWN claims -- those already surface under Your Open Tasks. A role-less user
+(no person node, no reports either direction) or personalization off sees no
+change at all.
+
 ## Edge types
 
   part_of (auto), led_to, resolved_by, supersedes, contradicts, relates_to

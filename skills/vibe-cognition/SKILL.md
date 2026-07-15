@@ -98,6 +98,15 @@ are injected at session start and listed via `cognition_list_tasks`, so the grap
   else's closed task) succeeds and returns a `claim_warning` (`kind`, `claimant`,
   `claimed_at`, `message`) instead of blocking — present only when a real foreign
   claim was detected; self-actions and unverifiable identities never trigger it.
+- **Role-aware session-start prime.** A person node's `reports_to_email` (a
+  reporting relationship — not the free-text `person.role` job title) drives two
+  personalized sections: managers get `## Your Team` (direct reports' in-progress
+  claims with claimant + age, stale ones first, blocked claims, capped) right after
+  `## Team Critical`; subordinates get `## Your Manager's Recent Decisions` right
+  after that. Your OWN claimed tasks stay under `## Your Open Tasks` — these are
+  new sections about your reports/manager, not a replacement. No new section for
+  own-claims; a role-less user (no person node, no reports either direction) sees
+  no change at all.
 - **Curate tasks** like any node: `/vibe-curate` links a task `relates_to` the
   decision/pattern it implements, or a done task `resolved_by`/`led_to` the closing episode.
 - **Filter out an author with `exclude_people`** (comma-separated emails, on

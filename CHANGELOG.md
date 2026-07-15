@@ -5,6 +5,30 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+**WP-TC16: role-aware prime sections (manager rollup / subordinate view).**
+
+### Added
+- **`## Your Team`** (manager role, personalized-only): one `TASK` scan bucketed by claimant email among a manager's direct reports (`reports_to_email` casefolds to the session email). In-progress rows show claimant + claim age (`- <summary> (<report name>, claimed <age>)`); blocked rows show `- <summary> (<report name>, blocked)`. A claim is **stale** iff its age is *strictly greater than* `prime_stale_claim_days` (new knob, default 7) — exactly-7-days-old is NOT stale, and a null/legacy `claimed_at` (no recorded `in_progress` transition) is NEVER stale. Capped at `prime_rollup_cap` (new knob, default 5) total rows, stale first, then blocked, then in-progress, recency-desc within each group, with an overflow line. Unclaimed/unstamped tasks and tasks claimed by non-reports never appear. Placed immediately after `## Team Critical`.
+- **`## Your Manager's Recent Decisions`** (subordinate role, personalized-only): decision nodes whose stamped identity matches the session's manager email, newest first, capped at `prime_manager_decision_limit` (new knob, default 3). Deliberately **no** HEAD/supersession filter — mirrors the global `## Recent Decisions` section's own unfiltered model exactly, so a superseded decision can legitimately appear in both (a known, documented overlap; deduping would silently change the global section's own semantics). A dangling manager email (no registered person node) still works — matched by the stamped email string. Placed immediately after `## Your Team`.
+- **Role derivation**: ONE `get_nodes_by_type(PERSON)` scan per prime run resolves MANAGER (has direct reports), SUBORDINATE (has a `reports_to_email`), both (middle manager — both sections), or neither (no new sections). A user with no person node, no reports either direction, or `prime_personalize=off` sees prime output byte-identical to before this feature — the strongest-pinned regression fixture.
+- Three new knobs (`prime_stale_claim_days=7`, `prime_rollup_cap=5`, `prime_manager_decision_limit=3`) in both `PrimeConfig` and `Settings`, covered by the existing defaults-equivalence test.
+
+### Changed
+- **`_task_claimed_at` relocated** from `tools/cognition_tools.py` to a new light, stdlib-only shared module `cognition/task_meta.py` — `prime.py` cannot import `tools/cognition_tools` (it drags in chroma/embeddings, violating prime's light-import constraint), so the single-implementation claim-age computation needed a shared home outside both. `cognition_tools.py` re-exports the name (`from ..cognition.task_meta import _task_claimed_at`) so the old import path — including `tests/test_task.py`'s direct import — keeps working unchanged. `dashboard/api.py`'s import line updated to the new path (mechanical, zero dashboard behavior change; existing dashboard tests pass unmodified).
+
+### Fixed
+- **Mixed-case `claimed_by` email silently dropped from `## Your Team`** (gate finding, Vince) — `claimed_by.email` is a verbatim git-config provenance stamp, never casefolded at write time (unlike person emails, which ARE casefolded), so a report whose git config carries a mixed-case email vanished from their manager's rollup on a raw-vs-casefolded comparison. Now casefolded at read time, matching the existing `_task_matches_email`/`_node_email` precedent.
+- **Naive (no-tzinfo) `claimed_at` crashed `generate_prime`** (gate finding, Vince, same class as TC9's `98dcca4` seniority-crash fixup) — a replayed/hand-edited journal entry with a naive ISO `at` timestamp parses fine via `datetime.fromisoformat` (no exception), but the subsequent aware-minus-naive subtraction raised an uncaught `TypeError` (not `ValueError`) in both `_humanize_claim_age` and `## Your Team`'s stale check — crashing the SessionStart hook for every user of that graph. Now: a shared `_parse_iso_datetime` helper normalizes a naive parse to UTC-aware before any subtraction, at both sites — write-side validation is not protection against replay.
+
+### Notes
+- Terminology: the manager/subordinate classification is a REPORTING relationship derived from `reports_to_email` — distinct from the pre-existing free-text `person.role` job title; never conflated.
+- Ruling: graph owns HUMAN roles only — agent roles stay in teammate-comms (ruling `6be2e867f91e`).
+- Known limits (documented): single-manager assumption (`reports_to_email` is one string; matrixed orgs out of scope); stale detection requires a transitions-recorded claim (pre-TC4-era claims with no `in_progress` entry never go stale); an unregistered claimant is invisible to the rollup even if their `reports_to_email` points at the manager.
+- No MCP tool changed — no tool-surface audit required.
+- Version bump held — batches with TC14/TC15 as the 0.24.0 candidate.
+
 ## [0.23.0] — 2026-07-15
 
 **WP-TC4: claim-collision + reopen warnings on `cognition_update_task`.**
