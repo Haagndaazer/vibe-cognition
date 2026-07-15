@@ -2,3 +2,5 @@
 chromadb/
 .git-hygiene-managed
 *.lock
+.last-rehydrate.json
+onboard-declined
