@@ -5,6 +5,21 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+**WP-TC4: claim-collision + reopen warnings on `cognition_update_task`.**
+
+### Added
+- **`claim_warning` on `cognition_update_task` success responses** — never blocks, with one enforced exception. `blocked → in_progress` over someone else's LIVE claim (`metadata.claimed_by` present, status `in_progress`/`blocked` — `open`/`done`/`cancelled` is a released claim) requires `note=`; without one, the call is rejected BEFORE mutation with an error naming the current claimant and claim age (kind `claim_collision` once a note is supplied). Every other collision-adjacent shape never blocks: a same-status `status="in_progress"` poke against a foreign live claimant — combo or bare — succeeds with `kind: "takeover_note_required"` and no restamp (a bare poke, which previously hit the generic "No updatable fields" error, now gets an explicit answer instead); the same shape WITH `note=` is a single-call takeover (`kind: "claim_collision"`) that restamps `claimed_by` and logs the seizure. Reopening someone else's `done`/`cancelled` task (`kind: "reopen"`) never requires a note — the ruling scopes the note requirement to takeover only — and is suppressed when the closing transition can't be attributed (no matching transitions entry, e.g. legacy data). `claim_warning` shape: `{kind, claimant: {name, email}, claimed_at, assigned_to (only when set), message}`; the key is absent for self-actions, released claims, and unverifiable identities (either side's git-config email blank — same never-wipe-on-unverified doctrine as `exclude_people`).
+
+### Changed
+- `_task_claimed_at` (last-wins scan for the latest `in_progress` transition) moved from `dashboard/api.py` into `tools/cognition_tools.py` — a single shared implementation now backs both the dashboard and `_update_task`'s claim-collision detection; the dashboard imports it back. Mechanical, zero dashboard behavior change.
+
+### Notes
+- Interpretation ruling (Colton, task detail): "claiming a task already claimed_by someone else returns a warning naming the current claimant and claim age — NEVER blocks; takeover (re-claim over a live claim) requires a transition note; reopening someone else's done/cancelled task gets the same warning shape." This WP resolves the "never blocks" vs. "requires a note" tension by enforcing the note ONLY for the two unambiguous transition-based takeover shapes (2a, and the seizure half of 2b) — every ambiguous or non-takeover shape warns-and-proceeds instead. Flagged for Colton's async review; if overruled, 2a's rejection relaxes to warning-plus-proceed as a one-flip patch (the warning plumbing is unchanged).
+- Tool-surface self-sufficiency audit re-run over `cognition_update_task`.
+- Version bump held — batches with the next WP.
+
 ## [0.22.0] — 2026-07-15
 
 **WP-TC1: curation conflict lens.**

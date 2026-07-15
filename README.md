@@ -390,6 +390,23 @@ the append-only `metadata.assignments` audit trail (`{to, at, by}`, `by`
 server-resolved); resubmitting the same email is a no-op. The target need not be a
 registered person node yet — dangling is legal, mirroring `reports_to_email`.
 
+**Claim collisions and reopen warnings.** `cognition_update_task` never blocks a
+teammate from taking action, with one exception: retaking a task someone else is
+actively working (`metadata.claimed_by` present, status `in_progress`/`blocked` — an
+`open`/`done`/`cancelled` task's claim is released, not live) via `blocked` →
+`in_progress` requires `note=` (a one-retry-recoverable validation error names the
+current claimant and claim age otherwise). Every other collision-adjacent shape —
+poking an already-in_progress task without taking it over, or reopening someone else's
+closed task — never blocks; it succeeds and the response carries a `claim_warning`
+(`kind`: `claim_collision` | `takeover_note_required` | `reopen`, plus `claimant`,
+`claimed_at`, and a human-readable `message`), present only when something foreign was
+actually detected — self-actions, released claims, and unverifiable identities (either
+side's git email blank) disengage the machinery entirely, same never-wipe-on-unverified
+doctrine as `exclude_people` below. Passing `status="in_progress"` again on an
+already-in_progress task held by someone else, together with `note=`, is a single-call
+takeover: it restamps `claimed_by` and logs the seizure just like a real transition
+would.
+
 **Per-author search/task filtering.** `cognition_search` and `cognition_list_tasks`
 both take an optional `exclude_people` param (comma-separated emails, casefolded) that
 drops hits/tasks authored by those identities — matched on the same server-resolved

@@ -91,6 +91,13 @@ are injected at session start and listed via `cognition_list_tasks`, so the grap
   assignment/reassignment/unassignment appends one entry to `metadata.assignments`; a
   same-email resubmission is a no-op. Anyone may assign anyone (no ACL; the audit trail
   is the control).
+- **Claiming never blocks, with one exception.** Retaking someone else's LIVE claim
+  (`in_progress`/`blocked`, `claimed_by` set) via `blocked → in_progress` requires
+  `note=` — a retryable error names the current claimant otherwise. Every other
+  collision (poking an in-progress task without taking it over, reopening someone
+  else's closed task) succeeds and returns a `claim_warning` (`kind`, `claimant`,
+  `claimed_at`, `message`) instead of blocking — present only when a real foreign
+  claim was detected; self-actions and unverifiable identities never trigger it.
 - **Curate tasks** like any node: `/vibe-curate` links a task `relates_to` the
   decision/pattern it implements, or a done task `resolved_by`/`led_to` the closing episode.
 - **Filter out an author with `exclude_people`** (comma-separated emails, on
