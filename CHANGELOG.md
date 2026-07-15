@@ -5,6 +5,23 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+**WP-TC10: per-person search/task exclude filter + "returned N of M" completeness.**
+
+### Added
+- **`exclude_people` on `cognition_search` and `cognition_list_tasks`** — an optional comma-separated (casefolded) email list that drops hits/tasks authored by those identities. Matched on the same server-resolved stamp personalization uses (`recorded_by.email` for entities, `created_by.email` for tasks) — never the free-text `author`/`owner` field, and never an unstamped pre-P13n node (unverifiable is not the same as "matches"). **User-invoked only**: the docstring instructs the agent to add it ONLY when a human explicitly asks to filter people out for that call, never on its own initiative; there is no persistent/env-var muting, by design. `cognition_search`'s filter exempts constraint/incident hits (same never-wipe doctrine those node types get elsewhere) — an exempted hit passes through and does not count toward `excluded_count`. A filtered call discloses `excluded_count` (distinct nodes dropped) + `excluded_for` (the casefolded emails matched against), present iff the param was passed AND something was actually excluded — never a silent zero.
+- **`total_found` / `exhaustive` on `cognition_search` and `cognition_get_history`** (always present, unconditional) — `total_found` is the distinct match count discovered (post-exclusion where applicable) before the response's `limit`-slice; `exhaustive` is `true` when that count is exact (the search space was fully seen) and `false` when it's a floor (stopped at `limit` or an internal cap — more matches may exist unseen). `count` (the length of `results`) can be less than `total_found` for reasons independent of any exclusion filter, simply because more matched than `limit` allowed through — this was previously invisible to callers. `cognition_get_history` is always exhaustive (a full structural scan); `cognition_search`'s adaptive vector search can genuinely stop early. Multi-project (`project="*"`/a tag set): `total_found` sums across entries, `exhaustive` AND-reduces, and `exclude_people`'s `excluded_count`/`excluded_for` likewise combine across entries.
+
+### Changed
+- `adaptive_vector_search`'s `dedupe` callback contract: now returns `(list, excluded_count)` instead of a bare list, and the list is no longer capped to `limit` internally — the caller (`adaptive_vector_search`) owns both the limit-slice and the total_found/exhaustive accounting. The dashboard's own search `_dedupe` closure was updated to conform (plumbing only; the dashboard JSON response is unchanged — it never exposes `total_found`/`exhaustive`/`excluded_count`).
+- `storage.get_recent_nodes` gained an additive, keyword-only `with_total: bool = False` parameter — every pre-existing caller (prime.py's patterns/decisions sections, the dashboard's recent-episodes tile) is unaffected by default; `cognition_get_history`'s recency branch passes `with_total=True` to get the exact pre-slice count.
+
+### Notes
+- `_format_search_results` now unconditionally fetches the full node (`storage.get_node`) per hit (previously only for `document`-type hits, to compute staleness) — needed so the exclusion filter can read the server-resolved identity stamp; a cheap in-memory lookup, no new I/O.
+- Tool-surface self-sufficiency audit re-run over `cognition_search`, `cognition_get_history`, and `cognition_list_tasks` (the three tools this WP touched).
+- Version bump held — batches with the next Wave 2 WP (TC1) as `0.22.0`.
+
 ## [0.21.0] — 2026-07-15
 
 **WP-TC7: prime-triggered new-user onboarding.**

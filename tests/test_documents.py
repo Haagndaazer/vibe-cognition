@@ -656,7 +656,7 @@ def test_search_drops_hits_for_graph_absent_nodes(tmp_path):
         {"_id": "ghost001", "entity_type": "decision", "summary": "DELETED — must not surface"},
         {"_id": "live0001#chunk-3", "entity_type": "decision", "summary": "chunk of a live node"},
     ]
-    out = _format_search_results(hits, s, limit=10)
+    out, _ = _format_search_results(hits, s, limit=10)
     ids = [h["id"] for h in out]
     assert ids == ["live0001"], f"expected one deduped node id, got {ids}"
     assert "ghost001" not in ids, "ghost (graph-absent) hit served — N1 fix failed"
@@ -940,7 +940,7 @@ def test_deleted_document_all_chunk_hits_drop(tmp_path):
         {"_id": "gonedoc1#chunk-0", "entity_type": "document", "matched_text": "secret 0"},
         {"_id": "gonedoc1#chunk-1", "entity_type": "document", "matched_text": "secret 1"},
     ]
-    out = _format_search_results(hits, s, limit=10)
+    out, _ = _format_search_results(hits, s, limit=10)
     assert out == [], "a deleted document's chunk hits were served (N1xdedupe compose failed)"
 
 
@@ -1053,7 +1053,7 @@ def test_search_results_document_hit_carries_staleness_when_path_missing(tmp_pat
     s.add_node(node)
 
     hits = [{"_id": "doc1", "entity_type": "document", "summary": "a doc"}]
-    out = _format_search_results(hits, s, limit=10)
+    out, _ = _format_search_results(hits, s, limit=10)
 
     assert len(out) == 1
     assert out[0]["staleness"] == "path_missing"
@@ -1066,7 +1066,7 @@ def test_search_results_non_document_hit_has_no_staleness_key(tmp_path):
     s.add_node(_node("dec1", CognitionNodeType.DECISION, summary="a decision"))
 
     hits = [{"_id": "dec1", "entity_type": "decision", "summary": "a decision"}]
-    out = _format_search_results(hits, s, limit=10)
+    out, _ = _format_search_results(hits, s, limit=10)
 
     assert len(out) == 1
     assert "staleness" not in out[0]
@@ -1084,7 +1084,7 @@ def test_search_results_document_hit_no_staleness_key_when_unchanged(tmp_path):
     s.add_node(node)
 
     hits = [{"_id": "doc1", "entity_type": "document", "summary": "a doc"}]
-    out = _format_search_results(hits, s, limit=10)
+    out, _ = _format_search_results(hits, s, limit=10)
 
     assert len(out) == 1
     assert "staleness" not in out[0]

@@ -42,7 +42,7 @@ from ..cognition.documents import (
     write_blob,
     write_text_sidecar,
 )
-from ..cognition.prime import SEVERITY_ORDER
+from ..cognition.prime import SEVERITY_ORDER, _node_email
 from ..embeddings import ChromaDBStorage, EmbeddingGenerator, adaptive_vector_search
 from .dispatch import dispatch_tool
 from .project_registry import (
@@ -531,12 +531,33 @@ def _add_edges_batch_core(storage: CognitionStorage, edges: str) -> dict[str, An
 
 _MATCHED_EXCERPT_LEN = 500   # chars of chunk text returned as the match excerpt
 
+# WP-TC10: exclude_people's never-wipe carve-out (same doctrine as TC9) — a
+# constraint/incident hit is NEVER dropped by the filter, and passing one through
+# does not count toward excluded_count (nothing was actually excluded).
+_NEVER_EXCLUDED_SEARCH_TYPES = frozenset({
+    CognitionNodeType.CONSTRAINT.value, CognitionNodeType.INCIDENT.value,
+})
+
+
+def _parse_exclude_people(exclude_people: str | None) -> frozenset[str]:
+    """Comma-separated emails -> casefolded frozenset (WP-TC10). Blank entries and
+    a blank/None param both collapse to the empty set (= no filter)."""
+    if not exclude_people:
+        return frozenset()
+    return frozenset(
+        email for raw in exclude_people.split(",") if (email := _casefold_email(raw))
+    )
+
 
 def _format_search_results(
-    results: list[dict[str, Any]], storage: CognitionStorage, limit: int
-) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]],
+    storage: CognitionStorage,
+    limit: int,
+    exclude_emails: frozenset[str] = frozenset(),
+) -> tuple[list[dict[str, Any]], int]:
     """Dedupe over-queried hits to the BEST hit per node, dropping graph-absent
     nodes, and carry a ``matched_excerpt`` for chunk hits — the N1 fix + D2 dedupe.
+    WP-TC10 additionally applies the optional per-author exclusion filter here.
 
     N1 (§9): a cross-process remove_node replays into the graph but never un-embeds,
     so Chroma serves hits for nodes deleted on another machine — escalated by
@@ -554,9 +575,21 @@ def _format_search_results(
     ``freshness`` field (a same-size content edit isn't caught) — deliberately, so search
     cost never scales with re-reading every matched document's full referenced file.
 
-    Returns at most ``limit`` deduped nodes."""
+    WP-TC10: fetches the full node (``storage.get_node``, unconditional — the N1
+    membership check above is presence-only, it never returns node data) so the
+    exclusion filter can match the SAME server-resolved identity stamp personalization
+    uses (``prime._node_email``: ``recorded_by.email`` / task ``created_by.email`` —
+    never the free-text ``author`` field, never an unstamped pre-P13n node). A
+    constraint/incident hit is NEVER excluded (``_NEVER_EXCLUDED_SEARCH_TYPES``) and
+    passing one through does not increment ``excluded_count``.
+
+    Returns ``(all live deduped (post-exclusion) hits for this round, excluded_count)``
+    — the list is NOT capped to ``limit`` (the caller, ``adaptive_vector_search``,
+    owns both the limit-slice and the widen-vs-stop decision; capping here would
+    make its ``total_found``/exhaustive accounting wrong)."""
     formatted: list[dict[str, Any]] = []
     seen_nodes: set[str] = set()
+    excluded_count = 0
     for r in results:
         raw_id = r.get("_id") or ""
         if not storage.search_hit_is_live(raw_id):  # N1 drop (shared predicate)
@@ -565,7 +598,17 @@ def _format_search_results(
         if node_id in seen_nodes:  # keep only the best (first) hit per node
             continue
         seen_nodes.add(node_id)
+        node = storage.get_node(node_id)  # cheap: in-memory graph lookup
+        if node is None:  # vanished between the live-check and here (race) — same drop as N1
+            continue
         node_type = r.get("entity_type")
+        if (
+            exclude_emails
+            and node_type not in _NEVER_EXCLUDED_SEARCH_TYPES
+            and _node_email(node) in exclude_emails
+        ):
+            excluded_count += 1
+            continue
         entry: dict[str, Any] = {
             "id": node_id,  # the NODE id, never the chunk id
             "node_type": node_type,
@@ -581,18 +624,14 @@ def _format_search_results(
             "from_agent": r.get("from_agent"),
         }
         if node_type == CognitionNodeType.DOCUMENT.value:
-            doc_node = storage.get_node(node_id)  # cheap: in-memory graph lookup
-            if doc_node:
-                staleness = cheap_staleness_signal(doc_node.get("metadata", {}))
-                if staleness:
-                    entry["staleness"] = staleness
+            staleness = cheap_staleness_signal(node.get("metadata", {}))
+            if staleness:
+                entry["staleness"] = staleness
         matched = r.get("matched_text")
         if matched:
             entry["matched_excerpt"] = matched[:_MATCHED_EXCERPT_LEN]
         formatted.append(entry)
-        if len(formatted) >= limit:
-            break
-    return formatted
+    return formatted, excluded_count
 
 
 def _reembed_replayed_nodes(
@@ -661,8 +700,10 @@ def _search_with_embedding(
     query_embedding: list[float],
     node_type: str | None,
     limit: int,
-) -> list[dict[str, Any]]:
-    """Inner search: takes a pre-computed embedding, returns formatted result list.
+    exclude_emails: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """Inner search: takes a pre-computed embedding, returns the adaptive_vector_search
+    envelope (``results``/``total_found``/``exhaustive``/``excluded_count`` — WP-TC10).
 
     Extracted so multi-project search can embed the query ONCE and fan over entries
     without re-embedding per project. ``storage`` must be the storage for THIS
@@ -675,7 +716,7 @@ def _search_with_embedding(
         query_embedding,
         entity_type=node_type,
         limit=limit,
-        dedupe=lambda results, lim: _format_search_results(results, storage, lim),
+        dedupe=lambda results, lim: _format_search_results(results, storage, lim, exclude_emails),
     )
 
 
@@ -686,6 +727,7 @@ def _search_cognition(
     query: str,
     node_type: str | None = None,
     limit: int = 10,
+    exclude_people: str | None = None,
 ) -> dict[str, Any]:
     """Semantic search core (testable; cognition_search is the thin ctx wrapper).
 
@@ -700,11 +742,30 @@ def _search_cognition(
     live nodes, OR Chroma is exhausted (fewer hits than asked), OR a cap is hit.
     Doubling keeps round-trips logarithmic. The single-document-with->cap-chunks case
     is the only residual (capped), and only degrades recall (never serves a wrong or
-    deleted node — the dedupe + N1 filter are exact)."""
+    deleted node — the dedupe + N1 filter are exact).
+
+    WP-TC10: `exclude_people` (comma-separated emails) drops hits authored by those
+    identities (constraints/incidents exempt — see _format_search_results) BEFORE the
+    limit-fill, so adaptive widening naturally refills excluded slots. `total_found`/
+    `exhaustive` (M4) are always present; `excluded_count`/`excluded_for` are present
+    only when the param was passed AND something was actually excluded."""
     limit = min(limit, 50)
+    exclude_emails = _parse_exclude_people(exclude_people)
     query_embedding = generator.generate_query_embedding(query)
-    formatted = _search_with_embedding(storage, embedding_storage, query_embedding, node_type, limit)
-    return {"query": query, "results": formatted, "count": len(formatted)}
+    search = _search_with_embedding(
+        storage, embedding_storage, query_embedding, node_type, limit, exclude_emails
+    )
+    result: dict[str, Any] = {
+        "query": query,
+        "results": search["results"],
+        "count": len(search["results"]),
+        "total_found": search["total_found"],
+        "exhaustive": search["exhaustive"],
+    }
+    if exclude_emails and search["excluded_count"] > 0:
+        result["excluded_count"] = search["excluded_count"]
+        result["excluded_for"] = sorted(exclude_emails)
+    return result
 
 
 def _materialize_blob(
@@ -1306,13 +1367,21 @@ def _list_tasks(
     owner: str | None = None,
     parent_id: str | None = None,
     include_done: bool = False,
+    exclude_people: str | None = None,
 ) -> dict[str, Any]:
     """List tasks filtered + sorted (testable core of cognition_list_tasks).
 
     Home-project only. Sorts by priority (SEVERITY_ORDER) then recency (newest first).
     Default EXCLUDES done/cancelled. Each row carries a ``depth`` = the number of present
     ancestors in the visible result set (so the hierarchy reads as a tree); a child whose
-    parent is filtered out or deleted falls back to depth 0 (shown ungrouped, F10)."""
+    parent is filtered out or deleted falls back to depth 0 (shown ungrouped, F10).
+
+    WP-TC10: ``exclude_people`` (comma-separated emails, casefolded) drops tasks whose
+    ``created_by.email`` matches — the task identity stamp, same ``prime._node_email``
+    match used by cognition_search (never the free-text ``owner``; an unstamped task is
+    never excluded). Applied BEFORE the depth/visible computation, so an excluded
+    task's children fall back to depth 0 exactly like any other filtered-out parent
+    (F10 — no special-casing needed)."""
     if status is not None and status not in _TASK_STATUSES:
         return {"error": f"Invalid status '{status}'. Valid: {list(_TASK_STATUSES)}"}
 
@@ -1340,6 +1409,18 @@ def _list_tasks(
         )
 
     filtered = [t for t in tasks if _keep(t)]
+
+    exclude_emails = _parse_exclude_people(exclude_people)
+    excluded_count = 0
+    if exclude_emails:
+        kept: list[dict[str, Any]] = []
+        for t in filtered:
+            if _node_email(t) in exclude_emails:
+                excluded_count += 1
+                continue
+            kept.append(t)
+        filtered = kept
+
     # Stable two-pass sort: recency desc first, then severity asc → severity primary,
     # recency secondary (newest-first within a priority band).
     filtered.sort(key=lambda t: t.get("timestamp") or "", reverse=True)
@@ -1374,7 +1455,11 @@ def _list_tasks(
             "from_agent": meta.get("from_agent"),
             "assigned_to": meta.get("assigned_to"),
         })
-    return {"tasks": rows, "count": len(rows)}
+    result: dict[str, Any] = {"tasks": rows, "count": len(rows)}
+    if exclude_emails and excluded_count > 0:
+        result["excluded_count"] = excluded_count
+        result["excluded_for"] = sorted(exclude_emails)
+    return result
 
 
 def _reparent_task(
@@ -2268,6 +2353,7 @@ def register_cognition_tools(mcp) -> None:
         owner: str | None = None,
         parent_id: str | None = None,
         include_done: bool = False,
+        exclude_people: str | None = None,
     ) -> dict[str, Any]:
         """List the project's tasks — the backlog view. **Check this before picking up work.**
 
@@ -2283,19 +2369,31 @@ def register_cognition_tools(mcp) -> None:
             owner: Optional owner filter (exact match on the free-text owner).
             parent_id: Optional — only tasks whose direct parent is this id.
             include_done: Include done/cancelled tasks (default False).
+            exclude_people: Optional comma-separated email(s), casefolded before
+                    matching (case doesn't matter), to drop tasks CREATED BY
+                    (matched on the server-resolved `created_by.email` stamp —
+                    never the free-text `owner`; a task with no stamped creator is
+                    NEVER excluded). No restriction on targets — any email, human or
+                    agent. Include ONLY when the human explicitly asked to filter
+                    people out this session; never volunteer it, and never persist
+                    it across calls (no config knob for this — per-call only).
 
         Returns:
             {"tasks": [{id, summary, status, priority, owner, parent_id, created_by,
-             timestamp, depth, from_agent, assigned_to}, ...], "count": N} or
-            {"error": ...} for a bad status. `assigned_to` is the casefolded email of
-            who this task is directed at, or None when unassigned (WP-TC8; never
-            coerced, same convention as `from_agent`).
+             timestamp, depth, from_agent, assigned_to}, ...], "count": N,
+             "excluded_count": N, "excluded_for": [str, ...]} or {"error": ...} for a
+            bad status. `assigned_to` is the casefolded email of who this task is
+            directed at, or None when unassigned (WP-TC8; never coerced, same
+            convention as `from_agent`). `excluded_count`/`excluded_for` are present
+            iff `exclude_people` was passed AND something was actually excluded
+            (never a silent 0).
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         return _list_tasks(
             storage,
             status=status, priority=priority, owner=owner,
             parent_id=parent_id, include_done=include_done,
+            exclude_people=exclude_people,
         )
 
     @dispatch_tool(mcp)
@@ -2726,6 +2824,7 @@ def register_cognition_tools(mcp) -> None:
         node_type: str | None = None,
         limit: int = 10,
         project: str | None = None,
+        exclude_people: str | None = None,
     ) -> dict[str, Any]:
         """Search PROJECT HISTORY (decisions, failures, discoveries, patterns) by natural language.
 
@@ -2743,11 +2842,23 @@ def register_cognition_tools(mcp) -> None:
             project: None (default, home only), a tag/path (one loaded foreign
                      project), or "*" (all loaded projects — aggregate search).
                      Single-node tools reject "*"; this aggregate tool accepts it.
+            exclude_people: Optional comma-separated email(s), casefolded before
+                     matching (case doesn't matter), to drop hits authored by
+                     (matched on the server-resolved identity stamp — never the
+                     free-text `author` field; a node with no stamped identity is
+                     NEVER excluded, since "unstamped" isn't the same as "matches").
+                     No restriction on targets — any email, human or agent. Include
+                     ONLY when the human explicitly asked to filter people out this
+                     session; never volunteer it, and never persist it across calls
+                     (there is no config knob for this — it is per-call only, by
+                     design). Constraint/incident hits are NEVER excluded regardless
+                     of author (same never-wipe doctrine as safety-critical nodes
+                     elsewhere in this server) and never count toward excluded_count.
 
         Returns:
             {
               query: str,
-              results: [                 # hits, sorted by score desc
+              results: [                 # hits, sorted by score desc, at most `limit`
                 {id, node_type, summary, score, …, project: tag}
                                          # "project" present when project != None.
                                          # NOTE the key is "node_type" here, NOT
@@ -2766,7 +2877,24 @@ def register_cognition_tools(mcp) -> None:
                                          # deliberately cheap so search cost doesn't
                                          # scale with re-reading every matched document.
               ],
-              count: int,
+              count: int,                # len(results) — may be < total_found
+              total_found: int,          # distinct live (post-exclusion) matches
+                                         # discovered before search stopped widening —
+                                         # ALWAYS present. A floor unless exhaustive.
+              exhaustive: bool,          # true: total_found is the exact match count
+                                         # (Chroma ran dry). false: search stopped at
+                                         # `limit`/an internal cap — total_found is a
+                                         # floor, more matches may exist unseen. So
+                                         # count < total_found is possible even with no
+                                         # exclusion in play; never read count alone as
+                                         # "that's everything" without checking this.
+              excluded_count: int,       # present iff exclude_people was passed AND
+                                         # something was actually excluded (never a
+                                         # silent 0) — distinct nodes dropped by the
+                                         # filter for the query as searched.
+              excluded_for: [str, ...],  # present under the same condition as
+                                         # excluded_count — the casefolded emails that
+                                         # were matched against.
               project_notes: {           # project != None only; omitted when empty
                 "<tag>": {semantic_unavailable: true, reason: "<model_guard>"}
                           # or {confidence: "degraded (no model provenance for <tag>)"}
@@ -2783,6 +2911,12 @@ def register_cognition_tools(mcp) -> None:
             index is guarded off (no-index / dim-mismatch / model-mismatch) — that
             source contributed no hits, but it is NOT "no history." A confidence
             caveat means search ran but the model provenance couldn't be verified.
+            Multi-project (project="*"/tag set): total_found is SUMMED across
+            entries, exhaustive is AND-reduced (false if any searched entry didn't
+            exhaust), and excluded_count/excluded_for likewise combine across
+            entries — so post-merge truncation to `limit` can make count < total_found
+            for reasons independent of exclusion or exhaustion (it's simply the
+            per-project sum, then a single global top-`limit` cut).
         """
         err = require_embeddings(ctx)
         if err:
@@ -2840,6 +2974,7 @@ def register_cognition_tools(mcp) -> None:
                 query,
                 node_type=node_type,
                 limit=limit,
+                exclude_people=exclude_people,
             )
             if home_entry is not None and home_entry.model_guard == "unknown":
                 result["confidence"] = (
@@ -2865,10 +3000,14 @@ def register_cognition_tools(mcp) -> None:
             _reembed_replayed_nodes(home_in_fanout.storage, home_in_fanout.embeddings, generator)
 
         limit = min(limit, 50)
+        exclude_emails = _parse_exclude_people(exclude_people)
         query_embedding = generator.generate_query_embedding(query)
 
         all_results: list[dict[str, Any]] = []
         project_notes: dict[str, Any] = {}
+        total_found = 0
+        exhaustive = True
+        excluded_count = 0
 
         for entry in entries:
             tag = entry.tag
@@ -2887,11 +3026,14 @@ def register_cognition_tools(mcp) -> None:
                     "reason": entry.model_guard,
                 }
                 continue
-            results = _search_with_embedding(
-                entry.storage, entry.embeddings, query_embedding, node_type, limit
+            search = _search_with_embedding(
+                entry.storage, entry.embeddings, query_embedding, node_type, limit, exclude_emails
             )
-            tag_results(results, tag)
-            all_results.extend(results)
+            tag_results(search["results"], tag)
+            all_results.extend(search["results"])
+            total_found += search["total_found"]
+            exhaustive = exhaustive and search["exhaustive"]
+            excluded_count += search["excluded_count"]
             if entry.model_guard == "unknown":
                 project_notes[tag] = {
                     "confidence": "degraded — no model provenance in collection metadata (pre-stamp)"
@@ -2903,7 +3045,16 @@ def register_cognition_tools(mcp) -> None:
         all_results.sort(key=lambda r: r.get("score") or 0.0, reverse=True)
         all_results = all_results[:limit]
 
-        result: dict[str, Any] = {"query": query, "results": all_results, "count": len(all_results)}
+        result: dict[str, Any] = {
+            "query": query,
+            "results": all_results,
+            "count": len(all_results),
+            "total_found": total_found,
+            "exhaustive": exhaustive,
+        }
+        if exclude_emails and excluded_count > 0:
+            result["excluded_count"] = excluded_count
+            result["excluded_for"] = sorted(exclude_emails)
         if project_notes:
             result["project_notes"] = project_notes
         return result
@@ -3044,7 +3195,7 @@ def register_cognition_tools(mcp) -> None:
         results = _search_with_embedding(
             storage, embedding_storage, query_embedding,
             node_type=CognitionNodeType.WORKFLOW.value, limit=1,
-        )
+        )["results"]
         if not results:
             return {"error": f"No workflow found matching: {name_or_topic!r}"}
 
@@ -3118,12 +3269,21 @@ def register_cognition_tools(mcp) -> None:
                      carries a "project" tag when project != None.
 
         Returns:
-            {context_term, results: [{id, type, summary, detail, ...}, ...], count}
+            {context_term, results: [{id, type, summary, detail, ...}, ...], count,
+             total_found, exhaustive}
             Each node's kind is keyed "type" (the raw graph attribute name) — NOT
             "node_type" like cognition_search's results use; the two shapes are
             not interchangeable. (The node_type ARG above, which filters the
             query, is unrelated to this key-naming asymmetry.)
-            When project != None also includes "projects_queried": [tag, …].
+            total_found (WP-TC10 M4): the exact count of matching nodes before the
+            `limit` slice — count may be < total_found when more matched than
+            `limit` allowed through. exhaustive is always True here (a full
+            structural scan sees everything, unlike cognition_search's adaptive
+            vector search, where it can be a floor).
+            When project != None also includes "projects_queried": [tag, …];
+            total_found is then SUMMED across entries (so post-merge truncation
+            to `limit` can make count < total_found for reasons unrelated to any
+            single entry's own completeness).
             (Cross-project note: for semantic search over projects use
             cognition_search with project=; get_history is structural only.)
         """
@@ -3133,15 +3293,25 @@ def register_cognition_tools(mcp) -> None:
         if err:
             return err
 
-        # Default path: byte-identical to pre-XP2.
+        # Default path: byte-identical to pre-XP2 except for the added total_found/
+        # exhaustive keys (WP-TC10 M4).
         if project is None:
             storage: CognitionStorage = lc["cognition_storage"]
             if context_term:
-                results = get_history_for_context(storage, context_term, nt)
-                results = results[:limit]
+                full = get_history_for_context(storage, context_term, nt)
+                results = full[:limit]
+                total_found = len(full)
             else:
-                results = storage.get_recent_nodes(limit=limit, node_type=nt)
-            return {"context_term": context_term, "results": results, "count": len(results)}
+                results, total_found = storage.get_recent_nodes(
+                    limit=limit, node_type=nt, with_total=True
+                )
+            return {
+                "context_term": context_term,
+                "results": results,
+                "count": len(results),
+                "total_found": total_found,
+                "exhaustive": True,
+            }
 
         # Multi-project path.
         entries, err2 = resolve_project(lc, project)
@@ -3149,11 +3319,17 @@ def register_cognition_tools(mcp) -> None:
             return err2
 
         all_results: list[dict[str, Any]] = []
+        total_found = 0
         for entry in entries:
             if context_term:
-                rows = get_history_for_context(entry.storage, context_term, nt)[:limit]
+                full = get_history_for_context(entry.storage, context_term, nt)
+                rows = full[:limit]
+                total_found += len(full)
             else:
-                rows = entry.storage.get_recent_nodes(limit=limit, node_type=nt)
+                rows, entry_total = entry.storage.get_recent_nodes(
+                    limit=limit, node_type=nt, with_total=True
+                )
+                total_found += entry_total
             tag_results(rows, entry.tag)
             all_results.extend(rows)
 
@@ -3164,6 +3340,8 @@ def register_cognition_tools(mcp) -> None:
             "context_term": context_term,
             "results": all_results,
             "count": len(all_results),
+            "total_found": total_found,
+            "exhaustive": True,
             "projects_queried": [e.tag for e in entries],
         }
 

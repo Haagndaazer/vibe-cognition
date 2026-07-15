@@ -8,7 +8,7 @@ from collections import defaultdict
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, overload
 
 import networkx as nx
 
@@ -448,19 +448,45 @@ class CognitionStorage:
                 if data.get("type") == node_type.value
             ]
 
+    @overload
     def get_recent_nodes(
         self,
         limit: int = 10,
         node_type: CognitionNodeType | None = None,
-    ) -> list[dict[str, Any]]:
+        *,
+        with_total: Literal[False] = False,
+    ) -> list[dict[str, Any]]: ...
+
+    @overload
+    def get_recent_nodes(
+        self,
+        limit: int = 10,
+        node_type: CognitionNodeType | None = None,
+        *,
+        with_total: Literal[True],
+    ) -> tuple[list[dict[str, Any]], int]: ...
+
+    def get_recent_nodes(
+        self,
+        limit: int = 10,
+        node_type: CognitionNodeType | None = None,
+        *,
+        with_total: bool = False,
+    ) -> list[dict[str, Any]] | tuple[list[dict[str, Any]], int]:
         """Get the most recent nodes, optionally filtered by type.
 
         Args:
             limit: Maximum number of nodes to return
             node_type: Optional type filter
+            with_total: WP-TC10, additive/keyword-only, default False — every
+                pre-existing caller is untouched. When True, returns
+                ``(sliced, total)`` instead of just ``sliced`` — ``total`` is the
+                count of ALL matching nodes before the ``limit`` slice (this is a
+                full structural scan, so ``total`` is always exact, never a floor).
 
         Returns:
-            List of node data dicts sorted by timestamp descending
+            List of node data dicts sorted by timestamp descending (default), or
+            ``(list, total)`` when ``with_total=True``.
         """
         with self._synced():
             nodes = []
@@ -470,7 +496,10 @@ class CognitionStorage:
                 nodes.append({"id": node_id, **data})
 
         nodes.sort(key=lambda n: n.get("timestamp", ""), reverse=True)
-        return nodes[:limit]
+        sliced = nodes[:limit]
+        if with_total:
+            return sliced, len(nodes)
+        return sliced
 
     def get_uncurated_nodes(
         self,

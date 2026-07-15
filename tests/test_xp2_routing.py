@@ -167,7 +167,7 @@ def test_n1_discriminating_storage_pairing(tmp_path):
     query_emb = [0.9, 0.05, 0.05]
 
     # Correct pairing: B.storage + B.embeddings → live survives
-    results_correct = _search_with_embedding(b_storage, b_chroma, query_emb, None, 10)
+    results_correct = _search_with_embedding(b_storage, b_chroma, query_emb, None, 10)["results"]
     live_ids_correct = [r["id"] for r in results_correct]
     assert live_id in live_ids_correct, (
         "live_node dropped with correct (B, B) pairing — N1 filter broken"
@@ -179,7 +179,7 @@ def test_n1_discriminating_storage_pairing(tmp_path):
     assert "ghost_node_id" not in ghost_ids_correct, "ghost survived N1 filter"
 
     # Wrong pairing: A.storage + B.embeddings → live_node ALSO dropped (proves pairing matters)
-    results_wrong = _search_with_embedding(a_storage, b_chroma, query_emb, None, 10)
+    results_wrong = _search_with_embedding(a_storage, b_chroma, query_emb, None, 10)["results"]
     live_ids_wrong = [r["id"] for r in results_wrong]
     assert live_id not in live_ids_wrong, (
         "live_node survived wrong (A, B) pairing — test fixture broken "
@@ -193,12 +193,16 @@ def test_n1_discriminating_storage_pairing(tmp_path):
 
 
 def test_search_cognition_default_is_unchanged(tmp_path):
-    """_search_cognition (no project) returns the same shape as before XP2.
+    """_search_cognition (no project) returns the same shape as before XP2, PLUS the
+    WP-TC10 M4 completeness keys (total_found/exhaustive — always present, unlike
+    exclude_people's excluded_count/excluded_for which are conditional).
 
-    The default path must be byte-identical: {query, results, count} and NOTHING
-    more. No project_notes, no projects_queried.
+    The default (no exclude_people) path must be exactly:
+    {query, results, count, total_found, exhaustive}. No project_notes, no
+    projects_queried, no excluded_count/excluded_for (nothing was excluded — the
+    param was never passed).
 
-    Fails-before: default path gained new keys.
+    Fails-before: default path gained unexpected keys beyond this WP-TC10-updated set.
     """
     storage = CognitionStorage(tmp_path / ".cognition")
     chroma = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
@@ -208,7 +212,7 @@ def test_search_cognition_default_is_unchanged(tmp_path):
 
     result = _search_cognition(storage, chroma, mock_gen, "test query", limit=5)
 
-    assert set(result.keys()) == {"query", "results", "count"}, (
+    assert set(result.keys()) == {"query", "results", "count", "total_found", "exhaustive"}, (
         f"default _search_cognition returned unexpected keys: {set(result.keys())}"
     )
     chroma.close()
@@ -283,7 +287,7 @@ def test_cross_project_id_collision_no_dedup(tmp_path):
     for entry in entries:
         if entry.embeddings is None:
             continue
-        rows = _search_with_embedding(entry.storage, entry.embeddings, query_emb, None, 10)
+        rows = _search_with_embedding(entry.storage, entry.embeddings, query_emb, None, 10)["results"]
         tag_results(rows, entry.tag)
         all_results.extend(rows)
 
@@ -622,7 +626,9 @@ def test_home_model_mismatch_in_multiproject_fanout_also_honest(tmp_path):
 
 def test_home_model_match_search_unaffected(tmp_path):
     """Regression guard: a clean (matching) home collection must NOT gain the
-    semantic_unavailable/reason keys -- the byte-identical pre-XP2 shape."""
+    semantic_unavailable/reason keys -- the byte-identical pre-XP2 shape, PLUS the
+    WP-TC10 M4 completeness keys (always present; exclude_people's excluded_count/
+    excluded_for are NOT, since the param was never passed here)."""
     lc = _make_lc_with_home_guard(tmp_path)  # stamped == configured by default
     ctx = _make_ctx(lc)
     mock = _MockMcp()
@@ -631,7 +637,7 @@ def test_home_model_match_search_unaffected(tmp_path):
     result = mock.tools["cognition_search"](ctx, query="alpha")
     assert "semantic_unavailable" not in result
     assert "reason" not in result
-    assert set(result.keys()) == {"query", "results", "count"}
+    assert set(result.keys()) == {"query", "results", "count", "total_found", "exhaustive"}
     lc["cognition_embedding_storage"].close()
 
 

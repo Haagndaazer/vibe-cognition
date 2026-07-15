@@ -407,16 +407,36 @@ def adaptive_vector_search(
     entity_type: str | None = None,
     limit: int,
     dedupe: Any,
-) -> list[dict[str, Any]]:
+) -> dict[str, Any]:
     """Widen n_results (doubling) until `limit` distinct deduped results, Chroma
-    exhausted, or the cap. `dedupe(results, limit) -> list` owns N1-drop + chunk-
-    dedupe per surface (MCP and dashboard use different result shapes)."""
+    exhausted, or the cap.
+
+    `dedupe(results, limit) -> (list, excluded_count)` owns N1-drop + chunk-dedupe
+    (+ any per-surface exclusion filter) per surface (MCP and dashboard use
+    different result shapes). Unlike the pre-WP-TC10 contract, `dedupe`'s list is
+    NOT capped to `limit` — it returns every live deduped (post-filter) hit for
+    that round, so the caller can report the terminating round's full count
+    (`total_found`, WP-TC10 M4) instead of a value truncated by dedupe itself.
+
+    Returns {"results": at most `limit` items, "total_found": len(dedupe's list)
+    for the terminating round (never accumulated across widening rounds — each
+    round's dedupe call recomputes from scratch over that round's raw hits),
+    "exhaustive": True iff Chroma returned fewer raw hits than requested that
+    round (M is exact; False means M is a floor — stopped at limit or the cap),
+    "excluded_count": likewise the terminating round's count, 0 when the caller's
+    dedupe never excludes}."""
     n = max(limit * _SEARCH_OVERQUERY_K, limit, 1)
     while True:
         results = embedding_storage.vector_search(
             query_embedding=query_embedding, limit=n, entity_type=entity_type
         )
-        formatted = dedupe(results, limit)
-        if len(formatted) >= limit or len(results) < n or n >= _SEARCH_OVERQUERY_CAP:
-            return formatted
+        formatted, excluded_count = dedupe(results, limit)
+        exhaustive = len(results) < n
+        if len(formatted) >= limit or exhaustive or n >= _SEARCH_OVERQUERY_CAP:
+            return {
+                "results": formatted[:limit],
+                "total_found": len(formatted),
+                "exhaustive": exhaustive,
+                "excluded_count": excluded_count,
+            }
         n = min(n * 2, _SEARCH_OVERQUERY_CAP)
