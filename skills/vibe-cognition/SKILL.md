@@ -11,7 +11,7 @@ description: You MUST use this skill any time you need to retrieve information a
 | `cognition_record` | Record a knowledge node or episode |
 | `cognition_add_task` | File a trackable task (server-attributed to the git user) |
 | `cognition_list_tasks` | List the backlog — open tasks, priority-sorted, grouped by parent |
-| `cognition_update_task` | Update a task's status/owner/priority/parent in place (transition-logged) |
+| `cognition_update_task` | Update a task's status/owner/priority/parent/assignment in place (transition- and assignment-logged) |
 | `cognition_register_person` | Register a HUMAN identity (never an agent) as a first-class person node |
 | `cognition_update_person` | Edit a person's profile fields in place (audit-trailed via profile_history) |
 | `cognition_get_person` | Get a person's full profile, including the profile_history audit trail |
@@ -80,9 +80,17 @@ are injected at session start and listed via `cognition_list_tasks`, so the grap
   Re-parent later with `cognition_update_task(parent_id="<id>")`, or `parent_id=""` to
   detach to top-level. Moving a task carries its whole subtree.
 - **Lifecycle:** `open → in_progress → blocked → done | cancelled` (reopen allowed). Change
-  it with `cognition_update_task(status=...)` — the ONLY path to status/owner/parent edits
-  (each status change is appended to an audit log). `cognition_update_node` can still fix a
-  task's summary/detail/priority, but not its status/owner/parent.
+  it with `cognition_update_task(status=...)` — the ONLY path to status/owner/parent/
+  assignment edits (each status change is appended to an audit log). `cognition_update_node`
+  can still fix a task's summary/detail/priority, but not its status/owner/parent/assignment.
+- **Assign with `assigned_to_email`** (on `cognition_add_task` or `cognition_update_task`):
+  directs a task AT someone — email-keyed and identity-matched (unlike the free-text
+  `owner`), so it surfaces under the assignee's "Your Open Tasks" at their next session
+  start even if they neither created nor claimed it. Assigning is NOT claiming — the
+  assignee still claims it via `status="in_progress"`. Every effective (different-email)
+  assignment/reassignment/unassignment appends one entry to `metadata.assignments`; a
+  same-email resubmission is a no-op. Anyone may assign anyone (no ACL; the audit trail
+  is the control).
 - **Curate tasks** like any node: `/vibe-curate` links a task `relates_to` the
   decision/pattern it implements, or a done task `resolved_by`/`led_to` the closing episode.
 
