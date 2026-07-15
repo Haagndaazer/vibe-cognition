@@ -57,8 +57,10 @@ def test_histogram_counts_every_known_source_exactly(tmp_path):
         storage.add_edge(_edge(ids[i], ids[(i + 1) % len(ids)], src))
 
     stats = storage.get_statistics()
+    hist = stats["edge_sources"]
+    assert isinstance(hist, dict)
     for src in sources:
-        assert stats["edge_sources"][src] == 1
+        assert hist[src] == 1
 
 
 def test_unknown_source_appears_in_histogram_and_is_counted(tmp_path):
@@ -71,7 +73,9 @@ def test_unknown_source_appears_in_histogram_and_is_counted(tmp_path):
     storage.add_edge(_edge("a", "b", "mystery-tool"))
 
     stats = storage.get_statistics()
-    assert stats["edge_sources"]["mystery-tool"] == 1
+    hist = stats["edge_sources"]
+    assert isinstance(hist, dict)
+    assert hist["mystery-tool"] == 1
     assert stats["edges_outside_curation"] == 1
 
 
@@ -152,7 +156,9 @@ def test_multiple_edges_same_unknown_source_aggregate_in_histogram(tmp_path):
     storage.add_edge(_edge("b", "c", "manual", edge_type=CognitionEdgeType.RELATES_TO))
 
     stats = storage.get_statistics()
-    assert stats["edge_sources"]["manual"] == 2
+    hist = stats["edge_sources"]
+    assert isinstance(hist, dict)
+    assert hist["manual"] == 2
     assert stats["edges_outside_curation"] == 2
 
 
