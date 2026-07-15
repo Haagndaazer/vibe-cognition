@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.23.0] — 2026-07-15
 
 **WP-TC4: claim-collision + reopen warnings on `cognition_update_task`.**
 
@@ -18,7 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Notes
 - Interpretation ruling (Colton, task detail): "claiming a task already claimed_by someone else returns a warning naming the current claimant and claim age — NEVER blocks; takeover (re-claim over a live claim) requires a transition note; reopening someone else's done/cancelled task gets the same warning shape." This WP resolves the "never blocks" vs. "requires a note" tension by enforcing the note ONLY for the two unambiguous transition-based takeover shapes (2a, and the seizure half of 2b) — every ambiguous or non-takeover shape warns-and-proceeds instead. Flagged for Colton's async review; if overruled, 2a's rejection relaxes to warning-plus-proceed as a one-flip patch (the warning plumbing is unchanged).
 - Tool-surface self-sufficiency audit re-run over `cognition_update_task`.
-- Version bump held — batches with the next WP.
 
 **WP-TC9: seniority + agent-origin weighting on `cognition_search`.**
 
@@ -30,11 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Person-email→seniority lookup is memoized once per top-level `cognition_search` call (one `get_nodes_by_type(PERSON)` scan), reused across every adaptive-widening round of that call — not rebuilt per round.
 
+### Fixed
+- **C1 cross-version tolerance for seniority reads** (gate finding, Vince) — `_hit_weight`'s `_SENIORITY_MULTIPLIERS[seniority]` and `_person_seniority_map`'s direct `["metadata"]["person"]["seniority"]` access both crashed `cognition_search` with `KeyError` on a person node carrying an out-of-vocabulary seniority tier (a newer plugin version, a hand-edited journal, a cross-version team) or one predating the `seniority` field entirely. Now: an unknown tier gets the neutral multiplier (never a penalty for vocabulary this build doesn't know) while the raw tier string still surfaces verbatim in `weight.seniority`/`basis`; a person node missing `seniority` falls through to the existing `human:unregistered` path instead of raising. The strict-dominance invariant (agent 0.85 below every seniority multiplier) is unaffected.
+
 ### Notes
 - Scope: `cognition_search` only. `cognition_get_history`, `cognition_list_tasks`, session-start priming, and the dashboard's own search path are unaffected.
 - Ruling (Colton): weighting never wipes or hides lower-seniority/agent findings; weights are always visible, never silent; constraints/incidents are never outranked by seniority; human input always outweighs agent input.
 - Tool-surface self-sufficiency audit re-run over `cognition_search` (return shape gained `weight`/`weighted_score`).
-- Version bump held — batches with WP-TC4 above.
 
 ## [0.22.0] — 2026-07-15
 
