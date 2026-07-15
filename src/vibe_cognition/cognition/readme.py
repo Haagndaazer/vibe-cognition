@@ -67,6 +67,11 @@ Tasks (trackable open work, server-attributed to the git user):
   exclude_people (comma-separated emails, on cognition_list_tasks) drops tasks
   CREATED BY those identities -- matched on created_by, never owner. USER-INVOKED
   ONLY -- never add it yourself, only when a human explicitly asks.
+  Claiming never blocks except one case: blocked->in_progress over someone else's
+  LIVE claim requires note= (retryable error names the claimant otherwise). Every
+  other collision (in-progress poke without takeover, reopening someone else's
+  closed task) succeeds with a claim_warning (kind/claimant/claimed_at/message)
+  instead of blocking; self-actions and unverifiable identities never trigger it.
 
 Documents (stored files with text sidecar for search):
   document -- use the /vibe-document skill

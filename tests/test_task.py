@@ -32,6 +32,7 @@ from vibe_cognition.cognition.prime import _format_tasks, generate_prime
 from vibe_cognition.tools.cognition_tools import (
     _TASK_TRANSITIONS,
     _embed_entity_node,
+    _task_claimed_at,
     register_cognition_tools,
 )
 
@@ -417,7 +418,11 @@ def test_update_task_claim_stamps_claimed_by(build_lc, make_ctx, mock_mcp, tmp_p
 
 def test_update_task_reclaim_restamps_claimed_by(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
     """Losing and re-claiming a task (in_progress -> blocked -> in_progress) re-stamps
-    claimed_by to the new claimer's identity — it's not sticky to the first claim."""
+    claimed_by to the new claimer's identity — it's not sticky to the first claim.
+
+    WP-TC4: this reclaim is a foreign blocked -> in_progress takeover over a live
+    claim, so it now requires note= (2a) — see the sibling no-note-rejects test below.
+    """
     calls = {"name": "First Claimer", "email": "first@x.com"}
     monkeypatch.setattr(
         "vibe_cognition.tools.cognition_tools.resolve_git_identity",
@@ -436,8 +441,50 @@ def test_update_task_reclaim_restamps_claimed_by(build_lc, make_ctx, mock_mcp, t
         "vibe_cognition.tools.cognition_tools.resolve_git_identity",
         lambda repo: calls,
     )
-    up = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+    up = mock_mcp.tools["cognition_update_task"](
+        ctx, node_id=t["id"], status="in_progress", note="taking over",
+    )
+    assert "error" not in up, up
     assert up["metadata"]["claimed_by"] == {"name": "Second Claimer", "email": "second@x.com"}
+    assert up["claim_warning"]["kind"] == "claim_collision"
+    assert up["claim_warning"]["claimant"] == {"name": "First Claimer", "email": "first@x.com"}
+
+
+def test_update_task_reclaim_without_note_rejects(
+    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+):
+    """WP-TC4 (2a): a FOREIGN blocked -> in_progress reclaim over a live claim,
+    WITHOUT note=, is the one enforced takeover shape — rejects naming the claimant
+    and claim age, and leaves the task state unmutated (retryable with note=).
+    """
+    calls = {"name": "First Claimer", "email": "first@x.com"}
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: calls,
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="blocked")
+    before = mock_mcp.tools["cognition_get_node"](ctx, node_id=t["id"])
+
+    calls = {"name": "Second Claimer", "email": "second@x.com"}
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: calls,
+    )
+    result = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+    assert "error" in result
+    assert "First Claimer" in result["error"]
+    assert "first@x.com" in result["error"]
+
+    after = mock_mcp.tools["cognition_get_node"](ctx, node_id=t["id"])
+    assert after["metadata"]["status"] == "blocked"
+    assert after["metadata"]["claimed_by"] == {"name": "First Claimer", "email": "first@x.com"}
+    assert after["metadata"]["transitions"] == before["metadata"]["transitions"]
 
 
 def test_update_task_non_claim_transitions_leave_claimed_by_untouched(
@@ -509,6 +556,394 @@ def test_update_task_same_status_combo_does_not_restamp_claimed_by(
     assert "error" not in up, up
     assert up["metadata"]["owner"] == "new-owner"  # the combo field DID apply
     assert up["metadata"]["claimed_by"] == {"name": "Original Claimer", "email": "orig@x.com"}
+
+
+# ── WP-TC4: claim-collision + reopen warnings ───────────────────────────────
+
+
+def test_update_task_same_status_bare_poke_foreign_returns_warning_unmutated(
+    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+):
+    """WP-TC4 (2c): a BARE status='in_progress' poke (nothing else) against a task
+    already claimed by someone else succeeds with a claim_warning instead of hitting
+    the "No updatable fields" error -- the node is otherwise unmutated."""
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "First Claimer", "email": "first@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+    before = mock_mcp.tools["cognition_get_node"](ctx, node_id=t["id"])
+
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Second Claimer", "email": "second@x.com"},
+    )
+    up = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+    assert "error" not in up, up
+    assert up["claim_warning"]["kind"] == "takeover_note_required"
+    assert up["claim_warning"]["claimant"] == {"name": "First Claimer", "email": "first@x.com"}
+    assert "did NOT take it over" in up["claim_warning"]["message"]
+
+    after = mock_mcp.tools["cognition_get_node"](ctx, node_id=t["id"])
+    assert after["metadata"]["claimed_by"] == before["metadata"]["claimed_by"]
+    assert after["metadata"]["transitions"] == before["metadata"]["transitions"]
+
+
+def test_update_task_same_status_bare_poke_same_identity_still_errors(
+    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+):
+    """A bare status='in_progress' poke from the SAME claimant is byte-identical to
+    today: not a takeover shape (not foreign), so it still hits "No updatable fields"."""
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Claimer", "email": "claimer@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+
+    result = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+    assert "error" in result and "No updatable fields" in result["error"]
+
+
+def test_update_task_same_status_combo_carries_takeover_note_required_warning(
+    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+):
+    """WP-TC4 (2c): the same-status foreign combo call (pinned unmodified in
+    test_update_task_same_status_combo_does_not_restamp_claimed_by) also carries the
+    takeover_note_required warning -- checked here rather than in the pinned test."""
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Original Claimer", "email": "orig@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Combo Caller", "email": "combo@x.com"},
+    )
+    up = mock_mcp.tools["cognition_update_task"](
+        ctx, node_id=t["id"], status="in_progress", owner="new-owner",
+    )
+    assert "error" not in up, up
+    assert up["claim_warning"]["kind"] == "takeover_note_required"
+    assert up["claim_warning"]["claimant"] == {"name": "Original Claimer", "email": "orig@x.com"}
+
+
+def test_update_task_same_status_takeover_with_note_seizes(
+    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+):
+    """WP-TC4 (2b): status='in_progress' on an already-in_progress task, held by a
+    foreign live claimant, WITH note= -- a single-call takeover: restamps claimed_by,
+    appends a new transitions entry carrying the note, and warns (kind claim_collision,
+    claimant = the PRIOR claimant -- snapshot-before-mutate)."""
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "First Claimer", "email": "first@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+    before = mock_mcp.tools["cognition_get_node"](ctx, node_id=t["id"])
+    assert len(before["metadata"]["transitions"]) == 2  # seed open + claim in_progress
+
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Second Claimer", "email": "second@x.com"},
+    )
+    up = mock_mcp.tools["cognition_update_task"](
+        ctx, node_id=t["id"], status="in_progress", note="taking over",
+    )
+    assert "error" not in up, up
+    assert up["metadata"]["claimed_by"] == {"name": "Second Claimer", "email": "second@x.com"}
+    assert len(up["metadata"]["transitions"]) == 3
+    new_entry = up["metadata"]["transitions"][-1]
+    assert new_entry["status"] == "in_progress"
+    assert new_entry["note"] == "taking over"
+    assert new_entry["by"] == {"name": "Second Claimer", "email": "second@x.com"}
+    assert up["claim_warning"]["kind"] == "claim_collision"
+    assert up["claim_warning"]["claimant"] == {"name": "First Claimer", "email": "first@x.com"}
+
+
+def test_update_task_note_same_status_same_identity_still_rejects(
+    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+):
+    """The carved note guard still rejects note+same-status for a NON-takeover shape:
+    same identity, same status -- no takeover, so today's error stands verbatim."""
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Claimer", "email": "claimer@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+
+    result = mock_mcp.tools["cognition_update_task"](
+        ctx, node_id=t["id"], status="in_progress", note="just a note",
+    )
+    assert "error" in result and "note annotates a status change" in result["error"]
+
+
+def test_update_task_note_same_status_no_prior_claim_still_rejects(
+    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+):
+    """A same-status note call against a task with NO claimed_by at all (legacy/
+    hand-built: in_progress but never claimed via the tool) is not a takeover shape
+    (no claimant to take over from) -- the guard still rejects verbatim."""
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Someone", "email": "someone@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    storage: CognitionStorage = lc["cognition_storage"]
+    _task_node(storage, "legacy1", "legacy task", status="in_progress")
+
+    result = mock_mcp.tools["cognition_update_task"](
+        ctx, node_id="legacy1", status="in_progress", note="just a note",
+    )
+    assert "error" in result and "note annotates a status change" in result["error"]
+
+
+def test_update_task_reclaim_blocked_unverifiable_claimant_bypasses_note_requirement(
+    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+):
+    """WP-TC4: an unverifiable PRIOR claimant (blank email) disengages the 2a note
+    requirement entirely -- byte-identical to today, silent restamp, no warning."""
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "First Claimer", "email": ""},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="blocked")
+
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Second Claimer", "email": "second@x.com"},
+    )
+    up = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+    assert "error" not in up, up
+    assert up["metadata"]["claimed_by"] == {"name": "Second Claimer", "email": "second@x.com"}
+    assert "claim_warning" not in up
+
+
+def test_update_task_reclaim_blocked_unverifiable_caller_bypasses_note_requirement(
+    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+):
+    """WP-TC4: an unverifiable CALLER (blank email) disengages the 2a note requirement
+    entirely, even over a verified prior claimant."""
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "First Claimer", "email": "first@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="blocked")
+
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Second Claimer", "email": ""},
+    )
+    up = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+    assert "error" not in up, up
+    assert up["metadata"]["claimed_by"] == {"name": "Second Claimer", "email": ""}
+    assert "claim_warning" not in up
+
+
+def test_update_task_self_reclaim_after_self_block_no_warning(
+    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+):
+    """Self-re-claiming your own blocked task never warns and never requires a note
+    -- same person, not a collision."""
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Claimer", "email": "claimer@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="blocked")
+
+    up = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+    assert "error" not in up, up
+    assert "claim_warning" not in up
+
+
+def test_update_task_open_to_in_progress_over_released_foreign_claim_no_warning(
+    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+):
+    """WP-TC4: an open task's claim is not LIVE by definition -- open -> in_progress
+    over a foreign prior claimant restamps silently (today's flow), no warning, no
+    note needed, even though the prior claimant is foreign and verified."""
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "First Claimer", "email": "first@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="open")
+
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Second Claimer", "email": "second@x.com"},
+    )
+    up = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+    assert "error" not in up, up
+    assert up["metadata"]["claimed_by"] == {"name": "Second Claimer", "email": "second@x.com"}
+    assert "claim_warning" not in up
+
+
+def test_update_task_reopen_foreign_done_returns_warning(
+    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+):
+    """WP-TC4 (3): done -> open where the closing transition's author is a different
+    verified identity -- warns (kind reopen, claimant = closer, claimed_at = closed-at).
+    No note required (the ruling scopes the note requirement to takeover)."""
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Closer", "email": "closer@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    done = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="done")
+    closed_at = done["metadata"]["transitions"][-1]["at"]
+
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Reopener", "email": "reopener@x.com"},
+    )
+    reopened = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="open")
+    assert "error" not in reopened
+    assert reopened["claim_warning"]["kind"] == "reopen"
+    assert reopened["claim_warning"]["claimant"] == {"name": "Closer", "email": "closer@x.com"}
+    assert reopened["claim_warning"]["claimed_at"] == closed_at
+
+
+def test_update_task_reopen_foreign_cancelled_returns_warning(
+    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+):
+    """Same as the done case, but cancelled -> open."""
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Closer", "email": "closer@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="cancelled")
+
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Reopener", "email": "reopener@x.com"},
+    )
+    reopened = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="open")
+    assert "error" not in reopened
+    assert reopened["claim_warning"]["kind"] == "reopen"
+    assert reopened["claim_warning"]["claimant"] == {"name": "Closer", "email": "closer@x.com"}
+
+
+def test_update_task_reopen_own_task_no_warning(
+    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+):
+    """Reopening your OWN closed task never warns."""
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Closer", "email": "closer@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="done")
+
+    reopened = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="open")
+    assert "error" not in reopened
+    assert "claim_warning" not in reopened
+
+
+def test_update_task_reopen_suppressed_without_closing_transitions_entry(
+    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+):
+    """WP-TC4 (3): a done task with NO closing transitions entry to attribute (legacy/
+    hand-built journal, mirrors the claim-side null case) reopens with NO warning --
+    unattributable, same doctrine as the identity carve-out."""
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Reopener", "email": "reopener@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    storage: CognitionStorage = lc["cognition_storage"]
+    _task_node(storage, "legacy-done", "legacy done task", status="done")
+
+    reopened = mock_mcp.tools["cognition_update_task"](ctx, node_id="legacy-done", status="open")
+    assert "error" not in reopened
+    assert "claim_warning" not in reopened
+
+
+def test_task_claimed_at_null_for_legacy_claimed_by_without_transition():
+    """_task_claimed_at returns None when no transitions entry actually records an
+    in_progress status (legacy/hand-built) -- it scans transitions, not claimed_by."""
+    assert _task_claimed_at([{"status": "open", "at": "2020-01-01T00:00:00+00:00"}]) is None
+
+
+def test_update_task_takeover_claimed_at_is_last_wins_over_consecutive_entries(
+    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+):
+    """After a 2b takeover, two CONSECUTIVE in_progress transitions entries exist --
+    _task_claimed_at must report the LATEST one (last-wins), not the first claim."""
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "First Claimer", "email": "first@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
+
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Second Claimer", "email": "second@x.com"},
+    )
+    up = mock_mcp.tools["cognition_update_task"](
+        ctx, node_id=t["id"], status="in_progress", note="taking over",
+    )
+    transitions = up["metadata"]["transitions"]
+    assert len(transitions) == 3  # open, First Claimer's claim, Second Claimer's takeover
+    assert transitions[1]["status"] == transitions[2]["status"] == "in_progress"
+    assert _task_claimed_at(transitions) == transitions[-1]["at"]
 
 
 def test_update_task_reopen_allowed(build_lc, make_ctx, mock_mcp, tmp_path):

@@ -1254,6 +1254,29 @@ def _task_ancestor_ids(storage: CognitionStorage, start_id: str) -> set[str]:
     return ancestors
 
 
+def _task_claimed_at(transitions: list[dict[str, Any]]) -> str | None:
+    """The `at` of the LATEST ->in_progress transition (mirrors claimed_by's semantics
+    in _update_task: a takeover re-stamps both together). Null when no such entry
+    exists (legacy). Shared by _update_task and the dashboard — single implementation
+    (WP-TC4 design 5), no second hand-rolled copy."""
+    claimed_at = None
+    for tr in transitions:
+        if tr.get("status") == "in_progress":
+            claimed_at = tr.get("at")
+    return claimed_at
+
+
+def _task_closer(transitions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The LATEST transitions entry that closed the task (status done/cancelled),
+    last-wins scan (mirrors _task_claimed_at). None when no closing entry exists
+    (legacy/hand-built journal) -- the closer cannot be attributed (WP-TC4 design 3)."""
+    closer = None
+    for tr in transitions:
+        if tr.get("status") in ("done", "cancelled"):
+            closer = tr
+    return closer
+
+
 def _add_task(
     ctx: Context,
     summary: str,
@@ -1565,9 +1588,32 @@ def _update_task(
     transition — a call that passes ``status="in_progress"`` while the task is ALREADY
     in_progress is a same-status no-op (the transition branch below is skipped entirely,
     same as it always was for the transitions log), so it never re-stamps claimed_by even
-    when combined with another field that DOES apply (e.g. owner=/priority=). A takeover
-    of claimed_by requires a real transition (blocked/open -> in_progress); this is
-    deliberate, not an oversight."""
+    when combined with another field that DOES apply (e.g. owner=/priority=) UNLESS it is
+    a same-status TAKEOVER with a note (WP-TC4 2b, below) — the one same-status shape that
+    does restamp. A takeover of claimed_by otherwise requires a real transition
+    (blocked/open -> in_progress); this is deliberate, not an oversight.
+
+    Claim collisions (WP-TC4) never block, except one unambiguous case. A foreign LIVE
+    claim (``claimed_by`` present, current status in_progress/blocked; open/done/cancelled
+    = released, not live) being displaced or poked always SUCCEEDS and may carry a
+    ``claim_warning`` in the response:
+      - blocked -> in_progress over a live foreign claim WITHOUT ``note``: the one
+        enforced exception — rejects with an error naming the claimant + claim age
+        (retry with ``note=`` to take over); WITH ``note`` — proceeds, restamps, and the
+        response carries ``claim_warning`` kind ``"claim_collision"``.
+      - ``status="in_progress"`` on an already-in_progress task held by a foreign live
+        claimant WITH ``note`` — a single-call takeover: restamps + logs the seizure +
+        ``claim_warning`` kind ``"claim_collision"``.
+      - same shape WITHOUT ``note`` (including a bare ``status="in_progress"`` poke,
+        which bypasses the "no updatable fields" error for this one shape) — no seizure,
+        no restamp, no error, ``claim_warning`` kind ``"takeover_note_required"``.
+      - done/cancelled -> open (reopen) where the closing transition's author is a
+        different verified identity — ``claim_warning`` kind ``"reopen"``; suppressed
+        when no closing transitions entry exists to attribute.
+    ``claim_warning`` shape: ``{"kind", "claimant": {"name", "email"}, "claimed_at",
+    "assigned_to" (only when set), "message"}``. Key is ABSENT for self-actions, released
+    claims, unverifiable identity (either side's email blank casefolds to unmatched), and
+    fresh claims — never present with a false/empty value."""
     node = storage.get_node(node_id)
     if node is None:
         return {"error": f"Node '{node_id}' does not exist"}
@@ -1586,11 +1632,42 @@ def _update_task(
 
     metadata = dict(node.get("metadata", {}))  # copy for read-modify-write
     metadata_changed = False
+    current_status = metadata.get("status", "open")
+    claim_warning: dict[str, Any] | None = None
+
+    # WP-TC4 (2-MECH #1): resolve the caller identity ONCE, early -- was previously
+    # resolved inside the transition body below; that call is now dropped in favor of
+    # this hoisted result, which also feeds takeover detection.
+    caller = resolve_git_identity(storage.cognition_dir.parent)
+    caller_email = _casefold_email(caller.get("email", ""))
+
+    # Snapshot the PRIOR claim before any mutation (rev-2 finding #8: metadata mutates
+    # in place below) -- every claim_warning reports this snapshot, never post-mutation
+    # state.
+    prior_claimed_by = metadata.get("claimed_by")
+    prior_claimant_email = _casefold_email((prior_claimed_by or {}).get("email", ""))
+    prior_transitions = metadata.get("transitions", [])
+    # Unverifiable identity (either side's email empty) disengages ALL claim machinery.
+    identity_verifiable = bool(caller_email) and bool(prior_claimant_email)
+    foreign_claimant = identity_verifiable and prior_claimant_email != caller_email
+
+    # WP-TC4 (2-MECH #2): same-status takeover shape -- status="in_progress" on an
+    # already-in_progress task held by a verified foreign claimant. Detected before the
+    # note guard so the guard's own carve-out (below) can see it.
+    same_status_takeover_shape = (
+        status == "in_progress" and current_status == "in_progress" and foreign_claimant
+    )
 
     # `note` annotates a status transition — reject it (BEFORE any mutation) when no
     # transition will occur (no status, or status == current), so it can't be silently
-    # dropped. Checked here, pre-mutation, so an erroring note never half-applies.
-    if note is not None and (status is None or status == metadata.get("status", "open")):
+    # dropped. A same-status TAKEOVER (2b) is the one exception (2-MECH #3): its note
+    # annotates the takeover's own new transitions entry, appended by the branch below
+    # rather than this one -- the takeover IS the status event.
+    if (
+        note is not None
+        and (status is None or status == current_status)
+        and not same_status_takeover_shape
+    ):
         return {
             "error": (
                 "note annotates a status change — pass a new (different) status, or omit note"
@@ -1601,21 +1678,38 @@ def _update_task(
     if status is not None:
         if status not in _TASK_STATUSES:
             return {"error": f"Invalid status '{status}'. Valid: {list(_TASK_STATUSES)}"}
-        current = metadata.get("status", "open")
-        if status != current:
-            allowed = _TASK_TRANSITIONS.get(current, frozenset())
+        if status != current_status:
+            allowed = _TASK_TRANSITIONS.get(current_status, frozenset())
             if status not in allowed:
                 return {
                     "error": (
-                        f"Illegal status transition {current!r} -> {status!r}. "
-                        f"Allowed from {current!r}: {sorted(allowed)}"
+                        f"Illegal status transition {current_status!r} -> {status!r}. "
+                        f"Allowed from {current_status!r}: {sorted(allowed)}"
                     )
                 }
-            by = resolve_git_identity(storage.cognition_dir.parent)
+
+            # WP-TC4 (2a, 2-MECH #6): blocked -> in_progress over a LIVE foreign claim
+            # (an open task's claim is not live by definition) is an unambiguous act of
+            # claim-taking -- requires a transition note, validated BEFORE mutation. A
+            # retry with note= always succeeds.
+            live_claim = (
+                current_status == "blocked" and status == "in_progress" and foreign_claimant
+            )
+            if live_claim and not note:
+                assert prior_claimed_by is not None  # live_claim implies foreign_claimant
+                return {
+                    "error": (
+                        f"Task is claimed by {prior_claimed_by['name']} "
+                        f"<{prior_claimed_by['email']}> "
+                        f"(claimed_at={_task_claimed_at(prior_transitions)!r}) — "
+                        "pass note= to take over"
+                    )
+                }
+
             entry: dict[str, Any] = {
                 "status": status,
                 "at": datetime.now(UTC).isoformat(),
-                "by": by,
+                "by": caller,
             }
             if note:
                 entry["note"] = note
@@ -1626,8 +1720,76 @@ def _update_task(
             # resolve). Re-claiming (blocked/open -> in_progress again) re-stamps;
             # every other transition leaves claimed_by untouched.
             if status == "in_progress":
-                metadata["claimed_by"] = by
+                if live_claim:
+                    # Reached only with a note (the no-note case returned above) --
+                    # proceeded over a live foreign claim.
+                    assert prior_claimed_by is not None  # live_claim implies foreign_claimant
+                    claim_warning = {
+                        "kind": "claim_collision",
+                        "claimant": prior_claimed_by,
+                        "claimed_at": _task_claimed_at(prior_transitions),
+                        "message": (
+                            f"took over from {prior_claimed_by['name']} "
+                            f"<{prior_claimed_by['email']}>"
+                        ),
+                    }
+                metadata["claimed_by"] = caller
+            elif status == "open" and current_status in ("done", "cancelled"):
+                # WP-TC4 (3): reopening someone else's closed task -- warn, no note
+                # required (the ruling scopes the note requirement to takeover).
+                # Suppressed when no closing transitions entry exists (unattributable).
+                closer = _task_closer(prior_transitions)
+                closer_by = closer.get("by") or {} if closer else {}
+                closer_email = _casefold_email(closer_by.get("email", ""))
+                if closer and closer_email and caller_email and closer_email != caller_email:
+                    claim_warning = {
+                        "kind": "reopen",
+                        "claimant": closer_by,
+                        "claimed_at": closer.get("at"),
+                        "message": (
+                            f"reopened a task closed by {closer_by.get('name', 'unknown')} "
+                            f"<{closer_email}>"
+                        ),
+                    }
             metadata_changed = True
+
+    # WP-TC4 (2-MECH #4): same-status takeover (2b/2c), PARALLEL to the transition body
+    # above -- status == current_status there means that body's `if status !=
+    # current_status` gate skips it entirely; this is new mutation code, not a reroute.
+    if same_status_takeover_shape:
+        assert prior_claimed_by is not None  # same_status_takeover_shape implies foreign_claimant
+        if note:
+            # (2b) seizes: restamp + append a transitions entry recording the takeover.
+            claim_warning = {
+                "kind": "claim_collision",
+                "claimant": prior_claimed_by,
+                "claimed_at": _task_claimed_at(prior_transitions),
+                "message": (
+                    f"took over from {prior_claimed_by['name']} <{prior_claimed_by['email']}>"
+                ),
+            }
+            entry = {
+                "status": "in_progress",
+                "at": datetime.now(UTC).isoformat(),
+                "by": caller,
+                "note": note,
+            }
+            metadata["claimed_by"] = caller
+            metadata["transitions"] = [*metadata.get("transitions", []), entry]
+            metadata_changed = True
+        else:
+            # (2c) pokes: no seizure, no restamp, no error -- just the warning. Other
+            # fields in the same call (owner=/priority=/etc.) still apply normally.
+            claim_warning = {
+                "kind": "takeover_note_required",
+                "claimant": prior_claimed_by,
+                "claimed_at": _task_claimed_at(prior_transitions),
+                "message": (
+                    f"task remains claimed by {prior_claimed_by['name']} "
+                    f"<{prior_claimed_by['email']}>; you did NOT take it over — "
+                    "pass note= to take over"
+                ),
+            }
 
     # --- owner (empty string clears) ---
     if owner is not None:
@@ -1670,13 +1832,17 @@ def _update_task(
     if top_updates:
         storage.update_node(node_id, **top_updates)
 
-    if not metadata_changed and not top_updates:
+    if not metadata_changed and not top_updates and claim_warning is None:
         return {
             "error": (
                 "No updatable fields provided "
                 "(status, priority, owner, summary, detail, parent_id, assigned_to_email)"
             )
         }
+    # WP-TC4 (2-MECH #5): a stashed claim_warning with nothing else changed is the
+    # "bare poke" shape (2c) -- fall through to the normal response assembly below
+    # rather than erroring; an attempted claim deserves an answer, and re-embedding an
+    # unmutated node is harmless.
 
     # Re-embed ONCE on the fresh node (NOT via _update_node) so the new status/owner +
     # narrative land in Chroma. Deferred if the model isn't ready (rare — an edit needs a
@@ -1692,6 +1858,12 @@ def _update_task(
 
     result = _get_node(storage, node_id)
     result["reembed"] = reembed
+    if claim_warning is not None:
+        # WP-TC4 (1): TC8 info, zero semantics -- only present when the task is assigned.
+        assigned_to = metadata.get("assigned_to")
+        if assigned_to:
+            claim_warning = {**claim_warning, "assigned_to": assigned_to}
+        result["claim_warning"] = claim_warning
     return result
 
 
@@ -2430,6 +2602,22 @@ def register_cognition_tools(mcp) -> None:
         email, casefolded) appends one entry to `metadata.assignments`; resubmitting the
         SAME email is a no-op and appends nothing.
 
+        Claim collisions (WP-TC4) almost never block — the one exception is claiming
+        (`status="in_progress"`) a task someone ELSE is actively working via
+        `blocked → in_progress`: that specific call REQUIRES `note=`, or it is rejected
+        (before any change is made) with an error naming who holds it and since when;
+        retry the same call with a `note=` and it succeeds. "Actively working" means
+        `in_progress` or `blocked` with a DIFFERENT person's `claimed_by` on it — a task
+        that's `open`/`done`/`cancelled` has no live claim, so reclaiming it never needs a
+        note. Every other case where you brush up against someone else's claim succeeds
+        outright and adds a `claim_warning` to the response instead of blocking: passing
+        `status="in_progress"` again on a task that's already `in_progress` under someone
+        else either takes it over (if you also pass `note=`) or just pokes it without
+        taking over (if you don't) — read the warning either way. Reopening someone
+        else's `done`/`cancelled` task also warns, no note needed. You'll never see a
+        `claim_warning` for your own actions, and identity that can't be verified (a
+        blank git-config email on either side) is treated as unknown, not as a match.
+
         Args:
             node_id: The task to update (must be a task node).
             status: New status (open | in_progress | blocked | done | cancelled).
@@ -2438,7 +2626,12 @@ def register_cognition_tools(mcp) -> None:
             summary: New title, if changing.
             detail: New description, if changing.
             parent_id: Re-parent target task id, "" to detach, or omit for no change.
-            note: Optional annotation recorded on the status transition (with `status`).
+            note: Annotation recorded on the status transition (with `status`).
+                REQUIRED to take over someone else's live claim via `blocked ->
+                in_progress`, or via `status="in_progress"` again on an already
+                `in_progress` task someone else holds — omitted, those two calls
+                either reject (the first) or succeed without taking over and warn
+                (the second). Optional everywhere else.
             assigned_to_email: New assignee's email; pass "" to unassign; omit (None,
                 the default) for no change. Casefolded before comparing/storing, so
                 resubmitting the SAME email in a different case is still a no-op, not
@@ -2446,8 +2639,24 @@ def register_cognition_tools(mcp) -> None:
 
         Returns:
             The updated task node plus `reembed` ("done" | "deferred"), or {"error": ...}
-            for a non-task id, an illegal/invalid status, a bad re-parent, or no fields
-            (including a same-email assignment resubmission with nothing else to apply).
+            for a non-task id, an illegal/invalid status, a bad re-parent, no fields
+            (including a same-email assignment resubmission with nothing else to apply),
+            or a note-less takeover of someone else's live `blocked -> in_progress` claim
+            (the one case above that blocks — naming the current claimant and how long
+            they've held it; retry with `note=` to proceed).
+
+            A successful response MAY additionally carry `claim_warning` — read it when
+            present, it means the call touched someone else's claim or closure:
+            `{"kind": "claim_collision" | "takeover_note_required" | "reopen",
+            "claimant": {"name", "email"}, "claimed_at": "<ISO timestamp or null>",
+            "assigned_to": "<email, present only if the task is currently assigned>",
+            "message": "<human-readable summary>"}`. `claim_collision` = you took the
+            claim over (with a note). `takeover_note_required` = the task is still
+            claimed by `claimant`; your call went through but did NOT take it over —
+            resend with `note=` if you meant to. `reopen` = you reopened a task someone
+            else closed (`claimant` is who closed it, `claimed_at` is when). The key is
+            simply absent when nothing collision-worthy happened (your own task, a
+            released claim, or an identity that couldn't be verified on either side).
         """
         lc = get_lifespan(ctx)
         # WP-Wedge (AC4): compute readiness FIRST, then read the generator

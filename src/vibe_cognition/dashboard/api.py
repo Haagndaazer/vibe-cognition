@@ -18,7 +18,7 @@ from starlette.responses import FileResponse, JSONResponse
 from ..cognition import CognitionEdgeType, CognitionNodeType, delete_cognition_node
 from ..cognition.documents import documents_dir, text_sidecar_path
 from ..embeddings import adaptive_vector_search
-from ..tools.cognition_tools import _reembed_replayed_nodes
+from ..tools.cognition_tools import _reembed_replayed_nodes, _task_claimed_at
 
 # Deliberately NOT `from ..cognition.prime import SEVERITY_ORDER` (scope-dashboard-v1
 # brief, doc:4c0b9d426f4c): prime.py carries markdown-formatting + CLI-facing deps this
@@ -309,16 +309,6 @@ def _parse_ts(ts: str | None) -> datetime | None:
         return datetime.fromisoformat(ts)
     except ValueError:
         return None
-
-
-def _task_claimed_at(transitions: list[dict[str, Any]]) -> str | None:
-    """The `at` of the LATEST ->in_progress transition (mirrors claimed_by's semantics
-    in _update_task: a takeover re-stamps both together)."""
-    claimed_at = None
-    for tr in transitions:
-        if tr.get("status") == "in_progress":
-            claimed_at = tr.get("at")
-    return claimed_at
 
 
 def _task_row(t: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
