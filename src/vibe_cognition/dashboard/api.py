@@ -235,12 +235,16 @@ async def search(request):
         _reembed_replayed_nodes(cognition_storage, embed_storage, generator)
         vector = generator.generate_query_embedding(query)
 
-        def _dedupe(hits: list[dict], lim: int) -> list[dict]:
+        def _dedupe(hits: list[dict], lim: int) -> tuple[list[dict], int]:
             # N1 ghost-search SAFETY (WP-D2): drop hits whose node was deleted cross-process
             # but never un-embedded — else the dashboard would serve verbatim deleted client
             # document chunk text.
             # D-6 NAVIGATION (WP-D4): dedupe chunk hits to best hit per node, rewrite _id
             # to the navigable node id, hydrate summary from the graph.
+            # WP-TC10 dedupe-contract conformance: returns (list, excluded_count) — the
+            # list is no longer capped to `lim` here (adaptive_vector_search owns the
+            # limit-slice now, so it can report total_found honestly). The dashboard
+            # never excludes by author, so excluded_count is always 0 here.
             out: list[dict] = []
             seen: set[str] = set()
             for h in hits:
@@ -260,13 +264,15 @@ async def search(request):
                 if matched:
                     row["matched_excerpt"] = matched[:500]
                 out.append(row)
-                if len(out) >= lim:
-                    break
-            return out
+            return out, 0
 
+        # WP-TC10: adaptive_vector_search now returns an envelope
+        # ({"results", "total_found", "exhaustive", "excluded_count"}) — the dashboard
+        # JSON response deliberately stays results-only (no feature change here, see
+        # brief), so only the "results" key is threaded through.
         return adaptive_vector_search(
             embed_storage, vector, entity_type=entity_type, limit=limit, dedupe=_dedupe
-        )
+        )["results"]
 
     results = await run_in_threadpool(_do_search)
     return JSONResponse({"results": results})

@@ -388,6 +388,29 @@ the append-only `metadata.assignments` audit trail (`{to, at, by}`, `by`
 server-resolved); resubmitting the same email is a no-op. The target need not be a
 registered person node yet — dangling is legal, mirroring `reports_to_email`.
 
+**Per-author search/task filtering.** `cognition_search` and `cognition_list_tasks`
+both take an optional `exclude_people` param (comma-separated emails, casefolded) that
+drops hits/tasks authored by those identities — matched on the same server-resolved
+stamp personalization uses (`recorded_by.email` for entities, `created_by.email` for
+tasks), never the free-text `author`/`owner` field, and never an unstamped pre-P13n
+node (unverifiable is not the same as "matches"). It is **user-invoked only** — an
+agent must never add it on its own initiative, only when a human explicitly asks to
+filter people out for that call; there is no persistent/env-var muting, by design.
+`cognition_search`'s filter exempts constraint/incident hits (never excluded, same
+never-wipe doctrine as those node types get elsewhere). Every filtered call discloses
+`excluded_count`/`excluded_for`, present iff the param was passed AND something was
+actually excluded — silent exclusion is forbidden.
+
+**Search/history completeness ("returned N of M").** `cognition_search` and
+`cognition_get_history` responses always carry `total_found` (distinct matches
+discovered, post-exclusion where applicable) and `exhaustive` (`true` = that's the
+exact count; `false` = a floor — more may exist beyond what was searched/limit
+allowed). `count` (the length of `results`) can be less than `total_found` even with
+no filtering in play, whenever more matches exist than `limit` — never read `count`
+alone as proof a search was exhaustive. `cognition_get_history` is always exhaustive
+(a full structural scan); `cognition_search`'s adaptive vector search can genuinely
+stop early at an internal cap.
+
 **Known trust-model limits** (documented, not "fixed" — this is a local trust domain,
 not a security boundary): `reports_to_email` and `seniority` are trust-declared and
 freely peer-editable — the audit trail is the control, not an ACL, and anyone sharing
@@ -395,8 +418,12 @@ the graph may update anyone's profile. `from_agent` is client-declared and unver
 by the server (like the `author` field on `cognition_record`). `assigned_to` is
 similarly client-declared and unverifiable — the server proves who made the assignment
 (`assignments[].by`), never that the assignee accepted or even saw it; there is no
-notification beyond the assignee's next session-start prime. Person data is only as
-fresh as the team keeps it — nothing enforces it, though the onboarding notice below
+notification beyond the assignee's next session-start prime. `exclude_people` trusts
+caller restraint (the user-invoked-only guard is behavioral, unverifiable by the
+server — same trust class as `from_agent`); excluding a prolific author on a small
+graph can legitimately under-fill results — that's disclosed via `excluded_count`, not
+padded. Person data is only as fresh as the team keeps it — nothing enforces it, though
+the onboarding notice below
 reduces how often it goes stale.
 
 **New-user onboarding notice.** When a session's git identity resolves to an email

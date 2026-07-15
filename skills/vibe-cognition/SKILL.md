@@ -10,13 +10,13 @@ description: You MUST use this skill any time you need to retrieve information a
 |------|---------|
 | `cognition_record` | Record a knowledge node or episode |
 | `cognition_add_task` | File a trackable task (server-attributed to the git user) |
-| `cognition_list_tasks` | List the backlog — open tasks, priority-sorted, grouped by parent |
+| `cognition_list_tasks` | List the backlog — open tasks, priority-sorted, grouped by parent; optional `exclude_people` filter |
 | `cognition_update_task` | Update a task's status/owner/priority/parent/assignment in place (transition- and assignment-logged) |
 | `cognition_register_person` | Register a HUMAN identity (never an agent) as a first-class person node |
 | `cognition_update_person` | Edit a person's profile fields in place (audit-trailed via profile_history) |
 | `cognition_get_person` | Get a person's full profile, including the profile_history audit trail |
 | `cognition_list_people` | List every registered person — the team roster |
-| `cognition_search` | Semantic search across all cognition nodes |
+| `cognition_search` | Semantic search across all cognition nodes; reports `total_found`/`exhaustive`, optional `exclude_people` filter |
 | `cognition_get_node` | Read a single node's full narrative (incl. `detail`) by id |
 | `cognition_update_node` | Edit a node's narrative (summary/detail/context/severity) in place; re-embeds on text change |
 | `cognition_get_chain` | Traverse reasoning chains (LED_TO edges) from a node |
@@ -93,6 +93,8 @@ are injected at session start and listed via `cognition_list_tasks`, so the grap
   is the control).
 - **Curate tasks** like any node: `/vibe-curate` links a task `relates_to` the
   decision/pattern it implements, or a done task `resolved_by`/`led_to` the closing episode.
+- **Filter out an author with `exclude_people`** (comma-separated emails, on
+  `cognition_list_tasks`) — matched on `created_by`, user-invoked only (see Querying).
 
 ## People — the team roster
 
@@ -212,6 +214,18 @@ Use these tools to query the cognition graph:
 1. `cognition_search` — Find decisions, failures, patterns by meaning
 2. `cognition_get_history` — Browse by context area, type, or recency
 3. `cognition_get_chain` — Follow causal chains from a specific node
+
+`cognition_search`/`cognition_get_history` responses always carry `total_found`
+(distinct matches discovered) + `exhaustive` (whether that's the exact count or a
+floor) — `count` (what you got back) can be less than `total_found`; check
+`exhaustive` before treating a search as complete. `cognition_search` and
+`cognition_list_tasks` both take an optional `exclude_people` (comma-separated
+emails) to drop hits/tasks by those authors — **user-invoked only**, never add it
+on your own initiative; only when a human explicitly asks to filter someone out
+for that call. Matched on the server-resolved identity stamp, never free-text
+`author`/`owner`; an unstamped node is never excluded; `cognition_search`'s filter
+exempts constraint/incident hits. A filtered call discloses `excluded_count`/
+`excluded_for` whenever something was actually dropped.
 
 ## Workflow Integration
 

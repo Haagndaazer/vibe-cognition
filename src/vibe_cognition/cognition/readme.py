@@ -64,6 +64,9 @@ Tasks (trackable open work, server-attributed to the git user):
   from the free-text, unmatched owner -- surfacing it under the assignee's Your
   Open Tasks; assigning is not claiming, the assignee still claims it via
   status=in_progress.
+  exclude_people (comma-separated emails, on cognition_list_tasks) drops tasks
+  CREATED BY those identities -- matched on created_by, never owner. USER-INVOKED
+  ONLY -- never add it yourself, only when a human explicitly asks.
 
 Documents (stored files with text sidecar for search):
   document -- use the /vibe-document skill
@@ -84,6 +87,20 @@ human explicitly dictated/authored the content themselves). Surfaces in
 cognition_search results, cognition_get_node, and cognition_list_tasks rows. A node
 written before this existed has no from_agent key -- that reads as unknown, never
 coerced to true or false.
+
+## Search filtering & completeness
+
+cognition_search and cognition_get_history always report total_found (distinct
+matches discovered) + exhaustive (true = exact count, false = a floor -- more may
+exist past the limit/an internal cap); count (what you got back) can be less than
+total_found even with no filtering. cognition_search and cognition_list_tasks both
+take an optional exclude_people (comma-separated emails) to drop hits/tasks by
+those authors -- matched on the server-resolved identity stamp, never free-text
+author/owner, never an unstamped node; cognition_search exempts constraint/incident
+hits. USER-INVOKED ONLY -- never add it on your own initiative, only when a human
+explicitly asks to filter someone out for that call; there is no persistent muting.
+A filtered call discloses excluded_count/excluded_for whenever something was
+actually dropped.
 
 ## Edge types
 
