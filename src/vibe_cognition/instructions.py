@@ -35,11 +35,12 @@ from .config import Settings, resolve_repo_path_env
 # THE owning channel for the record->curate loop (WP-7, 9aca47c5803d) — paid most
 # consistently (every session AND every compact) of the three places that used to
 # restate it, so the other two (readme.py's COGNITION_GUIDE, cognition_readme) now
-# point back here instead of duplicating the mechanics. Measured cost: ~433 tokens
-# (char-count/4 estimate; re-measured after the DW1 rewrite added workflow/document
-# triggers as a fourth standing practice — was ~370 tokens pre-DW1; re-measure and
-# update this comment again if the text changes materially — the v0.13.0 prime trim
-# accounting did NOT include this constant, see 9aca47c5803d).
+# point back here instead of duplicating the mechanics. Measured cost: ~545 tokens
+# (char-count/4 estimate; re-measured after the doc-fix WP appended a trailing
+# paragraph naming the prime-digest/observability-keys channel — was ~433 tokens
+# pre-doc-fix, ~370 tokens pre-DW1; re-measure and update this comment again if
+# the text changes materially — the v0.13.0 prime trim accounting did NOT include
+# this constant, see 9aca47c5803d).
 SERVER_INSTRUCTIONS = (
     "Vibe Cognition maintains this project's knowledge graph: the durable, "
     "cross-session record of decisions, failures, discoveries, constraints, "
@@ -72,7 +73,15 @@ SERVER_INSTRUCTIONS = (
     "After recording, run the /vibe-curate skill to launch the background "
     "curator, which adds semantic edges; only deterministic part_of edges "
     "(from shared references) are automatic. Never author semantic edges "
-    "yourself. For full guidance, use the /vibe-cognition skill."
+    "yourself. For full guidance, use the /vibe-cognition skill.\n"
+    "\n"
+    "Every session start, and again after a compaction, this same channel "
+    "injects a prime digest built from the graph: open tasks, active "
+    "constraints, recent patterns, decisions, and incidents, plus -- for a "
+    "registered person -- personalized sections including an identity header "
+    "naming your role and manager. get_status also exposes observability "
+    "keys (edges_outside_curation, edge_sources, rehydrate_events) for "
+    "diagnosing graph and curation health."
 )
 
 # Header so the re-injected (post-compact) block is self-explaining when it sits next to

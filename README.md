@@ -279,7 +279,7 @@ The cognition graph captures project knowledge — decisions made, approaches th
 
 1. **Record nodes** during conversations via `cognition_record`
 2. **Deterministic matching** instantly creates `part_of` edges (and `relates_to` for document→episode) when nodes share references (commit hashes, issue/PR numbers, `doc:` keys) — the only automatic edges
-3. **Semantic edges** (led_to, resolved_by, supersedes) are the agent's job: after recording, run the `/vibe-curate` skill (or add them with `cognition_add_edge`)
+3. **Semantic edges** (led_to, resolved_by, supersedes) are the agent's job: after recording, run the `/vibe-curate` skill, the ONLY path that writes them — `cognition_add_edge`/`cognition_add_edges_batch` are never called directly outside curation (a documented convention, checked via `get_status`'s `edges_outside_curation`)
 4. **Query** with `cognition_search` (semantic) or `cognition_get_history` (by context/type)
 
 ### Node Types
@@ -303,11 +303,11 @@ The cognition graph captures project knowledge — decisions made, approaches th
 | Edge | Meaning | How Created |
 |------|---------|-------------|
 | `part_of` | Entity belongs to an episode, or a descriptor to a document | Deterministic (entity↔episode on any shared ref; entity→document on a shared `doc:` ref) |
-| `led_to` | Causal chain — X led to Y | Semantic (via `/vibe-curate` skill or manual) |
+| `led_to` | Causal chain — X led to Y | Semantic (via `/vibe-curate` skill) |
 | `resolved_by` | Problem X was fixed by Y | Semantic |
 | `supersedes` | X replaces Y (THE reconciliation edge for duplicates — same node type on both ends, no cycles, enforced) | Semantic |
 | `contradicts` | X conflicts with Y | Semantic |
-| `relates_to` | Same topic, no causal link | Deterministic (document→episode on a shared `doc:` ref) OR semantic (`/vibe-curate` or manual) |
+| `relates_to` | Same topic, no causal link | Deterministic (document→episode on a shared `doc:` ref) OR semantic (via `/vibe-curate` skill) |
 
 The graph uses a **MultiDiGraph** — multiple edge types between the same pair of nodes are supported (e.g., A can be both `part_of` B and `led_to` B). Each (from, to, edge_type) triple is unique.
 
@@ -468,6 +468,24 @@ padded. Person data is only as fresh as the team keeps it — nothing enforces i
 the onboarding notice below
 reduces how often it goes stale.
 
+**Personalized session-start prime.** `prime_personalize` (`auto` default | `on` |
+`off`, env `PRIME_PERSONALIZE`) controls whether the session-start prime shows the
+global digest or a personalized one keyed to the current git identity. `auto`
+personalizes when the graph has more than one distinct stamped writer email OR
+more than one registered person — the second condition catches a team's
+first-onboarded member, where every node so far was written by one person but
+several people are now registered (a solo user who registers only themselves
+stays global either way, byte-identical to the unregistered digest). When
+personalized AND the current identity resolves to a registered person node, the
+block opens with a one-line identity header — `You are registered as {name} —
+{role} ({seniority}), reporting to {manager}.`, degrading field-by-field when
+role/seniority/manager are blank, falling back to the raw email when the manager
+doesn't resolve to a person node — mutually exclusive with the `## New Here?`
+onboarding notice below, by construction (one needs a matching person node, the
+other needs its absence). Full pinned order when personalized: identity header →
+`## Your Open Tasks` → `## Team Critical` → `## Your Team` → `## Your Manager's
+Recent Decisions` → `## Since You Were Gone` → `## Your Recent Activity`.
+
 **Role-aware session-start prime.** `reports_to_email` on a person node (a
 REPORTING relationship — distinct from the free-text `person.role` job title) drives
 two personalized sections when it resolves the current session's identity into a
@@ -483,8 +501,10 @@ supersession/HEAD filter, mirroring the global `## Recent Decisions` section's o
 unfiltered model). Sections self-gate on role existence — there is no separate
 on/off knob; `PRIME_PERSONALIZE=off` disables them along with every other
 personalized section. A middle manager (has both direct reports and a manager) gets
-both sections, in the pinned order Team Critical → Your Team → Your Manager's
-Recent Decisions → Your Recent Activity. Your own claimed tasks are unaffected —
+both sections, in the pinned order identity header → Your Open Tasks → Team
+Critical → Your Team → Your Manager's Recent Decisions → Since You Were Gone →
+Your Recent Activity (see "Personalized session-start prime" above). Your own
+claimed tasks are unaffected —
 they already surface under `## Your Open Tasks`, not a new section. Single-manager
 assumption: `reports_to_email` is one string; matrixed/multi-manager orgs are out of
 scope. A user with no person node, no reports either direction, or personalization

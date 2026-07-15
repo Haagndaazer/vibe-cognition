@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**WP-doc-fix: README/skill/docstring consistency sweep (Gate B-final findings, doc-only, zero behavior changes).**
+
+### Changed
+- **Edge-authoring contradiction fixed.** README, both SKILL.md files, and the
+  `cognition_add_edge`/`cognition_add_edges_batch`/`cognition_store_document`/
+  `cognition_update_node`/`cognition_record`/`cognition_remove_node` docstrings
+  now consistently state `/vibe-curate` is the ONLY path that writes semantic
+  edges (including `supersedes`); the vibe-workflow skill's stray
+  `cognition_add_edge(...)` example command and the Edge Types table's "or
+  manual" wording are gone. `cognition_add_edge`/`cognition_add_edges_batch`/
+  `cognition_mark_curated` docstrings now also state explicitly that this is a
+  documented CONVENTION enforced by agent discipline, not a server-side ACL —
+  none of the three tools has a caller-identity check — and point at
+  `get_status`'s `edges_outside_curation`/`edge_sources` as the after-the-fact
+  detection signal. `get_status`'s own docstring gained matching remediation
+  guidance (inspect `edge_sources`, remove an accidental manual/batch edge with
+  `cognition_remove_edge` or document it as an accepted baseline, and re-run
+  `/vibe-curate` regardless since a low count doesn't mean nothing's missing).
+- **Personalized session-start prime documented in all three canonical sites**
+  (README.md, `skills/vibe-cognition/SKILL.md`, `cognition/readme.py`) — the
+  widened `auto` heuristic, the identity header format, mutual exclusion with
+  the New Here banner, and the full pinned section order, none of which had
+  been written down outside WP-OnboardPayoff's own diff until now.
+- **`cognition_get_history`/`cognition_get_neighbors` docstrings** gained a
+  disclosure that results are NOT HEAD-filtered and carry no conflict/
+  supersession marker, contrasting with `cognition_search`'s `conflicted`/
+  `superseded_by` fields, so a caller doesn't assume parity across tools.
+- **`readme.py`'s "Since You Were Gone" section** gained the same
+  constraints-are-HEAD-filtered / decisions-and-incidents-are-not disclosure
+  README.md already carried, closing the last of the three-site gap.
+- **`skills/vibe-cognition/SKILL.md`'s `claim_warning` bullet** now enumerates
+  the three `kind` values (`claim_collision` | `takeover_note_required` |
+  `reopen`), matching README's existing documentation.
+- **`SERVER_INSTRUCTIONS`** (`instructions.py`) gained a trailing unnumbered
+  paragraph naming what session-start prime injects (open tasks, constraints,
+  patterns, decisions, incidents, plus the personalized sections including the
+  identity header) and that `get_status` exposes WP-TC15 observability keys.
+  Token-estimate comment re-measured: ~545 tokens (was ~433 pre-doc-fix).
+
+### Notes
+- Zero behavior changes — no code paths touched, only docstrings/prose. Full
+  gate parity: `uv run pytest` 1056 passed/1 skipped (unchanged baseline),
+  `uv run ruff check .` clean, bare `uv run pyright` 39 errors (unchanged
+  baseline). `test_tool_wrappers.py`'s pinned edge-type/`duplicate_of`/
+  `retire` substring assertions verified to still pass — all edits to those
+  three docstrings were additive only.
+- No version bump (batches into 0.27.0 with the rest of the Gate D train).
+
 **WP-OnboardPayoff: person-node-aware auto-personalize + prime identity header (Gate D S5 fix).**
 
 ### Added
