@@ -282,6 +282,50 @@ def test_your_team_cap_and_overflow(tmp_path):
     assert "+2 more of your team's tasks — use cognition_list_tasks" in result
 
 
+# ── gate fixup: mixed-case email + naive timestamp replay tolerance ─────────
+
+
+def test_your_team_matches_mixed_case_claimant_email(tmp_path):
+    """claimed_by.email is a verbatim git-config provenance stamp, never
+    casefolded at write time (unlike person emails, which ARE casefolded at
+    write) -- a report whose git config stamps a mixed-case email must still
+    match the casefolded report_names keys and appear in the rollup."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _person(storage, "p-mgr", MGR)
+    _person(storage, "p-bob", BOB, reports_to_email=MGR["email"])  # registered lowercase
+    bob_mixed_case_stamp = {"name": "Bob", "email": "Bob@X.COM"}
+    _claimed_task(
+        storage, "t1", "bob's mixed-case-stamped task", status="in_progress",
+        claimant=bob_mixed_case_stamp, claimed_at=(datetime.now(UTC) - timedelta(days=1)).isoformat(),
+    )
+
+    result = generate_prime(storage, PrimeConfig(prime_personalize="on"), current_email=MGR["email"])
+    assert "## Your Team" in result
+    assert "bob's mixed-case-stamped task" in result
+    assert "(Bob, claimed 1d)" in result
+
+
+def test_your_team_naive_claimed_at_does_not_crash(tmp_path):
+    """A naive (no-tzinfo) claimed_at -- as could appear in a replayed or
+    hand-edited journal -- must not crash generate_prime (the SessionStart
+    hook) via an uncaught TypeError on aware-minus-naive subtraction. Same
+    failure class as WP-TC9's 98dcca4 fixup: write-side validation is not
+    protection against replay. Exercises both the stale check and
+    _humanize_claim_age, since both parse this same claimed_at string."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _person(storage, "p-mgr", MGR)
+    _person(storage, "p-bob", BOB, reports_to_email=MGR["email"])
+    naive_claimed_at = "2026-07-14T12:00:00"  # no tzinfo
+    _claimed_task(
+        storage, "t1", "bob's naively-stamped task", status="in_progress",
+        claimant=BOB, claimed_at=naive_claimed_at,
+    )
+
+    result = generate_prime(storage, PrimeConfig(prime_personalize="on"), current_email=MGR["email"])
+    assert "## Your Team" in result
+    assert "bob's naively-stamped task" in result
+
+
 # ── '## Your Manager's Recent Decisions' subordinate view ───────────────────
 
 

@@ -461,6 +461,24 @@ def _derive_role(storage: CognitionStorage, current_email: str) -> _RoleContext:
     return _RoleContext(my_person, direct_reports, my_manager_email)
 
 
+def _parse_iso_datetime(value: str) -> datetime | None:
+    """Parse an ISO timestamp, tolerating a NAIVE (no-tzinfo) string -- treated
+    as UTC -- from a replayed or hand-edited journal. Write paths always stamp
+    aware timestamps, but replay validates nothing; a naive-but-valid string
+    parses fine via `fromisoformat` and would otherwise raise `TypeError` (not
+    `ValueError`) on the aware-naive subtraction downstream, crashing
+    `generate_prime` for every user of that graph (same class as WP-TC9's
+    98dcca4 lesson: write-side validation is not protection against replay).
+    Returns `None` only for a genuinely unparseable string."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
 def _humanize_claim_age(claimed_at: str | None) -> str:
     """`claimed_at` (an ISO timestamp, or None for a legacy/unattributed claim) as
     a compact human age string, day granularity -- "0d" for same-day. None input
@@ -468,9 +486,8 @@ def _humanize_claim_age(claimed_at: str | None) -> str:
     renders as "unknown age" so a legacy row is still readable, never crashes."""
     if not claimed_at:
         return "unknown age"
-    try:
-        claimed = datetime.fromisoformat(claimed_at)
-    except ValueError:
+    claimed = _parse_iso_datetime(claimed_at)
+    if claimed is None:
         return "unknown age"
     days = max(0, (datetime.now(UTC) - claimed).days)
     return f"{days}d"
@@ -506,7 +523,12 @@ def _format_your_team(
     for n in storage.get_nodes_by_type(CognitionNodeType.TASK):
         meta = n.get("metadata", {})
         claimed_by = meta.get("claimed_by")
-        claimant_email = claimed_by.get("email") if isinstance(claimed_by, dict) else None
+        raw_claimant_email = claimed_by.get("email") if isinstance(claimed_by, dict) else None
+        # claimed_by.email is a verbatim git-config provenance stamp, never
+        # casefolded at write time (unlike person emails) -- casefold here at
+        # read time, matching the _task_matches_email/_node_email precedent,
+        # so a mixed-case git config still matches the casefolded report_names keys.
+        claimant_email = raw_claimant_email.casefold() if raw_claimant_email else None
         if not claimant_email or claimant_email not in report_names:
             continue
         status = meta.get("status", "open")
@@ -516,10 +538,9 @@ def _format_your_team(
             claimed_at = _task_claimed_at(meta.get("transitions", []))
             is_stale = False
             if claimed_at:
-                try:
-                    is_stale = (now - datetime.fromisoformat(claimed_at)) > stale_cutoff
-                except ValueError:
-                    is_stale = False
+                parsed_claimed_at = _parse_iso_datetime(claimed_at)
+                if parsed_claimed_at is not None:
+                    is_stale = (now - parsed_claimed_at) > stale_cutoff
             (stale_rows if is_stale else fresh_rows).append((n, claimant_email))
 
     if not stale_rows and not blocked_rows and not fresh_rows:
