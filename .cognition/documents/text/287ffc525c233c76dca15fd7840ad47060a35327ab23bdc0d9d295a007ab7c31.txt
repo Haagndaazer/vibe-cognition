@@ -1,0 +1,31 @@
+# Scope: WP-TC7 — Prime-Triggered New-User Onboarding
+
+Status: APPROVED (peer-reviewed 2026-07-15, 4 corrections: empty-graph non-co-occurrence; git_hygiene version bump for gitignore entry; notice position pinned; TC5 byte-identity test RETAINED not replaced). QUEUED — hands to Vorpid when WP-TC11 gates. Epic cedf4a8457e9; task 62d8264bdb1d. Depends WP-TC5 (shipped v0.19.0). NO tool/schema changes.
+
+## RULINGS: Trigger FROM THE PRIME (decision 8f3612ad9583); trust the human's answers (name, role, seniority, direct manager). Sub-question delegated to brief: solo decline/snooze path.
+
+## DESIGN
+
+Detection in generate_prime (light-import safe; current_email already resolved+casefolded at prime.py:395; person nodes via storage.get_nodes_by_type(PERSON), email at metadata.person.email). Notice fires when ALL: (1) current_email non-empty; (2) no person node matches; (3) email not in decline file; (4) prime_onboard knob on. Fires for solo AND multi-user graphs.
+
+Empty-graph interaction: notice and ONBOARDING_BLOCK are MUTUALLY EXCLUSIVE by construction — main() (prime.py:521-529) appends the block on the empty branch and only calls generate_prime on else. Person notice first fires the session AFTER the first node lands. Do not add detection to main()'s empty branch.
+
+Notice position pinned: FIRST section of generate_prime's output, before Active Constraints. Full payload order: migration note → rehydrate warning → [notice → constraints → …].
+
+Decline file: .cognition/onboard-declined (via storage.cognition_dir, storage.py:126-129), one casefolded email per line, per-machine, written by the AGENT when the human declines (no new MCP tool, no graph write). Snooze == decline (remove line to be re-asked). Gitignore entry MUST land via git_hygiene.py::_write_gitignore + GIT_HYGIENE_VERSION bump 2→3 (versioned-writer precedent) — hand-editing this repo's .cognition/.gitignore is insufficient for downstream projects.
+
+Notice content contract: tell human graph doesn't know them; ask name/role/seniority(owner|senior|mid|junior)/direct manager (optional); then cognition_register_person OMITTING email (server resolves) with from_agent=false (human-dictated by construction); decline → append email to decline file, never a placeholder node; ≤10 lines injected.
+
+Config: prime_onboard: bool = True in Settings + PrimeConfig (defaults-consistency test covers automatically). Env-overridable kill switch; decline file is the per-human path.
+
+NOT changed: MCP tools/schemas (TC5 tools are the contract — if insufficient, STOP and report); instructions.py/SERVER_INSTRUCTIONS (one-shot flow doesn't belong in per-compaction prose; propose at gate if disagreeing); _should_personalize; hooks. git_hygiene.py IS in scope (only non-prime code change).
+
+Test evolution — RETAIN test_solo_prime_byte_identical_with_and_without_person_nodes (passes no current_email → notice never fires there; docstring-only update). ADD: registered user → byte-identical to pre-TC7; unregistered → exactly the notice prepended.
+
+## ACCEPTANCE
+
+Notice fires (unregistered email, solo+multi fixtures); suppressed (registered / empty email / declined / prime_onboard=false via env). Decline file: casefolded, missing==empty, malformed lines ignored; gitignore via hygiene writer + version bump with re-fire test. Byte-identity: registered identical, unregistered delta exactly the prepended notice; no-email test retained unmodified. Notice text substrings: register_person, email omitted, from_agent=false, decline path. Ordering pins keep passing; empty graph → block only, notice asserted ABSENT. Hook JSON valid with notice. prime.py imports unchanged (import-provenance at gate). PrimeConfig↔Settings extended. README team-semantics paragraph + CHANGELOG. Gate: pytest+ruff, isolated worktree, pinned commit. Version bump HELD to batch with WP-TC8 (one release closes Wave 1) unless TC8 stalls. Journal untouched on branch.
+
+## REJECTED: multi-user-only carve-out (ruling says new USER); decline in graph (not team knowledge, would sync); new decline MCP tool (Gate B surface for a file append); SERVER_INSTRUCTIONS prose (per-session cost for one-shot flow); timed snooze (needs richer local state — revisit with TC14).
+
+## KNOWN LIMITS: decline per-machine; from_agent=false trust-declared; nag every session until register/decline is intended per ruling.

@@ -1,0 +1,27 @@
+# Scope: WP-TC8 — Stamped Task Assignment (assigned_to / assignment audit)
+
+Status: APPROVED (peer-reviewed 2026-07-15, 2 blocking corrections: no-op guard modeled on _update_person NOT the adjacent owner block; creation-time blank assigned_to_email == not-provided). QUEUED — hands to Vorpid after TC7. Epic cedf4a8457e9; task fc2c8b522ed8. Ruling: "stamped assignment is worth keeping" (Colton).
+
+## PROBLEM
+Tasks know creator and claimant (server-stamped) but there is no directed "this is YOURS" — a manager cannot assign work such that the assignee's next session surfaces it. owner is free text (often an agent), deliberately never identity-matched (prime.py:118). Assignment must be email-keyed, stamped, auditable.
+
+## DESIGN
+Field shape (metadata, additive): metadata.assigned_to = casefolded email string or absent (unassigned); client-declared, trust-based, dangling legal (assignee need not be a registered person — mirrors reports_to). metadata.assignments = append-only audit [{to, by, at}] — to = casefolded target ("" for explicit unassign), by = SERVER-RESOLVED git identity (unforgeable, same mechanism as transitions/profile_history), at = timestamp. assigned_by is the by of the LAST entry — no standalone field (would drift).
+
+Tools (no new tools; Gate B self-sufficiency audit triggers):
+- cognition_add_task: assigned_to_email param — non-blank seeds field + first audit entry. Creation-time blank/whitespace == NOT PROVIDED: seed nothing (never store "" — do NOT copy owner's creation path which stores raw).
+- cognition_update_task: assigned_to_email param — set/reassign; "" unassigns; omit = no change. Each effective change appends exactly one entry; same-email no-op appends NONE. No-op guard modeled on _update_person's compare-before-append reports_to handling (cognition_tools.py:1810), NOT the adjacent owner block (which unconditionally sets metadata_changed, cognition_tools.py:1521-1523 — wrong template).
+- Docstrings: owner = free-text display, may be an agent, never matched; assigned_to_email = email-keyed HUMAN accountability driving session-start surfacing. Self-assignment fine; anyone may assign anyone (audit is the control). Casefold at write; assignment rides update_task's single update_node call + one-shot re-embed (verified).
+
+Reads: cognition_list_tasks rows gain assigned_to (None when absent, never coerced — from_agent pattern, cognition_tools.py:1361). get_node passes metadata through — no change. Optional at gate: assigned_to_registered parity flag.
+
+Prime (the point): extend _task_matches_email (prime.py:163-176) with a string-compare on metadata.assigned_to (it's a STRING, not a {name,email} stamp dict — don't force the dict branch). Verified: rides _format_your_tasks AND the Team Critical exclude_ids automatically; assigned_to never feeds _distinct_stamped_emails so it can't flip solo→multi-user; no-assignments graphs byte-identical.
+
+NOT changed: claim vs assignment stay distinct (no auto-assign on claim, no auto-claim on assign — TC4 owns mismatch warnings); owner untouched; dashboard untouched (TC11 in flight, /api/tasks field-whitelists so assigned_to is additive-but-invisible in V1 — expected, chips are V3); no new sections/nodes/edges.
+
+## ACCEPTANCE
+add_task seeds field + exact first entry; blank-at-creation seeds NOTHING (asserted); update set/reassign/unassign append exactly one each; same-email no-op appends none; omit = unchanged. Casefold end-to-end fixture. list_tasks carries assigned_to (absent → None). Prime: assigned-but-not-created/claimed task appears in Your Open Tasks (multi-user fixture); solo/global byte-identical without assignments. Self-sufficiency audit (67751ebc39bd) over both tools. Docs: docstrings, README assignment paragraph + trust-model line, SKILL.md, readme.py COGNITION_GUIDE, CHANGELOG. Old journals unchanged; pre-TC8 tasks identical everywhere. Gate: pytest+ruff, isolated worktree, pinned commit, import-provenance. ONE version bump for TC7+TC8 (closes Wave 1) — whichever lands second carries the bump. Journal untouched on branch.
+
+## REJECTED: matching owner free text (prime.py:118 rejection stands); separate assign tool (Gate B surface for one field); standalone assigned_by field (derivable, would drift); auto-assign-on-claim / auto-claim-on-assign (collapses distinct semantics; TC4 owns warnings); requiring registered assignee (mirrors dangling-reports_to ruling).
+
+## KNOWN LIMITS: assigned_to client-declared/unverifiable (server proves who ASSIGNED, not acceptance); no notification beyond next session prime (push notifications permanently rejected); assigning done/cancelled tasks legal and unwarned here (TC4 may add).
