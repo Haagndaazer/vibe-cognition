@@ -1519,7 +1519,14 @@ def _list_tasks(
     match used by cognition_search (never the free-text ``owner``; an unstamped task is
     never excluded). Applied BEFORE the depth/visible computation, so an excluded
     task's children fall back to depth 0 exactly like any other filtered-out parent
-    (F10 — no special-casing needed)."""
+    (F10 — no special-casing needed).
+
+    Gate B-final finding (task 8c7bab562c37): rows also carry ``claimed_by`` (the
+    server-resolved identity dict from the task's live claim, or None if never claimed)
+    and ``claimed_at`` (the ``at`` of the latest ->in_progress transition, via
+    ``_task_claimed_at`` — same single implementation the dashboard and prime's manager
+    rollup use). This gives a read-only way to see who holds a claim before attempting
+    to take it over, instead of discovering it by collision on cognition_update_task."""
     if status is not None and status not in _TASK_STATUSES:
         return {"error": f"Invalid status '{status}'. Valid: {list(_TASK_STATUSES)}"}
 
@@ -1588,10 +1595,12 @@ def _list_tasks(
             "owner": meta.get("owner"),
             "parent_id": meta.get("parent_id"),
             "created_by": meta.get("created_by"),
+            "claimed_by": meta.get("claimed_by"),
             "timestamp": t.get("timestamp"),
             "depth": _depth(t),
             "from_agent": meta.get("from_agent"),
             "assigned_to": meta.get("assigned_to"),
+            "claimed_at": _task_claimed_at(meta.get("transitions") or []),
         })
     result: dict[str, Any] = {"tasks": rows, "count": len(rows)}
     if exclude_emails and excluded_count > 0:
@@ -2667,11 +2676,20 @@ def register_cognition_tools(mcp) -> None:
 
         Returns:
             {"tasks": [{id, summary, status, priority, owner, parent_id, created_by,
-             timestamp, depth, from_agent, assigned_to}, ...], "count": N,
-             "excluded_count": N, "excluded_for": [str, ...]} or {"error": ...} for a
-            bad status. `assigned_to` is the casefolded email of who this task is
-            directed at, or None when unassigned (WP-TC8; never coerced, same
-            convention as `from_agent`). `excluded_count`/`excluded_for` are present
+             claimed_by, timestamp, depth, from_agent, assigned_to, claimed_at}, ...],
+             "count": N, "excluded_count": N, "excluded_for": [str, ...]} or
+            {"error": ...} for a bad status. `assigned_to` is the casefolded email of
+            who this task is directed at, or None when unassigned (WP-TC8; never
+            coerced, same convention as `from_agent`). `claimed_by` is the
+            server-resolved identity dict ({name, email}) of whoever last claimed the
+            task (the ->in_progress transition), or None if it has never been claimed
+            — it stays stamped after the task closes (done/cancelled), it is NOT
+            cleared, so it reads as claim HISTORY, not "is this task live right now"
+            (use `status` for that). Check it BEFORE calling
+            cognition_update_task(status="in_progress") on a task that
+            looks active, so you learn who holds it without triggering a collision.
+            `claimed_at` is the ISO timestamp of that claim (the latest ->in_progress
+            transition), or None to match. `excluded_count`/`excluded_for` are present
             iff `exclude_people` was passed AND something was actually excluded
             (never a silent 0).
         """

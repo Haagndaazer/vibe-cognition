@@ -1248,6 +1248,31 @@ def test_list_tasks_carries_assigned_to(build_lc, make_ctx, mock_mcp, tmp_path):
     assert rows[unassigned["id"]]["assigned_to"] is None
 
 
+def test_list_tasks_carries_claimed_by_and_claimed_at(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
+    """cognition_list_tasks rows surface claimed_by (server-resolved identity dict) and
+    claimed_at (the latest ->in_progress transition timestamp) — a read-only way to see
+    who holds a claim before attempting cognition_update_task (Gate B-final, task
+    8c7bab562c37). Both are None on a never-claimed task."""
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Claimer", "email": "claimer@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    unclaimed = mock_mcp.tools["cognition_add_task"](ctx, summary="unclaimed task", detail="d", context="c")
+    claimed = mock_mcp.tools["cognition_add_task"](ctx, summary="claimed task", detail="d", context="c")
+    up = mock_mcp.tools["cognition_update_task"](ctx, node_id=claimed["id"], status="in_progress")
+    assert "error" not in up, up
+    claimed_at = up["metadata"]["transitions"][-1]["at"]
+
+    rows = {t["id"]: t for t in mock_mcp.tools["cognition_list_tasks"](ctx)["tasks"]}
+    assert rows[claimed["id"]]["claimed_by"] == {"name": "Claimer", "email": "claimer@x.com"}
+    assert rows[claimed["id"]]["claimed_at"] == claimed_at
+    assert rows[unclaimed["id"]]["claimed_by"] is None
+    assert rows[unclaimed["id"]]["claimed_at"] is None
+
+
 def test_update_task_assignment_alone_does_not_touch_transitions_or_claimed_by(
     build_lc, make_ctx, mock_mcp, tmp_path,
 ):
