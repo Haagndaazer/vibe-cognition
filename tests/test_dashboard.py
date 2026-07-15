@@ -199,6 +199,24 @@ class TestRouteTable:
         finally:
             stack.close()
 
+    def test_api_people_route_present_and_get_only(self, lifespan_ctx):
+        """WP-DashV3: a NEW, positive assertion (peer-review corrected -- the
+        route-table test above enumerates only NON-GET routes, so a GET-only
+        /api/people passes it unmodified; this test is additive, not an
+        update to that one)."""
+        app, stack = build_app(lifespan_ctx, token="testtok")
+        try:
+            people_methods = [
+                r.methods for r in app.routes
+                if isinstance(r, Route) and r.path == "/api/people"
+            ]
+            assert len(people_methods) == 1
+            methods = people_methods[0]
+            assert methods is not None
+            assert methods - {"HEAD", "OPTIONS"} == {"GET"}
+        finally:
+            stack.close()
+
 
 class TestGraphAPI:
     def test_graph_shape(self, client):
@@ -950,6 +968,180 @@ class TestActivityAPI:
         assert "floodtarget" in ids
 
 
+class TestPeopleAPI:
+    """WP-DashV3: GET /api/people — roster for the People view."""
+
+    def _person(self, node_id, name, email, role="engineer", seniority="mid",
+                reports_to_email="", **extra_meta):
+        return CognitionNode(
+            id=node_id, type=CognitionNodeType.PERSON, summary=f"{name} — {role}",
+            detail="", context=[], references=[],
+            timestamp=datetime.now(UTC).isoformat(), author=name,
+            metadata={
+                "person": {
+                    "email": email.casefold(), "name": name, "role": role,
+                    "seniority": seniority, "reports_to_email": reports_to_email.casefold(),
+                },
+                "profile_history": [], **extra_meta,
+            },
+        )
+
+    def test_no_token_rejected(self, client):
+        c, _ = client
+        assert c.get("/api/people").status_code == 403
+
+    def test_empty_roster(self, client):
+        c, _ = client  # base fixture graph has no person nodes
+        r = c.get("/api/people", headers=_hdr())
+        assert r.status_code == 200
+        assert r.json() == {"people": [], "count": 0}
+
+    def test_roster_shape_and_sorted_by_name(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._person("pz", "Zara", "zara@example.com", role="lead", seniority="senior"))
+        s.add_node(self._person("pa", "Amir", "amir@example.com", role="engineer", seniority="mid"))
+
+        body = c.get("/api/people", headers=_hdr()).json()
+        assert body["count"] == 2
+        names = [p["name"] for p in body["people"]]
+        assert names == ["Amir", "Zara"], "roster must sort by name, not insertion order"
+        amir = next(p for p in body["people"] if p["id"] == "pa")
+        assert amir["email"] == "amir@example.com"
+        assert amir["role"] == "engineer"
+        assert amir["seniority"] == "mid"
+        assert amir["reports_to_email"] is None
+
+    def test_reports_to_registered_true_for_a_real_chain(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._person("pmgr", "Manager", "mgr@example.com", role="lead", seniority="senior"))
+        s.add_node(self._person("prep", "Report", "rep@example.com",
+                                 reports_to_email="mgr@example.com"))
+
+        body = c.get("/api/people", headers=_hdr()).json()
+        report = next(p for p in body["people"] if p["id"] == "prep")
+        assert report["reports_to_email"] == "mgr@example.com"
+        assert report["reports_to_registered"] is True
+
+    def test_reports_to_registered_false_for_a_dangling_email(self, client):
+        """Dangling is legal (a manager who simply isn't registered yet), never
+        a crash -- just flagged false."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._person("prep", "Report", "rep@example.com",
+                                 reports_to_email="nobody@example.com"))
+
+        body = c.get("/api/people", headers=_hdr()).json()
+        report = body["people"][0]
+        assert report["reports_to_email"] == "nobody@example.com"
+        assert report["reports_to_registered"] is False
+
+
+class TestConflictedFlag:
+    """WP-DashV3: `conflicted` bool on /api/tasks and /api/activity rows.
+
+    Direction semantics (peer-review BLOCKING catch): contradicts is
+    bidirectional membership (incoming OR outgoing); supersedes is
+    incoming-only (a node with an OUTGOING supersedes edge is the newer/
+    resolving version, not itself in conflict)."""
+
+    def _entity(self, node_id, ntype=CognitionNodeType.DECISION, summary="e"):
+        return CognitionNode(
+            id=node_id, type=ntype, summary=summary, detail="d", context=[],
+            references=[], timestamp=datetime.now(UTC).isoformat(), author="Colton",
+        )
+
+    def _task(self, node_id, summary="t"):
+        return CognitionNode(
+            id=node_id, type=CognitionNodeType.TASK, summary=summary, detail="d",
+            context=[], references=[], timestamp=datetime.now(UTC).isoformat(),
+            author="Colton", metadata={"status": "open"},
+        )
+
+    def test_incoming_contradicts_flags_true(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._entity("cflagged", summary="Flagged"))
+        s.add_node(self._entity("cother", summary="Other"))
+        s.add_edge(CognitionEdge(
+            from_id="cother", to_id="cflagged", edge_type=CognitionEdgeType.CONTRADICTS,
+            timestamp=datetime.now(UTC).isoformat(), source="test",
+        ))
+        s.add_node(self._task("tflagged", "Task flagged"))
+        s.add_edge(CognitionEdge(
+            from_id="cother", to_id="tflagged", edge_type=CognitionEdgeType.CONTRADICTS,
+            timestamp=datetime.now(UTC).isoformat(), source="test",
+        ))
+
+        activity = c.get("/api/activity", headers=_hdr()).json()["activity"]
+        row = next(r for r in activity if r["id"] == "cflagged")
+        assert row["conflicted"] is True
+        tasks = c.get("/api/tasks", headers=_hdr()).json()["tasks"]
+        trow = next(r for r in tasks if r["id"] == "tflagged")
+        assert trow["conflicted"] is True
+
+    def test_outgoing_contradicts_flags_true_fails_before(self, client):
+        """Peer-review BLOCKING catch: contradicts is stored ONE-WAY with
+        ARBITRARY direction (no reciprocal edge is ever minted) -- a node on
+        the OUTGOING side of a contradicts edge is just as much in conflict
+        as the incoming side. An incoming-only implementation would report
+        False here."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._entity("csource", summary="Source of the contradiction"))
+        s.add_node(self._entity("ctarget", summary="Target"))
+        s.add_edge(CognitionEdge(
+            from_id="csource", to_id="ctarget", edge_type=CognitionEdgeType.CONTRADICTS,
+            timestamp=datetime.now(UTC).isoformat(), source="test",
+        ))
+
+        activity = c.get("/api/activity", headers=_hdr()).json()["activity"]
+        row = next(r for r in activity if r["id"] == "csource")
+        assert row["conflicted"] is True
+
+    def test_non_head_supersedes_member_flags_true(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._entity("sold", summary="Superseded decision"))
+        s.add_node(self._entity("snew", summary="Newer decision"))
+        s.add_edge(CognitionEdge(
+            from_id="snew", to_id="sold", edge_type=CognitionEdgeType.SUPERSEDES,
+            timestamp=datetime.now(UTC).isoformat(), source="test",
+        ))
+
+        activity = c.get("/api/activity", headers=_hdr()).json()["activity"]
+        row = next(r for r in activity if r["id"] == "sold")
+        assert row["conflicted"] is True
+
+    def test_head_of_supersedes_chain_does_not_flag_fails_before(self, client):
+        """Fails-before: an OUTGOING supersedes edge means THIS node is the
+        newer version -- it is the resolution, not itself in conflict. Any
+        implementation that checked successors (or both directions) for
+        supersedes would wrongly flag the head too."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._entity("sold2", summary="Superseded decision"))
+        s.add_node(self._entity("snew2", summary="Newer decision (the HEAD)"))
+        s.add_edge(CognitionEdge(
+            from_id="snew2", to_id="sold2", edge_type=CognitionEdgeType.SUPERSEDES,
+            timestamp=datetime.now(UTC).isoformat(), source="test",
+        ))
+
+        activity = c.get("/api/activity", headers=_hdr()).json()["activity"]
+        row = next(r for r in activity if r["id"] == "snew2")
+        assert row["conflicted"] is False
+
+    def test_clean_node_not_flagged(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._entity("cclean", summary="No conflicts at all"))
+
+        activity = c.get("/api/activity", headers=_hdr()).json()["activity"]
+        row = next(r for r in activity if r["id"] == "cclean")
+        assert row["conflicted"] is False
+
+
 class TestStats:
     def test_stats_shape(self, client):
         c, _ = client
@@ -1482,11 +1674,11 @@ class TestFrontendStructure:
         with resources.as_file(traversable) as path:
             return (path / name).read_text(encoding="utf-8")
 
-    def test_nav_rail_has_six_v2_views(self):
-        """WP-DashV2: Workflows/Documents/Activity join the V1 nav rail
-        (overview/board/graph) -- six entries total, none removed."""
+    def test_nav_rail_has_seven_v3_views(self):
+        """WP-DashV3: People joins the V2 nav rail (overview/board/workflows/
+        documents/activity/graph) -- seven entries total, none removed."""
         html = self._read("index.html")
-        for view in ("overview", "board", "workflows", "documents", "activity", "graph"):
+        for view in ("overview", "board", "workflows", "documents", "activity", "people", "graph"):
             assert f'data-view="{view}"' in html, f"nav rail missing {view}"
 
     def test_drawer_is_shared_not_inline(self):
@@ -1526,3 +1718,69 @@ class TestFrontendStructure:
             if "loadOverview()" in line:
                 assert "if" not in line and "?" not in line, \
                     f"loadOverview() call looks conditionally gated: {line!r}"
+
+    def test_conflict_banner_repairs_outgoing_contradicts(self):
+        """WP-DashV3 peer-review BLOCKING repair: the V1 conflictBannerHTML had
+        the same incoming-only gap as the row-level flag -- a node on the
+        OUTGOING side of a contradicts edge showed no banner at all. The fix
+        must scan node.successors for contradicts too, with distinct wording
+        ('contradicts' for outgoing vs. 'contradicted by' for incoming) so the
+        direction stays legible; supersedes stays incoming-only (unchanged,
+        that asymmetry is correct there)."""
+        js = self._read("app.js")
+        start = js.index("function conflictBannerHTML")
+        body = js[start:js.index("\nfunction provenanceHTML", start)]
+        assert "node.successors" in body, \
+            "conflictBannerHTML must scan successors too (outgoing contradicts side)"
+        assert body.count('edge_type === "contradicts"') == 2, \
+            "must check contradicts on both predecessors AND successors"
+        assert "contradicted by" in body  # incoming wording preserved
+        assert "Conflict:</b> contradicts" in body, \
+            "outgoing wording ('contradicts', not 'contradicted by') must be present"
+        assert body.count('edge_type === "supersedes"') == 1, \
+            "supersedes must stay incoming-only -- unchanged by this repair"
+
+    def test_seniority_chip_never_attaches_to_unverified_author(self):
+        """Trust-boundary fails-before: an unverified free-text author must
+        never borrow a registered person's seniority. identityChipHTML's
+        author-fallback branch must not call the roster lookup at all --
+        seniorityChipForResolved is reachable only from the `resolved` branch."""
+        js = self._read("app.js")
+        start = js.index("function identityChipHTML")
+        body = js[start:js.index("\n}\n", start)]
+        # The author-only fallback line must not reference seniority at all.
+        fallback_line = next(line for line in body.splitlines() if "personChipHTML(author" in line)
+        assert "seniority" not in fallback_line.lower(), \
+            f"unverified-author branch must never attach a seniority chip: {fallback_line!r}"
+        assert "seniorityChipForResolved(resolved" in body
+
+    def test_seniority_chip_casefolded_both_sides(self):
+        """Fails-before (stamp-casefold pattern 23ee825e9e79): a mixed-case
+        git-stamped email must still match a roster entry. Both the roster
+        MAP KEYS (built from /api/people, already server-casefolded) and the
+        LOOKUP key (a resolved identity's raw email) must be lowercased --
+        an implementation that only lowercases one side would miss a
+        mixed-case git config email."""
+        js = self._read("app.js")
+        build_start = js.index("async function ensureRosterLoaded")
+        build_body = js[build_start:js.index("\n}\n", build_start)]
+        assert "p.email.toLowerCase()" in build_body, \
+            "roster map keys must be lowercased when built"
+        lookup_start = js.index("function seniorityChipForResolved")
+        lookup_body = js[lookup_start:js.index("\n}\n", lookup_start)]
+        assert "resolved.email.toLowerCase()" in lookup_body, \
+            "roster lookup key must be lowercased too -- mixed-case git email fails-before"
+
+    def test_roster_cache_fetch_is_guarded_not_refetched_every_call(self):
+        """Code-review criterion: the seniority-chip roster (read by every
+        identityChipHTML render, across Board/Activity/Overview/People) must
+        be fetched ONCE and cached -- not refetched on every view switch or
+        poll tick the way boardTasksCache/activityCache legitimately do.
+        ensureRosterLoaded's own early-return guard is what makes this true."""
+        js = self._read("app.js")
+        start = js.index("async function ensureRosterLoaded")
+        body = js[start:js.index("\n}\n", start)]
+        assert "if (_rosterByEmail || _rosterLoading) return" in body, (
+            "ensureRosterLoaded must short-circuit once loaded/loading -- else "
+            "every identityChipHTML render would refetch the roster"
+        )

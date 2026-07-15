@@ -92,11 +92,70 @@ function personChipHTML(who, opts) {
   return `<span class="${cls}">${escapeHTML(name)}${escapeHTML(suffix)}</span>`;
 }
 
+// ── Roster join for seniority chips (WP-DashV3, §5 item 1) ─────────────────
+// Fetched ONCE lazily -- the first render that needs it kicks off the fetch,
+// cached module-level, never refetched per view switch/poll. Deliberately NOT
+// the boardTasksCache/activityCache idiom (those refetch every activation) --
+// a roster is small and stable within a session, so that idiom would be
+// wasted round-trips here.
+let _rosterByEmail = null; // null = not yet loaded; Map<lowercased email, person row> once loaded
+let _rosterLoading = null;
+
+async function ensureRosterLoaded() {
+  if (_rosterByEmail || _rosterLoading) return _rosterLoading;
+  _rosterLoading = (async () => {
+    try {
+      const data = await api("/api/people");
+      const map = new Map();
+      for (const p of (data.people || [])) {
+        if (p.email) map.set(p.email.toLowerCase(), p);
+      }
+      _rosterByEmail = map;
+    } catch (_) {
+      _rosterByEmail = new Map(); // degrade silently -- no seniority chips, no error surfaced
+    }
+  })();
+  return _rosterLoading;
+}
+
+// Seniority chip: SOLID style (never dashed) -- the mockup's dashed
+// .chip.seniority CSS collides with the reserved unverified signal
+// (.chip.person.unverified is dashed = untrusted free-text identity); a
+// verified identity's seniority chip must never be confused with that. Text
+// pin: the seniority word alone in list rows (`full` falsy); the fuller
+// "role · seniority" form only in the drawer provenance block and People
+// cards (`full` true) -- see identityChipHTML's `full` param.
+function seniorityChipHTML(seniority, role, full) {
+  const text = full && role ? `${role} · ${seniority}` : seniority;
+  return `<span class="chip seniority">${escapeHTML(text)}</span>`;
+}
+
+// Trust-boundary lookup: only ever called with a RESOLVED (server-stamped)
+// identity, never a free-text author -- an unverified name string must not
+// borrow a registered person's authority (matches identityChipHTML's own
+// trust-class doctrine, and prime's never-match-free-text precedent).
+// Casefolded both sides (`.toLowerCase()` -- the closest vanilla-JS
+// approximation of the server's Unicode casefold; the roster's own keys are
+// already server-casefolded, so this is belt-and-suspenders on that side and
+// load-bearing on the resolved-identity side, whose email is a raw git-config
+// value that may be mixed-case).
+function seniorityChipForResolved(resolved, full) {
+  if (!resolved || typeof resolved !== "object" || !resolved.email) return "";
+  ensureRosterLoaded(); // fire-and-forget; lazy, idempotent, no polling
+  if (!_rosterByEmail) return ""; // not loaded yet -- no retroactive re-render (WP-DashV3 pin)
+  const person = _rosterByEmail.get(resolved.email.toLowerCase());
+  return person && person.seniority ? seniorityChipHTML(person.seniority, person.role, full) : "";
+}
+
 // Renders the server-resolved identity if present, else the free-text author
 // fallback marked unverified. Never silently upgrades an author string to look
-// like a verified chip.
-function identityChipHTML(resolved, author) {
-  return resolved ? personChipHTML(resolved) : (author ? personChipHTML(author, { unverified: true }) : "");
+// like a verified chip. A resolved identity additionally gains a seniority
+// chip when its email matches a registered person on the roster (WP-DashV3);
+// pass `full=true` for the drawer's "role · seniority" form (default: the
+// seniority word alone, for list rows).
+function identityChipHTML(resolved, author, full) {
+  if (resolved) return personChipHTML(resolved) + seniorityChipForResolved(resolved, full);
+  return author ? personChipHTML(author, { unverified: true }) : "";
 }
 
 // from_agent (WP-TC6): a bool key present on the node's metadata, caller-declared
@@ -113,6 +172,17 @@ function severityChipClass(sev) {
   if (sev === "critical") return "crit";
   if (sev === "high") return "high";
   return "norm";
+}
+
+// List-level conflict indicator (WP-DashV3, §4.7): a small ⚠ on Board cards
+// and Activity rows when the row's `conflicted` flag is true (see api.py
+// _is_conflicted -- bidirectional contradicts + incoming-only supersedes).
+// The drawer (conflictBannerHTML) is where names/details live; this is just
+// the affordance that something needs a closer look.
+function conflictIndicatorHTML(conflicted) {
+  return conflicted
+    ? ' <span class="chip warn" title="has a conflict — open for details">⚠</span>'
+    : "";
 }
 
 function wireRowClicks(container) {
@@ -147,9 +217,22 @@ function closeDrawer() {
 
 function conflictBannerHTML(node) {
   const preds = node.predecessors || [];
-  const contradicts = preds.find(p => p.edge_type === "contradicts");
-  if (contradicts) {
+  const succs = node.successors || [];
+  // WP-DashV3 (peer-review BLOCKING repair): contradicts edges are stored
+  // ONE-WAY with ARBITRARY direction (cognition_add_edge: "either direction",
+  // no reciprocal edge is ever minted) -- an incoming-only check showed no
+  // banner at all for a node on the OUTGOING side of a contradicts edge, even
+  // though it IS in conflict. Both sides now render (different wording so the
+  // direction stays legible: "contradicted by" for incoming, "contradicts"
+  // for outgoing).
+  const contradictedBy = preds.find(p => p.edge_type === "contradicts");
+  if (contradictedBy) {
     return `<div class="warnbanner">⚠ <b>Conflict:</b> contradicted by
+      <span class="node-ref" data-id="${escapeHTML(contradictedBy.id)}">${escapeHTML(contradictedBy.id)}</span></div>`;
+  }
+  const contradicts = succs.find(s => s.edge_type === "contradicts");
+  if (contradicts) {
+    return `<div class="warnbanner">⚠ <b>Conflict:</b> contradicts
       <span class="node-ref" data-id="${escapeHTML(contradicts.id)}">${escapeHTML(contradicts.id)}</span></div>`;
   }
   const supersededBy = preds.find(p => p.edge_type === "supersedes");
@@ -168,7 +251,7 @@ function provenanceHTML(node) {
   if (isTask) {
     rows.push(`<div class="row" style="margin-bottom:6px">
       <span class="meta" style="min-width:90px">created by</span>
-      ${identityChipHTML(meta.created_by, node.author)}
+      ${identityChipHTML(meta.created_by, node.author, true)}
       ${fromAgentChipHTML(meta.from_agent)}
     </div>`);
     rows.push(`<div class="row" style="margin-bottom:6px">
@@ -178,7 +261,7 @@ function provenanceHTML(node) {
   } else {
     rows.push(`<div class="row" style="margin-bottom:6px">
       <span class="meta" style="min-width:90px">recorded by</span>
-      ${identityChipHTML(meta.recorded_by, node.author)}
+      ${identityChipHTML(meta.recorded_by, node.author, true)}
       ${fromAgentChipHTML(meta.from_agent)}
     </div>`);
   }
@@ -382,7 +465,7 @@ function taskCardHTML(t) {
   }
   return `<div class="tcard${ghost}" data-id="${escapeHTML(t.id)}">
     ${crumb}
-    <div class="sum">${escapeHTML(t.summary || t.id)}</div>
+    <div class="sum">${escapeHTML(t.summary || t.id)}${conflictIndicatorHTML(t.conflicted)}</div>
     <div class="row">
       <span class="chip ${severityChipClass(t.priority)}">${escapeHTML(t.priority || "normal")}</span>
       ${identityChipHTML(t.created_by, t.author)}
@@ -609,7 +692,7 @@ function renderActivity() {
     <li class="row clickable" data-id="${escapeHTML(r.id)}">
       <span class="chip type">${escapeHTML(r.type || "")}</span>
       ${r.severity ? `<span class="chip ${severityChipClass(r.severity)}">${escapeHTML(r.severity)}</span>` : ""}
-      <span class="grow">${escapeHTML(r.summary || r.id)}</span>
+      <span class="grow">${escapeHTML(r.summary || r.id)}${conflictIndicatorHTML(r.conflicted)}</span>
       ${identityChipHTML(r.recorded_by, r.author)}
       ${fromAgentChipHTML(r.from_agent)}
       <span class="meta">${escapeHTML(formatTimestamp(r.timestamp))}</span>
@@ -619,6 +702,83 @@ function renderActivity() {
 
 function wireActivityFilters() {
   document.getElementById("activity-author-filter").addEventListener("input", debounce(renderActivity, 150));
+}
+
+// ── People (WP-DashV3) ───────────────────────────────────────────────────
+// Fetches fresh on every activation, same as Workflows/Documents/Activity
+// (V2 pattern) -- NOT on the 30s poll (§8 acceptance, unchanged conditions).
+// Also seeds the roster cache directly from this response, so a seniority
+// chip render right after visiting this view doesn't cost a second round-trip.
+async function loadPeople() {
+  let data;
+  try {
+    data = await api("/api/people");
+  } catch (err) {
+    toast(`People load failed: ${err.message}`, "error");
+    return;
+  }
+  const list = data.people || [];
+  const map = new Map();
+  for (const p of list) if (p.email) map.set(p.email.toLowerCase(), p);
+  _rosterByEmail = map;
+  renderPeople(list, map);
+}
+
+function personCardHTML(p, byEmail) {
+  const roleSeniority = p.seniority
+    ? `<span class="chip seniority">${escapeHTML(p.role || "")}${p.role ? " · " : ""}${escapeHTML(p.seniority)}</span>`
+    : "";
+  let reportsTo = '<span class="meta">— top of chain</span>';
+  if (p.reports_to_email) {
+    const mgr = byEmail.get(p.reports_to_email.toLowerCase());
+    reportsTo = mgr
+      ? `<span class="chip person node-ref" data-id="${escapeHTML(mgr.id)}">${escapeHTML(mgr.name || mgr.email)}</span>`
+      : `<span class="meta">${escapeHTML(p.reports_to_email)}</span> <span class="chip">unregistered</span>`;
+  }
+  return `<div class="card cardgrid-item clickable" data-id="${escapeHTML(p.id)}">
+    <div class="row" style="margin-bottom:6px">
+      <span class="chip person">${escapeHTML(p.name || p.email || p.id)}</span>
+      ${roleSeniority}
+    </div>
+    <div class="meta" style="margin-bottom:6px">${escapeHTML(p.email || "")}</div>
+    <div class="row" style="margin-bottom:8px">
+      <span class="meta" style="min-width:80px">reports to</span>${reportsTo}
+    </div>
+    <button class="mini-toggle" type="button" data-activity="${escapeHTML(p.name || p.email || "")}">View activity</button>
+  </div>`;
+}
+
+function renderPeople(list, byEmail) {
+  const el = document.getElementById("people-grid");
+  if (!list.length) {
+    el.innerHTML = '<div class="meta" style="padding:14px 0">no people registered — register with cognition_register_person</div>';
+    return;
+  }
+  el.innerHTML = list.map(p => personCardHTML(p, byEmail)).join("");
+
+  for (const card of el.querySelectorAll(".cardgrid-item[data-id]")) {
+    card.addEventListener("click", () => openDrawer(card.dataset.id));
+  }
+  for (const hop of el.querySelectorAll(".node-ref[data-id]")) {
+    hop.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      openDrawer(hop.dataset.id);
+    });
+  }
+  for (const btn of el.querySelectorAll("[data-activity]")) {
+    btn.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      viewPersonActivity(btn.dataset.activity);
+    });
+  }
+}
+
+// Switches to Activity and pre-fills its (existing, client-side) author text
+// filter with the person's name -- no new API, the filter already matches
+// author OR recorded_by name/email substrings (renderActivity).
+function viewPersonActivity(name) {
+  document.getElementById("activity-author-filter").value = name;
+  activateView("activity");
 }
 
 // ── Graph (constellation, lazy — D-3 / WP-TC11) ─────────────────────────
@@ -772,6 +932,8 @@ function activateView(view) {
   else if (view === "workflows") loadWorkflows();
   else if (view === "documents") loadDocuments();
   else if (view === "activity") loadActivity();
+  // WP-DashV3: same fetch-on-activation, no-poll pattern as the V2 views above.
+  else if (view === "people") loadPeople();
 }
 
 function wireNav() {

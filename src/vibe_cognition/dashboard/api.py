@@ -15,7 +15,12 @@ from typing import Any
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import FileResponse, JSONResponse
 
-from ..cognition import CognitionEdgeType, CognitionNodeType, delete_cognition_node
+from ..cognition import (
+    CognitionEdgeType,
+    CognitionNodeType,
+    CognitionStorage,
+    delete_cognition_node,
+)
 from ..cognition.documents import documents_dir, freshness_by_rehash, text_sidecar_path
 from ..cognition.queries import get_superseded_chain
 from ..cognition.task_meta import _task_claimed_at  # WP-TC16: relocated (was cognition_tools)
@@ -359,7 +364,34 @@ def _parse_ts(ts: str | None) -> datetime | None:
         return None
 
 
-def _task_row(t: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _is_conflicted(storage: CognitionStorage, node_id: str) -> bool:
+    """Whether a node carries any conflict signal (WP-DashV3) -- the list-level
+    ``conflicted`` flag behind the Board-card and Activity-row ⚠ indicator.
+
+    Direction semantics (peer-review BLOCKING catch, pinned): ``contradicts``
+    edges are stored ONE-WAY with ARBITRARY direction (``cognition_add_edge``'s
+    own docstring: "either direction" -- no reciprocal edge is ever minted), so
+    membership is BIDIRECTIONAL for contradicts (incoming OR outgoing) -- an
+    incoming-only check flags only one side of every contradicts pair.
+    ``supersedes`` stays INCOMING-only, deliberately: the newer node (which has
+    an OUTGOING supersedes edge) is not itself in conflict -- it IS the
+    resolution; only the superseded (incoming) side is stale.
+
+    Cost: up to three edge lookups per row (in-contradicts, out-contradicts,
+    in-supersedes) -- NetworkX in-memory MultiDiGraph lookups, O(degree); at a
+    100-row activity window this is a few hundred dict lookups, negligible. No
+    caching.
+    """
+    return bool(
+        storage.get_predecessors(node_id, CognitionEdgeType.CONTRADICTS)
+        or storage.get_successors(node_id, CognitionEdgeType.CONTRADICTS)
+        or storage.get_predecessors(node_id, CognitionEdgeType.SUPERSEDES)
+    )
+
+
+def _task_row(
+    storage: CognitionStorage, t: dict[str, Any], by_id: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
     """Shape one task node for the dashboard Board view.
 
     Built independently against storage.get_nodes_by_type (WP-TC11 brief) rather than
@@ -393,6 +425,7 @@ def _task_row(t: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> dict[str, 
         "claimed_at": _task_claimed_at(transitions),
         "last_transition_at": transitions[-1]["at"] if transitions else None,
         "transitions_count": len(transitions),
+        "conflicted": _is_conflicted(storage, t["id"]),
     }
 
 
@@ -407,22 +440,30 @@ def get_tasks(request):
     storage = lc["cognition_storage"]
     tasks = storage.get_nodes_by_type(CognitionNodeType.TASK)
     by_id = {t["id"]: t for t in tasks}
-    rows = [_task_row(t, by_id) for t in tasks]
+    rows = [_task_row(storage, t, by_id) for t in tasks]
     rows.sort(key=lambda r: r.get("timestamp") or "", reverse=True)
     rows.sort(key=lambda r: _SEVERITY_ORDER.get(r.get("priority") or "normal", 2))
     return JSONResponse({"tasks": rows, "count": len(rows)})
 
 
-def _entity_row(n: dict[str, Any]) -> dict[str, Any]:
+def _entity_row(n: dict[str, Any], storage: CognitionStorage | None = None) -> dict[str, Any]:
     """Shape a non-task entity node (episode/incident/constraint/...) for list views.
 
     Includes both provenance fields so the frontend can apply trust-class labeling
     (design doc §4.7): `recorded_by` is server-resolved (WP-P13n+), `author` is the
     free-text fallback every node has always had. A pre-P13n node has `recorded_by`
     absent -- the frontend renders `author` with a dashed "unverified" chip in that case.
+
+    ``storage`` (WP-DashV3, optional): when provided, the row gains a `conflicted`
+    bool (see `_is_conflicted`). Deliberately opt-in, not unconditional -- the
+    brief pins Overview's constraint/attention lists to NO CHANGE (they are
+    already HEAD-filtered; a superseded constraint never appears there, and
+    adding the flag to a filtered list invites confusion), while `/api/activity`
+    (unfiltered, a chronological record) DOES want it. Callers that omit
+    `storage` get the exact pre-V3 row shape.
     """
     meta = n.get("metadata", {}) or {}
-    return {
+    row = {
         "id": n["id"],
         "type": n.get("type"),
         "summary": n.get("summary"),
@@ -432,6 +473,9 @@ def _entity_row(n: dict[str, Any]) -> dict[str, Any]:
         "recorded_by": meta.get("recorded_by"),
         "from_agent": meta.get("from_agent"),
     }
+    if storage is not None:
+        row["conflicted"] = _is_conflicted(storage, n["id"])
+    return row
 
 
 def get_overview(request):
@@ -592,10 +636,12 @@ def get_activity(request):
     displace genuinely-recent included rows out of the fetch window before
     filtering ever saw them.
 
-    Rows reuse _entity_row verbatim (same shape as Overview's recent_episodes/
-    recent_incidents) so recorded_by and author stay separate fields — the
-    client's trust-class rendering (identityChipHTML) needs both, never a
-    pre-collapsed author string.
+    Rows reuse _entity_row, passing `storage` (WP-DashV3) so each row also
+    carries `conflicted` (see `_is_conflicted`) — Overview's calls to
+    _entity_row omit `storage` deliberately, so this is the one list view
+    where the flag appears; recorded_by and author still stay separate
+    fields — the client's trust-class rendering (identityChipHTML) needs
+    both, never a pre-collapsed author string.
 
     Deliberately unfiltered by HEAD/supersession and un-deduped against other
     views (e.g. Overview's active-constraints is HEAD-filtered; this shows
@@ -613,11 +659,54 @@ def get_activity(request):
     rows = []
     for node_type in _ACTIVITY_NODE_TYPES:
         rows.extend(
-            _entity_row(n) for n in storage.get_recent_nodes(limit=limit, node_type=node_type)
+            _entity_row(n, storage) for n in storage.get_recent_nodes(limit=limit, node_type=node_type)
         )
     rows.sort(key=lambda r: r.get("timestamp") or "", reverse=True)
     rows = rows[:limit]
     return JSONResponse({"activity": rows, "count": len(rows)})
+
+
+def get_people(request):
+    """Roster for the People view (WP-DashV3): one row per PERSON node, sorted
+    by name (mirrors cognition_list_people's sort only — see below for why the
+    derivation does NOT mirror that tool's implementation).
+
+    `reports_to_registered` (peer-review corrected): cognition_list_people's
+    own derivation calls _find_person_by_email PER ROW (cognition_tools.py
+    _list_people -> _reports_to_registered -> _find_person_by_email), each of
+    which re-runs the full PERSON scan — O(N²) over the roster. This endpoint
+    instead does ONE storage.get_nodes_by_type(PERSON) scan, builds a
+    casefolded-email set from it, and does O(1) membership checks per row —
+    same output, better shape. (The tool's O(N²) is a separate pre-existing
+    nit, out of scope here.)
+    """
+    lc = _ctx(request)
+    storage = lc["cognition_storage"]
+    nodes = storage.get_nodes_by_type(CognitionNodeType.PERSON)
+    registered_emails = {
+        (n.get("metadata", {}).get("person", {}).get("email") or "") for n in nodes
+    }
+    registered_emails.discard("")
+
+    rows = []
+    for n in nodes:
+        meta = n.get("metadata", {}) or {}
+        person = meta.get("person", {}) or {}
+        reports_to = person.get("reports_to_email") or None
+        rows.append({
+            "id": n["id"],
+            "name": person.get("name"),
+            "email": person.get("email"),
+            "role": person.get("role"),
+            "seniority": person.get("seniority"),
+            "reports_to_email": reports_to,
+            "reports_to_registered": bool(reports_to) and reports_to in registered_emails,
+            "recorded_by": meta.get("recorded_by"),
+            "from_agent": meta.get("from_agent"),
+            "timestamp": n.get("timestamp"),
+        })
+    rows.sort(key=lambda r: (r.get("name") or "").casefold())
+    return JSONResponse({"people": rows, "count": len(rows)})
 
 
 def download_document(request):

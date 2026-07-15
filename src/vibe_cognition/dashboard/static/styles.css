@@ -148,6 +148,14 @@ ul.plain li.clickable:hover { background: var(--panel-2); }
 .chip.crit { color: var(--sev-crit); border-color: var(--sev-crit); }
 .chip.high { color: var(--sev-high); border-color: var(--sev-high); }
 .chip.norm, .chip.low { color: var(--sev-norm); }
+/* WP-DashV3: SOLID border, deliberately distinct hue from .chip.person -- must
+   never be mistaken for the dashed .chip.person.unverified signal (that's the
+   whole peer-review correction vs. the mockup's dashed seniority CSS). Only
+   ever attaches to a RESOLVED (verified) identity -- see identityChipHTML. */
+.chip.seniority { border-color: var(--accent); color: var(--accent); }
+/* WP-DashV3: list-level conflict indicator (Board cards, Activity rows) --
+   same hue as the high-severity chip, a lightweight echo of .warnbanner. */
+.chip.warn { border-color: var(--sev-high); color: var(--sev-high); cursor: help; }
 
 .st { font-size: 11px; padding: 2px 8px; border-radius: 6px; font-weight: 600; display: inline-block; }
 .st.open { background: rgba(76, 141, 255, .18); color: var(--st-open); }
