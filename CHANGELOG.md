@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**WP-SearchFlags: `cognition_search` results gain `conflicted`/`superseded_by` (Gate D S2/S4 fix).**
+
+### Added
+- **`conflicted: bool`** and **`superseded_by: str | null`**, ALWAYS present on every
+  `cognition_search` result. `conflicted` is true iff the hit has >=1 incoming OR
+  outgoing `CONTRADICTS` edge (contradicts is one-way/arbitrary-direction — pattern
+  `6ed494680fb3` — so membership is bidirectional). `superseded_by` is the id of the
+  newest node with an incoming `SUPERSEDES` edge onto the hit, or null; only the
+  superseded (older) side gets a non-null value, the resolving/newer node stays null.
+  Branch case (multiple incoming supersedes edges): tie-break picks the superseder
+  with the greatest NODE timestamp (authorship time), never the edge's own mint time.
+  Closes the Gate D finding that a superseded hit could outrank its correction with no
+  marker, and that two contradicting decisions rendered side-by-side with no signal —
+  while the dashboard's rows already flagged the same nodes (inconsistent read
+  surface, now unified).
+- **No ranking change** (pinned decision): flags never affect `weighted_score` or
+  result order — search stays visibility-preserving (TC9 doctrine); a superseded or
+  conflicted hit ranks exactly where its raw similarity places it. Regression-tested.
+- **Single implementation**: membership logic relocated to
+  `cognition.queries.conflict_flags(storage, node_id) -> (conflicted, superseded_by)`,
+  shared by `cognition_search`'s per-result flags and the dashboard's `_is_conflicted`
+  wrapper (which composes `conflicted OR superseded` to keep its existing single-⚠
+  semantics — dashboard tests pass UNMODIFIED after the relocation).
+
+### Notes
+- `cognition_get_workflow`'s internal top-1 match search shares the same formatter, so
+  these flags are computed for that throwaway result too and discarded (3 wasted edge
+  lookups per call) — accepted, not worth a special-case bypass.
+- Return-shape change to an MCP tool — ran the tool-surface self-sufficiency audit on
+  `cognition_search`'s docstring; it now also explicitly states results are NOT
+  HEAD-filtered (a superseded hit ranks normally; the flag is the marker).
+- No version bump on this branch (batches into 0.27.0 with the other Gate D fixes).
+
 **WP-list-tasks-claim: `cognition_list_tasks` rows gain `claimed_by`/`claimed_at`.**
 
 ### Added

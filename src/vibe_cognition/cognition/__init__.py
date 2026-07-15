@@ -11,6 +11,7 @@ from .models import (
 )
 from .operations import delete_cognition_node
 from .queries import (
+    conflict_flags,
     get_history_for_context,
     get_incident_resolution,
     get_reasoning_chain,
@@ -34,6 +35,7 @@ __all__ = [
     # Operations
     "delete_cognition_node",
     # Queries
+    "conflict_flags",
     "get_history_for_context",
     "get_incident_resolution",
     "get_reasoning_chain",

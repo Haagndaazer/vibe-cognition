@@ -15,6 +15,7 @@ from ..cognition import (
     CognitionNode,
     CognitionNodeType,
     CognitionStorage,
+    conflict_flags,
     delete_cognition_node,
     generate_node_id,
     get_history_for_context,
@@ -695,6 +696,10 @@ def _format_search_results(
     constraint/incident hit is NEVER excluded (``_NEVER_EXCLUDED_SEARCH_TYPES``) and
     passing one through does not increment ``excluded_count``.
 
+    WP-SearchFlags: each entry also carries ``conflicted``/``superseded_by``
+    (see ``cognition.queries.conflict_flags`` for the semantics) — computed here,
+    once, in this per-result loop, not a second pass.
+
     Returns ``(all live deduped (post-exclusion) hits for this round, excluded_count)``
     — the list is NOT capped to ``limit`` (the caller, ``adaptive_vector_search``,
     owns both the limit-slice and the widen-vs-stop decision; capping here would
@@ -726,6 +731,16 @@ def _format_search_results(
         from_agent = r.get("from_agent")
         score = r.get("score") or 0.0
         weight = _hit_weight(node_type, email, from_agent, person_seniority)
+        # WP-SearchFlags: computed via the single shared implementation
+        # (cognition.queries.conflict_flags, also used by the dashboard) so
+        # search and the dashboard's ⚠ agree on what counts as a conflict. Costs
+        # up to 3 edge lookups per formatted hit (post-dedupe, so <= 3*limit per
+        # search round) -- negligible on the in-memory graph. H3 (peer-review):
+        # cognition_get_workflow's internal top-1 match also flows through this
+        # function via _search_with_embedding and discards everything but the
+        # id -- these two lookups are wasted for that caller, accepted (not
+        # worth a special-case bypass).
+        conflicted, superseded_by = conflict_flags(storage, node_id)
         entry: dict[str, Any] = {
             "id": node_id,  # the NODE id, never the chunk id
             "node_type": node_type,
@@ -743,6 +758,12 @@ def _format_search_results(
             # neutral ones. `score` above stays the raw similarity, untouched.
             "weight": weight,
             "weighted_score": score * weight["multiplier"],
+            # WP-SearchFlags: ALWAYS present (false/null on a clean hit), same
+            # "never silent" doctrine as `weight` above -- a missing key must
+            # never be readable as "checked and clean". NO ranking change: these
+            # flags do not affect weighted_score or sort order (pinned decision).
+            "conflicted": conflicted,
+            "superseded_by": superseded_by,
         }
         if node_type == CognitionNodeType.DOCUMENT.value:
             staleness = cheap_staleness_signal(node.get("metadata", {}))
@@ -3251,6 +3272,24 @@ def register_cognition_tools(mcp) -> None:
                                          # "freshness" field (misses a same-size edit);
                                          # deliberately cheap so search cost doesn't
                                          # scale with re-reading every matched document.
+                                         # conflicted: bool, ALWAYS present. True iff the
+                                         # hit has >=1 incoming OR outgoing CONTRADICTS
+                                         # edge (contradicts is one-way/arbitrary-direction
+                                         # -- see superseded_by note below for why both
+                                         # directions matter).
+                                         # superseded_by: str | null, ALWAYS present. The
+                                         # id of the newest node that SUPERSEDES this hit
+                                         # (an incoming SUPERSEDES edge), or null if none.
+                                         # Only the superseded (older) side gets a
+                                         # non-null value -- the newer/resolving node
+                                         # (outgoing supersedes) is null here, since it IS
+                                         # the current version. Neither flag changes
+                                         # weighted_score or result order (no ranking
+                                         # change) -- results are NOT HEAD-filtered:
+                                         # a superseded hit ranks exactly where its raw
+                                         # similarity places it, same as any other hit;
+                                         # these two fields are the ONLY marker that it
+                                         # has been superseded or is in conflict.
               ],
               count: int,                # len(results) — may be < total_found
               total_found: int,          # distinct live (post-exclusion) matches

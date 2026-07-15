@@ -22,7 +22,7 @@ from ..cognition import (
     delete_cognition_node,
 )
 from ..cognition.documents import documents_dir, freshness_by_rehash, text_sidecar_path
-from ..cognition.queries import get_superseded_chain
+from ..cognition.queries import conflict_flags, get_superseded_chain
 from ..cognition.task_meta import _task_claimed_at  # WP-TC16: relocated (was cognition_tools)
 from ..embeddings import adaptive_vector_search
 from ..tools.cognition_tools import _reembed_replayed_nodes
@@ -368,25 +368,18 @@ def _is_conflicted(storage: CognitionStorage, node_id: str) -> bool:
     """Whether a node carries any conflict signal (WP-DashV3) -- the list-level
     ``conflicted`` flag behind the Board-card and Activity-row ⚠ indicator.
 
-    Direction semantics (peer-review BLOCKING catch, pinned): ``contradicts``
-    edges are stored ONE-WAY with ARBITRARY direction (``cognition_add_edge``'s
-    own docstring: "either direction" -- no reciprocal edge is ever minted), so
-    membership is BIDIRECTIONAL for contradicts (incoming OR outgoing) -- an
-    incoming-only check flags only one side of every contradicts pair.
-    ``supersedes`` stays INCOMING-only, deliberately: the newer node (which has
-    an OUTGOING supersedes edge) is not itself in conflict -- it IS the
-    resolution; only the superseded (incoming) side is stale.
-
-    Cost: up to three edge lookups per row (in-contradicts, out-contradicts,
-    in-supersedes) -- NetworkX in-memory MultiDiGraph lookups, O(degree); at a
-    100-row activity window this is a few hundred dict lookups, negligible. No
-    caching.
+    WP-SearchFlags: the membership logic itself relocated to the single shared
+    implementation ``cognition.queries.conflict_flags`` (also used by
+    cognition_search's per-result flags). This wrapper composes the dashboard's
+    ORIGINAL single-bool semantics from that tuple -- conflicted-by-contradicts
+    OR superseded (the dashboard collapses both into one ⚠, unlike search, which
+    keeps them separate) -- so behavior is byte-identical to before the
+    relocation: a node with ONLY an incoming SUPERSEDES edge (superseded, no
+    contradicts) still returns True here, even though ``conflict_flags``'s own
+    ``conflicted`` element only tracks contradicts.
     """
-    return bool(
-        storage.get_predecessors(node_id, CognitionEdgeType.CONTRADICTS)
-        or storage.get_successors(node_id, CognitionEdgeType.CONTRADICTS)
-        or storage.get_predecessors(node_id, CognitionEdgeType.SUPERSEDES)
-    )
+    conflicted, superseded_by = conflict_flags(storage, node_id)
+    return conflicted or superseded_by is not None
 
 
 def _task_row(
