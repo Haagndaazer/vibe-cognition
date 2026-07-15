@@ -660,12 +660,14 @@ class CognitionStorage:
     # Types that are graph-inert: a pair involving one of these mints NO deterministic
     # edge — the gate short-circuits before any pair rule below. ``workflow`` is
     # versioned via supersession; ``task`` is curated explicitly (its parent hierarchy
-    # is a direct part_of edge set at creation, never reference-matched). NOTE:
-    # ``document`` is deliberately NOT inert — it has its own ``doc_gated`` pair rules
-    # below, reached only after this gate passes.
+    # is a direct part_of edge set at creation, never reference-matched); ``person``
+    # (WP-TC5) has no references at all and must never auto-mint a part_of edge on a
+    # coincidentally shared ref. NOTE: ``document`` is deliberately NOT inert — it has
+    # its own ``doc_gated`` pair rules below, reached only after this gate passes.
     _INERT_TYPES: frozenset[str] = frozenset({
         CognitionNodeType.WORKFLOW.value,
         CognitionNodeType.TASK.value,
+        CognitionNodeType.PERSON.value,
     })
 
     @staticmethod

@@ -2,6 +2,7 @@
 
 from .git_identity import resolve_git_identity
 from .models import (
+    SENIORITY_LEVELS,
     CognitionEdge,
     CognitionEdgeType,
     CognitionNode,
@@ -20,6 +21,7 @@ from .storage import CognitionStorage
 
 __all__ = [
     # Models
+    "SENIORITY_LEVELS",
     "CognitionEdge",
     "CognitionEdgeType",
     "CognitionNode",

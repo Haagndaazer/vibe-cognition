@@ -122,6 +122,10 @@ The embedding model (~250MB) also downloads on first use from Hugging Face. Afte
 | `cognition_add_task` | File a trackable task, server-attributed to the git user (open work + lifecycle) |
 | `cognition_list_tasks` | List the backlog: open tasks, priority-sorted, grouped by parent |
 | `cognition_update_task` | Update a task's status/owner/priority/parent in place (status-transition logged) |
+| `cognition_register_person` | Register a HUMAN identity (never an agent) as a first-class person node |
+| `cognition_update_person` | Edit a person's profile fields in place (audit-trailed via `profile_history`) |
+| `cognition_get_person` | Get a person's full profile, including the `profile_history` audit trail |
+| `cognition_list_people` | List every registered person — the team roster |
 | `cognition_store_document` | Store a document (reference or copy mode) + extracted text as a first-class node |
 | `cognition_get_document` | Retrieve a stored document: metadata + full text + freshness |
 | `cognition_readme` | Get the full orientation guide + getting-started walkthrough (same content as the `/vibe-cognition` skill) |
@@ -279,6 +283,7 @@ The cognition graph captures project knowledge — decisions made, approaches th
 | `episode` | Full narrative of completed work (Linear task, feature, debugging session) |
 | `workflow` | A step-by-step procedure stored as ONE unit; versioned by supersession (update = new node + `supersedes` edge) |
 | `task` | Trackable open work, server-attributed to the git user; mutable status/priority + arbitrary-depth parent hierarchy (created with `cognition_add_task`) |
+| `person` | A HUMAN identity — name, role, seniority, reports-to (never an agent; agent identity lives in teammate-comms); updated in place with an audit trail (created with `cognition_register_person`) |
 
 ### Edge Types
 
@@ -341,6 +346,34 @@ Provenance is verified for **tasks and deletions**, not for other node authorshi
   legitimate use, not a bug. Don't treat the `author` field on a decision/discovery/
   pattern/etc. node as proof of who actually wrote it the way you can for a task's
   `created_by` or a deletion's `removed_by`.
+
+### Team semantics — person nodes and `from_agent`
+
+**Person nodes** (`cognition_register_person`) model your team's HUMANS — name, role,
+seniority (`owner | senior | mid | junior`), and a direct `reports_to_email` — so the
+graph knows *about* the people behind its provenance stamps, not just their emails.
+Agent identity is never stored here; agents live in teammate-comms. A person node is
+**updated in place** (never supersession-versioned) with an append-only
+`metadata.profile_history` audit trail (`{changed: {field: {from, to}}, at, by}` per
+edit) — so "who changed what, when" is always recoverable even though the current
+profile can be edited by anyone.
+
+**`from_agent`** is a provenance bool stamped on every write from `cognition_record`,
+`cognition_add_task`, `cognition_store_document`, `cognition_register_person`, and
+`cognition_update_person` — `true` (the default) means "recorded via an agent call, as
+usual"; `false` is the deliberately marked case where a human explicitly dictated or
+authored the content themselves. It surfaces wherever provenance already does:
+`cognition_search` results, `cognition_get_node`, and `cognition_list_tasks` rows. A
+node written before this feature shipped simply has no `from_agent` key — that surfaces
+as `null`/absent ("unverified/legacy"), **never** coerced to `true` or `false`.
+
+**Known trust-model limits** (documented, not "fixed" — this is a local trust domain,
+not a security boundary): `reports_to_email` and `seniority` are trust-declared and
+freely peer-editable — the audit trail is the control, not an ACL, and anyone sharing
+the graph may update anyone's profile. `from_agent` is client-declared and unverifiable
+by the server (like the `author` field on `cognition_record`). Person data is only as
+fresh as the team keeps it — nothing enforces it, though a future onboarding flow
+reduces how often it goes stale.
 
 ## Configuration
 

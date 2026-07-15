@@ -9,6 +9,7 @@ from typing import Any
 from fastmcp import Context
 
 from ..cognition import (
+    SENIORITY_LEVELS,
     CognitionEdge,
     CognitionEdgeType,
     CognitionNode,
@@ -114,6 +115,11 @@ def _embed_entity_node(
         metadata["status"] = status
     if owner:
         metadata["owner"] = owner
+    # WP-TC6: surface from_agent (when stamped) into Chroma metadata so search hits
+    # carry it too (get_node/list_tasks already surface it via the raw metadata dict).
+    # "in" (not truthiness) -- False is a real, present value, distinct from missing.
+    if "from_agent" in node.metadata:
+        metadata["from_agent"] = node.metadata["from_agent"]
     embedding_storage.upsert_embedding(node.id, embedding, metadata)
 
 
@@ -136,17 +142,21 @@ def _embed_workflow(
     wf_type = CognitionNodeType.WORKFLOW.value
     node_text = f"{wf_type}: {node.summary}\n{node.detail[:2000]}"
     chunks = chunk_text(node.detail)
+    wf_metadata: dict[str, Any] = {
+        "entity_type": wf_type,
+        "summary": node.summary,
+        "author": node.author,
+        "timestamp": node.timestamp,
+        "context": ",".join(node.context),
+        "chunk_count": len(chunks),
+    }
+    # WP-TC6 (see _embed_entity_node's matching comment): "in", not truthiness.
+    if "from_agent" in node.metadata:
+        wf_metadata["from_agent"] = node.metadata["from_agent"]
     embedding_storage.upsert_embedding(
         node.id,
         generator.generate(node_text, input_type="document"),
-        {
-            "entity_type": wf_type,
-            "summary": node.summary,
-            "author": node.author,
-            "timestamp": node.timestamp,
-            "context": ",".join(node.context),
-            "chunk_count": len(chunks),
-        },
+        wf_metadata,
     )
     # Delete-then-write the chunk set (idempotent regardless of count change).
     embedding_storage.delete_by_node_id(node.id)
@@ -193,6 +203,7 @@ def _record_node(
     author: str,
     severity: str | None = None,
     references: str | None = None,
+    from_agent: bool = True,
 ) -> dict[str, Any]:
     """Shared logic for cognition_record tool."""
     lc = get_lifespan(ctx)
@@ -256,7 +267,7 @@ def _record_node(
         severity=severity,
         timestamp=timestamp,
         author=author,
-        metadata={"recorded_by": recorded_by},
+        metadata={"recorded_by": recorded_by, "from_agent": from_agent},
     )
     # WP-ID: mint a collision-free id under the lock (global fix). Rebind node_id to
     # the returned id BEFORE the embedding upsert + edges + result — else a salted node
@@ -564,6 +575,10 @@ def _format_search_results(
             "severity": r.get("severity"),
             "context": r.get("context", ""),
             "score": r.get("score"),
+            # WP-TC6: present (True/False) when the writer stamped it; None for
+            # every pre-TC6 node -- NEVER coerced to False (that would misrepresent
+            # unknown provenance as "known agent-written").
+            "from_agent": r.get("from_agent"),
         }
         if node_type == CognitionNodeType.DOCUMENT.value:
             doc_node = storage.get_node(node_id)  # cheap: in-memory graph lookup
@@ -751,6 +766,7 @@ def _embed_document(
     summary: str,
     detail: str,
     sidecar_text: str,
+    from_agent: bool | None = None,
 ) -> int:
     """Embed a document: ONE node-level vector (so it shows in node search) + its
     sidecar text chunked into ``<node_id>#chunk-N`` vectors (each carrying its chunk
@@ -768,10 +784,16 @@ def _embed_document(
     doc_type = CognitionNodeType.DOCUMENT.value
     node_text = f"{doc_type}: {summary}\n{detail}"
     chunks = chunk_text(sidecar_text)
+    doc_metadata: dict[str, Any] = {
+        "entity_type": doc_type, "summary": summary, "chunk_count": len(chunks),
+    }
+    # WP-TC6: "is not None", not truthiness -- False is a real, present value.
+    if from_agent is not None:
+        doc_metadata["from_agent"] = from_agent
     embedding_storage.upsert_embedding(
         node_id,
         generator.generate(node_text, input_type="document"),
-        {"entity_type": doc_type, "summary": summary, "chunk_count": len(chunks)},
+        doc_metadata,
     )
     # Delete-then-write the chunk set (idempotent regardless of count change).
     embedding_storage.delete_by_node_id(node_id)
@@ -798,6 +820,7 @@ def _store_document(
     force_new: bool = False,
     store_copy: bool = False,
     local_only: bool | None = None,
+    from_agent: bool = True,
     embedding_storage: "ChromaDBStorage | None" = None,
     generator: "EmbeddingGenerator | None" = None,
 ) -> dict[str, Any]:
@@ -925,6 +948,7 @@ def _store_document(
         "sha256": sha,
         "mode": mode,
         "indexed_text_chars": indexed_chars,
+        "from_agent": from_agent,
         **blob_meta,
     }
     if source_path:
@@ -952,7 +976,7 @@ def _store_document(
     # the next _sync backfills it. Never block/fail the store on embedding.
     if embedding_storage is not None and generator is not None:
         _embed_document(embedding_storage, generator, node_id, title,
-                        document_text[:2000], document_text)
+                        document_text[:2000], document_text, from_agent=from_agent)
 
     result = {
         "node_id": node_id,
@@ -1178,6 +1202,7 @@ def _add_task(
     owner: str | None = None,
     parent_id: str | None = None,
     references: str | None = None,
+    from_agent: bool = True,
 ) -> dict[str, Any]:
     """Create a task node (testable core of cognition_add_task).
 
@@ -1218,6 +1243,7 @@ def _add_task(
         "owner": owner,
         "parent_id": parent_id,
         "transitions": [{"status": "open", "at": timestamp, "by": created_by}],
+        "from_agent": from_agent,
     }
 
     node_id = generate_node_id(CognitionNodeType.TASK.value, summary, timestamp)
@@ -1332,6 +1358,7 @@ def _list_tasks(
             "created_by": meta.get("created_by"),
             "timestamp": t.get("timestamp"),
             "depth": _depth(t),
+            "from_agent": meta.get("from_agent"),
         })
     return {"tasks": rows, "count": len(rows)}
 
@@ -1541,6 +1568,323 @@ def _update_task(
     return result
 
 
+# ── Person node core logic (cognition_register_person / _update_person /
+# _get_person / _list_people) ─────────────────────────────────────────────────
+#
+# A ``person`` node models a HUMAN identity ONLY — agent identity lives in
+# teammate-comms, never here. Concise (single entity vector, like a task), UPDATED
+# IN PLACE (not supersession-versioned) with an append-only metadata.profile_history
+# audit trail. Email is the identity key (casefolded), enforcing one node per email.
+# Graph-inert in the matcher (storage._INERT_TYPES).
+
+_SENIORITY_SET: frozenset[str] = frozenset(SENIORITY_LEVELS)
+
+
+def _casefold_email(email: str) -> str:
+    """The single email-normalization point for person matching (WP-P13n convention:
+    casefold, never .lower() — Unicode-aware). Also strips surrounding whitespace."""
+    return email.strip().casefold()
+
+
+def _find_person_by_email(storage: CognitionStorage, email: str) -> dict[str, Any] | None:
+    """Linear scan for the person node with this (casefolded) email — same no-index
+    convention as WP-P13n's email match (no email index exists). Returns None for a
+    blank email (never matches, never scans) or no match."""
+    target = _casefold_email(email)
+    if not target:
+        return None
+    for node in storage.get_nodes_by_type(CognitionNodeType.PERSON):
+        if node.get("metadata", {}).get("person", {}).get("email") == target:
+            return node
+    return None
+
+
+def _resolve_person(storage: CognitionStorage, email_or_id: str) -> dict[str, Any] | None:
+    """Resolve a person node by node id OR email. Tries id first (the unambiguous
+    graph key); an id that resolves to a NON-person node is rejected (not silently
+    treated as a not-found email lookup)."""
+    node = storage.get_node(email_or_id)
+    if node is not None:
+        if node.get("type") == CognitionNodeType.PERSON.value:
+            return {"id": email_or_id, **node}
+        return None
+    return _find_person_by_email(storage, email_or_id)
+
+
+def _person_summary(name: str, role: str) -> str:
+    return f"{name} — {role}"
+
+
+def _reports_to_cycle(storage: CognitionStorage, self_email: str, reports_to_email: str) -> bool:
+    """True if walking the reports_to EMAIL chain from ``reports_to_email`` ever
+    reaches ``self_email`` — i.e. setting this reports_to would make self its own
+    transitive manager. This is an email-keyed metadata walk (person-node linear
+    scan), NOT a graph-edge walk like the task-parent cycle guard: dangling (an
+    email with no backing person node) terminates the walk GRACEFULLY, never an
+    error — a manager may simply not be registered yet."""
+    self_key = _casefold_email(self_email)
+    current = _casefold_email(reports_to_email)
+    seen: set[str] = set()
+    while current and current not in seen:
+        if current == self_key:
+            return True
+        seen.add(current)
+        node = _find_person_by_email(storage, current)
+        if node is None:
+            return False  # dangling — graceful stop, not a cycle
+        current = _casefold_email(
+            (node.get("metadata", {}).get("person") or {}).get("reports_to_email") or ""
+        )
+    return False
+
+
+def _reports_to_registered(storage: CognitionStorage, reports_to_email: str | None) -> bool:
+    """Whether ``reports_to_email`` resolves to an EXISTING person node — surfaced as
+    ``reports_to_registered`` (dangling is legal, not an error, just flagged)."""
+    if not reports_to_email:
+        return False
+    return _find_person_by_email(storage, reports_to_email) is not None
+
+
+def _register_person(
+    ctx: Context,
+    name: str,
+    role: str,
+    seniority: str,
+    reports_to_email: str | None = None,
+    email: str | None = None,
+    detail: str = "",
+    from_agent: bool = True,
+) -> dict[str, Any]:
+    """Create a person node (testable core of cognition_register_person).
+
+    Identity rule: when ``email`` is omitted, the server resolves the CURRENT git
+    identity's email and registers self (impersonation-resistant onboarding path).
+    An explicit ``email`` registers someone else (e.g. a manager pre-registering a
+    teammate) — allowed, trust-based; ``recorded_by``/``from_agent`` record who did
+    it. One node per (casefolded) email: registering an existing email returns the
+    EXISTING node with ``already_registered: True`` (never a silent duplicate,
+    never a data-losing error)."""
+    lc = get_lifespan(ctx)
+    storage: CognitionStorage = lc["cognition_storage"]
+    embedding_storage: ChromaDBStorage = lc["cognition_embedding_storage"]
+
+    seniority_norm = seniority.strip().casefold()
+    if seniority_norm not in _SENIORITY_SET:
+        return {"error": f"Invalid seniority '{seniority}'. Valid: {list(SENIORITY_LEVELS)}"}
+
+    recorded_by = resolve_git_identity(storage.cognition_dir.parent)
+    if email:
+        resolved_email = _casefold_email(email)
+        if not resolved_email:
+            return {"error": "email, if provided, must not be blank"}
+    else:
+        resolved_email = _casefold_email(recorded_by.get("email", ""))
+        if not resolved_email:
+            return {
+                "error": (
+                    "no email provided and the current git identity has no resolvable "
+                    "email — pass email explicitly, or set user.email in git config"
+                )
+            }
+
+    existing = _find_person_by_email(storage, resolved_email)
+    if existing is not None:
+        result: dict[str, Any] = {"id": existing["id"], **existing}
+        result["already_registered"] = True
+        return result
+
+    reports_to = _casefold_email(reports_to_email or "")
+    if reports_to and reports_to == resolved_email:
+        return {"error": "A person cannot report to themselves"}
+    if reports_to and _reports_to_cycle(storage, resolved_email, reports_to):
+        return {
+            "error": (
+                f"reports_to rejected: '{reports_to}' transitively reports to "
+                f"'{resolved_email}' — would create a cycle"
+            )
+        }
+
+    timestamp = datetime.now(UTC).isoformat()
+    summary = _person_summary(name, role)
+    metadata: dict[str, Any] = {
+        "person": {
+            "email": resolved_email,
+            "name": name,
+            "role": role,
+            "seniority": seniority_norm,
+            "reports_to_email": reports_to,
+        },
+        "profile_history": [],
+        "recorded_by": recorded_by,
+        "from_agent": from_agent,
+    }
+    node_id = generate_node_id(CognitionNodeType.PERSON.value, summary, timestamp)
+    node = CognitionNode(
+        id=node_id,
+        type=CognitionNodeType.PERSON,
+        summary=summary,
+        detail=detail,
+        context=[],
+        references=[],
+        severity=None,
+        timestamp=timestamp,
+        author=recorded_by["name"],
+        metadata=metadata,
+    )
+    # WP-ID: mint a collision-free id under the lock; rebind BEFORE embed (A1 discipline
+    # shared with _record_node/_add_task/_store_document).
+    node_id = storage.add_node(node, mint_unique_id=True)
+    node = node.model_copy(update={"id": node_id})
+
+    if _embeddings_ready(lc):
+        generator: EmbeddingGenerator = lc["embedding_generator"]
+        _embed_entity_node(embedding_storage, generator, node)
+
+    result = _get_node(storage, node_id)
+    result["already_registered"] = False
+    result["reports_to_registered"] = _reports_to_registered(storage, reports_to)
+    return result
+
+
+def _update_person(
+    ctx: Context,
+    email_or_id: str,
+    name: str | None = None,
+    role: str | None = None,
+    seniority: str | None = None,
+    reports_to_email: str | None = None,
+    detail: str | None = None,
+    from_agent: bool = True,
+) -> dict[str, Any]:
+    """In-place field update on a person node (testable core of cognition_update_person).
+
+    Anyone may update anyone (local trust domain; the append-only profile_history
+    audit trail is the control, not an ACL). Every call appends EXACTLY one
+    profile_history entry listing only the fields that actually changed
+    (``{field: {from, to}}``). ``reports_to_email=""`` clears it (top of chain);
+    omitting it leaves the parent unchanged (None = no change, mirroring
+    cognition_update_task's parent_id convention). ``summary`` regenerates whenever
+    name or role changes, so display never desyncs from the profile."""
+    lc = get_lifespan(ctx)
+    storage: CognitionStorage = lc["cognition_storage"]
+    embedding_storage: ChromaDBStorage = lc["cognition_embedding_storage"]
+
+    node = _resolve_person(storage, email_or_id)
+    if node is None:
+        return {"error": f"No person found for '{email_or_id}'"}
+    node_id = node["id"]
+    person = dict(node.get("metadata", {}).get("person", {}))
+    self_email = person.get("email", "")
+
+    # Validate BEFORE any mutation (same discipline as _update_task).
+    if seniority is not None:
+        seniority = seniority.strip().casefold()
+        if seniority not in _SENIORITY_SET:
+            return {"error": f"Invalid seniority '{seniority}'. Valid: {list(SENIORITY_LEVELS)}"}
+
+    new_reports_to: str | None = None
+    if reports_to_email is not None:
+        new_reports_to = _casefold_email(reports_to_email)
+        if new_reports_to:
+            if new_reports_to == self_email:
+                return {"error": "A person cannot report to themselves"}
+            if _reports_to_cycle(storage, self_email, new_reports_to):
+                return {
+                    "error": (
+                        f"reports_to rejected: '{new_reports_to}' transitively reports to "
+                        f"'{self_email}' — would create a cycle"
+                    )
+                }
+
+    changed: dict[str, dict[str, Any]] = {}
+    if name is not None and name != person.get("name"):
+        changed["name"] = {"from": person.get("name"), "to": name}
+        person["name"] = name
+    if role is not None and role != person.get("role"):
+        changed["role"] = {"from": person.get("role"), "to": role}
+        person["role"] = role
+    if seniority is not None and seniority != person.get("seniority"):
+        changed["seniority"] = {"from": person.get("seniority"), "to": seniority}
+        person["seniority"] = seniority
+    if reports_to_email is not None and new_reports_to != person.get("reports_to_email"):
+        changed["reports_to_email"] = {"from": person.get("reports_to_email"), "to": new_reports_to}
+        person["reports_to_email"] = new_reports_to
+
+    top_updates: dict[str, Any] = {}
+    if detail is not None and detail != node.get("detail"):
+        changed["detail"] = {"from": node.get("detail"), "to": detail}
+        top_updates["detail"] = detail
+
+    if not changed:
+        return {
+            "error": (
+                "No updatable fields provided (name, role, seniority, reports_to_email, detail)"
+            )
+        }
+
+    by = resolve_git_identity(storage.cognition_dir.parent)
+    entry = {"changed": changed, "at": datetime.now(UTC).isoformat(), "by": by}
+
+    metadata = dict(node.get("metadata", {}))
+    metadata["person"] = person
+    metadata["profile_history"] = [*metadata.get("profile_history", []), entry]
+    metadata["from_agent"] = from_agent
+    storage.update_node(node_id, metadata=metadata)
+
+    if "name" in changed or "role" in changed:
+        top_updates["summary"] = _person_summary(person["name"], person["role"])
+    if top_updates:
+        storage.update_node(node_id, **top_updates)
+
+    if _embeddings_ready(lc):
+        generator: EmbeddingGenerator = lc["embedding_generator"]
+        post = storage.get_node(node_id)
+        assert post is not None  # just updated it; cannot vanish under the lock
+        cnode = _node_from_dict(node_id, post)
+        _embed_entity_node(embedding_storage, generator, cnode)
+        reembed = "done"
+    else:
+        reembed = "deferred"
+
+    result = _get_node(storage, node_id)
+    result["reembed"] = reembed
+    result["reports_to_registered"] = _reports_to_registered(storage, person.get("reports_to_email"))
+    return result
+
+
+def _get_person(storage: CognitionStorage, email_or_id: str) -> dict[str, Any]:
+    """Full person node incl. profile_history (testable core of cognition_get_person)."""
+    node = _resolve_person(storage, email_or_id)
+    if node is None:
+        return {"error": f"No person found for '{email_or_id}'"}
+    person = node.get("metadata", {}).get("person", {})
+    result = dict(node)
+    result["reports_to_registered"] = _reports_to_registered(storage, person.get("reports_to_email"))
+    return result
+
+
+def _list_people(storage: CognitionStorage) -> dict[str, Any]:
+    """Roster view (testable core of cognition_list_people): one row per person,
+    sorted by name (casefolded)."""
+    nodes = storage.get_nodes_by_type(CognitionNodeType.PERSON)
+    rows: list[dict[str, Any]] = []
+    for n in nodes:
+        person = n.get("metadata", {}).get("person", {})
+        reports_to = person.get("reports_to_email") or None
+        rows.append({
+            "id": n["id"],
+            "email": person.get("email"),
+            "name": person.get("name"),
+            "role": person.get("role"),
+            "seniority": person.get("seniority"),
+            "reports_to_email": reports_to,
+            "reports_to_registered": _reports_to_registered(storage, reports_to),
+        })
+    rows.sort(key=lambda r: (r.get("name") or "").casefold())
+    return {"people": rows, "count": len(rows)}
+
+
 # ── XP1 core logic (module-level so tests can call without an MCP Context) ───
 
 
@@ -1679,6 +2023,7 @@ def register_cognition_tools(mcp) -> None:
         author: str,
         severity: str | None = None,
         references: str | None = None,
+        from_agent: bool = True,
     ) -> dict[str, Any]:
         """Record a cognition node — a decision, failure, discovery, or other knowledge artifact.
 
@@ -1715,6 +2060,8 @@ def register_cognition_tools(mcp) -> None:
         - task: NOT creatable here — use cognition_add_task instead (it resolves the git
           creator server-side and seeds the status/transition lifecycle; passing
           node_type="task" to this tool returns an error, not a task node).
+        - person: NOT creatable here — use cognition_register_person instead (a HUMAN
+          identity, never an agent; passing node_type="person" here returns an error).
 
         ENTITY NODES (decision, fail, discovery, assumption, constraint, incident, pattern):
         - summary: MAX 250 chars. Write like a commit message — scannable at a glance.
@@ -1754,6 +2101,12 @@ def register_cognition_tools(mcp) -> None:
             references: Optional external refs, comma-separated. Include issue/PR/commit refs
                         so nodes link to their episode (part_of) and /vibe-curate can
                         relate them. Example: "issue:LL-298,pr:97"
+            from_agent: Set false ONLY when the human explicitly dictated/authored this
+                        content themselves; default true ("via agent" — an undeclared
+                        write is honestly agent-originated). When in doubt, leave the
+                        default. Stamped as metadata.from_agent; surfaced in search
+                        results and get_node (missing on pre-existing nodes, never
+                        coerced to true/false).
 
         Returns:
             {id, type, summary, timestamp} plus, when non-empty,
@@ -1784,10 +2137,18 @@ def register_cognition_tools(mcp) -> None:
                     "cognition_record cannot attribute or track a task."
                 )
             }
+        if nt == CognitionNodeType.PERSON:
+            return {
+                "error": (
+                    "Use cognition_register_person to create a person node — it enforces "
+                    "the one-node-per-email invariant and the human-only identity rule. "
+                    "cognition_record cannot create or attribute a person node."
+                )
+            }
 
         return _record_node(
             ctx, nt, summary, detail, context, author,
-            severity, references,
+            severity, references, from_agent,
         )
 
     @dispatch_tool(mcp)
@@ -1800,6 +2161,7 @@ def register_cognition_tools(mcp) -> None:
         owner: str | None = None,
         parent_id: str | None = None,
         references: str | None = None,
+        from_agent: bool = True,
     ) -> dict[str, Any]:
         """Create a trackable task — open, actionable work, attributed to the git user.
 
@@ -1828,6 +2190,10 @@ def register_cognition_tools(mcp) -> None:
             owner: Optional free-text "who's on it" (distinct from the git creator).
             parent_id: Optional id of a parent task to file this under (must be a task).
             references: Optional external refs (issue/PR/commit), comma-separated.
+            from_agent: Set false ONLY when the human explicitly dictated/authored this
+                        task themselves; default true. When in doubt, leave the default.
+                        Stamped as metadata.from_agent; surfaced in list_tasks rows and
+                        search results (missing on pre-existing tasks, never coerced).
 
         Returns:
             The created task node ({id, type, summary, ..., severity, metadata}) or
@@ -1836,6 +2202,7 @@ def register_cognition_tools(mcp) -> None:
         return _add_task(
             ctx, summary, detail, context,
             priority=priority, owner=owner, parent_id=parent_id, references=references,
+            from_agent=from_agent,
         )
 
     @dispatch_tool(mcp)
@@ -1933,6 +2300,136 @@ def register_cognition_tools(mcp) -> None:
         )
 
     @dispatch_tool(mcp)
+    def cognition_register_person(
+        ctx: Context,
+        name: str,
+        role: str,
+        seniority: str,
+        reports_to_email: str | None = None,
+        email: str | None = None,
+        detail: str = "",
+        from_agent: bool = True,
+    ) -> dict[str, Any]:
+        """Register a HUMAN identity as a first-class person node.
+
+        Person nodes model HUMANS ONLY — agent identity lives in teammate-comms,
+        never here. Use this for onboarding (introducing your human) or for a
+        manager pre-registering a teammate who hasn't onboarded yet.
+
+        Identity rule: omit `email` to self-register — the server resolves the
+        CURRENT git identity's email server-side (impersonation-resistant). Pass an
+        explicit `email` to register someone ELSE (allowed, trust-based; who did it
+        is recorded via `recorded_by`/`from_agent` in the audit trail, not enforced).
+
+        One node per (casefolded) email: registering an email that already has a
+        person node returns the EXISTING node with `already_registered: true` —
+        never a silent duplicate, never a data-losing error. To edit an existing
+        person's profile, use `cognition_update_person` instead.
+
+        Args:
+            name: The person's display name.
+            role: Their role (e.g. "backend engineer", "PM").
+            seniority: One of: owner, senior, mid, junior (closed set, casefolded).
+            reports_to_email: Optional direct manager's email. Need not resolve to
+                an existing person node yet (a manager may register later) —
+                dangling is legal, surfaced as `reports_to_registered: false`.
+                Self-reporting and transitive cycles (A→B→...→A, walked through
+                already-registered people) are rejected.
+            email: Omit to self-register (server-resolved git identity); pass to
+                register someone else.
+            detail: Optional free-text bio/notes.
+            from_agent: Set false ONLY when the human explicitly dictated/authored
+                this registration themselves; default true ("via agent"). When in
+                doubt, leave the default.
+
+        Returns:
+            The person node ({id, type, summary, detail, metadata: {person,
+            profile_history, recorded_by, from_agent}, ...}) plus
+            `already_registered` (bool). `reports_to_registered` (bool) is
+            included ONLY when a NEW node is created — the `already_registered:
+            true` (dedup) branch returns the existing node as-is and omits it;
+            use `cognition_get_person` if you need that flag for an existing
+            person. Returns {"error": ...} for an invalid seniority,
+            self-reporting, a reports_to cycle, a blank explicit email, or an
+            unresolvable self-email with no explicit email.
+        """
+        return _register_person(
+            ctx, name, role, seniority,
+            reports_to_email=reports_to_email, email=email, detail=detail,
+            from_agent=from_agent,
+        )
+
+    @dispatch_tool(mcp)
+    def cognition_update_person(
+        ctx: Context,
+        email_or_id: str,
+        name: str | None = None,
+        role: str | None = None,
+        seniority: str | None = None,
+        reports_to_email: str | None = None,
+        detail: str | None = None,
+        from_agent: bool = True,
+    ) -> dict[str, Any]:
+        """Edit a person node's profile fields in place, with an audit trail.
+
+        Anyone may update anyone — this is a local trust domain; the append-only
+        `metadata.profile_history` audit trail (one entry per call, listing exactly
+        which fields changed as `{field: {from, to}}`, plus who/when) is the
+        control, not an ACL. `summary` ("Name — role") auto-regenerates whenever
+        name or role changes, so display never desyncs from the profile.
+
+        Args:
+            email_or_id: The person's email OR node id.
+            name: New name, if changing.
+            role: New role, if changing.
+            seniority: New seniority (owner | senior | mid | junior), if changing.
+            reports_to_email: New manager's email; pass "" to clear (top of chain);
+                omit for no change. Self-reporting and cycles are rejected; a
+                dangling (unregistered) email is legal.
+            detail: New bio/notes, if changing.
+            from_agent: Set false ONLY when the human explicitly dictated/authored
+                this update themselves; default true. When in doubt, leave default.
+
+        Returns:
+            The updated person node plus `reembed` ("done" | "deferred") and
+            `reports_to_registered` (bool), or {"error": ...} for no matching
+            person, an invalid seniority, self-reporting, a reports_to cycle, or
+            no updatable fields provided. "No updatable fields provided" also
+            fires if every field you pass is identical to its current value —
+            a no-op re-submission is indistinguishable from omitting the field.
+        """
+        return _update_person(
+            ctx, email_or_id, name=name, role=role, seniority=seniority,
+            reports_to_email=reports_to_email, detail=detail, from_agent=from_agent,
+        )
+
+    @dispatch_tool(mcp)
+    def cognition_get_person(ctx: Context, email_or_id: str) -> dict[str, Any]:
+        """Get a person's full profile, including the profile_history audit trail.
+
+        Args:
+            email_or_id: The person's email OR node id.
+
+        Returns:
+            The full person node (id, summary, detail, metadata: {person,
+            profile_history, recorded_by, from_agent}, ...) plus
+            `reports_to_registered` (bool), or {"error": ...} if not found.
+        """
+        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
+        return _get_person(storage, email_or_id)
+
+    @dispatch_tool(mcp)
+    def cognition_list_people(ctx: Context) -> dict[str, Any]:
+        """List every registered person — the team roster.
+
+        Returns:
+            {"people": [{id, email, name, role, seniority, reports_to_email,
+             reports_to_registered}, ...], "count": N}, sorted by name.
+        """
+        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
+        return _list_people(storage)
+
+    @dispatch_tool(mcp)
     def cognition_store_document(
         ctx: Context,
         title: str,
@@ -1946,6 +2443,7 @@ def register_cognition_tools(mcp) -> None:
         force_new: bool = False,
         store_copy: bool = False,
         local_only: bool | None = None,
+        from_agent: bool = True,
     ) -> dict[str, Any]:
         """Store a document as a first-class DOCUMENT node.
 
@@ -1981,6 +2479,11 @@ def register_cognition_tools(mcp) -> None:
             force_new: Store even if a document with the same content already exists.
             store_copy: Copy the bytes into the content-addressed blob store.
             local_only: Keep the copied blob out of git (copy mode only).
+            from_agent: Set false ONLY when the human explicitly dictated/authored
+                        this store themselves; default true. When in doubt, leave
+                        the default. Stamped as metadata.from_agent (new documents
+                        only — a dedup hit on an existing document is unaffected);
+                        surfaced in search results (missing on pre-existing docs).
 
         Returns:
             {node_id, doc_ref, mode, size, indexed_text_chars, already_stored?,
@@ -2003,7 +2506,7 @@ def register_cognition_tools(mcp) -> None:
             storage, title, document_text, context, author,
             file_path=file_path, content_text=content_text,
             references=references, mime=mime, force_new=force_new,
-            store_copy=store_copy, local_only=local_only,
+            store_copy=store_copy, local_only=local_only, from_agent=from_agent,
             embedding_storage=embedding_storage, generator=generator,
         )
 
@@ -2162,7 +2665,7 @@ def register_cognition_tools(mcp) -> None:
                    - "what failed with the migration"
                    - "localization issues"
             node_type: Optional filter: decision, fail, discovery, assumption,
-                       constraint, incident, pattern, episode, workflow, task
+                       constraint, incident, pattern, episode, workflow, task, person
             limit: Max results (default: 10)
             project: None (default, home only), a tag/path (one loaded foreign
                      project), or "*" (all loaded projects — aggregate search).
@@ -2534,7 +3037,7 @@ def register_cognition_tools(mcp) -> None:
         Args:
             context_term: Optional term to search in context fields (file paths, topics)
             node_type: Optional filter: decision, fail, discovery, assumption,
-                       constraint, incident, pattern, episode, workflow, task
+                       constraint, incident, pattern, episode, workflow, task, person
             limit: Max results (default: 20)
             project: None (default, home), tag/path, or "*" (all loaded projects).
                      Aggregate tool: "*" fans across all loaded projects, merges and
@@ -2761,7 +3264,7 @@ def register_cognition_tools(mcp) -> None:
 
         Args:
             node_type: Optional filter: decision, fail, discovery, assumption,
-                       constraint, incident, pattern, episode, workflow, task
+                       constraint, incident, pattern, episode, workflow, task, person
             limit: Max results (default: 50, max: 500)
             project: None (default, home), tag/path, or "*" (all loaded projects).
                      Aggregate tool: "*" fans across all loaded projects and merges.
@@ -2832,7 +3335,7 @@ def register_cognition_tools(mcp) -> None:
 
         Args:
             node_type: Optional filter: decision, fail, discovery, assumption,
-                       constraint, incident, pattern, episode, workflow, task
+                       constraint, incident, pattern, episode, workflow, task, person
             limit: Max results (default: 50, max: 500)
             project: None (default, home), tag/path, or "*" (all loaded projects).
                      Aggregate tool: "*" fans across all loaded projects and merges.

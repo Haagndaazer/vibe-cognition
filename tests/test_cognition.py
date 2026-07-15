@@ -25,8 +25,9 @@ class TestModels:
     """Tests for cognition data models."""
 
     def test_node_types(self):
-        """All 11 node types exist (TASK added in WP-Task-Node)."""
-        assert len(CognitionNodeType) == 11
+        """All 12 node types exist (PERSON added in WP-TC5)."""
+        assert len(CognitionNodeType) == 12
+        assert CognitionNodeType.PERSON.value == "person"
         assert CognitionNodeType.DECISION.value == "decision"
         assert CognitionNodeType.FAIL.value == "fail"
         assert CognitionNodeType.DISCOVERY.value == "discovery"

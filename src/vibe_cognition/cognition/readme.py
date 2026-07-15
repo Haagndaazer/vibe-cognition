@@ -27,6 +27,8 @@ Deterministic part_of edges are created automatically.
 |-------|-------|
 | Record | cognition_record, cognition_update_node, cognition_remove_node |
 | Tasks | cognition_add_task, cognition_list_tasks, cognition_update_task |
+| People | cognition_register_person, cognition_update_person, cognition_get_person, |
+|        | cognition_list_people |
 | Search | cognition_search |
 | History | cognition_get_history, cognition_get_node, cognition_get_chain, |
 |         | cognition_get_superseded_chain, cognition_get_incident_resolution, |
@@ -61,6 +63,23 @@ Tasks (trackable open work, server-attributed to the git user):
 
 Documents (stored files with text sidecar for search):
   document -- use the /vibe-document skill
+
+People (a HUMAN identity -- name, role, seniority, reports-to; never an agent):
+  person -- create with cognition_register_person (NOT cognition_record). Updated
+  IN PLACE (never supersession-versioned) with an append-only profile_history audit
+  trail. Omit email to self-register (server-resolved git identity); pass one to
+  register someone else. One node per (casefolded) email. List the roster with
+  cognition_list_people(); look up one with cognition_get_person(email_or_id).
+
+## Provenance: from_agent
+
+Every write from cognition_record, cognition_add_task, cognition_store_document,
+cognition_register_person, and cognition_update_person stamps metadata.from_agent
+(default true -- an undeclared write is honestly "via agent"; set false ONLY when a
+human explicitly dictated/authored the content themselves). Surfaces in
+cognition_search results, cognition_get_node, and cognition_list_tasks rows. A node
+written before this existed has no from_agent key -- that reads as unknown, never
+coerced to true or false.
 
 ## Edge types
 

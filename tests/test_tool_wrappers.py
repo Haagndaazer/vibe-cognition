@@ -1205,7 +1205,7 @@ def test_cognition_unload_project_returns_error_on_home(tmp_path, mock_mcp, buil
 # ── full register_all_tools: all 29 names captured ───────────────────────────
 
 
-def test_all_29_tools_registered(mock_mcp):
+def test_all_33_tools_registered(mock_mcp):
     """register_all_tools captures every expected closure by name.
 
     Fails-before: if a new tool was added to a registrar but not captured (name drift),
@@ -1226,6 +1226,9 @@ def test_all_29_tools_registered(mock_mcp):
         "cognition_load_project", "cognition_unload_project", "cognition_list_projects",
         # task tools (WP-Task-Node, +3)
         "cognition_add_task", "cognition_list_tasks", "cognition_update_task",
+        # person tools (WP-TC5, +4)
+        "cognition_register_person", "cognition_update_person",
+        "cognition_get_person", "cognition_list_people",
         # service_tools.py (+1)
         "get_status",
         # dashboard_tool.py (+1)
@@ -1236,6 +1239,6 @@ def test_all_29_tools_registered(mock_mcp):
 
     missing = expected - set(mock_mcp.tools.keys())
     assert not missing, f"Tools not registered: {missing}"
-    assert len(mock_mcp.tools) == 29, (
-        f"Expected 29 tools, got {len(mock_mcp.tools)}: {set(mock_mcp.tools.keys())}"
+    assert len(mock_mcp.tools) == 33, (
+        f"Expected 33 tools, got {len(mock_mcp.tools)}: {set(mock_mcp.tools.keys())}"
     )

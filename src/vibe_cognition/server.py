@@ -284,7 +284,17 @@ def _sync_cognition_embeddings(
     if non_doc_missing:
         logger.info(f"Syncing {len(non_doc_missing)} cognition nodes to ChromaDB...")
         for n in non_doc_missing:
-            _embed_entity_node(embedding_storage, generator, _node_from_dict(n["id"], n))
+            # WP-TC6 (BACK-COMPAT): per-node tolerance for a type this process
+            # doesn't recognize (e.g. a NEWER client wrote a node type this
+            # server predates — the exact defect discovered in an OLDER
+            # version's sync during this WP's peer review, where the first
+            # unknown-type node raised and silently starved every node behind
+            # it in iteration order). One bad node is logged and skipped; the
+            # rest of the batch still syncs.
+            try:
+                _embed_entity_node(embedding_storage, generator, _node_from_dict(n["id"], n))
+            except Exception as e:  # noqa: BLE001 - a single node must never abort the batch
+                logger.warning(f"Cognition embedding sync: skipped node {n['id']!r}: {e}")
 
     if wf_to_embed:
         logger.info(f"Syncing {len(wf_to_embed)} workflow node(s) to ChromaDB...")
@@ -299,6 +309,7 @@ def _sync_cognition_embeddings(
         _embed_document(
             embedding_storage, generator, node["id"],
             node.get("summary", ""), node.get("detail", ""), sidecar_text,
+            from_agent=node.get("metadata", {}).get("from_agent"),
         )
 
     if non_doc_missing or wf_to_embed or docs_to_embed:

@@ -12,6 +12,10 @@ description: You MUST use this skill any time you need to retrieve information a
 | `cognition_add_task` | File a trackable task (server-attributed to the git user) |
 | `cognition_list_tasks` | List the backlog — open tasks, priority-sorted, grouped by parent |
 | `cognition_update_task` | Update a task's status/owner/priority/parent in place (transition-logged) |
+| `cognition_register_person` | Register a HUMAN identity (never an agent) as a first-class person node |
+| `cognition_update_person` | Edit a person's profile fields in place (audit-trailed via profile_history) |
+| `cognition_get_person` | Get a person's full profile, including the profile_history audit trail |
+| `cognition_list_people` | List every registered person — the team roster |
 | `cognition_search` | Semantic search across all cognition nodes |
 | `cognition_get_node` | Read a single node's full narrative (incl. `detail`) by id |
 | `cognition_update_node` | Edit a node's narrative (summary/detail/context/severity) in place; re-embeds on text change |
@@ -82,6 +86,26 @@ are injected at session start and listed via `cognition_list_tasks`, so the grap
 - **Curate tasks** like any node: `/vibe-curate` links a task `relates_to` the
   decision/pattern it implements, or a done task `resolved_by`/`led_to` the closing episode.
 
+## People — the team roster
+
+A `person` node models a **HUMAN identity only** — agent identity lives in
+teammate-comms, never here. Fields: name, role, seniority
+(`owner | senior | mid | junior`), and an optional `reports_to_email` (direct
+manager; dangling — no backing node yet — is legal).
+
+- **Create with `cognition_register_person`** (NOT `cognition_record` — that path is
+  rejected for `person`). Omit `email` to self-register using your server-resolved
+  git identity (impersonation-resistant); pass an explicit `email` to register
+  someone else. One node per (casefolded) email — re-registering an existing email
+  returns the existing node with `already_registered: true`, never a duplicate.
+- **Update in place** with `cognition_update_person` — anyone may update anyone
+  (local trust domain; the append-only `profile_history` audit trail is the
+  control, not an ACL). `summary` ("Name — role") regenerates automatically.
+- **Look up** with `cognition_get_person(email_or_id)` (full profile + history) or
+  browse the whole roster with `cognition_list_people()`.
+- Person nodes are graph-inert (no automatic `part_of` edges) and searchable via
+  `cognition_search(node_type="person")`.
+
 ## Two Kinds of Nodes
 
 ### Entities (concise facts)
@@ -141,7 +165,9 @@ Entities are automatically linked to episodes via `PART_OF` edges when they shar
 
 ### `node_type` (required)
 One of: `decision`, `fail`, `discovery`, `assumption`, `constraint`, `incident`, `pattern`, `episode`, `workflow`
-(`task` is also a node type, but it is created with `cognition_add_task`, not `cognition_record` — see the Tasks section above)
+(`task` and `person` are also node types, but each has its own dedicated creation tool —
+`cognition_add_task` / `cognition_register_person` — not `cognition_record`; see the
+Tasks and People sections above)
 
 ### `summary` (required)
 For entities: MAX 250 chars. Someone scanning 50 nodes should understand what happened.

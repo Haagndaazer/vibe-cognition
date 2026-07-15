@@ -490,6 +490,47 @@ class TestTaskInertGate:
         assert CognitionNodeType.DOCUMENT.value not in CognitionStorage._INERT_TYPES
 
 
+class TestPersonInertGate:
+    """WP-TC5: person-involving pairs mint NO deterministic edge (graph-inert).
+
+    Person nodes carry no references at all in normal use, but a coincidentally
+    shared ref (e.g. two nodes both citing the same commit) must not auto-link a
+    person into an episode/entity/document the way an ordinary entity would.
+    """
+
+    @pytest.fixture
+    def storage(self, tmp_path):
+        return CognitionStorage(tmp_path / ".cognition")
+
+    def _node(self, storage, node_id, ntype, refs):
+        storage.add_node(_make_node(node_id, ntype, references=refs))
+
+    def test_person_and_episode_no_edge(self, storage):
+        """person ↔ episode → no deterministic edge (would mint part_of without the gate)."""
+        self._node(storage, "p1", CognitionNodeType.PERSON, ["commit:abc"])
+        self._node(storage, "ep1", CognitionNodeType.EPISODE, ["commit:abc"])
+        assert storage.create_deterministic_edges("ep1") == 0
+
+    def test_person_and_entity_no_edge(self, storage):
+        """person ↔ entity → no deterministic edge."""
+        self._node(storage, "p1", CognitionNodeType.PERSON, ["commit:abc"])
+        self._node(storage, "dec1", CognitionNodeType.DECISION, ["commit:abc"])
+        assert storage.create_deterministic_edges("dec1") == 0
+
+    def test_person_and_document_no_edge(self, storage):
+        """person ↔ document → no deterministic edge."""
+        self._node(storage, "p1", CognitionNodeType.PERSON, ["doc:abc123abc123"])
+        self._node(storage, "doc1", CognitionNodeType.DOCUMENT, ["doc:abc123abc123"])
+        assert storage.create_deterministic_edges("doc1") == 0
+
+    def test_person_in_inert_set(self):
+        """person is in _INERT_TYPES alongside workflow/task (and document is NOT)."""
+        assert CognitionNodeType.PERSON.value in CognitionStorage._INERT_TYPES
+        assert CognitionNodeType.TASK.value in CognitionStorage._INERT_TYPES
+        assert CognitionNodeType.WORKFLOW.value in CognitionStorage._INERT_TYPES
+        assert CognitionNodeType.DOCUMENT.value not in CognitionStorage._INERT_TYPES
+
+
 class TestDeterministicEdgeSweep:
     """WP-5 (7c1899fe59ed): the startup sweep must re-evaluate against the
     reference index, not skip any node with ANY edge at all."""
