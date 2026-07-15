@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.22.0] — 2026-07-15
 
 **WP-TC1: curation conflict lens.**
 
@@ -19,7 +19,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Notes
 - Zero `src/` diff — this WP is agent-definition files, tests, docs, and scripts only; the curation pipeline's containment (orchestrator is the sole edge-writer, analyzers stay read-only/propose-only) and the `/vibe-curate` skill launcher (unchanged, stays generic) are untouched.
-- Version bump held — batches with WP-TC10 as `0.22.0`.
 
 **WP-TC10: per-person search/task exclude filter + "returned N of M" completeness.**
 
@@ -34,7 +33,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Notes
 - `_format_search_results` now unconditionally fetches the full node (`storage.get_node`) per hit (previously only for `document`-type hits, to compute staleness) — needed so the exclusion filter can read the server-resolved identity stamp; a cheap in-memory lookup, no new I/O.
 - Tool-surface self-sufficiency audit re-run over `cognition_search`, `cognition_get_history`, and `cognition_list_tasks` (the three tools this WP touched).
-- Version bump held — batches with the next Wave 2 WP (TC1) as `0.22.0`.
 
 ## [0.21.0] — 2026-07-15
 
