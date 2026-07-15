@@ -59,7 +59,21 @@ def register_service_tools(mcp) -> None:
                                and 0). This is a visibility signal only, not
                                an enforcement mechanism -- source is
                                caller-declared and a deliberate misreport is
-                               out of scope (local trust domain),
+                               out of scope (local trust domain). Remediation
+                               when edges_outside_curation is nonzero: inspect
+                               edge_sources for which value(s) are driving it;
+                               an accidental "manual"/"batch" edge from a
+                               one-off script or hand-edit is removed with
+                               cognition_remove_edge, or -- if it's intentional
+                               and meant to stay -- simply documented as an
+                               accepted baseline deviation (there is no
+                               "approve" flag). A LOW edges_outside_curation
+                               count is not itself a problem to fix -- the
+                               opposite miss (semantic edges that SHOULD exist
+                               but don't because /vibe-curate hasn't run
+                               recently) isn't visible here at all; re-run
+                               /vibe-curate periodically regardless of this
+                               count,
               rehydrate_events: null when no journal rehydrate-reset has occurred
                                 in this server process; otherwise
                                 {count: int, last: {at, nodes_before, nodes_after,

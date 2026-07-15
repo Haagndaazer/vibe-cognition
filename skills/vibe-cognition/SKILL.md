@@ -95,9 +95,21 @@ are injected at session start and listed via `cognition_list_tasks`, so the grap
   (`in_progress`/`blocked`, `claimed_by` set) via `blocked → in_progress` requires
   `note=` — a retryable error names the current claimant otherwise. Every other
   collision (poking an in-progress task without taking it over, reopening someone
-  else's closed task) succeeds and returns a `claim_warning` (`kind`, `claimant`,
+  else's closed task) succeeds and returns a `claim_warning` (`kind`:
+  `claim_collision` | `takeover_note_required` | `reopen`, plus `claimant`,
   `claimed_at`, `message`) instead of blocking — present only when a real foreign
   claim was detected; self-actions and unverifiable identities never trigger it.
+- **Personalized session-start prime.** `prime_personalize` (`auto` default | `on`
+  | `off`) picks global vs. personalized. `auto` personalizes when the graph has
+  more than one distinct stamped writer email OR more than one registered person
+  (catches a team's first-onboarded member — one writer so far, several people now
+  registered; a solo self-registered user stays global). When personalized and the
+  current identity resolves to a registered person node, the block opens with a
+  one-line identity header (`You are registered as {name} — {role} (seniority),
+  reporting to {manager}.`, degrading field-by-field) — mutually exclusive with
+  `## New Here?` below. Full order: identity header → `## Your Open Tasks` →
+  `## Team Critical` → `## Your Team` → `## Your Manager's Recent Decisions` →
+  `## Since You Were Gone` → `## Your Recent Activity`.
 - **Role-aware session-start prime.** A person node's `reports_to_email` (a
   reporting relationship — not the free-text `person.role` job title) drives two
   personalized sections: managers get `## Your Team` (direct reports' in-progress

@@ -15,7 +15,6 @@ retrievable by topic.
 | `cognition_get_workflow` | Find a procedure by name or topic; resolves to the current HEAD version |
 | `cognition_record` (node_type="workflow") | Store a new workflow procedure |
 | `cognition_get_superseded_chain` | See the full version history of a workflow |
-| `cognition_add_edge` | Add a `supersedes` edge when updating a workflow |
 
 ## Before a multi-step task — search first
 
@@ -53,14 +52,13 @@ cognition_record(
 ## Updating a workflow (versioning by supersession)
 
 **Never edit a workflow in place** — `cognition_update_node` is blocked on `workflow` nodes.
-Instead, record a new workflow carrying the FULL revised procedure, then link it:
+Instead, record a new workflow carrying the FULL revised procedure, then run
+`/vibe-curate` — the ONLY path that writes the `supersedes` edge linking it to the
+old version (semantic edges are never written directly, `cognition_add_edge` included
+— see "After recording" below):
 
 ```
-# 1. Record the updated version
 cognition_record(node_type="workflow", summary="same or new title", detail="FULL updated procedure...", ...)
-
-# 2. Link it to the old version
-cognition_add_edge(from_id="<new_id>", to_id="<old_id>", edge_type="supersedes")
 ```
 
 The HEAD is always the node with no incoming `supersedes` edge. `cognition_get_workflow`
@@ -74,4 +72,7 @@ resolves to the HEAD automatically, regardless of which version was matched.
 
 ## After recording
 
-Run `/vibe-curate` to add semantic edges linking the workflow to related nodes.
+Run `/vibe-curate` to add semantic edges linking the workflow to related nodes —
+including, when updating an existing workflow, the `supersedes` edge to the old
+version (see "Updating a workflow" above). `cognition_add_edge` is never called
+directly outside curation.

@@ -1303,8 +1303,9 @@ def _update_node(
         return {
             "error": (
                 "Workflow nodes are versioned by supersession — record a new workflow "
-                "node with the full updated procedure and add a `supersedes` edge to "
-                "this one; do not edit in place."
+                "node with the full updated procedure, then run /vibe-curate (the only "
+                "path that writes the `supersedes` edge to this one); do not edit in "
+                "place."
             )
         }
 
@@ -2516,7 +2517,8 @@ def register_cognition_tools(mcp) -> None:
         WORKFLOW NODES (workflow):
         - A step-by-step procedure stored as ONE cohesive unit. Verbose detail (like episode).
           Versioned by supersession: to update, record a NEW workflow node with the full revised
-          procedure and add a `supersedes` edge; never edit in place (update_node is blocked).
+          procedure, then run /vibe-curate (the only path that writes the `supersedes` edge);
+          never edit in place (update_node is blocked).
           summary: Brief title of the procedure. detail: The full procedure, verbose.
           Retrieve with cognition_get_workflow(name_or_topic) to resolve to the current HEAD.
 
@@ -3026,8 +3028,10 @@ def register_cognition_tools(mcp) -> None:
             prior_version_id/consider_supersedes (WP-12, db65f1568fa5) appear ONLY when
             file_path pointed at a path some EXISTING document node already references,
             with DIFFERENT content (sha changed) — a re-store of a changed file. This is
-            an OFFER, never automatic: no supersedes edge is created for you; link it
-            yourself with cognition_add_edge if this genuinely is a new version.
+            an OFFER, never automatic: no supersedes edge is created for you — if this
+            genuinely is a new version, record it as a new document and run /vibe-curate,
+            the ONLY path that writes the supersedes edge (semantic edges, including
+            supersedes, are never written directly, cognition_add_edge included).
         """
         lifespan = get_lifespan(ctx)
         storage: CognitionStorage = lifespan["cognition_storage"]
@@ -3712,6 +3716,12 @@ def register_cognition_tools(mcp) -> None:
             single entry's own completeness).
             (Cross-project note: for semantic search over projects use
             cognition_search with project=; get_history is structural only.)
+            NOT HEAD-filtered and carries no conflict/supersession marker: unlike
+            cognition_search's results (which carry `conflicted`/`superseded_by`,
+            WP-SearchFlags), a superseded row here shows exactly like its
+            resolving replacement, and a contradicted node shows exactly like a
+            clean one — recency/context alone decide what's returned. Use
+            cognition_search when you need those signals.
         """
         lc = get_lifespan(ctx)
 
@@ -3785,6 +3795,11 @@ def register_cognition_tools(mcp) -> None:
         ONLY the curate-orchestrator agent (launched via /vibe-curate) may use this
         tool. If you are any other agent — including the main instance — do NOT
         call it; to get edges created, run /vibe-curate. No manual carve-out.
+        This restriction is a documented CONVENTION enforced by agent discipline,
+        not a server-side ACL — this tool has no caller-identity check, so it
+        cannot itself reject an out-of-convention caller. get_status's
+        edges_outside_curation count (backed by the edge_sources histogram) is
+        how a violation would be detected after the fact, not prevented up front.
 
         EDGE SEMANTICS — when to use each type (this table's audience is the
         curate-orchestrator, including its degraded no-nesting inline mode — not a
@@ -3865,6 +3880,11 @@ def register_cognition_tools(mcp) -> None:
         ONLY the curate-orchestrator agent (launched via /vibe-curate) may use this
         tool. If you are any other agent — including the main instance — do NOT
         call it; to get edges created, run /vibe-curate. No manual carve-out.
+        This restriction is a documented CONVENTION enforced by agent discipline,
+        not a server-side ACL — this tool has no caller-identity check, so it
+        cannot itself reject an out-of-convention caller. get_status's
+        edges_outside_curation count (backed by the edge_sources histogram) is
+        how a violation would be detected after the fact, not prevented up front.
 
         Each edge in the JSON array needs from_id, to_id, and edge_type.
         Edges are validated individually — invalid ones are skipped and reported.
@@ -4071,7 +4091,9 @@ def register_cognition_tools(mcp) -> None:
         Called ONLY by the curate-orchestrator agent (launched via /vibe-curate)
         after reviewing a batch, even if no edges were created — marking nodes
         curated without analysis permanently skips them. If you are any other
-        agent — including the main instance — do NOT call it.
+        agent — including the main instance — do NOT call it. This restriction
+        is a documented CONVENTION enforced by agent discipline, not a
+        server-side ACL — this tool has no caller-identity check.
 
         Args:
             node_ids: Comma-separated node IDs to mark as curated
@@ -4124,6 +4146,11 @@ def register_cognition_tools(mcp) -> None:
             are always present. When project is not None, also includes
             "project": tag. {"error": "..."} on a missing node/bad edge_type/
             unsupported direction/rejected "*".
+            NOT HEAD-filtered and carries no conflict/supersession summary flag
+            (unlike cognition_search's `conflicted`/`superseded_by`, WP-SearchFlags):
+            the raw edges in the result ARE the signal — a `supersedes`/`contradicts`
+            entry here means exactly what its `edge_type` says, you read it directly
+            rather than a precomputed marker on `node_id` itself.
         """
         lc = get_lifespan(ctx)
 
@@ -4233,8 +4260,9 @@ def register_cognition_tools(mcp) -> None:
         incident to it (incoming and outgoing) and purges its embedding so it
         no longer appears in cognition_search. The deletion converges across
         concurrent sessions on the shared journal. Use this to prune junk,
-        test, or duplicate nodes — for an outdated-but-real node, prefer adding
-        a `supersedes` edge (cognition_add_edge) over deleting the history.
+        test, or duplicate nodes — for an outdated-but-real node, record the
+        correction and run /vibe-curate to add a `supersedes` edge (the only
+        path that writes one) over deleting the history.
         The acting author is resolved SERVER-SIDE from this repo's git config
         (same as cognition_add_task) and recorded in the journal tombstone.
 

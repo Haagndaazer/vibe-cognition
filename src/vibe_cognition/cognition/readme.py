@@ -123,6 +123,23 @@ below every human seniority tier), human:<seniority> (stamped + registered perso
 human:unregistered (stamped, no matching person node), unverified (no stamp at all).
 cognition_get_workflow's internal match search shares this path and inherits it too.
 
+## Session-start prime: personalized vs. global
+
+prime_personalize (auto default | on | off) picks whether session-start prime
+shows the global digest or one keyed to your git identity. auto personalizes
+when the graph has more than one distinct stamped writer email OR more than
+one registered person -- the second condition catches a team's
+first-onboarded member, where every node so far was written by one person but
+several people are now registered (a solo user who registers only themselves
+stays global either way). When personalized and your identity resolves to a
+registered person node, the block opens with a one-line identity header (You
+are registered as {name} -- {role} ({seniority}), reporting to {manager}.,
+degrading field-by-field when role/seniority/manager are blank) -- mutually
+exclusive with the New Here notice below, by construction. Full pinned order
+when personalized: identity header -> Your Open Tasks -> Team Critical ->
+Your Team -> Your Manager's Recent Decisions -> Since You Were Gone -> Your
+Recent Activity.
+
 ## Session-start prime: role-aware sections
 
 A person node's reports_to_email (a REPORTING relationship, distinct from the
@@ -144,7 +161,11 @@ synced) tracks when you last started a session here. Right after Your Manager's
 Recent Decisions, personalized prime shows "## Since You Were Gone": teammates'
 decisions, constraints, and incidents recorded since that marker -- newest first,
 capped, with your own writes excluded (not news to you) but unstamped nodes
-included (an awareness view reports content, not people). No marker yet (first
+included (an awareness view reports content, not people). Constraints are
+HEAD-filtered (mirroring the global Active Constraints section); decisions and
+incidents are not (mirroring their own global sections) -- a node can
+legitimately also appear in Your Manager's Recent Decisions or the global
+Recent Decisions, deliberately not deduplicated. No marker yet (first
 run, or an ephemeral sandbox) falls back to a capped lookback window -- never a
 full-history dump, never a silently-skipped section. The marker is stamped only
 by the real SessionStart hook, never by a bare generate_prime call (dashboard,
