@@ -5,12 +5,13 @@ import contextlib
 import json
 import os
 import sys
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ..config import Settings, resolve_repo_path_env
-from .git_hygiene import check_hygiene_state, format_hygiene_announce
+from .git_hygiene import _acquire_lock, _release_lock, check_hygiene_state, format_hygiene_announce
 from .git_identity import resolve_git_identity
 from .models import CognitionEdgeType, CognitionNodeType
 from .readme import ONBOARDING_BLOCK
@@ -28,6 +29,16 @@ _TASK_CLOSED_STATUSES = frozenset({"done", "cancelled"})
 # (kept as a plain string there too, not imported, matching that module's existing
 # stdlib-only/standalone convention for REHYDRATE_FLAG_FILENAME).
 ONBOARD_DECLINE_FILENAME = "onboard-declined"
+
+# WP-TC14: "Since You Were Gone" digest. Per-machine, git-ignored, UNCOMMITTED
+# marker file -- casefolded email -> aware-UTC ISO timestamp of that email's
+# last session-start (JSON object, read-modify-write preserves other emails'
+# entries -- the per-email ruling: a manager and subordinate sharing a machine
+# must not stomp each other's marker). Written ONLY by prime.py's own main()
+# (see _stamp_last_seen), never by generate_prime itself (read-only invariant).
+LAST_SEEN_FILENAME = "last-seen.json"
+_LAST_SEEN_LOCK_ATTEMPTS = 3
+_LAST_SEEN_LOCK_RETRY_DELAY_S = 0.02
 
 ONBOARDING_NOTICE = (
     "## New Here?\n"
@@ -77,6 +88,11 @@ class PrimeConfig:
     prime_stale_claim_days: int = 7
     prime_rollup_cap: int = 5
     prime_manager_decision_limit: int = 3
+
+    # WP-TC14: "Since You Were Gone" digest knobs. No separate on/off knob --
+    # the section self-gates on personalize (TC16 no-dead-knob philosophy).
+    prime_digest_cap: int = 5
+    prime_digest_fallback_days: int = 7
 
 
 def _truncate(text: str, maxlen: int) -> str:
@@ -602,6 +618,167 @@ def _format_manager_decisions(
     return "## Your Manager's Recent Decisions\n" + "\n".join(lines)
 
 
+# ── WP-TC14: "Since You Were Gone" digest ───────────────────────────────────
+
+
+def _last_seen_for(cognition_dir: Path, email: str) -> str | None:
+    """My last-seen marker timestamp (aware-UTC ISO string), or None when the
+    file is missing/unreadable/malformed JSON/non-dict/the value for this
+    email is missing-or-non-string (e.g. a null entry) -- never raises (the
+    onboard-declined OSError->empty-set model, extended to JSONDecodeError).
+    None means "first run or corrupted", NEVER "no digest" -- the caller
+    falls back to a capped lookback window instead."""
+    email = (email or "").casefold()
+    if not email:
+        return None
+    path = cognition_dir / LAST_SEEN_FILENAME
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    value = data.get(email)
+    return value if isinstance(value, str) and value else None
+
+
+def _stamp_last_seen(cognition_dir: Path, email: str) -> None:
+    """Read-modify-write my (casefolded) entry in .cognition/last-seen.json to
+    now (aware UTC ISO), UNCONDITIONALLY overwriting whatever was there --
+    last-writer-wins is also the clock-skew self-heal (a future-dated marker
+    gets replaced with real now on the next session). No-op on an empty email.
+
+    Called ONLY from prime.py's own main() (the CLI/hook path), AFTER prime
+    output is produced -- generate_prime itself stays pure read-only (mirrors
+    where _consume_rehydrate_flag's mutation already lives). Guarded by
+    git_hygiene's established lock (60s stale detection) since two teammates
+    starting sessions on a shared machine concurrently is exactly the
+    per-email ruling's race -- an unlocked RMW can silently lose the other
+    email's fresh entry. A short bounded retry (3 attempts, 20ms apart, worst
+    case ~40ms) gives realistically-concurrent same-machine session-starts a
+    fair chance to both land rather than the second one being dropped by a
+    single failed attempt; retries exhausted still degrades to "skip the
+    stamp entirely" (a missed stamp just falls back to the lookback window
+    next session -- never blocks or fails the SessionStart hook). The write
+    itself is atomic (temp file in the same dir + os.replace) so a crash
+    never leaves torn JSON, and the whole body is wrapped in
+    suppress(OSError) -- a read-only filesystem must never fail the hook.
+    """
+    email = (email or "").casefold()
+    if not email:
+        return
+    lock_path = cognition_dir / f"{LAST_SEEN_FILENAME}.lock"
+    acquired = False
+    for attempt in range(_LAST_SEEN_LOCK_ATTEMPTS):
+        if _acquire_lock(lock_path):
+            acquired = True
+            break
+        if attempt < _LAST_SEEN_LOCK_ATTEMPTS - 1:
+            time.sleep(_LAST_SEEN_LOCK_RETRY_DELAY_S)
+    if not acquired:
+        return
+    try:
+        with contextlib.suppress(OSError):
+            path = cognition_dir / LAST_SEEN_FILENAME
+            tmp_path = cognition_dir / f"{LAST_SEEN_FILENAME}.tmp"
+            # Clean up a stray .tmp left by a process killed between write_text
+            # and os.replace on a prior stamp -- gate F1: unlink is a no-op if
+            # nothing is there, so this never affects the happy path. Must run
+            # BEFORE the write attempt below, so a stray survives even if THIS
+            # stamp also fails to write (a second disk hiccup, say).
+            tmp_path.unlink(missing_ok=True)
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    data = {}
+            except (OSError, json.JSONDecodeError, ValueError):
+                data = {}
+            data[email] = datetime.now(UTC).isoformat()
+            tmp_path.write_text(json.dumps(data), encoding="utf-8")
+            os.replace(tmp_path, path)
+    finally:
+        _release_lock(lock_path)
+
+
+def _format_since_you_were_gone(
+    storage: CognitionStorage, config: PrimeConfig, current_email: str, maxlen: int = 0
+) -> str:
+    """'Since You Were Gone' (personalized-only): decision/constraint/incident
+    nodes with `timestamp` STRICTLY greater than a per-email high-water-mark
+    cutoff (my last-seen marker when present, else `now -
+    prime_digest_fallback_days` -- a capped lookback, never a full-history
+    dump). Comparison is LEXICOGRAPHIC ISO string compare only -- no datetime
+    parsing anywhere in this function, so a naive/malformed node timestamp
+    simply compares low and drops out or shows (degrade, never crash -- the
+    TC16-F2 naive-timestamp crash class is structurally absent here).
+
+    Excludes nodes whose `_node_email` equals my casefolded email ("your own
+    writes are not news to you"). UNSTAMPED nodes (`_node_email` == "") are
+    INCLUDED -- an awareness view reports content, not people (deliberate
+    divergence from the rollup's attribution doctrine, which gates on
+    positive attribution because it names people).
+
+    Constraints are HEAD-filtered (mirrors Active Constraints -- the inline
+    `not storage.get_predecessors(..., SUPERSEDES)` expression, a 4th copy of
+    the same pattern already inlined 3x in this file). Decisions and
+    incidents are NOT HEAD-filtered -- mirrors their own global sections
+    exactly (same "mirror each type's existing semantics" precedent TC16
+    established for Your Manager's Recent Decisions).
+
+    Newest-first interleave across all three types, capped at
+    `config.prime_digest_cap` total with the standard overflow line. A new
+    decision can legitimately ALSO appear in Your Manager's Recent Decisions
+    and the global Recent Decisions section -- deliberate, same overlap
+    ruling as TC16 (deduping would couple sections' semantics)."""
+    marker = _last_seen_for(storage.cognition_dir, current_email)
+    if marker is not None:
+        cutoff = marker
+    else:
+        cutoff = (datetime.now(UTC) - timedelta(days=config.prime_digest_fallback_days)).isoformat()
+
+    candidates: list[tuple[dict, str]] = []
+    for node_type, label in (
+        (CognitionNodeType.DECISION, "decision"),
+        (CognitionNodeType.CONSTRAINT, "constraint"),
+        (CognitionNodeType.INCIDENT, "incident"),
+    ):
+        for n in storage.get_nodes_by_type(node_type):
+            if n.get("timestamp", "") <= cutoff:
+                continue
+            if _node_email(n) == current_email:
+                continue
+            if node_type == CognitionNodeType.CONSTRAINT and storage.get_predecessors(
+                n["id"], CognitionEdgeType.SUPERSEDES
+            ):
+                continue
+            candidates.append((n, label))
+
+    if not candidates:
+        return ""
+
+    candidates.sort(key=lambda pair: pair[0].get("timestamp", ""), reverse=True)
+    total = len(candidates)
+    shown = candidates[: config.prime_digest_cap]
+
+    lines: list[str] = []
+    for n, label in shown:
+        summary = _truncate(n.get("summary", "No summary"), maxlen)
+        recorded = n.get("metadata", {}).get("recorded_by")
+        name = recorded.get("name") if isinstance(recorded, dict) else None
+        name = name or "unattributed"
+        date = n.get("timestamp", "")[:10]
+        lines.append(f"- [{label}] {summary} ({name}, {date})")
+
+    overflow = total - len(shown)
+    if overflow > 0:
+        lines.append(f"- +{overflow} more since you were gone — use cognition_search")
+    return "## Since You Were Gone\n" + "\n".join(lines)
+
+
 def _onboarding_notice(storage: CognitionStorage, config: PrimeConfig, current_email: str) -> str:
     """The new-user onboarding notice (WP-TC7), or "" when it should not fire.
 
@@ -663,12 +840,14 @@ def generate_prime(
         sections.append(_format_tasks(storage, config.prime_task_cap, maxlen))
 
     if personalize:
-        # WP-TC16: pinned order Team Critical -> Your Team -> Your Manager's
-        # Recent Decisions -> Your Recent Activity. Role derivation is ONE
-        # person-node scan shared by both sections (a middle manager gets both).
+        # WP-TC16/TC14: pinned order Team Critical -> Your Team -> Your
+        # Manager's Recent Decisions -> Since You Were Gone -> Your Recent
+        # Activity. Role derivation is ONE person-node scan shared by both
+        # TC16 sections (a middle manager gets both).
         role = _derive_role(storage, current_email)
         sections.append(_format_your_team(storage, config, role, maxlen))
         sections.append(_format_manager_decisions(storage, config, role, maxlen))
+        sections.append(_format_since_you_were_gone(storage, config, current_email, maxlen))
         sections.append(_format_your_activity(storage, config, current_email, maxlen))
 
     sections.extend([
@@ -810,6 +989,8 @@ def main(argv: list[str] | None = None):
                 prime_stale_claim_days=settings.prime_stale_claim_days,
                 prime_rollup_cap=settings.prime_rollup_cap,
                 prime_manager_decision_limit=settings.prime_manager_decision_limit,
+                prime_digest_cap=settings.prime_digest_cap,
+                prime_digest_fallback_days=settings.prime_digest_fallback_days,
             )
         except Exception:  # noqa: BLE001
             config = PrimeConfig()
@@ -817,6 +998,10 @@ def main(argv: list[str] | None = None):
         # contract) -- no try/except needed around it, unlike Settings() above.
         current_email = resolve_git_identity(repo_path).get("email") or None
         sections.append(generate_prime(storage, config, current_email))  # type: ignore[arg-type]
+        # WP-TC14: stamp AFTER output is produced, only on this (main()'s own)
+        # CLI/hook path -- generate_prime itself stays pure read-only, and
+        # instructions.py's compact-reinject main() never reaches this branch.
+        _stamp_last_seen(cognition_dir, current_email or "")
 
     output = {
         "hookSpecificOutput": {

@@ -291,6 +291,21 @@ class Settings(BaseSettings):
         description="Max decisions shown in 'Your Manager's Recent Decisions'",
     )
 
+    # WP-TC14: "Since You Were Gone" digest. Self-gates on personalize (no
+    # separate on/off knob) -- see PrimeConfig for the full description.
+    prime_digest_cap: int = Field(
+        default=5,
+        description="Max rows shown in 'Since You Were Gone', newest-first across decisions/constraints/incidents",
+    )
+    prime_digest_fallback_days: int = Field(
+        default=7,
+        description=(
+            "Capped lookback window for 'Since You Were Gone' when no per-email "
+            "last-seen marker exists yet (first run, ephemeral sandbox, or a "
+            "corrupted/malformed marker) -- never a full-history dump."
+        ),
+    )
+
     @field_validator("repo_path", mode="before")
     @classmethod
     def validate_repo_path(cls, v: str | Path) -> Path:

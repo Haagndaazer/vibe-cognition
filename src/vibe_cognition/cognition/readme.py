@@ -132,6 +132,19 @@ your OWN claims -- those already surface under Your Open Tasks. A role-less user
 (no person node, no reports either direction) or personalization off sees no
 change at all.
 
+## Session-start prime: "Since You Were Gone" digest
+
+A machine-local, per-email marker (.cognition/last-seen.json, git-ignored, never
+synced) tracks when you last started a session here. Right after Your Manager's
+Recent Decisions, personalized prime shows "## Since You Were Gone": teammates'
+decisions, constraints, and incidents recorded since that marker -- newest first,
+capped, with your own writes excluded (not news to you) but unstamped nodes
+included (an awareness view reports content, not people). No marker yet (first
+run, or an ephemeral sandbox) falls back to a capped lookback window -- never a
+full-history dump, never a silently-skipped section. The marker is stamped only
+by the real SessionStart hook, never by a bare generate_prime call (dashboard,
+library use, tests) -- starting a session is what marks things "seen."
+
 ## Edge types
 
   part_of (auto), led_to, resolved_by, supersedes, contradicts, relates_to

@@ -486,6 +486,25 @@ assumption: `reports_to_email` is one string; matrixed/multi-manager orgs are ou
 scope. A user with no person node, no reports either direction, or personalization
 off sees byte-identical output to before this feature existed.
 
+**"Since You Were Gone" digest.** A machine-local, per-email marker
+(`.cognition/last-seen.json`, git-ignored, never synced — the manager/subordinate
+per-email ruling applies here too, so a shared machine's two identities don't stomp
+each other's marker) tracks when you last started a session in this repo.
+Personalized prime shows `## Since You Were Gone` right after `## Your Manager's
+Recent Decisions`: decisions, constraints, and incidents timestamped *strictly
+after* that marker — teammates' news since you were last here, newest first,
+capped at `prime_digest_cap`, default 5. Your own writes are excluded (not news to
+you); unstamped nodes are still included (an awareness view reports content, not
+people). Constraints are HEAD-filtered (mirroring `## Active Constraints`);
+decisions/incidents are not (mirroring their own global sections) — a node can
+legitimately also appear in `## Your Manager's Recent Decisions` or the global
+`## Recent Decisions`, deliberately not deduplicated. No marker yet (first
+session, or an ephemeral sandbox) falls back to a capped `prime_digest_fallback_days`
+(default 7) lookback window — never a full-history dump, never a silently-omitted
+section. The marker is stamped only by the real SessionStart hook (`main()`),
+never by a bare `generate_prime()` call — the function itself stays pure
+read-only, so the dashboard, library use, and tests never mark anything "seen."
+
 **New-user onboarding notice.** When a session's git identity resolves to an email
 with no matching person node yet, the session-start prime digest opens with a `## New
 Here?` notice prompting the agent to ask the human for their name, role, seniority,

@@ -7,8 +7,10 @@ except when the schema version is bumped for future writers (triggers one re-run
 Two writes (both idempotent, locked, crash-proof):
   1. repo-root .gitattributes  — .cognition/journal.jsonl merge=union
   2. .cognition/.gitignore     — chromadb/, .git-hygiene-managed, *.lock,
-                                 .last-rehydrate.json (local loss-alert flag), and
-                                 onboard-declined (local onboarding decline file)
+                                 .last-rehydrate.json (local loss-alert flag),
+                                 onboard-declined (local onboarding decline file), and
+                                 last-seen.json* (local "Since You Were Gone" marker
+                                 + its .tmp sibling from the atomic write)
 
 `merge=union` is a MERGE-DRIVER attribute — it only changes 3-way merge resolution
 and never participates in checkout/checkin filtering, so adding it does NOT
@@ -38,7 +40,11 @@ logger = logging.getLogger(__name__)
 # v2: .last-rehydrate.json added to .cognition/.gitignore (WP-1 loss visibility).
 # v3: onboard-declined added to .cognition/.gitignore (WP-TC7 onboarding decline file
 #     -- per-machine, must never sync via git any more than the rehydrate flag does).
-GIT_HYGIENE_VERSION = 3
+# v4: last-seen.json added to .cognition/.gitignore (WP-TC14 "Since You Were Gone"
+#     digest marker -- machine-local, per-email, must never sync via git). Amended
+#     in place (not v5, since v4 had not shipped anywhere yet) to a glob,
+#     last-seen.json*, covering the .tmp sibling of the atomic write (gate F1).
+GIT_HYGIENE_VERSION = 4
 
 _GITATTRIBUTES_MARKER = "# vibe-cognition: append-only journal union-merge (safe to remove)"
 _GITATTRIBUTES_RULE = ".cognition/journal.jsonl merge=union"
@@ -51,6 +57,15 @@ _GITIGNORE_REHYDRATE = ".last-rehydrate.json"
 # Local-only onboarding decline file (prime.ONBOARD_DECLINE_FILENAME) — string
 # duplicated here for the same reason as _GITIGNORE_REHYDRATE above.
 _GITIGNORE_ONBOARD_DECLINED = "onboard-declined"
+# Local-only "Since You Were Gone" last-seen marker (prime.LAST_SEEN_FILENAME) —
+# string duplicated here for the same reason as _GITIGNORE_REHYDRATE above. Glob
+# (not a bare filename) so it also covers the last-seen.json.tmp sibling that
+# _stamp_last_seen's atomic write briefly creates -- a process killed between
+# write_text and os.replace would otherwise leave an unignored .tmp file that
+# the journal-flush `git add .cognition/` procedure would commit (WP-TC14 gate
+# F1: machine-local state syncing via git, the exact property this file exists
+# to prevent).
+_GITIGNORE_LAST_SEEN = "last-seen.json*"
 _FLAG_FILENAME = ".git-hygiene-managed"
 
 # A lock older than this is assumed stale (leftover from a hard-killed process).
@@ -176,7 +191,7 @@ def _needs_gitignore_entry(gitignore_path: Path, entry: str, bare: str) -> bool:
 
 def _write_gitignore(cognition_dir: Path) -> bool:
     """Ensure .cognition/.gitignore contains chromadb/, .git-hygiene-managed, *.lock,
-    .last-rehydrate.json, and onboard-declined.
+    .last-rehydrate.json, onboard-declined, and last-seen.json.
     Returns True if the file is correct after the call (success or already-present)."""
     gitignore_path = cognition_dir / ".gitignore"
     lock = cognition_dir / ".gitignore.lock"
@@ -192,7 +207,13 @@ def _write_gitignore(cognition_dir: Path) -> bool:
         need_onboard_declined = _needs_gitignore_entry(
             gitignore_path, _GITIGNORE_ONBOARD_DECLINED, _GITIGNORE_ONBOARD_DECLINED
         )
-        if not any((need_chromadb, need_flag, need_locks, need_rehydrate, need_onboard_declined)):
+        need_last_seen = _needs_gitignore_entry(
+            gitignore_path, _GITIGNORE_LAST_SEEN, _GITIGNORE_LAST_SEEN
+        )
+        if not any((
+            need_chromadb, need_flag, need_locks, need_rehydrate,
+            need_onboard_declined, need_last_seen,
+        )):
             return True
 
         if not gitignore_path.exists():
@@ -207,6 +228,8 @@ def _write_gitignore(cognition_dir: Path) -> bool:
                 lines_to_add.append(_GITIGNORE_REHYDRATE)
             if need_onboard_declined:
                 lines_to_add.append(_GITIGNORE_ONBOARD_DECLINED)
+            if need_last_seen:
+                lines_to_add.append(_GITIGNORE_LAST_SEEN)
             try:
                 gitignore_path.write_text("\n".join(lines_to_add) + "\n", encoding="utf-8")
             except OSError as exc:
@@ -231,6 +254,8 @@ def _write_gitignore(cognition_dir: Path) -> bool:
             lines_to_add.append(_GITIGNORE_REHYDRATE)
         if need_onboard_declined:
             lines_to_add.append(_GITIGNORE_ONBOARD_DECLINED)
+        if need_last_seen:
+            lines_to_add.append(_GITIGNORE_LAST_SEEN)
 
         prefix = "" if (not existing or existing.endswith("\n")) else "\n"
         addition = prefix + "\n".join(lines_to_add) + "\n"
