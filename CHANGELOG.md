@@ -5,6 +5,25 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0] — 2026-07-15
+
+**WP-TC11: dashboard redesign V1 (PM core).**
+
+### Added
+- **Dashboard nav-rail redesign** — the 3-column constellation-first layout is replaced by a left nav rail with three views: **Overview** (stat tiles, active constraints, needs-attention list, recent episodes, recent high-severity incidents), **Board** (kanban columns for tasks with a tree-view toggle for the epic/subtask hierarchy, done capped to the most recent 20, cancelled behind a toggle), and **Graph** (the original constellation, kept for curation debugging, demoted from front door to a lazy-loaded tab).
+- **Shared detail drawer** replaces the old always-visible detail sidebar — opened from a Board card, a Graph node, a search result, or any Overview list row. Adds a provenance block with trust-class labeling (server-resolved `recorded_by`/`created_by`/`claimed_by` render as a solid person chip; a pre-P13n node with only a free-text `author` renders a visually distinct dashed "unverified" chip — never identical to a verified one), a task transition timeline, related nodes grouped by edge type (supersedes/contradicts rendered loud), and a conflict banner slot for contradicted-or-superseded nodes. A `from_agent` badge (WP-TC6) renders when the key is present on a node's metadata and nothing when it's absent.
+- **`GET /api/tasks`** — every task shaped for the Board view (`status`, `priority`, `owner`, `parent_id`, `depth`, `created_by`, `claimed_by`, `timestamp`, `claimed_at`, `last_transition_at`, `transitions_count`), built independently of `cognition_list_tasks` (the dashboard-only `claimed_at`/transition-timestamp fields aren't in that tool's row shape).
+- **`GET /api/overview`** — server-computed aggregate: task counts by status, done-this-week (from the `done` transition's timestamp, not node creation), HEAD-filtered active constraints (severity ≠ low, no incoming `supersedes` edge), needs-attention (stale claims — `claimed_at` older than 5 days — and blocked tasks), recent episodes (5), recent high-severity incidents (last 14 days), and HEAD-only workflow/document counts.
+- **D-3 fold-in**: auto-poll now refreshes stats/overview/board every 30s regardless of the active view; the Graph tab's `cytoscape()` instance is constructed exactly once, on first activation, and subsequent refreshes update its elements in place — the pre-redesign code rebuilt a fresh instance every tick even when the Graph tab wasn't showing. A persistent "Search disabled — server started with `--no-embeddings`" banner replaces the old auto-hiding placeholder text for that state.
+
+### Fixed
+- Board/Overview/drawer person chips never silently upgrade a free-text `author` fallback to look like a server-resolved identity — closes the gap decision `6be2e867f91e` exists to prevent, now enforced at the list-chip level too, not just the drawer.
+
+### Notes
+- Read-only v1 (unchanged): no new mutating endpoints; node delete is the only write path, unchanged.
+- Documents/Workflows dedicated views and an Activity feed are out of scope for this WP (V2, per the approved design doc) — `/api/documents` and `/api/document/{id}/download` are unchanged and still reachable directly.
+- Threadpool spawn risk (`4163f54f2848`) assessed, not widened: the two new endpoints are sync handlers matching the existing `get_graph`/`get_stats`/`list_documents` pattern — only `search()` explicitly calls `run_in_threadpool`, unchanged by this WP.
+
 ## [0.19.0] — 2026-07-15
 
 **WP-TC5 + WP-TC6: identity node layer (person nodes + agent-origin provenance).**

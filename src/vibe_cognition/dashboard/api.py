@@ -8,16 +8,28 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import FileResponse, JSONResponse
 
-from ..cognition import CognitionNodeType, delete_cognition_node
+from ..cognition import CognitionEdgeType, CognitionNodeType, delete_cognition_node
 from ..cognition.documents import documents_dir, text_sidecar_path
 from ..embeddings import adaptive_vector_search
 from ..tools.cognition_tools import _reembed_replayed_nodes
+
+# Deliberately NOT `from ..cognition.prime import SEVERITY_ORDER` (scope-dashboard-v1
+# brief, doc:4c0b9d426f4c): prime.py carries markdown-formatting + CLI-facing deps this
+# read-only JSON aggregation has no business pulling in. A local copy is one line and
+# keeps the dashboard's import surface independent of prime.py's.
+_SEVERITY_ORDER = {"critical": 0, "high": 1, "normal": 2, "low": 3}
+_TASK_CLOSED_STATUSES = frozenset({"done", "cancelled"})
+_STALE_CLAIM_DAYS = 5
+_DONE_THIS_WEEK_DAYS = 7
+_RECENT_INCIDENT_DAYS = 14
+_HIGH_SEVERITIES = frozenset({"critical", "high"})
 
 _UNSAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
 _SAFE_MEDIA_TYPE = re.compile(r"^[\w.+-]+/[\w.+-]+$")  # strict type/subtype, no params/CRLF
@@ -280,6 +292,181 @@ def get_stats(request):
         "embedding_status": status,
         "embedding_error": lc.get("embedding_error"),
         "embedding_generator_loaded": lc.get("embedding_generator") is not None,
+    })
+
+
+def _parse_ts(ts: str | None) -> datetime | None:
+    """Best-effort ISO-8601 parse; None on missing/malformed (never raises)."""
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+
+
+def _task_claimed_at(transitions: list[dict[str, Any]]) -> str | None:
+    """The `at` of the LATEST ->in_progress transition (mirrors claimed_by's semantics
+    in _update_task: a takeover re-stamps both together)."""
+    claimed_at = None
+    for tr in transitions:
+        if tr.get("status") == "in_progress":
+            claimed_at = tr.get("at")
+    return claimed_at
+
+
+def _task_row(t: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Shape one task node for the dashboard Board view.
+
+    Built independently against storage.get_nodes_by_type (WP-TC11 brief) rather than
+    reusing cognition_tools._list_tasks -- claimed_by/claimed_at/transition timestamps
+    are dashboard-only fields not in that tool's row shape.
+    """
+    meta = t.get("metadata", {}) or {}
+    transitions = meta.get("transitions") or []
+
+    depth = 0
+    seen: set[str] = set()
+    cur = meta.get("parent_id")
+    while cur and cur in by_id and cur not in seen:
+        seen.add(cur)
+        depth += 1
+        cur = (by_id[cur].get("metadata", {}) or {}).get("parent_id")
+
+    return {
+        "id": t["id"],
+        "summary": t.get("summary"),
+        "status": meta.get("status", "open"),
+        "priority": t.get("severity"),
+        "owner": meta.get("owner"),
+        "parent_id": meta.get("parent_id"),
+        "depth": depth,
+        "created_by": meta.get("created_by"),
+        "claimed_by": meta.get("claimed_by"),
+        "author": t.get("author"),
+        "from_agent": meta.get("from_agent"),
+        "timestamp": t.get("timestamp"),
+        "claimed_at": _task_claimed_at(transitions),
+        "last_transition_at": transitions[-1]["at"] if transitions else None,
+        "transitions_count": len(transitions),
+    }
+
+
+def get_tasks(request):
+    """List every task, shaped for the Board view (kanban + tree).
+
+    Unfiltered — the client caps "done" to a recent window and hides
+    "cancelled" behind a toggle (design doc §4.2); the API returns the full
+    set once so both are cheap client-side re-slices, not extra round-trips.
+    """
+    lc = _ctx(request)
+    storage = lc["cognition_storage"]
+    tasks = storage.get_nodes_by_type(CognitionNodeType.TASK)
+    by_id = {t["id"]: t for t in tasks}
+    rows = [_task_row(t, by_id) for t in tasks]
+    rows.sort(key=lambda r: r.get("timestamp") or "", reverse=True)
+    rows.sort(key=lambda r: _SEVERITY_ORDER.get(r.get("priority") or "normal", 2))
+    return JSONResponse({"tasks": rows, "count": len(rows)})
+
+
+def _entity_row(n: dict[str, Any]) -> dict[str, Any]:
+    """Shape a non-task entity node (episode/incident/constraint/...) for list views.
+
+    Includes both provenance fields so the frontend can apply trust-class labeling
+    (design doc §4.7): `recorded_by` is server-resolved (WP-P13n+), `author` is the
+    free-text fallback every node has always had. A pre-P13n node has `recorded_by`
+    absent -- the frontend renders `author` with a dashed "unverified" chip in that case.
+    """
+    meta = n.get("metadata", {}) or {}
+    return {
+        "id": n["id"],
+        "type": n.get("type"),
+        "summary": n.get("summary"),
+        "timestamp": n.get("timestamp"),
+        "severity": n.get("severity"),
+        "author": n.get("author"),
+        "recorded_by": meta.get("recorded_by"),
+        "from_agent": meta.get("from_agent"),
+    }
+
+
+def get_overview(request):
+    """Server-computed aggregate for the Overview view (REQUIRED, scope-dashboard-v1
+    brief doc:4c0b9d426f4c): task counts, done-this-week, active constraints,
+    needs-attention (stale claims / blocked), recent episodes + incidents."""
+    lc = _ctx(request)
+    storage = lc["cognition_storage"]
+    now = datetime.now(UTC)
+    week_ago = now - timedelta(days=_DONE_THIS_WEEK_DAYS)
+    stale_cutoff = now - timedelta(days=_STALE_CLAIM_DAYS)
+    incident_cutoff = now - timedelta(days=_RECENT_INCIDENT_DAYS)
+
+    tasks = storage.get_nodes_by_type(CognitionNodeType.TASK)
+    counts = {"open": 0, "in_progress": 0, "blocked": 0, "done": 0, "cancelled": 0}
+    done_this_week = 0
+    stale_claims = []
+    blocked = []
+    for t in tasks:
+        meta = t.get("metadata", {}) or {}
+        status = meta.get("status", "open")
+        counts[status] = counts.get(status, 0) + 1
+        transitions = meta.get("transitions") or []
+        last_at = transitions[-1]["at"] if transitions else t.get("timestamp")
+
+        if status == "done":
+            dt = _parse_ts(last_at)
+            if dt is not None and dt >= week_ago:
+                done_this_week += 1
+        elif status == "in_progress":
+            claimed_at = _task_claimed_at(transitions)
+            dt = _parse_ts(claimed_at)
+            if dt is not None and dt <= stale_cutoff:
+                stale_claims.append({
+                    "id": t["id"], "summary": t.get("summary"),
+                    "claimed_at": claimed_at, "claimed_by": meta.get("claimed_by"),
+                })
+        elif status == "blocked":
+            blocked.append({"id": t["id"], "summary": t.get("summary")})
+
+    documents_count = len(storage.get_nodes_by_type(CognitionNodeType.DOCUMENT))
+
+    workflows = storage.get_nodes_by_type(CognitionNodeType.WORKFLOW)
+    workflow_head_count = sum(
+        1 for w in workflows
+        if not storage.get_predecessors(w["id"], CognitionEdgeType.SUPERSEDES)
+    )
+
+    constraints = storage.get_nodes_by_type(CognitionNodeType.CONSTRAINT)
+    active_constraints = [
+        _entity_row(c) for c in constraints
+        if (c.get("severity") or "normal") != "low"
+        and not storage.get_predecessors(c["id"], CognitionEdgeType.SUPERSEDES)
+    ]
+    active_constraints.sort(key=lambda c: _SEVERITY_ORDER.get(c.get("severity") or "normal", 2))
+
+    recent_episodes = [
+        _entity_row(e)
+        for e in storage.get_recent_nodes(limit=5, node_type=CognitionNodeType.EPISODE)
+    ]
+
+    incidents = storage.get_nodes_by_type(CognitionNodeType.INCIDENT)
+    recent_incidents = []
+    for i in incidents:
+        if i.get("severity") not in _HIGH_SEVERITIES:
+            continue
+        dt = _parse_ts(i.get("timestamp"))
+        if dt is not None and dt >= incident_cutoff:
+            recent_incidents.append(_entity_row(i))
+    recent_incidents.sort(key=lambda i: i.get("timestamp") or "", reverse=True)
+
+    return JSONResponse({
+        "tasks": {**counts, "done_this_week": done_this_week},
+        "documents": documents_count,
+        "workflows": workflow_head_count,
+        "constraints": active_constraints,
+        "needs_attention": {"stale_claims": stale_claims, "blocked": blocked},
+        "recent_episodes": recent_episodes,
+        "recent_incidents": recent_incidents,
     })
 
 
