@@ -190,19 +190,47 @@ def _distinct_stamped_emails(storage: CognitionStorage) -> set[str]:
     return {email for n in storage.get_all_nodes() if (email := _node_email(n))}
 
 
+def _registered_person_emails(storage: CognitionStorage) -> set[str]:
+    """Every non-empty registered person email in the graph (WP-OnboardPayoff),
+    for the multi-user auto-detect's second signal.
+
+    A SET OF EMAILS, not a node count -- duplicate person nodes carrying the SAME
+    email (a journal-replay shape; the write path's `already_registered` guard
+    prevents this at write time but not on replay/hand-edited data, same lesson
+    as WP-TC9's 98dcca4) must not flip a solo graph to "multi-user". Trusts stored
+    casefolding (module convention, matches `_has_person_node`)."""
+    return {
+        email
+        for n in storage.get_nodes_by_type(CognitionNodeType.PERSON)
+        if (email := n.get("metadata", {}).get("person", {}).get("email"))
+    }
+
+
 def _should_personalize(storage: CognitionStorage, config: PrimeConfig, current_email: str) -> bool:
     """Whether this prime run personalizes, per `config.prime_personalize`.
 
     No resolvable current-user email means there's nothing to match against --
     global digest regardless of mode. 'off' is always global; 'on' is always
-    personalized (once an email exists); 'auto' personalizes only when the graph
-    has more than one distinct stamped email (a solo graph's output must stay
-    byte-identical to the pre-WP-P13n-2 global digest)."""
+    personalized (once an email exists); 'auto' personalizes when EITHER the
+    graph has more than one distinct stamped email OR more than one registered
+    person email (WP-OnboardPayoff) -- multiple REGISTERED people is a stronger
+    team signal than multiple writers (registration is an explicit team act), and
+    catches a team's first-onboarded-member case where every node so far was
+    written by one person but several people are now registered. The
+    stamped-email check runs first (short-circuits the person scan in the common
+    single-writer/unregistered case; PERSON nodes are few and this runs once per
+    prime call, not hot-path, but the ordering still avoids the extra scan when
+    unneeded). A solo graph's output stays byte-identical to the pre-WP-P13n-2
+    global digest either way -- a solo graph has at most one registered person
+    email (itself)."""
     if not current_email or config.prime_personalize == "off":
         return False
     if config.prime_personalize == "on":
         return True
-    return len(_distinct_stamped_emails(storage)) > 1
+    return (
+        len(_distinct_stamped_emails(storage)) > 1
+        or len(_registered_person_emails(storage)) > 1
+    )
 
 
 def _task_matches_email(node: dict, email: str) -> bool:
@@ -443,12 +471,18 @@ def _has_person_node(storage: CognitionStorage, email: str) -> bool:
 @dataclass(frozen=True)
 class _RoleContext:
     """Result of ONE person-node scan (WP-TC16) -- built once per prime run and
-    threaded into both the manager-rollup and subordinate-decisions sections, so
-    a middle manager's prime never re-scans person nodes for the second section."""
+    threaded into the manager-rollup, subordinate-decisions, and (WP-OnboardPayoff)
+    identity-header sections, so a middle manager's prime never re-scans person
+    nodes for any of them."""
 
     my_person: dict | None
     direct_reports: list[dict]
     my_manager_email: str  # casefolded; "" when absent
+    # WP-OnboardPayoff: resolved NAME of my_manager_email (via the same scan's
+    # email->name map), "" when unresolved -- defaulted so the early short-circuit
+    # in _derive_role (which legitimately has no manager to resolve) stays a valid
+    # construction even if that call site is ever missed in a future edit.
+    my_manager_name: str = ""
 
 
 def _derive_role(storage: CognitionStorage, current_email: str) -> _RoleContext:
@@ -456,25 +490,33 @@ def _derive_role(storage: CognitionStorage, current_email: str) -> _RoleContext:
     normalization point) into a `_RoleContext` via ONE `get_nodes_by_type(PERSON)`
     scan: `my_person` (a person node whose stored, already-casefolded email
     matches), `direct_reports` (person nodes whose `reports_to_email` matches
-    `current_email`), and `my_manager_email` (my_person's own `reports_to_email`,
-    already casefolded at write time -- see `_register_person`/`_update_person`).
-    MANAGER role iff `direct_reports` non-empty; SUBORDINATE role iff
-    `my_manager_email` non-empty; both may hold (middle manager). An empty
-    `current_email` short-circuits to an all-empty context without scanning."""
+    `current_email`), `my_manager_email` (my_person's own `reports_to_email`,
+    already casefolded at write time -- see `_register_person`/`_update_person`),
+    and `my_manager_name` (WP-OnboardPayoff: resolved from an email->name map
+    built during the SAME scan -- one scan preserved, no second pass for the
+    identity header). MANAGER role iff `direct_reports` non-empty; SUBORDINATE
+    role iff `my_manager_email` non-empty; both may hold (middle manager). An
+    empty `current_email` short-circuits to an all-empty context without
+    scanning."""
     my_person: dict | None = None
     direct_reports: list[dict] = []
     if not current_email:
-        return _RoleContext(my_person, direct_reports, "")
+        return _RoleContext(my_person, direct_reports, "", "")
+    by_email: dict[str, str] = {}
     for n in storage.get_nodes_by_type(CognitionNodeType.PERSON):
         person = n.get("metadata", {}).get("person", {})
-        if person.get("email") == current_email:
+        email = person.get("email")
+        if email:
+            by_email[email] = person.get("name") or ""
+        if email == current_email:
             my_person = n
         if person.get("reports_to_email") == current_email:
             direct_reports.append(n)
     my_manager_email = ""
     if my_person is not None:
         my_manager_email = my_person.get("metadata", {}).get("person", {}).get("reports_to_email") or ""
-    return _RoleContext(my_person, direct_reports, my_manager_email)
+    my_manager_name = by_email.get(my_manager_email, "") if my_manager_email else ""
+    return _RoleContext(my_person, direct_reports, my_manager_email, my_manager_name)
 
 
 def _parse_iso_datetime(value: str) -> datetime | None:
@@ -796,6 +838,37 @@ def _onboarding_notice(storage: CognitionStorage, config: PrimeConfig, current_e
     return ONBOARDING_NOTICE
 
 
+def _format_identity_header(role: _RoleContext) -> str:
+    """The one-line preamble opening the personalized block once `current_email`
+    resolves to a registered person node (WP-OnboardPayoff, Gate D S5 fix) -- ""
+    when `role.my_person` is None. Gating is structural, not a new knob: this
+    requires a matching person node, `_onboarding_notice`'s New Here banner
+    requires NO matching person node -- mutually exclusive by construction. A
+    plain preamble line (no `##` heading -- it's not a section, just an anchor).
+
+    Format algebra (pinned, peer-review M2 -- exact punctuation, do not drift):
+    start with "You are registered as {name}"; append " — {role}" iff the
+    person's `role` is non-empty; append " ({seniority})" iff `seniority` is
+    non-empty; append ", reporting to {manager}" iff `reports_to_email` is
+    non-empty, where `{manager}` is `role.my_manager_name` when resolved, else
+    the raw `reports_to_email` (an unresolvable manager email falls back to
+    showing the email rather than disappearing silently); always end with '.'.
+    Never crashes, never renders the string "None" for a missing field."""
+    if role.my_person is None:
+        return ""
+    person = role.my_person.get("metadata", {}).get("person", {})
+    line = f"You are registered as {person.get('name') or ''}"
+    if person.get("role"):
+        line += f" — {person['role']}"
+    if person.get("seniority"):
+        line += f" ({person['seniority']})"
+    reports_to_email = person.get("reports_to_email") or ""
+    if reports_to_email:
+        manager = role.my_manager_name or reports_to_email
+        line += f", reporting to {manager}"
+    return line + "."
+
+
 def generate_prime(
     storage: CognitionStorage,
     config: PrimeConfig | None = None,
@@ -816,6 +889,13 @@ def generate_prime(
             (constraints, workflows, documents, patterns, decisions,
             incidents) are unaffected either way.
 
+    When personalized AND `current_email` resolves to a registered person node,
+    the block opens with a one-line identity header ("You are registered as
+    ...", WP-OnboardPayoff) naming the user, role/seniority, and manager --
+    the registration payoff the New Here banner otherwise only implies. The
+    header and the banner are mutually exclusive by construction (the header
+    needs a matching person node, the banner needs the absence of one).
+
     Returns:
         Markdown string with project context
     """
@@ -831,24 +911,26 @@ def generate_prime(
     sections.append(_format_constraints(storage, config.prime_constraint_limit, maxlen))
 
     if personalize:
+        # WP-OnboardPayoff/TC16/TC14: pinned order Identity header -> Your Tasks
+        # -> Team Critical -> Your Team -> Your Manager's Recent Decisions ->
+        # Since You Were Gone -> Your Recent Activity. Role derivation is ONE
+        # person-node scan shared by the identity header and both TC16 sections
+        # (a middle manager gets both, and the header's manager-name resolution
+        # comes from the same scan) -- moved up so it runs once, only when
+        # personalizing (never scanned for the global digest).
+        role = _derive_role(storage, current_email)
+        sections.append(_format_identity_header(role))
         your_tasks, mine_ids = _format_your_tasks(
             storage, config.prime_your_tasks_cap, current_email, maxlen
         )
         sections.append(your_tasks)
         sections.append(_format_team_critical(storage, config.prime_team_critical_cap, mine_ids, maxlen))
-    else:
-        sections.append(_format_tasks(storage, config.prime_task_cap, maxlen))
-
-    if personalize:
-        # WP-TC16/TC14: pinned order Team Critical -> Your Team -> Your
-        # Manager's Recent Decisions -> Since You Were Gone -> Your Recent
-        # Activity. Role derivation is ONE person-node scan shared by both
-        # TC16 sections (a middle manager gets both).
-        role = _derive_role(storage, current_email)
         sections.append(_format_your_team(storage, config, role, maxlen))
         sections.append(_format_manager_decisions(storage, config, role, maxlen))
         sections.append(_format_since_you_were_gone(storage, config, current_email, maxlen))
         sections.append(_format_your_activity(storage, config, current_email, maxlen))
+    else:
+        sections.append(_format_tasks(storage, config.prime_task_cap, maxlen))
 
     sections.extend([
         _format_workflows(storage, config.prime_workflow_limit, maxlen),

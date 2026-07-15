@@ -230,11 +230,15 @@ class Settings(BaseSettings):
     prime_personalize: Literal["auto", "on", "off"] = Field(
         default="auto",
         description=(
-            "Prime personalization mode. 'auto': personalize only when the graph "
-            "has more than one distinct stamped git-identity email (a solo graph "
-            "gets the unchanged global digest); 'on': force personalized sections "
-            "whenever the current git identity resolves an email; 'off': always "
-            "the global digest. Set via PRIME_PERSONALIZE env var."
+            "Prime personalization mode. 'auto': personalize when the graph has "
+            "more than one distinct stamped git-identity email OR more than one "
+            "registered person (WP-OnboardPayoff -- catches a team's "
+            "first-onboarded-member case where every node so far was written by "
+            "one person but several people are now registered); a solo graph "
+            "gets the unchanged global digest either way. 'on': force "
+            "personalized sections whenever the current git identity resolves "
+            "an email; 'off': always the global digest. Set via "
+            "PRIME_PERSONALIZE env var."
         ),
     )
     prime_your_tasks_cap: int = Field(
