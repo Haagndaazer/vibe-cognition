@@ -5,6 +5,19 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+**WP-TC7: prime-triggered new-user onboarding.**
+
+### Added
+- **Onboarding notice in the session-start prime digest** — when the current git identity's email resolves but has no matching person node, `generate_prime` prepends a `## New Here?` notice (pinned first, ahead of `## Active Constraints`) prompting the agent to gather the human's name/role/seniority/manager and call `cognition_register_person` with `from_agent=false`, or, if the human declines, append their casefolded email to the new per-machine, git-ignored `.cognition/onboard-declined` file instead of creating a placeholder person node.
+- **`prime_onboard` config knob** (`PRIME_ONBOARD` env var, default `true`) — kill switch for the notice, wired through `Settings` and `PrimeConfig` alongside the existing `prime_*` trim knobs.
+- `.cognition/.gitignore` now also lists `onboard-declined` (git-hygiene writer bumped to v3; existing installs pick up the new rule via the standard versioned re-run).
+
+### Notes
+- Mutually exclusive with the empty-graph `ONBOARDING_BLOCK`: `main()`'s empty-graph branch never calls `generate_prime`, so the two onboarding paths never both fire in the same session.
+- The decline file is read-only to the server/prime process; nothing new writes it programmatically — an agent appends to it with an ordinary file write per the notice's own instructions, no new MCP tool.
+
 ## [0.20.0] — 2026-07-15
 
 **WP-TC11: dashboard redesign V1 (PM core).**

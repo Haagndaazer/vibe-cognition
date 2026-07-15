@@ -640,9 +640,13 @@ def test_search_result_from_agent_missing_key_is_none_not_false(build_lc, make_c
 
 
 def test_solo_prime_byte_identical_with_and_without_person_nodes(tmp_path):
-    """Person nodes are invisible to prime.py (onboarding surfacing is WP-TC7,
-    out of scope here) -- the solo digest is byte-identical whether or not
-    person nodes exist in the graph."""
+    """Person nodes are otherwise invisible to prime.py -- the solo digest is
+    byte-identical whether or not person nodes exist in the graph, PROVIDED no
+    current_email is passed (as here). WP-TC7 landed a person-node-aware
+    onboarding notice, but it is gated on a resolvable current_email -- both
+    calls below pass none, so this pin is unaffected and intentionally retained
+    unmodified. See test_prime.py's onboarding block for the TC7-specific
+    byte-identity pins (registered vs. unregistered current_email)."""
     from vibe_cognition.cognition import CognitionStorage
     from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
 

@@ -261,6 +261,17 @@ class Settings(BaseSettings):
         description="Max of your own recent discoveries shown in 'Your Recent Activity'",
     )
 
+    # WP-TC7: prime-triggered new-user onboarding.
+    prime_onboard: bool = Field(
+        default=True,
+        description=(
+            "Show the new-user onboarding notice in the session-start prime digest "
+            "when the current git identity's email has no matching person node and "
+            "hasn't declined (.cognition/onboard-declined). Kill switch — the "
+            "per-human path is the decline file, not this env var."
+        ),
+    )
+
     @field_validator("repo_path", mode="before")
     @classmethod
     def validate_repo_path(cls, v: str | Path) -> Path:

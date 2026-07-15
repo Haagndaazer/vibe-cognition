@@ -194,6 +194,41 @@ def test_gitignore_flag_is_listed(tmp_path):
     assert _FLAG_FILENAME in gi
 
 
+def test_gitignore_onboard_declined_is_listed(tmp_path):
+    """WP-TC7: onboard-declined (the per-machine onboarding decline file,
+    prime.ONBOARD_DECLINE_FILENAME) is listed in .cognition/.gitignore after a
+    fresh run — it must never sync via git any more than the rehydrate flag does."""
+    repo, cognition = _make_git_repo(tmp_path)
+    _run(repo, cognition)
+
+    gi = (cognition / ".gitignore").read_text(encoding="utf-8")
+    assert "onboard-declined" in gi
+
+
+def test_gitignore_onboard_declined_added_via_version_refire(tmp_path):
+    """WP-TC7 (GIT_HYGIENE_VERSION 2 -> 3): a flag stamped at the OLD version on an
+    existing install (pre-TC7 .gitignore already has chromadb/, the old flag, *.lock,
+    and the rehydrate entry but NOT onboard-declined) triggers exactly one re-run
+    that appends only the new entry — mirrors test_versioned_rerun_on_stale_flag but
+    pins the SPECIFIC new rule this bump exists to add."""
+    repo, cognition = _make_git_repo(tmp_path)
+    (cognition / ".gitignore").write_text(
+        "# vibe-cognition managed - do not remove\n"
+        "chromadb/\n"
+        f"{_FLAG_FILENAME}\n"
+        "*.lock\n"
+        ".last-rehydrate.json\n",
+        encoding="utf-8",
+    )
+    (cognition / _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION - 1), encoding="utf-8")
+
+    _run(repo, cognition)
+
+    gi = (cognition / ".gitignore").read_text(encoding="utf-8")
+    assert gi.count("onboard-declined") == 1
+    assert int((cognition / _FLAG_FILENAME).read_text(encoding="utf-8").strip()) == GIT_HYGIENE_VERSION
+
+
 # ---------------------------------------------------------------------------
 # Flag / opt-out / idempotency / announce tests
 # ---------------------------------------------------------------------------
