@@ -549,15 +549,120 @@ def _parse_exclude_people(exclude_people: str | None) -> frozenset[str]:
     )
 
 
+# WP-TC9: seniority + agent-origin weighting -- penalty-only, multiplicative from a
+# 1.0 baseline (score itself is never mutated; weighted_score derives from it). A
+# single named table, no config knob / env var (a product-ruled behavior, not a
+# preference -- matches exclude_people's no-persistent-muting precedent). Every
+# agent-attributed multiplier is strictly below every human-attributed one (human
+# always outweighs agent, ruled) -- checked programmatically at test time, not just
+# by these numbers.
+_SENIORITY_MULTIPLIERS: dict[str, float] = {
+    "owner": 1.0,
+    "senior": 1.0,
+    "mid": 0.95,
+    "junior": 0.9,
+}
+_AGENT_MULTIPLIER = 0.85
+
+
+def _person_seniority_map(storage: CognitionStorage) -> dict[str, str]:
+    """Casefolded email -> seniority, ONE ``get_nodes_by_type(PERSON)`` scan
+    (WP-TC9). Built ONCE per top-level search call by the caller
+    (``_search_with_embedding``) and threaded down as a plain dict -- NEVER rebuilt
+    inside ``_format_search_results``, which runs once per adaptive-widening round
+    (rebuilding there would silently degrade the per-call cost model to per-round,
+    the exact accidentally-quadratic shape C2 exists to catch). A read-only cache of
+    data immutable for the call's duration (person nodes don't change mid-search) --
+    contrast TC10's ``excluded_count``, which is per-round OUTPUT and must NOT be
+    cached this way; this caches INPUTS, never outputs.
+
+    C1 cross-version doctrine: a person node missing ``seniority`` (older schema,
+    hand-edited journal) maps to ``None`` here rather than raising -- readers
+    degrade on unknown/absent vocab, never crash."""
+    result: dict[str, str] = {}
+    for person in storage.get_nodes_by_type(CognitionNodeType.PERSON):
+        info = person["metadata"].get("person", {})
+        email = info.get("email")
+        seniority = info.get("seniority")
+        if email and seniority is not None:
+            result[email] = seniority
+    return result
+
+
+def _hit_weight(
+    node_type: str | None,
+    email: str,
+    from_agent: bool | None,
+    person_seniority: dict[str, str],
+) -> dict[str, Any]:
+    """WP-TC9: the ``{multiplier, seniority, from_agent, basis}`` weight for one
+    search hit. Penalty-only -- ``multiplier`` is always in ``(0, 1.0]``, never a
+    boost. Basis vocabulary mirrors the dashboard's EXACT unverified boundary
+    (dashboard/api.py): a stamped identity with no matching person node is a KNOWN,
+    unrostered author (``"human:unregistered"``), not ``"unverified"`` (no stamp at
+    all) -- conflating the two is the improvisation the battle plan forbids.
+    Precedence: exempt type > agent origin > stamp presence > person registration.
+
+    C1 cross-version doctrine: an out-of-vocabulary seniority (a newer tier this
+    build doesn't know, e.g. a future "principal") never crashes and never gets a
+    penalty -- it maps to the neutral multiplier while the RAW seniority string is
+    still surfaced verbatim in ``weight.seniority``/``basis`` (visible, not
+    hidden)."""
+    seniority = person_seniority.get(email)
+    if node_type in _NEVER_EXCLUDED_SEARCH_TYPES:
+        return {
+            "multiplier": 1.0,
+            "seniority": seniority,
+            "from_agent": from_agent,
+            "basis": f"exempt:{node_type}",
+        }
+    if from_agent:
+        return {
+            "multiplier": _AGENT_MULTIPLIER,
+            "seniority": seniority,
+            "from_agent": from_agent,
+            "basis": "agent",
+        }
+    if not email:
+        return {
+            "multiplier": 1.0,
+            "seniority": None,
+            "from_agent": from_agent,
+            "basis": "unverified",
+        }
+    if seniority is not None:
+        return {
+            "multiplier": _SENIORITY_MULTIPLIERS.get(seniority, 1.0),
+            "seniority": seniority,
+            "from_agent": from_agent,
+            "basis": f"human:{seniority}",
+        }
+    return {
+        "multiplier": 1.0,
+        "seniority": None,
+        "from_agent": from_agent,
+        "basis": "human:unregistered",
+    }
+
+
 def _format_search_results(
     results: list[dict[str, Any]],
     storage: CognitionStorage,
     limit: int,
     exclude_emails: frozenset[str] = frozenset(),
+    person_seniority: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Dedupe over-queried hits to the BEST hit per node, dropping graph-absent
     nodes, and carry a ``matched_excerpt`` for chunk hits — the N1 fix + D2 dedupe.
     WP-TC10 additionally applies the optional per-author exclusion filter here.
+
+    WP-TC9: also computes each hit's ``weight``/``weighted_score`` (see
+    ``_hit_weight``) and sorts the returned list by ``weighted_score`` descending
+    (stable -- ties keep vector-search order) so the caller's ``[:limit]`` slice
+    takes the weighted top, not the raw-score top. ``person_seniority`` is a plain
+    dict built ONCE by the caller (``_search_with_embedding``'s enclosing scope) --
+    this function never queries person nodes itself; ``None`` (no map given) treats
+    every hit as unregistered, same as an empty dict.
 
     N1 (§9): a cross-process remove_node replays into the graph but never un-embeds,
     so Chroma serves hits for nodes deleted on another machine — escalated by
@@ -587,6 +692,7 @@ def _format_search_results(
     — the list is NOT capped to ``limit`` (the caller, ``adaptive_vector_search``,
     owns both the limit-slice and the widen-vs-stop decision; capping here would
     make its ``total_found``/exhaustive accounting wrong)."""
+    person_seniority = person_seniority or {}
     formatted: list[dict[str, Any]] = []
     seen_nodes: set[str] = set()
     excluded_count = 0
@@ -602,13 +708,17 @@ def _format_search_results(
         if node is None:  # vanished between the live-check and here (race) — same drop as N1
             continue
         node_type = r.get("entity_type")
+        email = _node_email(node)  # WP-TC9: reused below for weighting, not re-derived
         if (
             exclude_emails
             and node_type not in _NEVER_EXCLUDED_SEARCH_TYPES
-            and _node_email(node) in exclude_emails
+            and email in exclude_emails
         ):
             excluded_count += 1
             continue
+        from_agent = r.get("from_agent")
+        score = r.get("score") or 0.0
+        weight = _hit_weight(node_type, email, from_agent, person_seniority)
         entry: dict[str, Any] = {
             "id": node_id,  # the NODE id, never the chunk id
             "node_type": node_type,
@@ -621,7 +731,11 @@ def _format_search_results(
             # WP-TC6: present (True/False) when the writer stamped it; None for
             # every pre-TC6 node -- NEVER coerced to False (that would misrepresent
             # unknown provenance as "known agent-written").
-            "from_agent": r.get("from_agent"),
+            "from_agent": from_agent,
+            # WP-TC9: never silent (ruled) -- present on every hit, including
+            # neutral ones. `score` above stays the raw similarity, untouched.
+            "weight": weight,
+            "weighted_score": score * weight["multiplier"],
         }
         if node_type == CognitionNodeType.DOCUMENT.value:
             staleness = cheap_staleness_signal(node.get("metadata", {}))
@@ -631,6 +745,8 @@ def _format_search_results(
         if matched:
             entry["matched_excerpt"] = matched[:_MATCHED_EXCERPT_LEN]
         formatted.append(entry)
+    # WP-TC9: stable sort -- ties (equal weighted_score) keep vector-search order.
+    formatted.sort(key=lambda e: e["weighted_score"], reverse=True)
     return formatted, excluded_count
 
 
@@ -710,13 +826,24 @@ def _search_with_embedding(
     ``embedding_storage`` — the N1 ghost-filter (search_hit_is_live) in
     _format_search_results uses it to check node presence; passing mismatched
     storage silently drops all hits from the foreign graph (XP2 correctness trap).
+
+    WP-TC9: builds THIS call's person-seniority map exactly ONCE, here in the
+    enclosing scope (never inside the dedupe lambda or _format_search_results
+    itself, which runs once per adaptive-widening round) — every widening round of
+    the same call reuses the same dict via closure. A multi-project fan-out calls
+    this function once per entry, so each entry naturally gets its OWN map built
+    from its OWN storage (per-entry registries, by construction — no special-casing
+    needed here).
     """
+    person_seniority = _person_seniority_map(storage)
     return adaptive_vector_search(
         embedding_storage,
         query_embedding,
         entity_type=node_type,
         limit=limit,
-        dedupe=lambda results, lim: _format_search_results(results, storage, lim, exclude_emails),
+        dedupe=lambda results, lim: _format_search_results(
+            results, storage, lim, exclude_emails, person_seniority
+        ),
     )
 
 
@@ -3064,11 +3191,44 @@ def register_cognition_tools(mcp) -> None:
                      of author (same never-wipe doctrine as safety-critical nodes
                      elsewhere in this server) and never count toward excluded_count.
 
+        WP-TC9: every hit's ranking is influenced by a penalty-only seniority/
+        agent-origin multiplier — see `weight`/`weighted_score` below. This NEVER
+        hides or wipes a lower-seniority or agent-authored hit (it can only push
+        it lower in a tie, never drop it from `results`), never boosts anything
+        above its raw score, and a constraint/incident hit is always exempt
+        (multiplier 1.0, pinned) regardless of who authored it. `weight.seniority`
+        is one of `owner`/`senior` (multiplier 1.0, no penalty), `mid` (0.95), or
+        `junior` (0.9) when the author is a registered person; an agent-authored
+        hit (`basis: "agent"`) is weighted 0.85 — always strictly below every
+        seniority tier, so human authorship always outranks agent authorship.
+        Applies to `cognition_search` only — `cognition_get_history`/
+        `cognition_list_tasks`/session-start priming are unaffected.
+        `cognition_get_workflow`'s internal top-1 match search shares this same
+        path, so weighting can change WHICH workflow it resolves to, not just how
+        a list of hits is ordered. Multi-project (`project="*"`/tag set) search
+        weights each entry's hits using that entry's OWN person registry, then
+        the final cross-project merge is ALSO sorted by `weighted_score` (not raw
+        `score`) — weighting is not a home-only/single-project-only effect.
+
         Returns:
             {
               query: str,
-              results: [                 # hits, sorted by score desc, at most `limit`
-                {id, node_type, summary, score, …, project: tag}
+              results: [                 # hits, sorted by weighted_score desc (see
+                                         # WP-TC9 note above), at most `limit`
+                {id, node_type, summary, score, weighted_score, weight, …, project: tag}
+                                         # weighted_score = score * weight.multiplier
+                                         # (score itself is the untouched raw
+                                         # similarity — never mutated). weight is
+                                         # {multiplier, seniority, from_agent, basis}
+                                         # and is ALWAYS present, even when
+                                         # multiplier == 1.0 (neutral) — never
+                                         # silent. basis is one of:
+                                         # "exempt:<node_type>" (constraint/incident,
+                                         # pinned 1.0), "agent" (from_agent stamped
+                                         # True), "human:<seniority>" (stamped +
+                                         # registered person), "human:unregistered"
+                                         # (stamped, no matching person node), or
+                                         # "unverified" (no identity stamp at all).
                                          # "project" present when project != None.
                                          # NOTE the key is "node_type" here, NOT
                                          # "type" — cognition_get_node/get_history/
@@ -3248,10 +3408,14 @@ def register_cognition_tools(mcp) -> None:
                     "confidence": "degraded — no model provenance in collection metadata (pre-stamp)"
                 }
 
-        # Sort merged results by score desc; no cross-project id-dedup —
+        # Sort merged results by weighted_score desc (WP-TC9: THE safety-critical
+        # edit for multi-project weighting -- sorting by raw `score` here would
+        # silently no-op weighting for project="*" while single-project still
+        # worked, since each entry's already-weighted-and-sorted `results` would
+        # just get re-sorted back to raw order). No cross-project id-dedup —
         # colliding ids across projects are two legitimately different nodes
         # (ids are content-derived, not namespaced). The project tag disambiguates.
-        all_results.sort(key=lambda r: r.get("score") or 0.0, reverse=True)
+        all_results.sort(key=lambda r: r.get("weighted_score") or 0.0, reverse=True)
         all_results = all_results[:limit]
 
         result: dict[str, Any] = {
@@ -3349,6 +3513,14 @@ def register_cognition_tools(mcp) -> None:
         query, then resolves the top hit to the current HEAD (in case an old version
         was matched) via SUPERSEDES edges. Returns the full procedure body, the full
         version chain, and which node was matched.
+
+        This lookup inherits ``cognition_search``'s seniority/agent-origin weighting
+        (WP-TC9) — on a graph with more than one similarly-matching workflow, the
+        one attributed to a more senior / human author can win the match over an
+        agent-authored or less-senior near-duplicate at a comparable raw score. This
+        can change WHICH procedure ``matched``/``head`` resolves to, not just its
+        rank in a list — a deliberate, unconditional consequence of the same ranking
+        change, not a graph-shape-dependent edge case.
 
         Args:
             name_or_topic: Name or topic of the procedure (e.g. "deploy to production",

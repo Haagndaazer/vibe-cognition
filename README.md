@@ -420,6 +420,25 @@ never-wipe doctrine as those node types get elsewhere). Every filtered call disc
 `excluded_count`/`excluded_for`, present iff the param was passed AND something was
 actually excluded — silent exclusion is forbidden.
 
+**Seniority + agent-origin weighting.** `cognition_search` ranks hits by
+`weighted_score` (`score * weight.multiplier`), a **penalty-only** adjustment —
+`multiplier` is always in `(0, 1.0]`, never a boost, so weighting can only push a hit
+lower relative to its peers, never hide it from `results` or inflate it above its raw
+score. Every hit always carries `weight` (`{multiplier, seniority, from_agent,
+basis}`), even neutral (`multiplier == 1.0`) hits — never silent. `basis` is
+`"exempt:<node_type>"` (constraint/incident — always pinned at 1.0, outranking no one
+but never itself down-weighted), `"agent"` (from_agent stamped `true` — the one
+multiplier guaranteed strictly below every human seniority multiplier, so human input
+always outweighs agent input), `"human:<seniority>"` (stamped + a matching registered
+person node), `"human:unregistered"` (stamped but no matching person node — a known,
+just-unrostered author), or `"unverified"` (no identity stamp at all). Shipped
+multipliers: `owner`/`senior` 1.0 (no penalty), `mid` 0.95, `junior` 0.9, agent 0.85.
+Applies to
+`cognition_search` only, not `cognition_get_history`/`cognition_list_tasks`/session-start
+priming; `cognition_get_workflow`'s internal top-1 match search shares `cognition_search`'s
+path and inherits weighting too, so it can change WHICH workflow a name/topic resolves
+to, not just the order of a hit list.
+
 **Search/history completeness ("returned N of M").** `cognition_search` and
 `cognition_get_history` responses always carry `total_found` (distinct matches
 discovered, post-exclusion where applicable) and `exhaustive` (`true` = that's the
