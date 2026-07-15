@@ -5,7 +5,20 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.22.0] — 2026-07-15
+
+**WP-TC1: curation conflict lens.**
+
+### Added
+- **`agents/curate-conflict-analyzer.md`** — a new, dedicated propose-only Haiku subagent that hunts deliberately for `contradicts`/`supersedes` edges on stance-bearing nodes (`decision`/`constraint`/`pattern`/`assumption`). The general edge-analyzer treats `contradicts` as "genuinely rare" and never actively looks for it, so the graph had almost none; this pass exists specifically to fill that gap with a hardened precision bar (a false `contradicts` edge is a trust cost the analyzer is designed to avoid). Every proposal carries a `reason` plus verbatim quoted stances from both nodes, and `contradicts` is only proposed when both endpoints are current/HEAD; same-lineage evolution (especially same `recorded_by`) prefers `supersedes` instead. Output uses `"source": "curate-conflict"`, distinct provenance from the general edge-analyzer's `"curate-skill"`.
+- **`curate-orchestrator.md` — new Step 3: Conflict Pass**, inserted between edge curation and cluster identification (cluster identification renumbered to Step 4). Spawns `curate-conflict-analyzer` with an explicit `model: "haiku"` override (same fail-f09e770da046 precedent as the existing analyzer spawns). The stance-bearing candidate list is captured at Step 1, immediately after the initial `cognition_get_uncurated_nodes` fetch — never re-fetched at the conflict pass's own insertion point, since Step 2's per-batch `cognition_mark_curated` calls would make a later fetch return empty (a silent zero-edge failure mode). A whole-run suspect cap discards the entire pass's proposals if, once at least 15 candidates have been examined, more than 20% came back `contradicts` — guarding against a systematic false-positive run. The mandated final-report line now includes a `conflict pass: X proposed / Y committed / Z discarded` clause.
+
+### Verified
+- **Precision eval**: the shipped analyzer definition (verbatim body) was exercised in-session via the Agent tool against a 36-pair labeled fixture (`tests/fixtures/conflict_lens_labeled_pairs.json`, authored independently by the gate) — 10 `contradicts`, 6 `supersedes`, 20 hard negatives. Result at the haiku pin: `contradicts` precision **1.0** (4/4, zero false positives) against a ≥0.9 bar; recall 0.4 (reported, not gated — the analyzer is deliberately biased toward `supersedes` when uncertain, which costs recall, not precision). No escalation to sonnet was needed. `scripts/eval_conflict_lens.py` validates the fixture's shape and scores a results file; it has no LLM/API access by design, so the actual per-pair judgment is agent-driven, not scriptable.
+- **Real-graph smoke test** (`scripts/smoke_conflict_pass.py`): ran the conflict-pass scaffolding — Step 1 candidate-capture timing, and `source="curate-conflict"` edge-commit mechanics — against an isolated temp copy of the production `.cognition` journal (never the live graph). Confirmed the timing invariant (a candidate list captured before simulated Step 2 differs from a naive post-Step-2 re-fetch) and that edges commit correctly. The live production graph currently has 0 stance-bearing uncurated candidates, so a real run today reports `0 proposed / 0 committed / 0 discarded`.
+
+### Notes
+- Zero `src/` diff — this WP is agent-definition files, tests, docs, and scripts only; the curation pipeline's containment (orchestrator is the sole edge-writer, analyzers stay read-only/propose-only) and the `/vibe-curate` skill launcher (unchanged, stays generic) are untouched.
 
 **WP-TC10: per-person search/task exclude filter + "returned N of M" completeness.**
 
@@ -20,7 +33,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Notes
 - `_format_search_results` now unconditionally fetches the full node (`storage.get_node`) per hit (previously only for `document`-type hits, to compute staleness) — needed so the exclusion filter can read the server-resolved identity stamp; a cheap in-memory lookup, no new I/O.
 - Tool-surface self-sufficiency audit re-run over `cognition_search`, `cognition_get_history`, and `cognition_list_tasks` (the three tools this WP touched).
-- Version bump held — batches with the next Wave 2 WP (TC1) as `0.22.0`.
 
 ## [0.21.0] — 2026-07-15
 

@@ -19,6 +19,7 @@ _SKILL = _REPO / "skills" / "vibe-cognition" / "SKILL.md"
 _README = _REPO / "README.md"
 _CURATE_SKILL = _REPO / "skills" / "vibe-curate" / "SKILL.md"
 _EDGE_ANALYZER = _REPO / "agents" / "curate-edge-analyzer.md"
+_CONFLICT_ANALYZER = _REPO / "agents" / "curate-conflict-analyzer.md"
 
 
 def _registered_tool_names() -> set[str]:
@@ -79,6 +80,22 @@ def test_edge_analyzer_output_schema_includes_source_field():
     """
     text = _EDGE_ANALYZER.read_text(encoding="utf-8")
     assert '"source"' in text, "edge-analyzer.md's output schema is missing a source key"
+
+
+def test_conflict_analyzer_output_schema_includes_source_field():
+    """WP-TC1 (doc:83c250e463ae): curate-conflict-analyzer.md's example JSON output
+    must include a "source" key set to "curate-conflict" -- distinct provenance from
+    the general edge-analyzer's "curate-skill", mirroring the WP-10 guard
+    (test_edge_analyzer_output_schema_includes_source_field) since the same
+    per-edge-source contract (cognition_add_edges_batch reads source PER-EDGE from
+    each array element) applies here too.
+
+    Fails-before: a schema block with no "source" key would land conflict-pass
+    edges with the wrong default provenance ("batch") and break attribution.
+    """
+    text = _CONFLICT_ANALYZER.read_text(encoding="utf-8")
+    assert '"source"' in text, "curate-conflict-analyzer.md's output schema is missing a source key"
+    assert '"curate-conflict"' in text, "curate-conflict-analyzer.md's output schema does not set source to \"curate-conflict\""
 
 
 def test_curate_skill_files_do_not_claim_part_of_is_forbidden():
