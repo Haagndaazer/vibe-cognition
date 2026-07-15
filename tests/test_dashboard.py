@@ -866,7 +866,7 @@ class TestActivityAPI:
             (CognitionNodeType.INCIDENT, True), (CognitionNodeType.CONSTRAINT, True),
             (CognitionNodeType.PATTERN, True), (CognitionNodeType.ASSUMPTION, True),
             (CognitionNodeType.TASK, False), (CognitionNodeType.DOCUMENT, False),
-            (CognitionNodeType.WORKFLOW, False),
+            (CognitionNodeType.WORKFLOW, False), (CognitionNodeType.PERSON, False),
         ):
             node_id = f"act-{ntype.value}"
             if ntype == CognitionNodeType.TASK:
@@ -885,6 +885,7 @@ class TestActivityAPI:
             "constraint", "pattern", "assumption",
         }
         assert "task" not in types_seen and "document" not in types_seen and "workflow" not in types_seen
+        assert "person" not in types_seen
 
     def test_newest_first(self, client):
         c, lc = client
@@ -1230,8 +1231,12 @@ def pm_storage(tmp_path: Path) -> CognitionStorage:
         timestamp=ts(), author="Colton", metadata={},
     )
     s.add_node(workflow_v2)
+    # SUPERSEDES points newer -> older ("B replaces A": edge is B -> A;
+    # cognition_tools.py:3741/3824, prime.py:331). workflow_v2 is newer, so it
+    # supersedes workflow_v1 (previously backwards -- test_workflows_counts_
+    # head_only only asserted a bare count, so the direction bug was masked).
     s.add_edge(CognitionEdge(
-        from_id=workflow_v1.id, to_id=workflow_v2.id,
+        from_id=workflow_v2.id, to_id=workflow_v1.id,
         edge_type=CognitionEdgeType.SUPERSEDES, timestamp=ts(), source="test",
     ))
 
