@@ -105,7 +105,12 @@ def main() -> None:
         cognition_dir = repo_path / ".cognition"
         if cognition_dir.exists():
             storage = CognitionStorage(cognition_dir)
-            if storage.get_statistics()["nodes"] > 0:
+            # WP-TC15 widened get_statistics()'s return type to accommodate the
+            # new edge_sources histogram value; "nodes" itself is always int,
+            # narrowed explicitly here since pyright doesn't infer that from the
+            # union return type alone.
+            node_count = storage.get_statistics()["nodes"]
+            if isinstance(node_count, int) and node_count > 0:
                 try:
                     settings = Settings()
                     config = PrimeConfig(

@@ -35,6 +35,25 @@ JOURNAL_FILENAME = "journal.jsonl"
 # (deleted) by prime.py after it is shown once. Git-ignored via git_hygiene.py.
 REHYDRATE_FLAG_FILENAME = ".last-rehydrate.json"
 
+# WP-TC15: curation-containment observability. Edge `source` values produced by
+# the ONLY sanctioned edge-writing path (the background curate-orchestrator agent,
+# plus the two deterministic/task-linking internal writers) — get_statistics counts
+# every OTHER source (an unrecognized value, "manual", or "batch") as a write that
+# happened outside a curation run. Conservative by construction: a future legitimate
+# producer must be added here deliberately, in code, with a CHANGELOG note — it does
+# not get exempted just by being common. "curator" is the legacy default (old
+# journals predating this feature; also the replay fallback for a missing source
+# field, storage.py's _catch_up "add_edge" branch above) and is exempt so every
+# pre-existing graph doesn't show a false baseline of violations.
+_EDGE_SOURCE_CURATION_EXEMPT: frozenset[str] = frozenset({
+    "deterministic",
+    "task-parent",
+    "curate-skill",
+    "curate-conflict",
+    "curate-cluster",
+    "curator",
+})
+
 
 class CognitionStorage:
     """Cognition graph storage: JSONL source of truth + NetworkX in-memory graph.
@@ -612,13 +631,22 @@ class CognitionStorage:
                     result.append((source_id, edge_data))
             return result
 
-    def get_statistics(self) -> dict[str, int]:
+    def get_statistics(self) -> dict[str, int | dict[str, int]]:
         """Get graph statistics.
 
         Returns:
-            Dictionary with node/edge counts by type
+            Dictionary with node/edge counts by type, plus (WP-TC15) an
+            edge_sources histogram and edges_outside_curation count -- see
+            those keys' inline comments below for the source taxonomy.
         """
         with self._synced():
+            # Kept narrowly int-valued internally (unlike the widened return
+            # type) so every existing `stats[key] += 1` below stays a plain
+            # int += int and pyright doesn't need to re-narrow a union on
+            # each one -- the histogram is merged in as a sibling structure
+            # only at the return boundary (WP-TC15 peer-review HIGH: the
+            # alternative, widening this dict's own annotation, ripples a
+            # union type into every increment line above and below).
             stats: dict[str, int] = {
                 "nodes": self._graph.number_of_nodes(),
                 "edges": self._graph.number_of_edges(),
@@ -631,21 +659,40 @@ class CognitionStorage:
                 if t in stats:
                     stats[t] += 1
 
-            # Edge counts by type
+            # Edge counts by type, plus (WP-TC15) the source histogram and
+            # outside-curation count -- derived in this SAME pass (no second
+            # O(edges) walk) since it already visits every edge's data.
             for edge_type in CognitionEdgeType:
                 stats[f"edge_{edge_type.value}"] = 0
+            edge_sources: dict[str, int] = {}
+            edges_outside_curation = 0
             for _, _, edge_data in self._graph.edges(data=True):
                 et = edge_data.get("type", "")
                 key = f"edge_{et}"
                 if key in stats:
                     stats[key] += 1
 
+                es = edge_data.get("source", "curator")
+                edge_sources[es] = edge_sources.get(es, 0) + 1
+                if es not in _EDGE_SOURCE_CURATION_EXEMPT:
+                    edges_outside_curation += 1
+
+            stats["edges_outside_curation"] = edges_outside_curation
+
             stats["uncurated"] = sum(
                 1 for _, data in self._graph.nodes(data=True)
                 if data.get("curated_by_skill_at") is None
             )
 
-            return stats
+            # WP-TC15: histogram of every edge source seen (dynamic, like the
+            # per-edge-type counts above) -- semantic-edge writes made outside
+            # a curation run are the ones NOT in _EDGE_SOURCE_CURATION_EXEMPT
+            # ("manual", "batch", or any unknown value), already summed above
+            # as edges_outside_curation. Always present, even on a zero-edge
+            # graph ({} and 0 respectively) -- no absent-key ambiguity.
+            result: dict[str, int | dict[str, int]] = dict(stats)
+            result["edge_sources"] = edge_sources
+            return result
 
     # ── Reference index ────────────────────────────────────────────────
 
