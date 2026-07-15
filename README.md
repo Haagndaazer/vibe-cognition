@@ -61,7 +61,7 @@ search work immediately, before that.
 - **Semantic Search**: Find project history using natural language through local vector embeddings
 - **Deterministic Edge Creation**: `part_of` edges are created instantly via reference matching (shared commit/issue/PR refs) — no LLM needed
 - **Manual & Batch Edge Creation**: Create edges individually or in bulk via MCP tools, with provenance tracking
-- **Curation Skill**: `/vibe-curate` skill with edge-analyzer and cluster-analyzer subagents for semantic edge creation and cluster identification
+- **Curation Skill**: `/vibe-curate` skill with edge-analyzer, conflict-analyzer, and cluster-analyzer subagents for semantic edge creation, deliberate contradiction/supersession hunting, and cluster identification
 - **Local Dashboard**: Interactive graph viewer with semantic search and node-detail sidebar — launch in your browser from Claude or the CLI
 - **Session Context Injection**: Start every Claude Code session with recent project context via hooks
 - **Local-First**: All processing and storage happens on your machine — no API keys, no cloud services
@@ -313,6 +313,8 @@ Edges are created through two mechanisms:
 
 1. **Deterministic matching** (always on): `part_of` and (for document→episode) `relates_to` edges are created automatically when nodes share references. No setup needed. This is the *only* automatic edge creation.
 2. **`/vibe-curate` skill** (launches a background curator): Triggering curation is the agent's responsibility — after recording any nodes, the agent runs the `/vibe-curate` skill to launch a background curate-orchestrator agent, which creates semantic edges (led_to, resolved_by, supersedes) and identifies clusters via Haiku subagents. The main agent never authors these edges itself.
+
+**Conflict pass**: a dedicated `curate-conflict-analyzer` subagent runs between edge curation and clustering, hunting deliberately for `contradicts`/`supersedes` on stance-bearing nodes (decisions, constraints, patterns, assumptions) — the general edge-analyzer treats `contradicts` as genuinely rare and never actively looks for it. Every proposal carries verbatim quoted stances from both nodes; a whole-run cap discards the entire pass if more than 20% of examined candidates (once at least 15 have been examined) come back `contradicts`, guarding against a systematic false-positive run.
 
 ## Working as a Team
 
