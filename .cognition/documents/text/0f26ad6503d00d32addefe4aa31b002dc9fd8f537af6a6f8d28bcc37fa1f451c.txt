@@ -1,0 +1,55 @@
+# Epic status report: team-cognition (cedf4a8457e9) — end of autonomous run, 2026-07-15
+
+Prepared by Vince (manager). Audience: Colton. Epic goal: make vibe-cognition serve multi-tiered teams — hierarchy, cohesion, provenance-aware retrieval, and a consumer experience that actually pays off for every persona.
+
+## BOTTOM LINE
+
+The epic's build phase is COMPLETE. Both epic-close audits ran; every fixable audit finding is fixed, shipped, and re-verified against the original failing artifacts. Four releases went out during the autonomous run (v0.24.0 → v0.27.0), all pinned by Loki, marketplace current at colton-claude-plugins 991de5c. The epic now closes on exactly ONE decision that is yours: the S2-write ruling. Everything else outstanding is human-gated review or deliberately parked.
+
+## RELEASED THIS RUN (each WP: peer-reviewed brief → Vorpid implements → independent gate → --no-ff merge → episode)
+
+- v0.24.0 (7537a6c): TC15 containment observability.
+- v0.25.0 (528b4df): Dashboard V2 — workflows, document freshness, activity feed.
+- v0.26.0 (38bcb8b): Dashboard V3 — People view, seniority chips, conflict flags on rows; dashboard redesign COMPLETE (7 views).
+- v0.27.0 (f5044b2, pinned 991de5c): the Gate D fix train —
+  - cognition_list_tasks rows: claimed_by/claimed_at (claim etiquette without discovery-by-collision);
+  - cognition_search results: conflicted/superseded_by provenance flags, always present, single implementation shared with the dashboard, NO ranking change (TC9 never-hides preserved);
+  - prime: auto-personalize now fires for registered teams with a single writer + one-line identity header as the registration payoff (solo byte-identity guarantee intact);
+  - docs: /vibe-curate documented as the ONLY semantic-edge path at every site that previously invited manual add_edge; convention-not-ACL disclosed; personalization fully documented.
+
+## EPIC-CLOSE AUDITS
+
+**Gate B-final (4f024867dbcb): CLOSED.** Fresh-eyes agent answered 7/7 comprehension questions from the tool surface alone. All findings filed → both resulting WPs (list-tasks-claim, doc-fix) now shipped.
+
+**Gate D (bf6ebeb1e1b6): 4.5/5, one ruling from closing.** Dual-persona consumer audit on an isolated graph; every failing scenario got a fix WP and a re-run against the ORIGINAL failing artifact:
+- S1 relitigate: PASS (original run).
+- S3 claim collision: PASS post-fix — the claim holder is now visible read-only.
+- S4 seniority arc: PASS post-fix — the exact audit numbers reproduced (superseded junior hit still outranks the correction 0.708 vs 0.688, deliberately), but the hit now carries superseded_by. Ranking honesty preserved; the marker closes the trap.
+- S5 onboarding: PASS post-fix — the exact original artifact (3 registrations, one writer) now yields a personalized prime with identity header.
+- S2 conflict: read half PASS (both sides of a contradicts pair flag in search, consistent with the dashboard). Write half awaits your ruling on f8fcac05f731.
+
+**YOUR DECISION — S2-write (f8fcac05f731):** Option A = rule a write-time conflict advisory in scope → one more WP before the gate closes. Option B = rule it out of scope → S2 passes on the read half, Gate D closes, and the epic's audit requirement is satisfied. MY RECOMMENDATION: B. A write-time advisory borders the permanently-rejected acknowledgment/interceptor class, and the passive signal (uncurated counter in get_statistics) plus the now-shipped read-side flags cover the consumer risk the audit actually measured. The retained gate-d-graph is kept until you rule (needed only if A).
+
+## NEW WORK FILED FROM YOUR TWO DIRECTIVES THIS RUN
+
+1. Dashboard user management (your message): People view already ships read-only viewing (v0.26.0). Your view-only ruling recorded as decision c0b7b559e3a7; the read-only delta (unregistered-writers section + per-person activity drilldown) is task 5d4e2bd60d17, queued next for Vorpid.
+2. Legacy identity backfill (your message): design doc COMPLETE and peer-reviewed — doc:e134110987c8, task 962ab7b442d5 blocked on your review of 8 open questions. Two findings were demonstrated live on this repo's own data: your git history blames to TWO emails (the design now refuses to auto-pick), and ~240 journal lines have agent-persona authors making the manual map-file the primary workflow here. The review also exposed a LIVE bug: cognition_store_document never stamps recorded_by at all → task 2858ae93bf17.
+
+## QUEUED ON YOU (in rough priority order)
+
+1. S2-write ruling f8fcac05f731 → closes Gate D (recommend Option B).
+2. /plugin update + dashboard visual smoke (917822052e46) — now spans v0.24→v0.27: the entire dashboard redesign plus the prime identity header. Also unblocks TC2.
+3. Backfill design review — 8 questions at the end of doc:e134110987c8.
+4. Async reviews queued earlier: TC4 takeover-note interpretation (2419eb670b43), C2 remediation note, DashV2 freshness deviation.
+
+## PARKED / BACKGROUND
+
+- TC2 (888a21f729dd): parked until your plugin update + a live curation run produces curate-conflict edges — the one epic item that needs runtime evidence only your machine can generate.
+- chromadb concurrency flake bucket (7ec1e5929309): 5 observed events across 2 tests, environment-level, reproduced on unmodified main; real signal about concurrent multi-session use; investigation queued (newer chromadb / widen _retry_chromadb_open).
+- pyright version pin (8f1ac67bb89b): CI 8 vs local 39 baseline drift — parity discipline held all run, pin still worth doing.
+- Wave-boundary curation batch: launched after the 0.27.0 release (13 uncurated at launch); completion will be recorded; graph was fully curated at every prior boundary.
+
+## PROCESS NOTES WORTH YOUR EYES
+
+- Vorpid caught his own Edit-tool near-miss on the shared main tree (wrong absolute path, same-turn recovery, zero damage) and self-reported it; recorded as fail 48e8e3c7a6c5 extending the shared-main contamination incident to absolute-path tools, not just cwd resets.
+- Every WP this run passed its gate first-try after peer-reviewed briefs — the brief→review→mutation-verify loop is earning its cost. Vorpid independently adopted mutation-verification of acceptance tests without being asked; it caught nothing this run precisely because the briefs pinned the traps, which is the system working.
