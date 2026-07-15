@@ -8,65 +8,78 @@
   <!-- Vendored (WP-D4 / audit D-4): self-hosted, not CDN — no SRI gap (a CDN
        compromise could run arbitrary JS in a page that can DELETE nodes) and the
        dashboard works offline. Pinned: cytoscape@3.30.2, layout-base@2.0.1,
-       cose-base@2.2.0, cytoscape-fcose@2.2.0. -->
+       cose-base@2.2.0, cytoscape-fcose@2.2.0. Loaded eagerly (small, vendored) but
+       NOT constructed into a cytoscape() instance until the Graph tab activates —
+       see app.js buildCy()/activateView() (WP-TC11, D-3 lazy-build). -->
   <script src="/static/vendor/cytoscape.min.js"></script>
   <script src="/static/vendor/layout-base.js"></script>
   <script src="/static/vendor/cose-base.js"></script>
   <script src="/static/vendor/cytoscape-fcose.js"></script>
 </head>
 <body>
-  <header>
-    <div id="brand">vibe-cognition</div>
-    <div id="search-wrap">
-      <input id="search" type="text" placeholder="Search nodes (loading embedding model...)" disabled autocomplete="off" />
-      <div id="search-results" hidden></div>
-    </div>
-    <div id="status-line">
-      <button id="refresh-btn" type="button" title="Reload the graph">↻ Refresh</button>
-      <span id="stats"></span>
-      <span id="banner" class="banner-loading">Loading embedding model…</span>
-    </div>
-  </header>
+  <div class="app">
+    <nav id="nav-rail">
+      <div class="brand">vibe-cognition<small>project dashboard</small></div>
+      <button class="nav-btn active" data-view="overview" type="button">▦ Overview</button>
+      <button class="nav-btn" data-view="board" type="button">☰ Board</button>
+      <button class="nav-btn" data-view="graph" type="button">✳ Graph</button>
+      <div class="nav-foot">read-only</div>
+    </nav>
 
-  <main>
-    <aside id="episodes-panel">
-      <div class="panel-header">Episodes <span id="episode-count" class="muted"></span></div>
-      <ul id="episode-list"></ul>
-      <div class="panel-header">Documents <span id="document-count" class="muted"></span></div>
-      <ul id="document-list"></ul>
-    </aside>
-    <div id="cy"></div>
-    <aside id="detail">
-      <div class="detail-empty">Click a node to see details</div>
-    </aside>
-  </main>
+    <div class="main-col">
+      <header>
+        <div id="search-wrap">
+          <input id="search" type="text" placeholder="Search nodes (loading embedding model...)" disabled autocomplete="off" />
+          <div id="search-results" hidden></div>
+        </div>
+        <div id="status-line">
+          <button id="refresh-btn" type="button" title="Reload">↻ Refresh</button>
+          <span id="stats"></span>
+          <span id="banner" class="banner-loading">Loading embedding model…</span>
+        </div>
+      </header>
+
+      <main>
+        <section class="view active" id="view-overview">
+          <h2>Overview</h2>
+          <div class="tiles" id="overview-tiles"></div>
+
+          <h3>Active constraints</h3>
+          <div class="card"><ul class="plain" id="overview-constraints"></ul></div>
+
+          <h3>Needs attention</h3>
+          <div class="card"><ul class="plain" id="overview-attention"></ul></div>
+
+          <h3>Recent episodes</h3>
+          <div class="card"><ul class="plain" id="overview-episodes"></ul></div>
+
+          <h3>Recent incidents <span class="meta">(14d, high+)</span></h3>
+          <div class="card" id="overview-incidents-card"><ul class="plain" id="overview-incidents"></ul></div>
+        </section>
+
+        <section class="view" id="view-board">
+          <h2>Board
+            <button id="board-tree-toggle" class="mini-toggle" type="button">Tree view</button>
+            <label class="mini-toggle"><input type="checkbox" id="board-show-cancelled" /> Show cancelled</label>
+          </h2>
+          <div class="board" id="board-columns"></div>
+          <ul class="tree" id="board-tree" hidden></ul>
+        </section>
+
+        <section class="view" id="view-graph">
+          <h2>Graph <span class="meta">— constellation, kept for curation debugging; no longer the front door</span></h2>
+          <div id="cy"></div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <aside class="drawer" id="drawer">
+    <button class="drawer-close" id="drawer-close" type="button">✕</button>
+    <div id="drawer-content"></div>
+  </aside>
 
   <div id="toasts"></div>
-
-  <template id="detail-tpl">
-    <div class="detail">
-      <div class="detail-header">
-        <span class="detail-type"></span>
-        <span class="detail-id"></span>
-      </div>
-      <h2 class="detail-summary"></h2>
-      <pre class="detail-body"></pre>
-      <div class="detail-meta"></div>
-      <div class="detail-section">
-        <h3>References</h3>
-        <ul class="detail-references"></ul>
-      </div>
-      <div class="detail-section">
-        <h3>Outgoing edges</h3>
-        <ul class="detail-successors"></ul>
-      </div>
-      <div class="detail-section">
-        <h3>Incoming edges</h3>
-        <ul class="detail-predecessors"></ul>
-      </div>
-      <button class="detail-delete">Delete node</button>
-    </div>
-  </template>
 
   <script src="/static/app.js"></script>
 </body>

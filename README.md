@@ -176,7 +176,15 @@ semantic search on it is disabled (structural reads still work) — the load res
 
 ## Dashboard
 
-The dashboard is a local web viewer for the cognition graph: an interactive force-directed layout of every node and edge, an episode timeline (newest first) on the left, embedding-powered search that highlights matches and their direct neighbors in the graph, and a node-detail sidebar with delete capability.
+The dashboard is a local, read-only web view of the cognition graph, organized like a project-management tool rather than a picture of a graph. A left nav rail switches between three views, and every view opens nodes in a shared detail drawer on the right:
+
+- **Overview** (default) — stat tiles (open/in-progress/blocked tasks, done this week, documents, workflows), active constraints, a needs-attention list (stale claims, blocked tasks), recent episodes, and recent high-severity incidents (last 14 days).
+- **Board** — a kanban view of tasks (Open / In Progress / Blocked / Done, done capped to the most recent 20 with cancelled behind a toggle), with a tree-view toggle for the epic/subtask hierarchy. Cards show priority, creator, claimant, and claim age.
+- **Graph** — the original interactive force-directed constellation, kept for curation debugging (spotting edgeless clusters). It's lazy-loaded: nothing is fetched or constructed until you open the tab, and the 30-second auto-refresh updates it in place rather than rebuilding it.
+
+The shared **detail drawer** (opened from a Board card, a Graph node, or any list row) shows the full node — summary, detail, references — plus a provenance block (who recorded/created/claimed it, with a visually distinct dashed "unverified" chip for older nodes that predate server-resolved identity and only have a free-text author), a task's transition timeline, related nodes grouped by edge type, and a conflict banner when the node is contradicted or superseded by a newer version. A global header keeps semantic search, the embedding-status banner, refresh, and stats — unchanged from before the redesign.
+
+Documents and Workflows browsing (dedicated views, freshness/citation metadata) and an Activity feed are not yet in the dashboard — planned for a later pass; `/api/documents` and `/api/document/{id}/download` still work if called directly. The dashboard has no write path beyond node delete (it has no per-request viewer identity, so any other write would stamp misleading provenance).
 
 It runs on `127.0.0.1` and is protected by a per-session token included in the URL. No data leaves your machine.
 
@@ -215,11 +223,12 @@ The CLI runs uvicorn in the foreground; press Ctrl-C to stop.
 
 ### What you can do
 
-- **Pan / zoom** the canvas to explore connections; nodes are colored by type (decision, fail, discovery, pattern, episode, …).
-- **Click a node** → its label and its direct neighbors' labels appear; the node-detail sidebar shows the full summary, detail, references, and incoming/outgoing edges.
-- **Click an episode** in the left panel → focuses that episode and its connected entities in the canvas.
-- **Search** with natural language → matching nodes get a yellow border, and the canvas dims everything outside their immediate neighborhood so you can see *where* the matches live.
-- **Delete a node** from the sidebar (it's removed from `journal.jsonl` and the embedding index — irreversible).
+- **Switch views** with the nav rail — Overview, Board, Graph.
+- **Click a task card, list row, or graph node** → opens the shared detail drawer with the full node, provenance, and (for tasks) the transition timeline.
+- **Toggle Board** between kanban columns and a tree view of the epic/subtask hierarchy; a checkbox reveals cancelled tasks.
+- **Pan / zoom** the Graph tab's canvas to explore connections; nodes are colored by type (decision, fail, discovery, pattern, episode, task, person, …).
+- **Search** with natural language → matching nodes get a yellow border in the Graph tab if it's loaded, and results open directly in the detail drawer either way.
+- **Delete a node** from the drawer (it's removed from `journal.jsonl` and the embedding index — irreversible).
 
 ## Storage
 

@@ -15,6 +15,8 @@ const TYPE_COLORS = {
 };
 
 const TOKEN = new URL(location.href).searchParams.get("token") || "";
+const DONE_CAP = 20;
+const STALE_CLAIM_DAYS = 5;
 
 function authHeaders(extra) {
   return { "X-Dashboard-Token": TOKEN, ...(extra || {}) };
@@ -43,7 +45,423 @@ function toast(message, kind) {
   setTimeout(() => el.remove(), 4500);
 }
 
-let cy;
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
+}
+
+function formatTimestamp(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return ts;
+  return d.toLocaleString();
+}
+
+function relativeDays(ts) {
+  if (!ts) return null;
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return null;
+  return Math.max(0, Math.floor((Date.now() - d.getTime()) / 86400000));
+}
+
+function isStaleClaim(ts) {
+  const days = relativeDays(ts);
+  return days != null && days >= STALE_CLAIM_DAYS;
+}
+
+const debounce = (fn, ms) => {
+  let h;
+  return (...a) => {
+    clearTimeout(h);
+    h = setTimeout(() => fn(...a), ms);
+  };
+};
+
+// ── Trust-class provenance chips (design doc §4.7 / decision 6be2e867f91e) ──
+// A person chip backed by server-resolved identity (recorded_by / created_by /
+// claimed_by) renders solid; a free-text `author` fallback (pre-P13n nodes with
+// no server-resolved field) renders dashed + "(unverified)" — the two must never
+// look identical, anywhere in the UI (list chips included, not just the drawer).
+function personChipHTML(who, opts) {
+  if (!who) return "";
+  const unverified = !!(opts && opts.unverified);
+  const name = typeof who === "object" ? (who.name || who.email || "?") : String(who);
+  const cls = "chip person" + (unverified ? " unverified" : "");
+  const suffix = unverified ? " (unverified)" : "";
+  return `<span class="${cls}">${escapeHTML(name)}${escapeHTML(suffix)}</span>`;
+}
+
+// Renders the server-resolved identity if present, else the free-text author
+// fallback marked unverified. Never silently upgrades an author string to look
+// like a verified chip.
+function identityChipHTML(resolved, author) {
+  return resolved ? personChipHTML(resolved) : (author ? personChipHTML(author, { unverified: true }) : "");
+}
+
+// from_agent (WP-TC6): a bool key present on the node's metadata, caller-declared
+// and unverified. Absent key (pre-TC6 node) renders NOTHING -- never coerced to a
+// badge either way.
+function fromAgentChipHTML(fromAgent) {
+  if (fromAgent === null || fromAgent === undefined) return "";
+  return fromAgent
+    ? `<span class="chip agent">via agent</span>`
+    : `<span class="chip">by human</span>`;
+}
+
+function severityChipClass(sev) {
+  if (sev === "critical") return "crit";
+  if (sev === "high") return "high";
+  return "norm";
+}
+
+function wireRowClicks(container) {
+  for (const el of container.querySelectorAll("[data-id]")) {
+    el.addEventListener("click", () => openDrawer(el.dataset.id));
+  }
+}
+
+// ── Drawer (shared detail surface: Board cards, Graph nodes, Overview rows) ──
+let drawerNodeId = null;
+
+async function openDrawer(id) {
+  drawerNodeId = id;
+  try {
+    const node = await api(`/api/node/${encodeURIComponent(id)}`);
+    renderDrawer(node);
+    document.getElementById("drawer").classList.add("open");
+    if (cy && cy.$id(id).length) {
+      highlightNeighborhood(id);
+      cy.center(cy.$id(id));
+    }
+  } catch (err) {
+    if (err.status === 404) toast(`Node ${id} no longer exists`, "error");
+    else toast(`Load failed: ${err.message}`, "error");
+  }
+}
+
+function closeDrawer() {
+  drawerNodeId = null;
+  document.getElementById("drawer").classList.remove("open");
+}
+
+function conflictBannerHTML(node) {
+  const preds = node.predecessors || [];
+  const contradicts = preds.find(p => p.edge_type === "contradicts");
+  if (contradicts) {
+    return `<div class="warnbanner">⚠ <b>Conflict:</b> contradicted by
+      <span class="node-ref" data-id="${escapeHTML(contradicts.id)}">${escapeHTML(contradicts.id)}</span></div>`;
+  }
+  const supersededBy = preds.find(p => p.edge_type === "supersedes");
+  if (supersededBy) {
+    return `<div class="warnbanner">⚠ <b>Outdated:</b> superseded by
+      <span class="node-ref" data-id="${escapeHTML(supersededBy.id)}">${escapeHTML(supersededBy.id)}</span>
+      — this is not the current version</div>`;
+  }
+  return "";
+}
+
+function provenanceHTML(node) {
+  const meta = node.metadata || {};
+  const isTask = node.type === "task";
+  const rows = [];
+  if (isTask) {
+    rows.push(`<div class="row" style="margin-bottom:6px">
+      <span class="meta" style="min-width:90px">created by</span>
+      ${identityChipHTML(meta.created_by, node.author)}
+      ${fromAgentChipHTML(meta.from_agent)}
+    </div>`);
+    rows.push(`<div class="row" style="margin-bottom:6px">
+      <span class="meta" style="min-width:90px">claimed by</span>
+      ${meta.claimed_by ? personChipHTML(meta.claimed_by) : '<span class="meta">— unclaimed</span>'}
+    </div>`);
+  } else {
+    rows.push(`<div class="row" style="margin-bottom:6px">
+      <span class="meta" style="min-width:90px">recorded by</span>
+      ${identityChipHTML(meta.recorded_by, node.author)}
+      ${fromAgentChipHTML(meta.from_agent)}
+    </div>`);
+  }
+  return `<h3>Provenance</h3>${rows.join("")}`;
+}
+
+function timelineHTML(node) {
+  if (node.type !== "task") return "";
+  const transitions = (node.metadata && node.metadata.transitions) || [];
+  if (!transitions.length) return "";
+  const items = transitions.map(t => {
+    const who = t.by && typeof t.by === "object" ? (t.by.name || t.by.email) : t.by;
+    const note = t.note ? `<span class="note">${escapeHTML(t.note)}</span>` : "";
+    return `<div class="ev"><b>${escapeHTML(t.status)}</b>
+      <span class="meta">· ${escapeHTML(formatTimestamp(t.at))}${who ? " · by " + escapeHTML(who) : ""}</span>${note}</div>`;
+  }).join("");
+  return `<div class="detail-section"><h3>Transition timeline</h3><div class="timeline">${items}</div></div>`;
+}
+
+const _LOUD_EDGE_TYPES = new Set(["supersedes", "contradicts"]);
+const _EDGE_TYPE_ORDER = ["supersedes", "contradicts", "part_of", "led_to", "resolved_by", "relates_to"];
+
+function relatedNodesHTML(node) {
+  const all = [
+    ...(node.successors || []).map(s => ({ ...s, dir: "→" })),
+    ...(node.predecessors || []).map(p => ({ ...p, dir: "←" })),
+  ];
+  if (!all.length) return '<li class="empty">none</li>';
+  const groups = {};
+  for (const r of all) (groups[r.edge_type] || (groups[r.edge_type] = [])).push(r);
+  const keys = Object.keys(groups).sort((a, b) => {
+    const ia = _EDGE_TYPE_ORDER.indexOf(a), ib = _EDGE_TYPE_ORDER.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+  });
+  return keys.map(k => groups[k].map(r => {
+    const cls = "edge-type" + (_LOUD_EDGE_TYPES.has(k) ? " loud" : "");
+    return `<li class="node-ref" data-id="${escapeHTML(r.id)}">
+      <span class="${cls}">${escapeHTML(k)} ${r.dir}</span>${escapeHTML(r.id)}</li>`;
+  }).join("")).join("");
+}
+
+function renderDrawer(node) {
+  const type = node.type || "";
+  const severity = node.severity;
+  const html = `
+    <div class="detail-header">
+      <span>
+        <span class="chip type">${escapeHTML(type)}</span>
+        ${severity ? `<span class="chip ${severityChipClass(severity)}">${escapeHTML(severity)}</span>` : ""}
+      </span>
+      <span class="detail-id">${escapeHTML(node.id)}</span>
+    </div>
+    ${conflictBannerHTML(node)}
+    <div class="detail-summary">${escapeHTML(node.summary || "(no summary)")}</div>
+    <pre class="detail-body">${escapeHTML(node.detail || "(no detail)")}</pre>
+    ${provenanceHTML(node)}
+    ${timelineHTML(node)}
+    <div class="detail-section">
+      <h3>Related nodes</h3>
+      <ul>${relatedNodesHTML(node)}</ul>
+    </div>
+    <button class="detail-delete" id="drawer-delete">Delete node</button>
+  `;
+  const content = document.getElementById("drawer-content");
+  content.innerHTML = html;
+  for (const el of content.querySelectorAll(".node-ref[data-id]")) {
+    el.addEventListener("click", () => openDrawer(el.dataset.id));
+  }
+  document.getElementById("drawer-delete").addEventListener("click", () => deleteNode(node.id));
+}
+
+async function deleteNode(id) {
+  if (!confirm(`Delete node ${id}? This cannot be undone.`)) return;
+  try {
+    await api(`/api/node/${encodeURIComponent(id)}`, { method: "DELETE" });
+    closeDrawer();
+    if (cy) cy.remove(cy.$id(id));
+    boardTasksCache = boardTasksCache.filter(t => t.id !== id);
+    renderBoard();
+    toast("Node deleted", "success");
+    refreshStats();
+    loadOverview();
+  } catch (err) {
+    toast(`Delete failed: ${err.message}`, "error");
+  }
+}
+
+// ── Overview ─────────────────────────────────────────────────────────────
+async function loadOverview() {
+  let data;
+  try {
+    data = await api("/api/overview");
+  } catch (err) {
+    toast(`Overview load failed: ${err.message}`, "error");
+    return;
+  }
+  renderOverviewTiles(data);
+  renderOverviewConstraints(data.constraints || []);
+  renderOverviewAttention(data.needs_attention || {});
+  renderOverviewFeed("overview-episodes", data.recent_episodes || []);
+  renderOverviewFeed("overview-incidents", data.recent_incidents || []);
+}
+
+function renderOverviewTiles(data) {
+  const t = data.tasks || {};
+  const tiles = [
+    { n: t.open || 0, l: "Open tasks" },
+    { n: t.in_progress || 0, l: "In progress" },
+    { n: t.blocked || 0, l: "Blocked" },
+    { n: t.done_this_week || 0, l: "Done this week" },
+    { n: data.documents || 0, l: "Documents" },
+    { n: data.workflows || 0, l: "Workflows" },
+  ];
+  document.getElementById("overview-tiles").innerHTML = tiles.map(x =>
+    `<div class="tile"><div class="n">${x.n}</div><div class="l">${escapeHTML(x.l)}</div></div>`
+  ).join("");
+}
+
+function renderOverviewConstraints(list) {
+  const el = document.getElementById("overview-constraints");
+  if (!list.length) {
+    el.innerHTML = '<li class="empty">none active</li>';
+    return;
+  }
+  el.innerHTML = list.map(c => `
+    <li class="row clickable" data-id="${escapeHTML(c.id)}">
+      <span class="chip ${severityChipClass(c.severity)}">${escapeHTML(c.severity || "normal")}</span>
+      <span class="grow">${escapeHTML(c.summary || c.id)}</span>
+      ${identityChipHTML(c.recorded_by, c.author)}
+    </li>`).join("");
+  wireRowClicks(el);
+}
+
+function renderOverviewAttention(na) {
+  const el = document.getElementById("overview-attention");
+  const rows = [];
+  for (const s of (na.stale_claims || [])) {
+    const days = relativeDays(s.claimed_at);
+    rows.push(`<li class="row clickable" data-id="${escapeHTML(s.id)}">
+      <span class="st in_progress">in progress</span>
+      <span class="grow">${escapeHTML(s.summary || s.id)}</span>
+      <span class="meta">claimed ${days != null ? days + "d" : "?"} ago</span>
+      ${s.claimed_by ? personChipHTML(s.claimed_by) : ""}
+    </li>`);
+  }
+  for (const b of (na.blocked || [])) {
+    rows.push(`<li class="row clickable" data-id="${escapeHTML(b.id)}">
+      <span class="st blocked">blocked</span>
+      <span class="grow">${escapeHTML(b.summary || b.id)}</span>
+    </li>`);
+  }
+  el.innerHTML = rows.length ? rows.join("") : '<li class="empty">nothing needs attention</li>';
+  wireRowClicks(el);
+}
+
+function renderOverviewFeed(elId, list) {
+  const el = document.getElementById(elId);
+  if (!list.length) {
+    el.innerHTML = '<li class="empty">none</li>';
+    return;
+  }
+  el.innerHTML = list.map(n => `
+    <li class="row clickable" data-id="${escapeHTML(n.id)}">
+      <span class="grow">${escapeHTML(n.summary || n.id)}</span>
+      ${identityChipHTML(n.recorded_by, n.author)}
+      ${fromAgentChipHTML(n.from_agent)}
+      <span class="meta">${escapeHTML(formatTimestamp(n.timestamp))}</span>
+    </li>`).join("");
+  wireRowClicks(el);
+}
+
+// ── Board ────────────────────────────────────────────────────────────────
+let boardTasksCache = [];
+let boardMode = "columns"; // "columns" | "tree"
+
+async function loadBoard() {
+  let data;
+  try {
+    data = await api("/api/tasks");
+  } catch (err) {
+    toast(`Board load failed: ${err.message}`, "error");
+    return;
+  }
+  boardTasksCache = data.tasks || [];
+  renderBoard();
+}
+
+function renderBoard() {
+  const showCancelled = document.getElementById("board-show-cancelled").checked;
+  if (boardMode === "tree") renderBoardTree(boardTasksCache, showCancelled);
+  else renderBoardColumns(boardTasksCache, showCancelled);
+}
+
+function taskCardHTML(t) {
+  const crumb = t.parent_id ? `<div class="crumb">↳ ${escapeHTML(t.parent_id)}</div>` : "";
+  const ghost = (t.status === "done" || t.status === "cancelled") ? " ghost" : "";
+  let claim = "";
+  if (t.status === "in_progress" && t.claimed_at) {
+    const days = relativeDays(t.claimed_at);
+    claim = `<span class="meta">claimed ${days != null ? days + "d" : "?"} ago${isStaleClaim(t.claimed_at) ? " ⚠ stale" : ""}</span>`;
+  }
+  return `<div class="tcard${ghost}" data-id="${escapeHTML(t.id)}">
+    ${crumb}
+    <div class="sum">${escapeHTML(t.summary || t.id)}</div>
+    <div class="row">
+      <span class="chip ${severityChipClass(t.priority)}">${escapeHTML(t.priority || "normal")}</span>
+      ${identityChipHTML(t.created_by, t.author)}
+      ${fromAgentChipHTML(t.from_agent)}
+      ${claim}
+    </div>
+  </div>`;
+}
+
+function boardColumnHTML(label, items, total) {
+  const count = total != null ? total : items.length;
+  const capNote = (total != null && total > items.length)
+    ? ` <span class="meta">(showing ${items.length})</span>` : "";
+  const cards = items.length ? items.map(taskCardHTML).join("")
+    : '<div class="meta" style="padding:8px 4px">none</div>';
+  return `<div class="col"><h4>${escapeHTML(label)} · ${count}${capNote}</h4>${cards}</div>`;
+}
+
+function wireCardClicks(container) {
+  for (const el of container.querySelectorAll(".tcard[data-id]")) {
+    el.addEventListener("click", () => openDrawer(el.dataset.id));
+  }
+}
+
+function renderBoardColumns(tasks, showCancelled) {
+  document.getElementById("board-tree").hidden = true;
+  const board = document.getElementById("board-columns");
+  board.hidden = false;
+
+  const cols = { open: [], in_progress: [], blocked: [], done: [], cancelled: [] };
+  for (const t of tasks) (cols[t.status] || cols.open).push(t);
+  cols.done.sort((a, b) => (b.last_transition_at || "").localeCompare(a.last_transition_at || ""));
+  const doneTotal = cols.done.length;
+  const doneShown = cols.done.slice(0, DONE_CAP);
+
+  const parts = [
+    boardColumnHTML("Open", cols.open),
+    boardColumnHTML("In progress", cols.in_progress),
+    boardColumnHTML("Blocked", cols.blocked),
+    boardColumnHTML("Done", doneShown, doneTotal),
+  ];
+  if (showCancelled) parts.push(boardColumnHTML("Cancelled", cols.cancelled));
+
+  board.style.gridTemplateColumns = `repeat(${parts.length}, minmax(0, 1fr))`;
+  board.innerHTML = parts.join("");
+  wireCardClicks(board);
+}
+
+function renderBoardTree(tasks, showCancelled) {
+  document.getElementById("board-columns").hidden = true;
+  const tree = document.getElementById("board-tree");
+  tree.hidden = false;
+
+  const rows = tasks.filter(t => showCancelled || t.status !== "cancelled");
+  rows.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+  tree.innerHTML = rows.length ? rows.map(t => `
+    <li data-id="${escapeHTML(t.id)}">
+      <span class="crumb-indent">${"—".repeat(t.depth)}</span>
+      <span class="st ${escapeHTML(t.status)}">${escapeHTML(t.status)}</span>
+      <span class="grow">${escapeHTML(t.summary || t.id)}</span>
+      <span class="chip ${severityChipClass(t.priority)}">${escapeHTML(t.priority || "normal")}</span>
+    </li>`).join("") : '<li class="empty">no tasks</li>';
+  wireRowClicks(tree);
+}
+
+function toggleBoardMode() {
+  boardMode = boardMode === "columns" ? "tree" : "columns";
+  document.getElementById("board-tree-toggle").textContent = boardMode === "columns" ? "Tree view" : "Board view";
+  renderBoard();
+}
+
+// ── Graph (constellation, lazy — D-3 / WP-TC11) ─────────────────────────
+// The tab's BUILD (cytoscape() construction) happens exactly once, on first
+// activation. The 30s poll below refreshes data (stats/overview always;
+// graph elements only if the tab has already been built) via cy.json(), never
+// by constructing a new instance -- the pre-redesign bug this replaces rebuilt
+// a fresh cytoscape() every tick regardless of which view was showing.
+let cy = null;
+let graphLoaded = false;
 let currentNodeId = null;
 
 function buildCy(elements) {
@@ -74,11 +492,7 @@ function buildCy(elements) {
       },
       {
         selector: "node.label-on, node:selected, node.search-hit",
-        style: {
-          "text-opacity": 1,
-          "font-size": 13,
-          "z-index": 10,
-        },
+        style: { "text-opacity": 1, "font-size": 13, "z-index": 10 },
       },
       {
         selector: "node:selected",
@@ -86,16 +500,9 @@ function buildCy(elements) {
       },
       {
         selector: "node.search-hit",
-        style: {
-          "border-color": "#f4c060",
-          "border-width": 3,
-          "z-index": 5,
-        },
+        style: { "border-color": "#f4c060", "border-width": 3, "z-index": 5 },
       },
-      {
-        selector: ".faded",
-        style: { "opacity": 0.15 },
-      },
+      { selector: ".faded", style: { "opacity": 0.15 } },
       {
         selector: "edge",
         style: {
@@ -116,38 +523,23 @@ function buildCy(elements) {
       },
       {
         selector: "edge.highlighted",
-        style: {
-          "line-color": "#5cb1ff",
-          "target-arrow-color": "#5cb1ff",
-          "width": 2,
-          "text-opacity": 1,
-        },
+        style: { "line-color": "#5cb1ff", "target-arrow-color": "#5cb1ff", "width": 2, "text-opacity": 1 },
       },
     ],
-    layout: {
-      name: "fcose",
-      animate: false,
-      randomize: true,
-      nodeRepulsion: 8000,
-      idealEdgeLength: 90,
-    },
+    layout: { name: "fcose", animate: false, randomize: true, nodeRepulsion: 8000, idealEdgeLength: 90 },
   });
 
-  cy.on("tap", "node", async (evt) => {
-    const id = evt.target.id();
-    await selectNode(id);
-  });
-
+  cy.on("tap", "node", (evt) => openDrawer(evt.target.id()));
   cy.on("tap", (evt) => {
     if (evt.target === cy) {
       cy.elements().removeClass("faded").removeClass("highlighted").removeClass("label-on");
-      setActiveEpisode(null);
-      clearDetail();
+      currentNodeId = null;
     }
   });
 }
 
 function highlightNeighborhood(id) {
+  currentNodeId = id;
   const node = cy.$id(id);
   if (node.empty()) return;
   const nh = node.closedNeighborhood();
@@ -157,216 +549,65 @@ function highlightNeighborhood(id) {
   nh.edges().addClass("highlighted");
 }
 
-async function selectNode(id) {
-  currentNodeId = id;
-  highlightNeighborhood(id);
-  setActiveEpisode(id);
-  cy.center(cy.$id(id));
+async function ensureGraphLoaded() {
+  if (graphLoaded) return;
+  graphLoaded = true;
   try {
-    const data = await api(`/api/node/${encodeURIComponent(id)}`);
-    renderDetail(data);
+    const graph = await api("/api/graph");
+    buildCy([...graph.nodes, ...graph.edges]);
   } catch (err) {
-    if (err.status === 404) {
-      toast(`Node ${id} no longer exists`, "error");
-      cy.remove(cy.$id(id));
-      clearDetail();
-    } else {
-      toast(`Load failed: ${err.message}`, "error");
-    }
+    graphLoaded = false; // allow a retry on next activation
+    toast(`Graph load failed: ${err.message}`, "error");
   }
 }
 
-function clearDetail() {
-  currentNodeId = null;
-  const aside = document.getElementById("detail");
-  aside.innerHTML = '<div class="detail-empty">Click a node to see details</div>';
-}
-
-function renderDetail(node) {
-  const tpl = document.getElementById("detail-tpl");
-  const frag = tpl.content.cloneNode(true);
-  const root = frag.querySelector(".detail");
-  const type = node.type || "";
-  const typeEl = root.querySelector(".detail-type");
-  typeEl.textContent = type;
-  typeEl.style.color = TYPE_COLORS[type] || "#aaa";
-  root.querySelector(".detail-id").textContent = node.id;
-  root.querySelector(".detail-summary").textContent = node.summary || "(no summary)";
-  root.querySelector(".detail-body").textContent = node.detail || "(no detail)";
-
-  const meta = root.querySelector(".detail-meta");
-  const metaItems = [
-    ["author", node.author],
-    ["timestamp", node.timestamp],
-    ["context", (node.context || []).join(", ")],
-    ["severity", node.severity],
-  ].filter(([, v]) => v);
-  meta.innerHTML = metaItems.map(([k, v]) => `<div><strong>${k}:</strong> ${escapeHTML(String(v))}</div>`).join("");
-
-  const refs = root.querySelector(".detail-references");
-  refs.innerHTML = (node.references || []).map(r => `<li>${escapeHTML(r)}</li>`).join("") || '<li class="detail-empty">none</li>';
-
-  const succ = root.querySelector(".detail-successors");
-  succ.innerHTML = (node.successors || []).map(s =>
-    `<li data-id="${escapeHTML(s.id)}"><span class="edge-type">${escapeHTML(s.edge_type)}</span>${escapeHTML(s.id)}</li>`
-  ).join("") || '<li class="detail-empty">none</li>';
-
-  const pred = root.querySelector(".detail-predecessors");
-  pred.innerHTML = (node.predecessors || []).map(p =>
-    `<li data-id="${escapeHTML(p.id)}"><span class="edge-type">${escapeHTML(p.edge_type)}</span>${escapeHTML(p.id)}</li>`
-  ).join("") || '<li class="detail-empty">none</li>';
-
-  for (const li of root.querySelectorAll(".detail-section li[data-id]")) {
-    li.addEventListener("click", () => {
-      const targetId = li.dataset.id;
-      if (cy.$id(targetId).length) selectNode(targetId);
-      else toast(`Node ${targetId} not in current graph`, "error");
-    });
-  }
-
-  root.querySelector(".detail-delete").addEventListener("click", () => deleteNode(node.id));
-
-  const aside = document.getElementById("detail");
-  aside.innerHTML = "";
-  aside.appendChild(frag);
-}
-
-async function deleteNode(id) {
-  if (!confirm(`Delete node ${id}? This cannot be undone.`)) return;
+async function refreshGraphInPlace() {
+  if (!graphLoaded || !cy) return;
   try {
-    await api(`/api/node/${encodeURIComponent(id)}`, { method: "DELETE" });
-    cy.remove(cy.$id(id));
-    removeEpisodeFromList(id);
-    clearDetail();
-    toast("Node deleted", "success");
-    refreshStats();
-  } catch (err) {
-    toast(`Delete failed: ${err.message}`, "error");
+    const graph = await api("/api/graph");
+    cy.json({ elements: [...graph.nodes, ...graph.edges] });
+    if (currentNodeId && cy.$id(currentNodeId).length) highlightNeighborhood(currentNodeId);
+  } catch (_) {
+    // non-fatal: the graph tab just shows slightly stale data until the next tick
   }
-}
-
-function buildEpisodeList(nodes) {
-  const episodes = nodes
-    .map(n => n.data)
-    .filter(d => d.type === "episode")
-    .sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
-
-  document.getElementById("episode-count").textContent = `(${episodes.length})`;
-  const list = document.getElementById("episode-list");
-  if (!episodes.length) {
-    list.innerHTML = '<li class="episode-empty">No episodes yet</li>';
-    return;
-  }
-  list.innerHTML = episodes.map(d => `
-    <li class="episode-item" data-id="${escapeHTML(d.id)}">
-      <div class="episode-summary">${escapeHTML((d.summary || d.id).slice(0, 140))}</div>
-      <div class="episode-meta">${escapeHTML(formatTimestamp(d.timestamp))}</div>
-    </li>
-  `).join("");
-
-  for (const li of list.querySelectorAll(".episode-item")) {
-    li.addEventListener("click", () => selectNode(li.dataset.id));
-  }
-}
-
-function setActiveEpisode(id) {
-  const list = document.getElementById("episode-list");
-  if (!list) return;
-  for (const li of list.querySelectorAll(".episode-item")) {
-    li.classList.toggle("active", id != null && li.dataset.id === id);
-  }
-}
-
-function removeEpisodeFromList(id) {
-  const li = document.querySelector(`.episode-item[data-id="${CSS.escape(id)}"]`);
-  if (li) li.remove();
-  const countEl = document.getElementById("episode-count");
-  const remaining = document.querySelectorAll(".episode-item").length;
-  if (countEl) countEl.textContent = `(${remaining})`;
-}
-
-async function loadDocuments() {
-  const list = document.getElementById("document-list");
-  const countEl = document.getElementById("document-count");
-  let docs = [];
-  try {
-    docs = (await api("/api/documents")).documents || [];
-  } catch {
-    return;  // non-fatal: the documents panel is supplementary to the graph
-  }
-  if (countEl) countEl.textContent = `(${docs.length})`;
-  if (!docs.length) {
-    list.innerHTML = '<li class="episode-empty">No documents yet</li>';
-    return;
-  }
-  list.innerHTML = docs.map(d => {
-    const kb = d.size != null ? ` · ${Math.max(1, Math.round(d.size / 1024))} KB` : "";
-    const label = d.has_blob ? "download" : "download text";
-    const href = `/api/document/${encodeURIComponent(d.node_id)}/download?token=${encodeURIComponent(TOKEN)}`;
-    return `<li class="episode-item" data-id="${escapeHTML(d.node_id)}">
-      <div class="episode-summary">${escapeHTML((d.summary || d.node_id).slice(0, 140))}</div>
-      <div class="episode-meta">${escapeHTML(d.mode)}${escapeHTML(kb)} ·
-        <a class="doc-download" href="${href}" download>${label}</a></div>
-    </li>`;
-  }).join("");
-  for (const li of list.querySelectorAll(".episode-item")) {
-    li.addEventListener("click", e => {
-      if (e.target.closest(".doc-download")) return;  // let the download link navigate
-      selectNode(li.dataset.id);
-    });
-  }
-}
-
-function formatTimestamp(ts) {
-  if (!ts) return "";
-  const d = new Date(ts);
-  if (isNaN(d.getTime())) return ts;
-  return d.toLocaleString();
 }
 
 function clearSearchHits() {
   if (!cy) return;
   cy.nodes().removeClass("search-hit");
   cy.elements().removeClass("faded").removeClass("highlighted").removeClass("label-on");
-  // Restore selection's neighborhood highlight if a node is currently selected
-  if (currentNodeId && cy.$id(currentNodeId).length) {
-    highlightNeighborhood(currentNodeId);
-  }
+  if (currentNodeId && cy.$id(currentNodeId).length) highlightNeighborhood(currentNodeId);
 }
 
 function applySearchHits(ids) {
   if (!cy) return;
-  // Reset all visual state — search supersedes any prior selection fade
   cy.nodes().removeClass("search-hit");
   cy.elements().removeClass("faded").removeClass("highlighted").removeClass("label-on");
   if (!ids.length) return;
-
   const hitSet = new Set(ids);
   let visible = cy.collection();
   for (const id of ids) {
     const node = cy.$id(id);
     if (node.length) visible = visible.union(node.closedNeighborhood());
   }
-  visible.nodes().forEach(n => {
-    if (hitSet.has(n.id())) n.addClass("search-hit");
-  });
+  visible.nodes().forEach(n => { if (hitSet.has(n.id())) n.addClass("search-hit"); });
   cy.elements().not(visible).addClass("faded");
 }
 
-function escapeHTML(s) {
-  return String(s).replace(/[&<>"']/g, c => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  })[c]);
+// ── Nav ──────────────────────────────────────────────────────────────────
+function activateView(view) {
+  document.querySelectorAll(".nav-btn").forEach(b => b.classList.toggle("active", b.dataset.view === view));
+  document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === `view-${view}`));
+  if (view === "graph") ensureGraphLoaded();
 }
 
-const debounce = (fn, ms) => {
-  let h;
-  return (...a) => {
-    clearTimeout(h);
-    h = setTimeout(() => fn(...a), ms);
-  };
-};
+function wireNav() {
+  document.querySelectorAll(".nav-btn[data-view]").forEach(b =>
+    b.addEventListener("click", () => activateView(b.dataset.view))
+  );
+}
 
+// ── Search (unchanged behavior, opens the shared drawer instead of an inline pane) ──
 let lastSearchSeq = 0;
 async function runSearch(query) {
   const resultsEl = document.getElementById("search-results");
@@ -388,11 +629,8 @@ async function runSearch(query) {
     renderSearchResults(results);
     applySearchHits(results.map(r => r._id));
   } catch (err) {
-    if (err.status === 503) {
-      toast("Embedding model not ready yet", "error");
-    } else {
-      toast(`Search failed: ${err.message}`, "error");
-    }
+    if (err.status === 503) toast("Embedding model not ready yet", "error");
+    else toast(`Search failed: ${err.message}`, "error");
   }
 }
 
@@ -416,26 +654,72 @@ function renderSearchResults(results) {
   resultsEl.hidden = false;
   for (const el of resultsEl.querySelectorAll(".search-result[data-id]")) {
     el.addEventListener("click", () => {
-      const id = el.dataset.id;
       resultsEl.hidden = true;
-      if (cy.$id(id).length) selectNode(id);
-      else toast(`Node ${id} not in current graph`, "error");
+      openDrawer(el.dataset.id);
     });
   }
 }
 
-function setSearchEnabled(enabled, message) {
+function wireSearch() {
+  const search = document.getElementById("search");
+  search.addEventListener("input", debounce(e => runSearch(e.target.value.trim()), 220));
+  search.addEventListener("focus", () => {
+    const r = document.getElementById("search-results");
+    if (r.innerHTML) r.hidden = false;
+  });
+  document.addEventListener("click", e => {
+    const wrap = document.getElementById("search-wrap");
+    if (!wrap.contains(e.target)) document.getElementById("search-results").hidden = true;
+  });
+}
+
+// ── Embedding status banner (D-3: persistent, visible --no-embeddings state) ──
+function setSearchEnabled(enabled, message, kind) {
   const search = document.getElementById("search");
   const banner = document.getElementById("banner");
   search.disabled = !enabled;
   if (enabled) {
     search.placeholder = "Search nodes by meaning…";
     banner.style.display = "none";
+    banner.className = "";
   } else {
     search.placeholder = message || "Loading embedding model…";
     banner.textContent = message || "Loading embedding model…";
-    banner.className = "banner-loading";
+    banner.className = `banner-${kind || "loading"}`;
     banner.style.display = "inline-block";
+  }
+}
+
+function applyEmbeddingBannerState(stats) {
+  if (!stats) return false;
+  if (stats.embedding_ready) {
+    setSearchEnabled(true);
+    return true;
+  }
+  if (stats.embedding_error) {
+    setSearchEnabled(false, `Embedding error: ${stats.embedding_error}`, "error");
+    return true;
+  }
+  if (stats.embedding_status === "disabled") {
+    // D-3 remainder: this state is terminal for the session (server started with
+    // --no-embeddings) -- stays visible, does not get polled away like "loading" does.
+    setSearchEnabled(false, "Search disabled — server started with --no-embeddings", "disabled");
+    return true;
+  }
+  return false;
+}
+
+async function pollEmbeddingReady() {
+  const delays = [2000, 3000, 5000, 8000, 10000];
+  let i = 0;
+  while (true) {
+    const data = await refreshStats();
+    if (applyEmbeddingBannerState(data)) {
+      if (data.embedding_ready) toast("Search ready", "success");
+      return;
+    }
+    await new Promise(r => setTimeout(r, delays[Math.min(i, delays.length - 1)]));
+    i++;
   }
 }
 
@@ -451,93 +735,56 @@ async function refreshStats() {
   }
 }
 
-async function pollEmbeddingReady() {
-  const delays = [2000, 3000, 5000, 8000, 10000];
-  let i = 0;
-  while (true) {
-    const data = await refreshStats();
-    if (data && data.embedding_ready) {
-      setSearchEnabled(true);
-      toast("Search ready", "success");
-      return;
-    }
-    if (data && data.embedding_error) {
-      setSearchEnabled(false, `Embedding error: ${data.embedding_error}`);
-      document.getElementById("banner").className = "banner-error";
-      return;
-    }
-    if (data && data.embedding_status === "disabled") {
-      setSearchEnabled(false, "Search disabled (embeddings off)");
-      document.getElementById("banner").className = "";
-      return;
-    }
-    await new Promise(r => setTimeout(r, delays[Math.min(i, delays.length - 1)]));
-    i++;
+// ── Auto-poll (D-3): stats + overview refresh every tick regardless of the
+// active view; board refreshes too (cheap); graph refreshes IN PLACE only if
+// it was already built -- never constructs a new cytoscape() instance here. ──
+let _pollInFlight = false;
+async function pollTick() {
+  if (_pollInFlight) return;
+  _pollInFlight = true;
+  try {
+    const stats = await refreshStats();
+    applyEmbeddingBannerState(stats);
+    await loadOverview();
+    await loadBoard();
+    await refreshGraphInPlace();
+  } finally {
+    _pollInFlight = false;
   }
-}
-
-async function loadGraph() {
-  const graph = await api("/api/graph");
-  const prev = currentNodeId;
-  buildCy([...graph.nodes, ...graph.edges]);
-  buildEpisodeList(graph.nodes);
-  loadDocuments();
-  if (prev && cy.$id(prev).length) {
-    highlightNeighborhood(prev);
-  }
-}
-
-let _refreshInFlight = false;
-function autoRefresh() {
-  if (_refreshInFlight) return;
-  _refreshInFlight = true;
-  Promise.all([refreshStats(), loadGraph()]).finally(() => { _refreshInFlight = false; });
 }
 
 async function init() {
-  // Wire all event listeners FIRST — they have no dependency on graph data.
-  // If the initial loadGraph() throws, listeners still attach and search still works.
+  wireNav();
+  wireSearch();
+  document.getElementById("drawer-close").addEventListener("click", closeDrawer);
+  document.getElementById("board-tree-toggle").addEventListener("click", toggleBoardMode);
+  document.getElementById("board-show-cancelled").addEventListener("change", renderBoard);
   document.getElementById("refresh-btn").addEventListener("click", () => {
-    refreshStats();
-    loadGraph();
-  });
-  const search = document.getElementById("search");
-  search.addEventListener("input", debounce(e => runSearch(e.target.value.trim()), 220));
-  search.addEventListener("focus", () => {
-    const r = document.getElementById("search-results");
-    if (r.innerHTML) r.hidden = false;
-  });
-  document.addEventListener("click", e => {
-    const wrap = document.getElementById("search-wrap");
-    if (!wrap.contains(e.target)) {
-      document.getElementById("search-results").hidden = true;
-    }
+    refreshStats().then(applyEmbeddingBannerState);
+    loadOverview();
+    loadBoard();
+    refreshGraphInPlace();
   });
 
   try {
     const stats = await refreshStats();
-    if (stats && stats.embedding_ready) {
-      setSearchEnabled(true);
-    } else if (stats && stats.embedding_error) {
-      setSearchEnabled(false, `Embedding error: ${stats.embedding_error}`);
-      document.getElementById("banner").className = "banner-error";
-    } else if (stats && stats.embedding_status === "disabled") {
-      setSearchEnabled(false, "Search disabled (embeddings off)");
-      document.getElementById("banner").className = "";
-    } else {
-      pollEmbeddingReady();
-    }
+    if (!applyEmbeddingBannerState(stats)) pollEmbeddingReady();
   } catch (err) {
     toast(`Init failed: ${err.message}`, "error");
   }
 
   try {
-    await loadGraph();
+    await loadOverview();
   } catch (err) {
-    toast(`Graph load failed: ${err.message}`, "error");
+    toast(`Overview load failed: ${err.message}`, "error");
+  }
+  try {
+    await loadBoard();
+  } catch (err) {
+    toast(`Board load failed: ${err.message}`, "error");
   }
 
-  setInterval(autoRefresh, 30000);
+  setInterval(pollTick, 30000);
 }
 
 init();

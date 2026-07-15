@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from importlib import resources
 from pathlib import Path
 from unittest.mock import patch
@@ -723,3 +723,468 @@ class TestLifecycle:
         }
         stop_dashboard(lifespan_ctx, join_timeout=0.01)
         assert closed, "stack.close() not called after clean join"
+
+
+# ── WP-TC11: /api/tasks + /api/overview (scope-dashboard-v1, doc:4c0b9d426f4c) ──
+
+def _who(name="Colton", email="c@example.com"):
+    return {"name": name, "email": email}
+
+
+@pytest.fixture
+def pm_storage(tmp_path: Path) -> CognitionStorage:
+    """A graph shaped to exercise every /api/tasks + /api/overview branch:
+    open/in_progress/blocked/done/cancelled tasks (one nested child), a stale
+    claim, a done-this-week task, a legacy author-only task (no created_by), an
+    active vs. a low-severity constraint, a superseded (non-HEAD) workflow, a
+    recent vs. a >14d-old high-severity incident, one episode, one document."""
+    s = CognitionStorage(tmp_path / ".cognition")
+    now = datetime.now(UTC)
+
+    def ts(dt=None):
+        return (dt or now).isoformat()
+
+    open_task = CognitionNode(
+        id=generate_node_id("task", "open"), type=CognitionNodeType.TASK,
+        summary="Open task", detail="d", context=[], references=[], severity="high",
+        timestamp=ts(), author="Colton",
+        metadata={
+            "status": "open", "created_by": _who(), "owner": None, "parent_id": None,
+            "transitions": [{"status": "open", "at": ts(), "by": _who()}],
+        },
+    )
+    s.add_node(open_task)
+
+    child_task = CognitionNode(
+        id=generate_node_id("task", "child"), type=CognitionNodeType.TASK,
+        summary="Child task", detail="d", context=[], references=[], severity="normal",
+        timestamp=ts(), author="Colton",
+        metadata={
+            "status": "open", "created_by": _who(), "owner": None, "parent_id": open_task.id,
+            "transitions": [{"status": "open", "at": ts(), "by": _who()}],
+        },
+    )
+    s.add_node(child_task)
+
+    stale_claimed_at = ts(now - timedelta(days=6))
+    stale_task = CognitionNode(
+        id=generate_node_id("task", "stale"), type=CognitionNodeType.TASK,
+        summary="Stale claim", detail="d", context=[], references=[], severity="normal",
+        timestamp=ts(now - timedelta(days=7)), author="Colton",
+        metadata={
+            "status": "in_progress", "created_by": _who(), "claimed_by": _who("Vorpid"),
+            "owner": None, "parent_id": None,
+            "transitions": [
+                {"status": "open", "at": ts(now - timedelta(days=7)), "by": _who()},
+                {"status": "in_progress", "at": stale_claimed_at, "by": _who("Vorpid")},
+            ],
+        },
+    )
+    s.add_node(stale_task)
+
+    fresh_claimed_at = ts(now - timedelta(days=1))
+    fresh_task = CognitionNode(
+        id=generate_node_id("task", "fresh"), type=CognitionNodeType.TASK,
+        summary="Fresh claim", detail="d", context=[], references=[], severity="normal",
+        timestamp=ts(now - timedelta(days=1)), author="Colton",
+        metadata={
+            "status": "in_progress", "created_by": _who(), "claimed_by": _who(),
+            "owner": None, "parent_id": None,
+            "transitions": [
+                {"status": "open", "at": ts(now - timedelta(days=1)), "by": _who()},
+                {"status": "in_progress", "at": fresh_claimed_at, "by": _who()},
+            ],
+        },
+    )
+    s.add_node(fresh_task)
+
+    done_at = ts(now - timedelta(days=2))
+    done_task = CognitionNode(
+        id=generate_node_id("task", "done"), type=CognitionNodeType.TASK,
+        summary="Done this week", detail="d", context=[], references=[], severity="normal",
+        timestamp=ts(now - timedelta(days=10)), author="Colton",
+        metadata={
+            "status": "done", "created_by": _who(), "owner": None, "parent_id": None,
+            "transitions": [
+                {"status": "open", "at": ts(now - timedelta(days=10)), "by": _who()},
+                {"status": "in_progress", "at": ts(now - timedelta(days=5)), "by": _who()},
+                {"status": "done", "at": done_at, "by": _who()},
+            ],
+        },
+    )
+    s.add_node(done_task)
+
+    old_done_task = CognitionNode(
+        id=generate_node_id("task", "old-done"), type=CognitionNodeType.TASK,
+        summary="Done last month", detail="d", context=[], references=[], severity="normal",
+        timestamp=ts(now - timedelta(days=40)), author="Colton",
+        metadata={
+            "status": "done", "created_by": _who(), "owner": None, "parent_id": None,
+            "transitions": [
+                {"status": "open", "at": ts(now - timedelta(days=40)), "by": _who()},
+                {"status": "done", "at": ts(now - timedelta(days=35)), "by": _who()},
+            ],
+        },
+    )
+    s.add_node(old_done_task)
+
+    blocked_task = CognitionNode(
+        id=generate_node_id("task", "blocked"), type=CognitionNodeType.TASK,
+        summary="Blocked task", detail="d", context=[], references=[], severity="low",
+        timestamp=ts(), author="Colton",
+        metadata={
+            "status": "blocked", "created_by": _who(), "owner": None, "parent_id": None,
+            "transitions": [
+                {"status": "open", "at": ts(), "by": _who()},
+                {"status": "blocked", "at": ts(), "by": _who()},
+            ],
+        },
+    )
+    s.add_node(blocked_task)
+
+    cancelled_task = CognitionNode(
+        id=generate_node_id("task", "cancelled"), type=CognitionNodeType.TASK,
+        summary="Cancelled task", detail="d", context=[], references=[], severity="normal",
+        timestamp=ts(), author="Colton",
+        metadata={
+            "status": "cancelled", "created_by": _who(), "owner": None, "parent_id": None,
+            "transitions": [
+                {"status": "open", "at": ts(), "by": _who()},
+                {"status": "cancelled", "at": ts(), "by": _who()},
+            ],
+        },
+    )
+    s.add_node(cancelled_task)
+
+    # Legacy: predates WP-P13n -- no created_by/recorded_by, only free-text author.
+    # This is the trust-class fallback fixture the drawer's "unverified" chip depends on.
+    legacy_task = CognitionNode(
+        id=generate_node_id("task", "legacy"), type=CognitionNodeType.TASK,
+        summary="Legacy author-only task", detail="d", context=[], references=[],
+        severity="normal", timestamp=ts(), author="OldAuthor",
+        metadata={
+            "status": "open", "owner": None, "parent_id": None,
+            "transitions": [{"status": "open", "at": ts(), "by": "OldAuthor"}],
+        },
+    )
+    s.add_node(legacy_task)
+
+    active_constraint = CognitionNode(
+        id=generate_node_id("constraint", "active"), type=CognitionNodeType.CONSTRAINT,
+        summary="Active constraint", detail="d", context=[], references=[], severity="high",
+        timestamp=ts(), author="Colton", metadata={"recorded_by": _who()},
+    )
+    s.add_node(active_constraint)
+
+    low_constraint = CognitionNode(
+        id=generate_node_id("constraint", "low"), type=CognitionNodeType.CONSTRAINT,
+        summary="Low-severity constraint", detail="d", context=[], references=[], severity="low",
+        timestamp=ts(), author="Colton", metadata={},
+    )
+    s.add_node(low_constraint)
+
+    workflow_v1 = CognitionNode(
+        id=generate_node_id("workflow", "v1"), type=CognitionNodeType.WORKFLOW,
+        summary="Workflow v1", detail="d", context=[], references=[],
+        timestamp=ts(now - timedelta(days=5)), author="Colton", metadata={},
+    )
+    s.add_node(workflow_v1)
+    workflow_v2 = CognitionNode(
+        id=generate_node_id("workflow", "v2"), type=CognitionNodeType.WORKFLOW,
+        summary="Workflow v2", detail="d", context=[], references=[],
+        timestamp=ts(), author="Colton", metadata={},
+    )
+    s.add_node(workflow_v2)
+    s.add_edge(CognitionEdge(
+        from_id=workflow_v1.id, to_id=workflow_v2.id,
+        edge_type=CognitionEdgeType.SUPERSEDES, timestamp=ts(), source="test",
+    ))
+
+    episode = CognitionNode(
+        id=generate_node_id("episode", "e1"), type=CognitionNodeType.EPISODE,
+        summary="An episode", detail="d", context=[], references=[],
+        timestamp=ts(), author="Colton", metadata={"recorded_by": _who(), "from_agent": True},
+    )
+    s.add_node(episode)
+
+    recent_incident = CognitionNode(
+        id=generate_node_id("incident", "recent"), type=CognitionNodeType.INCIDENT,
+        summary="Recent high-severity incident", detail="d", context=[], references=[],
+        severity="high", timestamp=ts(now - timedelta(days=3)), author="Colton", metadata={},
+    )
+    s.add_node(recent_incident)
+
+    old_incident = CognitionNode(
+        id=generate_node_id("incident", "old"), type=CognitionNodeType.INCIDENT,
+        summary="Old high-severity incident", detail="d", context=[], references=[],
+        severity="high", timestamp=ts(now - timedelta(days=20)), author="Colton", metadata={},
+    )
+    s.add_node(old_incident)
+
+    document = CognitionNode(
+        id=generate_node_id("document", "d1"), type=CognitionNodeType.DOCUMENT,
+        summary="A document", detail="d", context=[], references=[],
+        timestamp=ts(), author="Colton", metadata={"mode": "reference"},
+    )
+    s.add_node(document)
+
+    return s
+
+
+@pytest.fixture
+def pm_lifespan_ctx(pm_storage):
+    return {
+        "config": None,
+        "cognition_storage": pm_storage,
+        "cognition_embedding_storage": _FakeEmbeddingStorage(),
+        "embedding_generator": None,
+        "embedding_ready": threading.Event(),
+        "embedding_error": None,
+    }
+
+
+@pytest.fixture
+def pm_client(pm_lifespan_ctx):
+    app, stack = build_app(pm_lifespan_ctx, token="testtok")
+    with TestClient(app, base_url="http://127.0.0.1:7842") as c:
+        yield c, pm_lifespan_ctx
+    stack.close()
+
+
+class TestTasksAPI:
+    def test_no_token_rejected(self, pm_client):
+        c, _ = pm_client
+        r = c.get("/api/tasks")
+        assert r.status_code == 403
+
+    def test_shape_and_count(self, pm_client):
+        c, _ = pm_client
+        r = c.get("/api/tasks", headers=_hdr())
+        assert r.status_code == 200
+        body = r.json()
+        assert body["count"] == 9
+        assert len(body["tasks"]) == 9
+        row = next(t for t in body["tasks"] if t["summary"] == "Open task")
+        for key in (
+            "id", "summary", "status", "priority", "owner", "parent_id", "depth",
+            "created_by", "claimed_by", "timestamp", "claimed_at", "last_transition_at",
+            "transitions_count",
+        ):
+            assert key in row, f"missing key: {key}"
+
+    def test_depth_from_parent_chain(self, pm_client):
+        c, _ = pm_client
+        body = c.get("/api/tasks", headers=_hdr()).json()
+        rows = {t["summary"]: t for t in body["tasks"]}
+        assert rows["Open task"]["depth"] == 0
+        assert rows["Child task"]["depth"] == 1
+        assert rows["Child task"]["parent_id"] == rows["Open task"]["id"]
+
+    def test_claimed_at_is_latest_in_progress_transition(self, pm_client):
+        c, _ = pm_client
+        body = c.get("/api/tasks", headers=_hdr()).json()
+        rows = {t["summary"]: t for t in body["tasks"]}
+        stale = rows["Stale claim"]
+        assert stale["claimed_at"] is not None
+        assert stale["claimed_at"] == stale["last_transition_at"]
+        assert stale["claimed_by"]["name"] == "Vorpid"
+        assert stale["transitions_count"] == 2
+
+    def test_legacy_author_only_task_has_no_created_by(self, pm_client):
+        """Trust-class fallback fixture: created_by/claimed_by absent (None), author
+        present -- the drawer renders `author` with the dashed 'unverified' chip in
+        this shape, never upgrading it to look like a server-resolved identity."""
+        c, _ = pm_client
+        body = c.get("/api/tasks", headers=_hdr()).json()
+        row = next(t for t in body["tasks"] if t["summary"] == "Legacy author-only task")
+        assert row["created_by"] is None
+        assert row["claimed_by"] is None
+        # author isn't part of the row per the brief's literal shape, but the full
+        # node (author fallback source) is asserted via /api/node/{id} below.
+        node = c.get(f"/api/node/{row['id']}", headers=_hdr()).json()
+        assert node["author"] == "OldAuthor"
+        assert node.get("metadata", {}).get("created_by") is None
+        assert node.get("metadata", {}).get("recorded_by") is None
+
+
+class TestOverviewAPI:
+    def test_no_token_rejected(self, pm_client):
+        c, _ = pm_client
+        r = c.get("/api/overview")
+        assert r.status_code == 403
+
+    def test_task_counts_and_done_this_week(self, pm_client):
+        c, _ = pm_client
+        r = c.get("/api/overview", headers=_hdr())
+        assert r.status_code == 200
+        body = r.json()
+        tasks = body["tasks"]
+        assert tasks["open"] == 3  # open, child, legacy
+        assert tasks["in_progress"] == 2  # stale, fresh
+        assert tasks["blocked"] == 1
+        assert tasks["done"] == 2  # done-this-week + old-done
+        assert tasks["cancelled"] == 1
+        # done-cap is driven by last_transition_at (the "done" transition), NOT
+        # node creation timestamp -- old_done_task was CREATED 40d ago but its
+        # done transition landed 35d ago, so it must NOT count; done_task's done
+        # transition landed 2d ago and DOES count.
+        assert tasks["done_this_week"] == 1
+
+    def test_stale_claim_uses_claimed_at_not_creation_timestamp(self, pm_client):
+        c, _ = pm_client
+        body = c.get("/api/overview", headers=_hdr()).json()
+        stale_ids = {s["id"] for s in body["needs_attention"]["stale_claims"]}
+        fresh_summaries = {s["summary"] for s in body["needs_attention"]["stale_claims"]}
+        assert "Stale claim" in fresh_summaries
+        assert "Fresh claim" not in fresh_summaries
+        assert len(stale_ids) == 1
+
+    def test_blocked_in_needs_attention(self, pm_client):
+        c, _ = pm_client
+        body = c.get("/api/overview", headers=_hdr()).json()
+        blocked_summaries = {b["summary"] for b in body["needs_attention"]["blocked"]}
+        assert "Blocked task" in blocked_summaries
+
+    def test_active_constraints_excludes_low_severity(self, pm_client):
+        c, _ = pm_client
+        body = c.get("/api/overview", headers=_hdr()).json()
+        summaries = {c_["summary"] for c_ in body["constraints"]}
+        assert "Active constraint" in summaries
+        assert "Low-severity constraint" not in summaries
+
+    def test_workflows_counts_head_only(self, pm_client):
+        """A workflow with an incoming SUPERSEDES edge is an old version -- only
+        the HEAD (v2) counts, mirroring prime.py's _format_workflows filter."""
+        c, _ = pm_client
+        body = c.get("/api/overview", headers=_hdr()).json()
+        assert body["workflows"] == 1
+
+    def test_documents_count(self, pm_client):
+        c, _ = pm_client
+        body = c.get("/api/overview", headers=_hdr()).json()
+        assert body["documents"] == 1
+
+    def test_recent_incidents_excludes_older_than_14_days(self, pm_client):
+        c, _ = pm_client
+        body = c.get("/api/overview", headers=_hdr()).json()
+        summaries = {i["summary"] for i in body["recent_incidents"]}
+        assert "Recent high-severity incident" in summaries
+        assert "Old high-severity incident" not in summaries
+
+    def test_recent_episodes_include_provenance(self, pm_client):
+        c, _ = pm_client
+        body = c.get("/api/overview", headers=_hdr()).json()
+        assert len(body["recent_episodes"]) == 1
+        ep = body["recent_episodes"][0]
+        assert ep["recorded_by"]["name"] == "Colton"
+        assert ep["from_agent"] is True
+
+    def test_prime_import_not_used(self):
+        """Brief constraint (doc:4c0b9d426f4c): the dashboard must not import
+        prime.py (markdown-formatting + CLI deps this JSON aggregation has no
+        business pulling in). A local SEVERITY_ORDER/closed-statuses copy keeps
+        api.py's import surface independent of it."""
+        import vibe_cognition.dashboard.api as api_module
+        assert not hasattr(api_module, "SEVERITY_ORDER"), "must not import prime.py's SEVERITY_ORDER directly"
+        assert api_module._SEVERITY_ORDER == {"critical": 0, "high": 1, "normal": 2, "low": 3}
+
+
+class TestEmptyGraphFixture:
+    """Acceptance (doc:4c0b9d426f4c): V1 views must work on an empty-graph fixture,
+    not just a populated one -- a fresh install has zero tasks/constraints/episodes."""
+
+    @pytest.fixture
+    def empty_client(self, tmp_path: Path):
+        storage = CognitionStorage(tmp_path / ".cognition")
+        lc = {
+            "config": None, "cognition_storage": storage,
+            "cognition_embedding_storage": _FakeEmbeddingStorage(),
+            "embedding_generator": None, "embedding_ready": threading.Event(),
+            "embedding_error": None,
+        }
+        app, stack = build_app(lc, token="testtok")
+        with TestClient(app, base_url="http://127.0.0.1:7842") as c:
+            yield c
+        stack.close()
+
+    def test_tasks_empty(self, empty_client):
+        r = empty_client.get("/api/tasks", headers=_hdr())
+        assert r.status_code == 200
+        assert r.json() == {"tasks": [], "count": 0}
+
+    def test_overview_empty(self, empty_client):
+        r = empty_client.get("/api/overview", headers=_hdr())
+        assert r.status_code == 200
+        body = r.json()
+        assert body["tasks"] == {
+            "open": 0, "in_progress": 0, "blocked": 0, "done": 0, "cancelled": 0,
+            "done_this_week": 0,
+        }
+        assert body["documents"] == 0
+        assert body["workflows"] == 0
+        assert body["constraints"] == []
+        assert body["needs_attention"] == {"stale_claims": [], "blocked": []}
+        assert body["recent_episodes"] == []
+        assert body["recent_incidents"] == []
+
+    def test_graph_empty(self, empty_client):
+        r = empty_client.get("/api/graph", headers=_hdr())
+        assert r.status_code == 200
+        assert r.json() == {"nodes": [], "edges": []}
+
+
+class TestFrontendStructure:
+    """Structural/text assertions in place of a JS test runner (none exists in this
+    repo) -- mirrors TestPackaging's existing string-presence-check idiom."""
+
+    def _read(self, name: str) -> str:
+        traversable = resources.files("vibe_cognition.dashboard") / "static"
+        with resources.as_file(traversable) as path:
+            return (path / name).read_text(encoding="utf-8")
+
+    def test_nav_rail_has_three_v1_views(self):
+        html = self._read("index.html")
+        assert 'data-v="workflows"' not in html and 'data-view="workflows"' not in html, \
+            "Workflows is V2 scope (brief OUT list) -- must not appear in the V1 nav rail"
+        assert 'data-v="documents"' not in html and 'data-view="documents"' not in html
+        assert 'data-v="activity"' not in html and 'data-view="activity"' not in html
+        for view in ("overview", "board", "graph"):
+            assert f'data-view="{view}"' in html, f"nav rail missing {view}"
+
+    def test_drawer_is_shared_not_inline(self):
+        html = self._read("index.html")
+        assert 'id="drawer"' in html
+        assert 'id="detail-tpl"' not in html, "old inline detail template should be gone"
+
+    def test_lazy_graph_build_not_reconstructed_on_poll(self):
+        """D-3 fails-before: the pre-redesign app.js called loadGraph()->buildCy()
+        unconditionally from init() AND every 30s tick, rebuilding a fresh
+        cytoscape() instance each cycle regardless of which view was active. The
+        fix: buildCy() is called from exactly one place (ensureGraphLoaded, guarded
+        by a graphLoaded flag), and the poll path only ever calls the in-place
+        refresh (refreshGraphInPlace / cy.json), never buildCy directly."""
+        js = self._read("app.js")
+        assert js.count("buildCy(") == 2, (
+            "buildCy should appear exactly twice: its definition and its single "
+            "call site inside ensureGraphLoaded"
+        )
+        ensure_start = js.index("async function ensureGraphLoaded")
+        ensure_body = js[ensure_start:js.index("\n}\n", ensure_start)]
+        assert "buildCy(" in ensure_body
+        poll_start = js.index("async function pollTick")
+        poll_body = js[poll_start:js.index("\n}\n", poll_start)]
+        assert "buildCy(" not in poll_body
+        assert "refreshGraphInPlace" in poll_body
+
+    def test_overview_always_polled_regardless_of_active_view(self):
+        """Acceptance (doc:4c0b9d426f4c): 'stats/overview polling always' -- unlike
+        the graph fetch, loadOverview() in the poll tick must not be conditioned on
+        which nav view is currently active."""
+        js = self._read("app.js")
+        poll_start = js.index("async function pollTick")
+        poll_body = js[poll_start:js.index("\n}\n", poll_start)]
+        assert "await loadOverview();" in poll_body
+        for line in poll_body.splitlines():
+            if "loadOverview()" in line:
+                assert "if" not in line and "?" not in line, \
+                    f"loadOverview() call looks conditionally gated: {line!r}"

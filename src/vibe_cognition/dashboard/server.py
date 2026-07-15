@@ -24,7 +24,9 @@ from .api import (
     download_document,
     get_graph,
     get_node,
+    get_overview,
     get_stats,
+    get_tasks,
     list_documents,
     search,
 )
@@ -62,6 +64,8 @@ def build_app(lifespan_ctx: dict[str, Any], token: str) -> tuple[Starlette, Exit
         Route("/api/graph", endpoint=get_graph, methods=["GET"]),
         Route("/api/node/{node_id}", endpoint=get_node, methods=["GET"]),
         Route("/api/node/{node_id}", endpoint=delete_node, methods=["DELETE"]),
+        Route("/api/tasks", endpoint=get_tasks, methods=["GET"]),
+        Route("/api/overview", endpoint=get_overview, methods=["GET"]),
         Route("/api/search", endpoint=search, methods=["POST"]),
         Route("/api/documents", endpoint=list_documents, methods=["GET"]),
         Route("/api/document/{node_id}/download", endpoint=download_document, methods=["GET"]),
