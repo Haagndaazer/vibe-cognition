@@ -107,6 +107,14 @@ are injected at session start and listed via `cognition_list_tasks`, so the grap
   new sections about your reports/manager, not a replacement. No new section for
   own-claims; a role-less user (no person node, no reports either direction) sees
   no change at all.
+- **"Since You Were Gone" digest.** A machine-local, per-email marker
+  (`.cognition/last-seen.json`, git-ignored) tracks your last session-start here.
+  Personalized prime shows `## Since You Were Gone` (right after `## Your
+  Manager's Recent Decisions`): teammates' decisions/constraints/incidents newer
+  than that marker, newest first, capped, excluding your own writes but including
+  unstamped ones. No marker yet → a capped lookback window, never a full-history
+  dump. Stamped only by the real SessionStart hook — `generate_prime()` itself
+  stays pure read-only.
 - **Curate tasks** like any node: `/vibe-curate` links a task `relates_to` the
   decision/pattern it implements, or a done task `resolved_by`/`led_to` the closing episode.
 - **Filter out an author with `exclude_people`** (comma-separated emails, on

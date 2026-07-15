@@ -138,6 +138,11 @@ def test_main_includes_prime_digest_when_graph_nonempty(tmp_path, monkeypatch):
     assert "a decision worth remembering" in ctx
     assert "Vibe Cognition" in ctx and "Project Context" in ctx  # generate_prime's header
 
+    # WP-TC14: this generate_prime call passes NO current_email, so it never
+    # personalizes -- and only prime.py's own main() ever stamps the "Since
+    # You Were Gone" marker. This compact-reinject path must never stamp.
+    assert not (tmp_path / ".cognition" / "last-seen.json").exists()
+
 
 def test_main_omits_prime_digest_when_no_cognition_dir(tmp_path, monkeypatch):
     """No .cognition/ at all (e.g. REPO_PATH points somewhere unexpected) must

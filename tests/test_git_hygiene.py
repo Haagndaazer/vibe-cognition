@@ -229,6 +229,45 @@ def test_gitignore_onboard_declined_added_via_version_refire(tmp_path):
     assert int((cognition / _FLAG_FILENAME).read_text(encoding="utf-8").strip()) == GIT_HYGIENE_VERSION
 
 
+def test_gitignore_last_seen_is_listed(tmp_path):
+    """WP-TC14: last-seen.json (the per-machine "Since You Were Gone" marker,
+    prime.LAST_SEEN_FILENAME) is listed in .cognition/.gitignore after a fresh
+    run — it must never sync via git any more than the rehydrate flag or the
+    onboard-declined file do."""
+    repo, cognition = _make_git_repo(tmp_path)
+    _run(repo, cognition)
+
+    gi = (cognition / ".gitignore").read_text(encoding="utf-8")
+    assert "last-seen.json" in gi
+
+
+def test_gitignore_last_seen_added_via_version_refire(tmp_path):
+    """WP-TC14 (GIT_HYGIENE_VERSION 3 -> 4): a flag stamped at the OLD version
+    on an existing install (v3 .gitignore already has chromadb/, the flag,
+    *.lock, the rehydrate entry, and onboard-declined but NOT last-seen.json)
+    triggers exactly one re-run that appends only the new entry — mirrors
+    test_gitignore_onboard_declined_added_via_version_refire but pins the
+    SPECIFIC new rule this bump exists to add. Fails-before: a pre-bump
+    build's .gitignore would never gain last-seen.json on re-init."""
+    repo, cognition = _make_git_repo(tmp_path)
+    (cognition / ".gitignore").write_text(
+        "# vibe-cognition managed - do not remove\n"
+        "chromadb/\n"
+        f"{_FLAG_FILENAME}\n"
+        "*.lock\n"
+        ".last-rehydrate.json\n"
+        "onboard-declined\n",
+        encoding="utf-8",
+    )
+    (cognition / _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION - 1), encoding="utf-8")
+
+    _run(repo, cognition)
+
+    gi = (cognition / ".gitignore").read_text(encoding="utf-8")
+    assert gi.count("last-seen.json") == 1
+    assert int((cognition / _FLAG_FILENAME).read_text(encoding="utf-8").strip()) == GIT_HYGIENE_VERSION
+
+
 # ---------------------------------------------------------------------------
 # Flag / opt-out / idempotency / announce tests
 # ---------------------------------------------------------------------------
