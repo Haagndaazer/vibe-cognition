@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**WP-list-tasks-claim: `cognition_list_tasks` rows gain `claimed_by`/`claimed_at`.**
+
+### Added
+- **`claimed_by`** (server-resolved identity dict, or `None`) and **`claimed_at`** (ISO
+  timestamp of the latest `->in_progress` transition, via the shared `_task_claimed_at`
+  helper — same implementation the dashboard and prime's manager rollup already use) on
+  every `cognition_list_tasks` row. Gate B-final finding (task `8c7bab562c37`): without
+  this, an agent following claim etiquette had no read-only way to see who holds a task
+  before attempting `cognition_update_task(status="in_progress")` — discovery only
+  happened by collision. `claimed_by` persists after a task closes (claim history, not
+  a liveness flag — use `status` for that).
+
+### Notes
+- Return-shape change to an MCP tool — ran the recurring tool-surface self-sufficiency
+  audit on the updated `cognition_list_tasks` docstring (name/args/return-shape read
+  standalone, no assumed context). No version bump on this branch (batches into 0.27.0
+  later).
+
 ## [0.26.0] — 2026-07-15
 
 **WP-DashV3: dashboard team-cognition wiring — People view, seniority chips, list-level conflict flags (phase V3 of 3, final).**
