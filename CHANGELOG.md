@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-07-15
+
 **WP-doc-fix: README/skill/docstring consistency sweep (Gate B-final findings, doc-only, zero behavior changes).**
 
 ### Changed
