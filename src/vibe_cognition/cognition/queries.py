@@ -150,6 +150,62 @@ def get_workflow_head(
     return current
 
 
+def conflict_flags(
+    storage: CognitionStorage,
+    node_id: str,
+) -> tuple[bool, str | None]:
+    """The single-implementation home for "is this node in conflict / superseded?"
+    (WP-SearchFlags) -- shared by cognition_search's per-result flags and the
+    dashboard's ``_is_conflicted`` wrapper (WP-DashV3). Callers needing a bare
+    conflicted bool that also folds in supersedes membership (the dashboard's
+    ⚠ indicator) must compose it themselves: ``flags[0] or flags[1] is not None``
+    -- this function keeps the two signals SEPARATE so a search consumer can act
+    on supersession (fetch the replacement) independently of contradiction.
+
+    Direction semantics (pattern 6ed494680fb3, pinned): ``contradicts`` edges are
+    stored ONE-WAY with ARBITRARY direction (``cognition_add_edge``'s own
+    docstring: "either direction" -- no reciprocal edge is ever minted), so
+    conflicted-by-contradicts is BIDIRECTIONAL (incoming OR outgoing) -- an
+    incoming-only check flags only one side of every contradicts pair.
+    ``supersedes`` stays INCOMING-only: a node with an OUTGOING supersedes edge
+    is the newer version (the resolution), not itself superseded --
+    ``superseded_by`` is null for it.
+
+    Returns:
+        (conflicted, superseded_by) -- ``conflicted`` is True iff >=1 incoming or
+        outgoing CONTRADICTS edge. ``superseded_by`` is the node id of the newest
+        node with an incoming SUPERSEDES edge onto ``node_id`` (i.e. the node that
+        replaced it), or None if ``node_id`` has no incoming SUPERSEDES edge.
+        Branch case (multiple incoming SUPERSEDES edges): the tie-break picks the
+        superseder whose NODE timestamp (``storage.get_node(source_id)['timestamp']``
+        -- authorship time) is lexicographically greatest, NEVER the edge's own
+        ``timestamp`` (edge-mint time -- a backfilled edge's mint time can differ
+        wildly from when its author actually wrote it).
+
+    Cost: up to three edge lookups per call (in-contradicts, out-contradicts,
+    in-supersedes) plus, only on the branch case, one ``get_node`` per extra
+    superseder -- NetworkX in-memory MultiDiGraph lookups, O(degree); negligible
+    at search/dashboard row counts. No caching.
+    """
+    conflicted = bool(
+        storage.get_predecessors(node_id, CognitionEdgeType.CONTRADICTS)
+        or storage.get_successors(node_id, CognitionEdgeType.CONTRADICTS)
+    )
+
+    superseded_by: str | None = None
+    supersessors = storage.get_predecessors(node_id, CognitionEdgeType.SUPERSEDES)
+    if supersessors:
+        best_id, best_ts = supersessors[0][0], None
+        for source_id, _edge_data in supersessors:
+            node = storage.get_node(source_id)
+            ts = node.get("timestamp") if node else None
+            if ts and (best_ts is None or ts > best_ts):
+                best_id, best_ts = source_id, ts
+        superseded_by = best_id
+
+    return conflicted, superseded_by
+
+
 def get_history_for_context(
     storage: CognitionStorage,
     context_term: str,
