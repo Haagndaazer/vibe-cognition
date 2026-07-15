@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vibe Cognition — Dashboard Redesign Mockup (fake data)</title>
+<style>
+  :root{
+    --bg:#0f1216; --surface:#161b22; --surface2:#1d242e; --border:#2a3340;
+    --ink:#e6edf3; --ink2:#9aa7b4; --ink3:#6b7683;
+    --accent:#4c8dff;
+    --st-open:#4c8dff; --st-prog:#b47aff; --st-block:#ff9f43; --st-done:#3fb27f;
+    --sev-crit:#ff6b6b; --sev-high:#ff9f43; --sev-norm:#9aa7b4;
+    --warn-bg:#3a2a12; --warn-bd:#8a6420;
+  }
+  *{box-sizing:border-box} body{margin:0;font:14px/1.45 system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--ink)}
+  .app{display:grid;grid-template-columns:200px 1fr;min-height:100vh}
+  /* nav rail */
+  nav{background:var(--surface);border-right:1px solid var(--border);padding:14px 10px;position:sticky;top:0;height:100vh}
+  nav .brand{font-weight:700;padding:4px 10px 14px;font-size:15px}
+  nav .brand small{display:block;color:var(--ink3);font-weight:400;font-size:11px}
+  nav button{display:flex;gap:8px;align-items:center;width:100%;text-align:left;padding:8px 10px;margin:2px 0;border:0;border-radius:8px;background:none;color:var(--ink2);font:inherit;cursor:pointer}
+  nav button.active{background:var(--surface2);color:var(--ink);font-weight:600}
+  nav button:hover{background:var(--surface2)}
+  nav .spacer{flex:1}
+  nav .foot{position:absolute;bottom:12px;left:10px;right:10px;color:var(--ink3);font-size:11px;padding:0 10px}
+  /* header */
+  header{display:flex;gap:12px;align-items:center;padding:10px 18px;border-bottom:1px solid var(--border);background:var(--surface);position:sticky;top:0;z-index:5}
+  header input{flex:1;max-width:520px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:7px 12px;color:var(--ink);font:inherit}
+  .pill{font-size:11px;padding:3px 9px;border-radius:999px;border:1px solid var(--border);color:var(--ink2);white-space:nowrap}
+  .pill.ok{color:var(--st-done);border-color:var(--st-done)}
+  main{padding:18px;max-width:1200px}
+  .view{display:none}.view.active{display:block}
+  h2{font-size:16px;margin:6px 0 12px} h3{font-size:13px;color:var(--ink2);margin:18px 0 8px;text-transform:uppercase;letter-spacing:.04em}
+  /* tiles */
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+  .tile{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px}
+  .tile .n{font-size:26px;font-weight:700} .tile .l{color:var(--ink2);font-size:12px;margin-top:2px}
+  .tile .sub{color:var(--ink3);font-size:11px;margin-top:4px}
+  /* cards & lists */
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:10px}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .grow{flex:1}
+  ul.plain{list-style:none;margin:0;padding:0} ul.plain li{padding:8px 2px;border-bottom:1px solid var(--border)} ul.plain li:last-child{border:0}
+  .meta{color:var(--ink3);font-size:12px}
+  .chip{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--border);color:var(--ink2);white-space:nowrap}
+  .chip.person{border-color:#3d4c5e;color:var(--ink)}
+  .chip.person::before{content:"👤 "}
+  .chip.agent::before{content:"🤖 "}
+  .chip.seniority{border-style:dashed;color:var(--ink3)}
+  .chip.crit{color:var(--sev-crit);border-color:var(--sev-crit)} .chip.high{color:var(--sev-high);border-color:var(--sev-high)} .chip.norm{color:var(--sev-norm)}
+  .st{font-size:11px;padding:2px 8px;border-radius:6px;font-weight:600}
+  .st.open{background:color-mix(in srgb,var(--st-open) 18%,transparent);color:var(--st-open)}
+  .st.prog{background:color-mix(in srgb,var(--st-prog) 18%,transparent);color:var(--st-prog)}
+  .st.block{background:color-mix(in srgb,var(--st-block) 18%,transparent);color:var(--st-block)}
+  .st.done{background:color-mix(in srgb,var(--st-done) 18%,transparent);color:var(--st-done)}
+  /* board */
+  .board{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;align-items:start}
+  .col{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px}
+  .col h4{margin:2px 4px 10px;font-size:12px;color:var(--ink2);text-transform:uppercase;letter-spacing:.04em}
+  .tcard{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:8px;cursor:pointer}
+  .tcard:hover{border-color:var(--accent)}
+  .tcard .crumb{color:var(--ink3);font-size:11px;margin-bottom:4px}
+  .tcard .sum{font-size:13px;margin-bottom:8px}
+  .warnbanner{background:var(--warn-bg);border:1px solid var(--warn-bd);border-radius:8px;padding:8px 12px;margin:8px 0;font-size:12.5px}
+  /* drawer */
+  .drawer{position:fixed;top:0;right:0;bottom:0;width:400px;background:var(--surface);border-left:1px solid var(--border);padding:16px;overflow:auto;box-shadow:-8px 0 24px #0008;display:none}
+  .drawer.open{display:block}
+  .drawer .x{float:right;background:none;border:0;color:var(--ink2);font-size:16px;cursor:pointer}
+  .timeline{border-left:2px solid var(--border);margin:8px 0 0 6px;padding-left:14px}
+  .timeline .ev{margin-bottom:10px;position:relative}
+  .timeline .ev::before{content:"";position:absolute;left:-19.5px;top:4px;width:8px;height:8px;border-radius:50%;background:var(--ink3)}
+  table{width:100%;border-collapse:collapse} th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border);font-size:13px} th{color:var(--ink2);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+  .fresh{font-size:11px;padding:2px 8px;border-radius:6px}
+  .fresh.ok{background:color-mix(in srgb,var(--st-done) 18%,transparent);color:var(--st-done)}
+  .fresh.mod{background:color-mix(in srgb,var(--st-block) 18%,transparent);color:var(--st-block)}
+  .note{color:var(--ink3);font-size:12px;border:1px dashed var(--border);border-radius:8px;padding:8px 12px;margin:10px 0}
+  .ghost{opacity:.55}
+</style>
+</head>
+<body>
+<div class="app">
+  <nav>
+    <div class="brand">vibe-cognition<small>project dashboard — MOCKUP, fake data</small></div>
+    <button class="active" data-v="overview">▦ Overview</button>
+    <button data-v="board">☰ Board</button>
+    <button data-v="workflows">↻ Workflows</button>
+    <button data-v="documents">▤ Documents</button>
+    <button data-v="activity">≋ Activity</button>
+    <button data-v="graph">✳ Graph</button>
+    <div class="foot">v-mock · read-only<br>127.0.0.1:7842</div>
+  </nav>
+  <div>
+    <header>
+      <input placeholder="Semantic search across the graph…  (embedding-powered, unchanged)">
+      <span class="pill ok">● embeddings ready</span>
+      <span class="pill">470 nodes · 833 edges</span>
+      <span class="pill">⟳ refresh</span>
+    </header>
+    <main>
+
+      <!-- OVERVIEW -->
+      <section class="view active" id="overview">
+        <h2>Overview</h2>
+        <div class="tiles">
+          <div class="tile"><div class="n">14</div><div class="l">Open tasks</div><div class="sub">3 critical/high</div></div>
+          <div class="tile"><div class="n">2</div><div class="l">In progress</div><div class="sub">1 stale &gt; 5 days</div></div>
+          <div class="tile"><div class="n">1</div><div class="l">Blocked</div><div class="sub">human-gated</div></div>
+          <div class="tile"><div class="n">6</div><div class="l">Done this week</div><div class="sub">of 106 total</div></div>
+          <div class="tile"><div class="n">10</div><div class="l">Documents</div><div class="sub">1 modified on disk</div></div>
+          <div class="tile"><div class="n">4</div><div class="l">Workflows</div><div class="sub">HEAD versions</div></div>
+        </div>
+
+        <h3>Active constraints — bind everyone, always visible</h3>
+        <div class="card">
+          <ul class="plain">
+            <li class="row"><span class="chip crit">high</span><span class="grow">Shared-worktree journal protocol: nobody commits journal.jsonl on a WP branch; manager flushes via temp worktree</span><span class="chip person">Vince</span></li>
+            <li class="row"><span class="chip crit">high</span><span class="grow">Only the curate-orchestrator may write semantic edges (containment)</span><span class="chip person">Vince</span></li>
+            <li class="row"><span class="chip norm">std</span><span class="grow">Never add a marketplace.json named "coltondyck" to this repo</span><span class="chip person">Colton</span></li>
+          </ul>
+        </div>
+
+        <h3>Needs attention</h3>
+        <div class="card">
+          <ul class="plain">
+            <li class="row"><span class="st prog">in progress</span><span class="grow">Chromadb rust-backend flake in reconciler test</span><span class="meta">claimed 6d ago by</span><span class="chip person">Vorpid’s human</span></li>
+            <li class="row"><span class="st block">blocked</span><span class="grow">H-4 first-install race — HUMAN-GATED</span><span class="meta">awaiting Colton</span></li>
+          </ul>
+        </div>
+
+        <h3>Recent episodes</h3>
+        <div class="card">
+          <ul class="plain">
+            <li class="row"><span class="grow">Team-cognition scoping survey completed (epic created, 12 suggestions dual-POV validated)</span><span class="chip person">Colton</span><span class="chip agent">via agent</span><span class="meta">today</span></li>
+            <li class="row"><span class="grow">WP-P13n-2 shipped: personalized session-start prime (v0.18.0)</span><span class="chip person">Colton</span><span class="chip agent">via agent</span><span class="meta">7d</span></li>
+            <li class="row"><span class="grow">WP-P13n-1 shipped (v0.17.0): recorded_by + claimed_by provenance</span><span class="chip person">Colton</span><span class="chip agent">via agent</span><span class="meta">7d</span></li>
+          </ul>
+        </div>
+
+        <h3>Recent incidents (14d, high+)</h3>
+        <div class="card ghost"><ul class="plain"><li class="meta">None in window — older: manager checkout ran in shared MAIN tree (high, resolved)</li></ul></div>
+      </section>
+
+      <!-- BOARD -->
+      <section class="view" id="board">
+        <h2>Board <span class="meta">— tree view toggle ▸ · done capped to 7d · cancelled hidden · columns show sample cards, counts are the real totals</span></h2>
+        <div class="board">
+          <div class="col"><h4>Open · 14</h4>
+            <div class="tcard" id="opencard">
+              <div class="crumb">EPIC team-cognition ▸</div>
+              <div class="sum">Human identity nodes: person node type w/ seniority + reports-to</div>
+              <div class="row"><span class="chip high">high</span><span class="chip person">Colton</span><span class="meta">created today</span></div>
+            </div>
+            <div class="tcard">
+              <div class="crumb">EPIC team-cognition ▸</div>
+              <div class="sum">Conflicting-decision warning on search results</div>
+              <div class="row"><span class="chip norm">normal</span><span class="chip person">Colton</span></div>
+            </div>
+            <div class="tcard">
+              <div class="crumb">Reliability follow-ups ▸</div>
+              <div class="sum">Mechanical guard against branch-switch journal clobber</div>
+              <div class="row"><span class="chip high">high</span><span class="chip person">Colton</span></div>
+            </div>
+          </div>
+          <div class="col"><h4>In progress · 2</h4>
+            <div class="tcard">
+              <div class="crumb">Reliability follow-ups ▸</div>
+              <div class="sum">Chromadb rust-backend InternalError flake</div>
+              <div class="row"><span class="chip high">high</span><span class="chip person">Vorpid’s human</span><span class="meta">claimed 6d ⚠ stale</span></div>
+            </div>
+          </div>
+          <div class="col"><h4>Blocked · 1</h4>
+            <div class="tcard">
+              <div class="crumb">P3 audit tail ▸</div>
+              <div class="sum">H-4 first-install race — HUMAN-GATED</div>
+              <div class="row"><span class="chip norm">low</span><span class="meta">blocked: needs Colton's machine</span></div>
+            </div>
+          </div>
+          <div class="col"><h4>Done · 6 this week</h4>
+            <div class="tcard ghost">
+              <div class="crumb">EPIC personalized prime ▸</div>
+              <div class="sum">WP-P13n-2 prime personalization</div>
+              <div class="row"><span class="st done">done</span><span class="chip person">Colton</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="note">Click any card → detail drawer (open card at right shows a task example with transition timeline + conflict banner slot).</div>
+      </section>
+
+      <!-- WORKFLOWS -->
+      <section class="view" id="workflows">
+        <h2>Workflows <span class="meta">— HEAD versions; chain expands on detail</span></h2>
+        <div class="card row"><span class="grow"><b>Plugin release procedure</b><div class="meta">code commit → version bump → push → ping Loki → marketplace re-pin</div></span><span class="chip">v3 · chain of 3</span><span class="chip person">Vince</span></div>
+        <div class="card row"><span class="grow"><b>Tool-surface self-sufficiency audit (recurring)</b><div class="meta">re-run whenever an MCP tool is added or changed</div></span><span class="chip">v1</span><span class="chip person">Vince</span></div>
+        <div class="card row"><span class="grow"><b>Shared-checkout journal flush</b><div class="meta">temp worktree → snapshot → commit → push origin main</div></span><span class="chip">v2 · chain of 2</span><span class="chip person">Vince</span></div>
+      </section>
+
+      <!-- DOCUMENTS -->
+      <section class="view" id="documents">
+        <h2>Documents</h2>
+        <div class="card" style="padding:0">
+        <table>
+          <tr><th>Document</th><th>Mode</th><th>Size</th><th>Freshness</th><th>Cited by</th><th></th></tr>
+          <tr><td>scope-personalized-prime.md</td><td>copy</td><td>13 KB</td><td><span class="fresh ok">unchanged</span></td><td>6 nodes</td><td><a style="color:var(--accent)" href="#">download</a></td></tr>
+          <tr><td>fable-audit-stage2-interconnectivity.md</td><td>copy</td><td>41 KB</td><td><span class="fresh mod">modified on disk</span></td><td>12 nodes</td><td><a style="color:var(--accent)" href="#">download</a></td></tr>
+          <tr><td>client-brief-rental-dispute.pdf</td><td>reference</td><td>210 KB</td><td><span class="fresh ok">unchanged</span></td><td class="meta">0 nodes ⚠ inert</td><td><a style="color:var(--accent)" href="#">download</a></td></tr>
+        </table>
+        </div>
+        <div class="note">“Cited by 0” is a graph-health smell (inert document) — surfaced here instead of buried.</div>
+      </section>
+
+      <!-- ACTIVITY -->
+      <section class="view" id="activity">
+        <h2>Activity <span class="meta">— filter: [all types ▾] [all people ▾]</span></h2>
+        <div class="card">
+          <ul class="plain">
+            <li class="row"><span class="chip">decision</span><span class="grow">Seniority IS weighed in retrieval — weighted, never wiped</span><span class="chip person">Colton</span><span class="chip agent">via agent</span><span class="meta">today 17:59</span></li>
+            <li class="row"><span class="chip">episode</span><span class="grow">Team-cognition scoping survey completed</span><span class="chip person">Colton</span><span class="chip agent">via agent</span><span class="meta">today 17:39</span></li>
+            <li class="row"><span class="chip">task</span><span class="grow">EPIC: team-cognition created (+3 children re-parented)</span><span class="chip person">Colton</span><span class="meta">today 17:29</span></li>
+            <li class="row"><span class="chip">discovery</span><span class="grow">Dashboard search has no graph-existence filter (ghost hits)</span><span class="chip person">Vince</span><span class="meta">Jun 13</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- GRAPH -->
+      <section class="view" id="graph">
+        <h2>Graph <span class="meta">— constellation demoted to a tab; lazy-loaded; unchanged from today</span></h2>
+        <div class="card" style="height:340px;display:flex;align-items:center;justify-content:center;color:var(--ink3)">
+          [ existing Cytoscape constellation renders here — kept for curation debugging, no longer the front door ]
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<!-- DETAIL DRAWER (example: a task) -->
+<aside class="drawer" id="drawer">
+  <button class="x" onclick="drawer.classList.remove('open')">✕</button>
+  <span class="chip">task</span> <span class="chip high">high</span>
+  <h2 style="margin:10px 0 4px">Human identity nodes: person node type w/ seniority + reports-to</h2>
+  <div class="meta">EPIC team-cognition ▸ · id 1c29cff92e20</div>
+
+  <div class="warnbanner">⚠ <b>Conflict slot (future):</b> shown when this node has a <i>contradicts</i> edge or a superseding HEAD — names the other node + who recorded it.</div>
+
+  <h3>Provenance</h3>
+  <div class="row" style="margin-bottom:6px"><span class="meta" style="width:90px">created_by</span><span class="chip person">Colton Dyck</span><span class="chip seniority">owner · senior (future)</span></div>
+  <div class="row" style="margin-bottom:6px"><span class="meta" style="width:90px">recorded</span><span class="chip agent">via agent (future bool)</span></div>
+  <div class="row"><span class="meta" style="width:90px">claimed_by</span><span class="meta">— unclaimed</span></div>
+
+  <h3>Detail</h3>
+  <div class="meta" style="color:var(--ink2)">First-class human identity nodes patterned after teammate-comms profiles but fully separate; updated in place; keyed by email; feeds seniority weighting and onboarding…</div>
+
+  <h3>Transition timeline</h3>
+  <div class="timeline">
+    <div class="ev"><b>open</b> <span class="meta">· today 17:59 · by Colton Dyck</span></div>
+    <div class="ev meta">…future transitions render here with {status, at, by, note}</div>
+  </div>
+
+  <h3>Related nodes (replaces constellation navigation)</h3>
+  <ul class="plain">
+    <li class="row"><span class="chip">part_of</span><span class="grow">EPIC: team-cognition</span></li>
+    <li class="row"><span class="chip">relates_to</span><span class="grow">decision: person nodes + seniority weighting approved</span></li>
+    <li class="row"><span class="chip">relates_to</span><span class="grow">task: seniority weighting in retrieval</span></li>
+  </ul>
+</aside>
+
+<script>
+  const views=document.querySelectorAll('.view'), btns=document.querySelectorAll('nav button[data-v]'), drawer=document.getElementById('drawer');
+  btns.forEach(b=>b.addEventListener('click',()=>{btns.forEach(x=>x.classList.remove('active'));b.classList.add('active');views.forEach(v=>v.classList.toggle('active',v.id===b.dataset.v));}));
+  document.getElementById('opencard').addEventListener('click',()=>drawer.classList.add('open'));
+</script>
+</body>
+</html>
