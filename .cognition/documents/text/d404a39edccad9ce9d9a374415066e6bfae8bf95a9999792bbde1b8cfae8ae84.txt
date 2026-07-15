@@ -1,0 +1,26 @@
+# Scope: Gate C1 — Wave 1 Stability Audit (identity layer)
+
+Status: APPROVED (peer-reviewed 2026-07-15, 5 precision corrections). Runs AFTER WP-TC8 gates (Wave 1 complete). Vorpid builds the Part B harness under this brief; Vince runs the checklist, gates results, records the C1 report. REMEDIATION CLAUSE: C1 failure blocks Wave 2 — fix WP or explicit accepted-risk record before TC1 starts. Epic cedf4a8457e9; task 85b2b4de8aee.
+
+## Part A — Vince-run checklist
+A1. Journal compat on real data: replay THIS repo's production journal at Wave-1-final commit, zero replay errors. Invariant = distinct-SET arithmetic (expected_nodes = add_node ids − remove_node ids; expected_edges = add_edge triples − removed triples; compare get_statistics()) — NOT raw line counts (add_edge lines aren't deduped at tool layer while graph edge-add is idempotent by triple). Vince runs the harness's --journal-dir mode (manager runs a script, writes none).
+A2. Additive-only metadata review: desk check from the four gate diffs that every Wave 1 key is NEW (person, profile_history, from_agent, assigned_to, assignments), no existing key changed shape. Record with commit refs.
+A3. Cross-version story: v0.19.0 upgrade-promptly note shipped; old replay stores unknown metadata inertly — code-verified (storage.py:1150 raw metadata pass, 1206-1213 blind key assign; replay never constructs the Pydantic model). Cite in report.
+A4. Flake review: suite ran ≥6 full times across Wave 1 gates; report any nonreproducible failure (count so far: zero).
+A5. Onboarding end-to-end manual pass in a scratch repo: unconfigured email → no notice; unregistered → notice; register per notice → next prime silent + person node correct (from_agent=false, empty profile_history, recorded_by stamped); decline → silent + file gitignored (hygiene v3 re-fire observed on pre-v3 scratch project).
+
+## Part B — Vorpid-built harness: scripts/bench_wave1.py
+Stdlib + project imports; NOT packaged (outside wheel packages list, pyproject.toml:38-39), NOT a test — runnable report generator. Modes: synthetic + --journal-dir.
+B1. Synthetic fixture: ~1,000 mixed nodes, 10 persons, 100 tasks (some assigned — REQUIRES TC8 merged; do not run before), deterministic seed, tmp dir. No embeddings backend needed for B2/B3 (storage + prime are chromadb-free, verified); B4/B5 touch chromadb via the conftest pattern (existing hard dep).
+B2. Replay wall time at 1k nodes (report; soft regression indicator < 2s dev machine).
+B3. Prime cost decomposition: generate_prime wall time; onboarding-detection share via prime_onboard on/off (10-run median; flag gates exactly one early return, prime.py:419). PASS: detection < 10% of prime time (one O(total-nodes) scan filtered to persons + one file read).
+B4. Embeds-per-operation (counting mock as generator): register_person==1; update_person==1; add_task-with-assignment==1; update_task assignment change==1 (no double re-embed). PASS: exact. Seams: _update_task = explicit-param testable core (pass counter directly); _add_task/_register_person/_update_person = ctx/lifespan — REUSE tests/conftest.py build_lc (90-134) + make_ctx (137-152); _embeddings_ready needs embedding_ready = SET threading.Event + embedding_error falsy, else embed silently skips → false zero.
+B5. Cross-instance convergence: two IN-PROCESS CognitionStorage on one journal dir (catch-up is filesystem stat+read, storage.py:953-971 — no multiprocessing). Trigger = any public storage method under _synced() runs _catch_up() (storage.py:177-193). A registers person + assigns task → B.get_node sees both field-exact → B updates person → A's next call converges. PASS: field-exact both directions.
+
+Harness acceptance: clean run at Wave-1-final commit; --journal-dir mode; copy-pasteable report; ruff clean; no production code changes; no new deps; no version bump (gate = review + run, not release train).
+
+## OUTPUT
+C1 report recorded in the graph: A1–A5 results, B2–B5 numbers, verdict PASS / PASS-with-notes / FAIL(→fix WP). Wave 2 briefs do not go to Vorpid before the verdict is recorded.
+
+## NON-GOALS
+No weighting/latency measurements (C2, after Wave 3). No dashboard load testing (accepted at TC11 gate). No chromadb soak rigs (flake WATCH = review of observed runs).
