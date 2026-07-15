@@ -272,6 +272,25 @@ class Settings(BaseSettings):
         ),
     )
 
+    # WP-TC16: role-aware prime (manager rollup / subordinate view). Sections
+    # self-gate on role existence (reports_to_email) — no separate on/off knob.
+    prime_stale_claim_days: int = Field(
+        default=7,
+        description=(
+            "A direct report's in_progress claim is 'stale' in 'Your Team' once its "
+            "claim age is STRICTLY greater than this many days (exactly this many "
+            "days old is not yet stale). A null/legacy claimed_at is never stale."
+        ),
+    )
+    prime_rollup_cap: int = Field(
+        default=5,
+        description="Max rows shown in 'Your Team' (manager rollup), stale first",
+    )
+    prime_manager_decision_limit: int = Field(
+        default=3,
+        description="Max decisions shown in 'Your Manager's Recent Decisions'",
+    )
+
     @field_validator("repo_path", mode="before")
     @classmethod
     def validate_repo_path(cls, v: str | Path) -> Path:

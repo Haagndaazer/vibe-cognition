@@ -17,8 +17,9 @@ from starlette.responses import FileResponse, JSONResponse
 
 from ..cognition import CognitionEdgeType, CognitionNodeType, delete_cognition_node
 from ..cognition.documents import documents_dir, text_sidecar_path
+from ..cognition.task_meta import _task_claimed_at  # WP-TC16: relocated (was cognition_tools)
 from ..embeddings import adaptive_vector_search
-from ..tools.cognition_tools import _reembed_replayed_nodes, _task_claimed_at
+from ..tools.cognition_tools import _reembed_replayed_nodes
 
 # Deliberately NOT `from ..cognition.prime import SEVERITY_ORDER` (scope-dashboard-v1
 # brief, doc:4c0b9d426f4c): prime.py carries markdown-formatting + CLI-facing deps this
