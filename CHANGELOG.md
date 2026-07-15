@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-07-15
+
 **WP-DashV2: dashboard Workflows library, Documents table, Activity feed (phase V2 of 3).**
 
 ### Added
