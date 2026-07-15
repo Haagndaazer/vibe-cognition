@@ -20,6 +20,26 @@ SEVERITY_ORDER = {"critical": 0, "high": 1, "normal": 2, "low": 3}
 
 _TASK_CLOSED_STATUSES = frozenset({"done", "cancelled"})
 
+# WP-TC7: new-user onboarding notice. Per-machine, local file (never synced via the
+# graph/journal) -- one casefolded email per line. Written by the AGENT via an
+# ordinary file append when the human declines/snoozes (no new MCP tool, no graph
+# write); read here only. Filename referenced by git_hygiene.py's versioned writer
+# (kept as a plain string there too, not imported, matching that module's existing
+# stdlib-only/standalone convention for REHYDRATE_FLAG_FILENAME).
+ONBOARD_DECLINE_FILENAME = "onboard-declined"
+
+ONBOARDING_NOTICE = (
+    "## New Here?\n"
+    "This graph has no person node for your email yet.\n"
+    "- Ask the human: name, role, seniority (owner|senior|mid|junior), and who "
+    "they directly report to (optional).\n"
+    "- Then call cognition_register_person (email omitted -- the server resolves "
+    "it) with from_agent=false (the human dictated this, not you).\n"
+    "- If they'd rather skip it: append their casefolded email to "
+    f".cognition/{ONBOARD_DECLINE_FILENAME} (one per line) -- never create a "
+    "placeholder person node."
+)
+
 
 @dataclass(frozen=True)
 class PrimeConfig:
@@ -48,6 +68,9 @@ class PrimeConfig:
     prime_your_episode_limit: int = 5
     prime_your_decision_limit: int = 5
     prime_your_discovery_limit: int = 5
+
+    # WP-TC7: new-user onboarding notice.
+    prime_onboard: bool = True
 
 
 def _truncate(text: str, maxlen: int) -> str:
@@ -365,6 +388,43 @@ def _format_incidents(
     return "## Recent Incidents\n" + "\n".join(lines)
 
 
+def _onboard_declined_emails(cognition_dir: Path) -> set[str]:
+    """Casefolded emails that declined/snoozed onboarding on THIS machine. Missing
+    file == empty set; blank/malformed lines are ignored. Never raises."""
+    path = cognition_dir / ONBOARD_DECLINE_FILENAME
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    return {line.strip().casefold() for line in raw.splitlines() if line.strip()}
+
+
+def _has_person_node(storage: CognitionStorage, email: str) -> bool:
+    """Whether a person node's (casefolded, stored-casefolded) email matches."""
+    for n in storage.get_nodes_by_type(CognitionNodeType.PERSON):
+        person = n.get("metadata", {}).get("person", {})
+        if person.get("email") == email:
+            return True
+    return False
+
+
+def _onboarding_notice(storage: CognitionStorage, config: PrimeConfig, current_email: str) -> str:
+    """The new-user onboarding notice (WP-TC7), or "" when it should not fire.
+
+    Fires when ALL: current_email resolved, prime_onboard on, no matching person
+    node, and the email hasn't declined. `current_email` here is ALREADY casefolded
+    by generate_prime's single normalization point -- this function does not
+    re-casefold, matching _task_matches_email's documented convention of trusting
+    an already-normalized caller within this module."""
+    if not current_email or not config.prime_onboard:
+        return ""
+    if _has_person_node(storage, current_email):
+        return ""
+    if current_email in _onboard_declined_emails(storage.cognition_dir):
+        return ""
+    return ONBOARDING_NOTICE
+
+
 def generate_prime(
     storage: CognitionStorage,
     config: PrimeConfig | None = None,
@@ -395,7 +455,9 @@ def generate_prime(
     current_email = (current_email or "").casefold()
     personalize = _should_personalize(storage, config, current_email)
 
-    sections = [_format_constraints(storage, config.prime_constraint_limit, maxlen)]
+    # WP-TC7: pinned FIRST section, before Active Constraints.
+    sections = [_onboarding_notice(storage, config, current_email)]
+    sections.append(_format_constraints(storage, config.prime_constraint_limit, maxlen))
 
     if personalize:
         your_tasks, mine_ids = _format_your_tasks(
@@ -544,6 +606,7 @@ def main(argv: list[str] | None = None):
                 prime_your_episode_limit=settings.prime_your_episode_limit,
                 prime_your_decision_limit=settings.prime_your_decision_limit,
                 prime_your_discovery_limit=settings.prime_your_discovery_limit,
+                prime_onboard=settings.prime_onboard,
             )
         except Exception:  # noqa: BLE001
             config = PrimeConfig()

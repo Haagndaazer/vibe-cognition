@@ -381,8 +381,18 @@ not a security boundary): `reports_to_email` and `seniority` are trust-declared 
 freely peer-editable — the audit trail is the control, not an ACL, and anyone sharing
 the graph may update anyone's profile. `from_agent` is client-declared and unverifiable
 by the server (like the `author` field on `cognition_record`). Person data is only as
-fresh as the team keeps it — nothing enforces it, though a future onboarding flow
+fresh as the team keeps it — nothing enforces it, though the onboarding notice below
 reduces how often it goes stale.
+
+**New-user onboarding notice.** When a session's git identity resolves to an email
+with no matching person node yet, the session-start prime digest opens with a `## New
+Here?` notice prompting the agent to ask the human for their name, role, seniority,
+and manager, then call `cognition_register_person` with `from_agent=false`. If the
+human would rather skip it, the agent appends their casefolded email to
+`.cognition/onboard-declined` (a per-machine, git-ignored file — never synced, never a
+placeholder person node) instead of registering them. The notice disappears the
+session after a matching person node lands, or immediately once declined. Set
+`PRIME_ONBOARD=false` to disable the notice outright.
 
 ## Configuration
 

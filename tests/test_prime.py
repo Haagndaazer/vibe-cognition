@@ -22,7 +22,14 @@ from vibe_cognition.cognition.models import (
     CognitionNode,
     CognitionNodeType,
 )
-from vibe_cognition.cognition.prime import PrimeConfig, _truncate, generate_prime, main
+from vibe_cognition.cognition.prime import (
+    ONBOARD_DECLINE_FILENAME,
+    ONBOARDING_NOTICE,
+    PrimeConfig,
+    _truncate,
+    generate_prime,
+    main,
+)
 from vibe_cognition.cognition.readme import ONBOARDING_BLOCK
 from vibe_cognition.config import Settings
 
@@ -319,12 +326,20 @@ def test_generate_prime_solo_graph_stays_global_auto_mode(tmp_path):
     """Solo graph (<=1 distinct stamped email) in 'auto' mode: output is the
     unchanged global digest, byte-identical to passing current_email=None,
     even though a resolvable current_email IS passed. This is the acceptance
-    criterion's "solo output byte-identical" pin."""
+    criterion's "solo output byte-identical" pin.
+
+    prime_onboard=False on both calls: this pin is about PERSONALIZATION
+    sectioning specifically (task-splitting must not change shape for a solo
+    graph) -- it predates and is orthogonal to WP-TC7's onboarding notice, which
+    is INTENTIONALLY current_email-gated on its own (a resolvable email with no
+    person node is exactly what it must fire for). Onboarding-notice-vs-no-notice
+    byte-identity is covered separately in the onboarding test block below."""
     storage = CognitionStorage(tmp_path / ".cognition")
     _task(storage, "t1", "solo task", severity="high", created_by=ME)
+    config = PrimeConfig(prime_onboard=False)
 
-    with_email = generate_prime(storage, current_email=ME["email"])
-    without_email = generate_prime(storage, current_email=None)
+    with_email = generate_prime(storage, config, current_email=ME["email"])
+    without_email = generate_prime(storage, config, current_email=None)
     assert with_email == without_email
     assert "## Your Open Tasks" not in with_email
     assert "## Open Tasks" in with_email
@@ -530,6 +545,209 @@ def test_your_recent_activity_matches_cross_case(tmp_path):
     assert "my cross-case episode" in result
 
 
+# ── WP-TC7: onboarding notice ────────────────────────────────────────────────
+
+
+def _person(storage: CognitionStorage, node_id: str, email: str, *, name: str = "Someone") -> None:
+    """Seed a minimal person node — only the fields _has_person_node reads."""
+    _add(
+        storage, node_id, CognitionNodeType.PERSON, f"person: {name}",
+        metadata={"person": {"email": email.casefold(), "name": name, "role": "engineer"}},
+    )
+
+
+def test_onboarding_notice_fires_for_unregistered_email_solo_graph(tmp_path):
+    """Notice fires: resolvable current_email, no matching person node, solo graph
+    (no other stamped emails at all -- must not be confused with the multi-user
+    auto-detect gate, which is a wholly separate mechanism)."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _add(storage, "d1", CognitionNodeType.DECISION, "some decision")
+
+    result = generate_prime(storage, current_email=ME["email"])
+    assert "## New Here?" in result
+    assert ONBOARDING_NOTICE in result
+
+
+def test_onboarding_notice_fires_for_unregistered_email_multiuser_graph(tmp_path):
+    """Notice fires the same way in a multi-user graph -- personalization mode is
+    orthogonal to the onboarding notice."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t-mine", "my task", created_by=ME)
+    _task(storage, "t-theirs", "teammate task", created_by=TEAMMATE)
+
+    result = generate_prime(storage, current_email=ME["email"])
+    assert "## New Here?" in result
+
+
+def test_onboarding_notice_suppressed_when_person_node_registered(tmp_path):
+    """A matching (casefolded) person node for current_email suppresses the notice."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _person(storage, "p-me", ME["email"])
+
+    result = generate_prime(storage, current_email=ME["email"])
+    assert "## New Here?" not in result
+
+
+def test_onboarding_notice_suppressed_when_person_node_registered_cross_case(tmp_path):
+    """Person-node match is case-insensitive, matching every other email-matching
+    convention in this module (casefold, not exact string equality)."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _person(storage, "p-me", "ALICE@X.COM")
+
+    result = generate_prime(storage, current_email=ME["email"])  # "alice@x.com"
+    assert "## New Here?" not in result
+
+
+def test_onboarding_notice_suppressed_when_email_unresolvable(tmp_path):
+    """No resolvable current_email -> nothing to onboard, notice never fires."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _add(storage, "d1", CognitionNodeType.DECISION, "some decision")
+
+    result = generate_prime(storage, current_email=None)
+    assert "## New Here?" not in result
+
+
+def test_onboarding_notice_suppressed_when_declined(tmp_path):
+    """An email present (casefolded) in .cognition/onboard-declined suppresses the
+    notice -- the per-machine, git-ignored decline/snooze path."""
+    cognition_dir = tmp_path / ".cognition"
+    storage = CognitionStorage(cognition_dir)
+    (cognition_dir / ONBOARD_DECLINE_FILENAME).write_text(
+        ME["email"] + "\n", encoding="utf-8"
+    )
+
+    result = generate_prime(storage, current_email=ME["email"])
+    assert "## New Here?" not in result
+
+
+def test_onboarding_notice_decline_file_matches_case_insensitively(tmp_path):
+    """Decline-file matching is casefolded, same as every other email match here."""
+    cognition_dir = tmp_path / ".cognition"
+    storage = CognitionStorage(cognition_dir)
+    (cognition_dir / ONBOARD_DECLINE_FILENAME).write_text(
+        "ALICE@X.COM\n", encoding="utf-8"
+    )
+
+    result = generate_prime(storage, current_email=ME["email"])  # "alice@x.com"
+    assert "## New Here?" not in result
+
+
+def test_onboarding_notice_decline_file_missing_is_empty_set_no_crash(tmp_path):
+    """No decline file at all -> treated as no declines, no crash (the common case:
+    most machines never write this file)."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+
+    result = generate_prime(storage, current_email=ME["email"])
+    assert "## New Here?" in result
+
+
+def test_onboarding_notice_decline_file_blank_and_malformed_lines_ignored(tmp_path):
+    """Blank lines and pure-whitespace lines in the decline file are ignored, not
+    treated as a (blank) declined email that would vacuously "match" nothing but
+    could otherwise corrupt the set."""
+    cognition_dir = tmp_path / ".cognition"
+    storage = CognitionStorage(cognition_dir)
+    (cognition_dir / ONBOARD_DECLINE_FILENAME).write_text(
+        "\n   \nbob@x.com\n\n", encoding="utf-8"
+    )
+
+    result = generate_prime(storage, current_email=ME["email"])
+    assert "## New Here?" in result  # alice@x.com never declined
+    result_bob = generate_prime(storage, current_email=TEAMMATE["email"])
+    assert "## New Here?" not in result_bob  # bob@x.com did
+
+
+def test_onboarding_notice_suppressed_when_prime_onboard_false_direct(tmp_path):
+    """PrimeConfig(prime_onboard=False) suppresses the notice outright, even for an
+    otherwise-qualifying unregistered email."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+
+    result = generate_prime(storage, PrimeConfig(prime_onboard=False), current_email=ME["email"])
+    assert "## New Here?" not in result
+
+
+def test_onboarding_notice_suppressed_when_prime_onboard_false_via_settings(monkeypatch, tmp_path):
+    """PRIME_ONBOARD=false flows Settings -> PrimeConfig.prime_onboard, matching
+    every other prime_* knob's env-override wiring (field name uppercased, no
+    prefix -- pydantic-settings' default, unlike vibe_cognition_no_git_hygiene
+    which spells the prefix into the field name itself)."""
+    monkeypatch.setenv("PRIME_ONBOARD", "false")
+    settings = Settings()
+    assert settings.prime_onboard is False
+
+    storage = CognitionStorage(tmp_path / ".cognition")
+    config = PrimeConfig(prime_onboard=settings.prime_onboard)
+    result = generate_prime(storage, config, current_email=ME["email"])
+    assert "## New Here?" not in result
+
+
+def test_onboarding_notice_is_first_section_before_active_constraints(tmp_path):
+    """Notice is pinned first -- ahead of '## Active Constraints' -- so it can't be
+    buried under a long constraint list."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _add(storage, "c1", CognitionNodeType.CONSTRAINT, "some constraint", severity="high")
+
+    result = generate_prime(storage, current_email=ME["email"])
+    assert result.index("## New Here?") < result.index("## Active Constraints")
+
+
+def test_onboarding_notice_contains_required_guidance_substrings(tmp_path):
+    """The notice text itself names the exact tool/flag/path an agent needs -- this
+    pins the literal guidance, not just presence, so a future edit can't silently
+    drop one of the required facts."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    result = generate_prime(storage, current_email=ME["email"])
+    assert "cognition_register_person" in result
+    assert "email omitted" in result
+    assert "from_agent=false" in result
+    assert ONBOARD_DECLINE_FILENAME in result
+
+
+def test_onboarding_notice_byte_identical_delta_when_registered(tmp_path):
+    """A registered current_email produces output byte-identical to current_email=None
+    -- proving the notice (and nothing else) is what current_email gates here, since
+    a matching person node isn't itself a stamped email counted by personalization."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _person(storage, "p-me", ME["email"])
+    _add(storage, "d1", CognitionNodeType.DECISION, "some decision")
+
+    with_email = generate_prime(storage, current_email=ME["email"])
+    without_email = generate_prime(storage, current_email=None)
+    assert with_email == without_email
+
+
+def test_onboarding_notice_unregistered_delta_is_exactly_the_notice(tmp_path):
+    """An unregistered current_email's output is EXACTLY the current_email=None
+    output with the notice section prepended -- not a rewritten or reordered
+    digest. This is the acceptance criterion's "delta is exactly the notice" pin."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _add(storage, "d1", CognitionNodeType.DECISION, "some decision")
+
+    with_notice = generate_prime(storage, current_email=ME["email"])
+    without = generate_prime(storage, current_email=None)
+    header = "# Vibe Cognition — Project Context\n\n"
+    assert without.startswith(header)
+    assert with_notice == without.replace(header, header + ONBOARDING_NOTICE + "\n\n", 1)
+
+
+def test_onboarding_notice_absent_in_empty_graph_path(tmp_path, monkeypatch):
+    """main()'s empty-graph branch injects ONBOARDING_BLOCK and never calls
+    generate_prime at all -- the WP-TC7 notice must be ASSERTED ABSENT here, not
+    merely untested, since the two onboarding mechanisms are mutually exclusive
+    by construction (empty graph has no person nodes to register against yet)."""
+    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.delenv("VIBE_MIGRATION_NOTE", raising=False)
+    monkeypatch.setattr("vibe_cognition.cognition.prime.resolve_git_identity", lambda repo: ME)
+
+    buf = io.StringIO()
+    monkeypatch.setattr("sys.stdout", buf)
+    main(argv=[])
+
+    ctx = json.loads(buf.getvalue())["hookSpecificOutput"]["additionalContext"]
+    assert ONBOARDING_BLOCK in ctx
+    assert "## New Here?" not in ctx
+
+
 # ── main() — hook payload ─────────────────────────────────────────────────────
 
 
@@ -643,6 +861,29 @@ def test_main_unconfigured_identity_falls_back_to_global_no_crash(tmp_path, monk
     ctx = json.loads(buf.getvalue())["hookSpecificOutput"]["additionalContext"]
     assert "## Your Open Tasks" not in ctx
     assert "## Open Tasks" in ctx
+
+
+def test_main_end_to_end_emits_valid_json_with_onboarding_notice(tmp_path, monkeypatch):
+    """main() end-to-end: an identity that resolves but has no person node yields
+    valid SessionStart JSON with the onboarding notice present -- exercising the
+    real main()->generate_prime wiring (not just generate_prime directly), and
+    confirming the notice survives the full hook payload round-trip through
+    json.dump/json.loads without corrupting the JSON."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _add(storage, "d1", CognitionNodeType.DECISION, "some decision")
+
+    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.delenv("VIBE_MIGRATION_NOTE", raising=False)
+    monkeypatch.setattr("vibe_cognition.cognition.prime.resolve_git_identity", lambda repo: ME)
+
+    buf = io.StringIO()
+    monkeypatch.setattr("sys.stdout", buf)
+    main(argv=[])
+
+    data = json.loads(buf.getvalue())
+    ctx = data["hookSpecificOutput"]["additionalContext"]
+    assert "## New Here?" in ctx
+    assert "cognition_register_person" in ctx
 
 
 # ── argparse / --help correctness (WP-13, 4aaef22e25ea) ──────────────────────
