@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**WP-OnboardPayoff: person-node-aware auto-personalize + prime identity header (Gate D S5 fix).**
+
+### Added
+- **`prime_personalize="auto"` now also personalizes on >1 registered person**,
+  not just >1 distinct stamped writer email. Closes the Gate D finding that a
+  team's first-onboarded member (every graph node so far written by ONE person,
+  but several people now registered) got zero personalized sections — the
+  experience was indistinguishable from unregistered except the New Here banner
+  disappearing. New `_registered_person_emails(storage)` helper returns a SET of
+  emails (never a node count — a replay-duplicate person node for one email must
+  not flip a solo graph to "multi-user"). All three existing solo byte-identity
+  pin tests pass UNMODIFIED.
+- **One-line identity header** ("You are registered as {name} — {role}
+  ({seniority}), reporting to {manager}.") opens the personalized block,
+  immediately before Your Tasks, whenever `current_email` resolves to a
+  registered person node. Degrades field-by-field when role/seniority/manager
+  are blank; an unresolvable manager email falls back to showing the raw email.
+  Mutually exclusive with the New Here banner by construction (the header needs
+  a matching person node, the banner needs the absence of one) — no new config
+  knob. `_RoleContext` gains `my_manager_name` (resolved from the same single
+  person-node scan `_derive_role` already does — no second scan).
+
+### Notes
+- Passive display change only, in prime.py — no acknowledgment/interceptor
+  mechanics (a permanently rejected feature class), no tool-return changes.
+- Known edge case (disclosed, not "fixed"): an UNREGISTERED user priming a
+  single-writer graph with >=2 registered persons now sees the personalized-
+  but-sparse layout (banner + mostly self-gated-empty sections) — the same
+  shape any unregistered user of a multi-*writer* graph already gets today, not
+  a new kind of experience, and it nudges toward registering.
+- `config.py`'s `prime_personalize` Field description updated to document the
+  OR condition. No version bump (batches into 0.27.0 with the other Gate D
+  fixes). README/skill harmonization deliberately deferred to the doc-fix WP
+  (6e54452b9735), which goes last.
+
 **WP-SearchFlags: `cognition_search` results gain `conflicted`/`superseded_by` (Gate D S2/S4 fix).**
 
 ### Added

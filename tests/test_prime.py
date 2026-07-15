@@ -26,6 +26,7 @@ from vibe_cognition.cognition.prime import (
     ONBOARD_DECLINE_FILENAME,
     ONBOARDING_NOTICE,
     PrimeConfig,
+    _derive_role,
     _truncate,
     generate_prime,
     main,
@@ -604,19 +605,29 @@ def test_your_recent_activity_matches_cross_case(tmp_path):
 
 def _person(
     storage: CognitionStorage, node_id: str, email: str, *, name: str = "Someone",
-    reports_to_email: str = "",
+    role: str = "engineer", seniority: str = "", reports_to_email: str = "",
 ) -> None:
-    """Seed a minimal person node — the fields _has_person_node/_derive_role read.
+    """Seed a minimal person node — the fields _has_person_node/_derive_role/
+    _format_identity_header read.
 
     WP-TC16: gained `reports_to_email` (default "", matching a real person node's
     always-present-but-possibly-empty field) so the same helper serves both the
-    onboarding tests (which never set it) and the role-derivation tests."""
+    onboarding tests (which never set it) and the role-derivation tests.
+
+    WP-OnboardPayoff: gained `role` (defaulted to the pre-existing hardcoded
+    "engineer", so every existing call site is byte-identical) and `seniority`
+    (defaulted to "" — OMITTED from metadata entirely when blank, matching every
+    pre-WP person node's shape exactly, not just an empty-string key) for the
+    identity-header degradation-case tests."""
+    person: dict = {
+        "email": email.casefold(), "name": name, "role": role,
+        "reports_to_email": reports_to_email.casefold(),
+    }
+    if seniority:
+        person["seniority"] = seniority
     _add(
         storage, node_id, CognitionNodeType.PERSON, f"person: {name}",
-        metadata={"person": {
-            "email": email.casefold(), "name": name, "role": "engineer",
-            "reports_to_email": reports_to_email.casefold(),
-        }},
+        metadata={"person": person},
     )
 
 
@@ -810,6 +821,170 @@ def test_onboarding_notice_absent_in_empty_graph_path(tmp_path, monkeypatch):
     ctx = json.loads(buf.getvalue())["hookSpecificOutput"]["additionalContext"]
     assert ONBOARDING_BLOCK in ctx
     assert "## New Here?" not in ctx
+
+
+# ── WP-OnboardPayoff: registered-team auto-detect + identity header ──────────
+# Gate D S5 fix: a team's first-onboarded member (single writer so far, several
+# people now registered) previously got ZERO personalized sections. This block
+# covers the two changes: (1) 'auto' also personalizes on >1 registered person
+# email, not just >1 stamped writer email; (2) a one-line identity header opens
+# the personalized block for a registered current_email.
+
+
+def test_auto_personalizes_on_two_registered_persons_single_writer_fails_before(tmp_path):
+    """The exact Gate D S5 shape: every node so far written by ONE person, but
+    TWO people are registered -- 'auto' must personalize. Fails-before: a
+    stamped-email-only heuristic sees a single distinct writer and stays global."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t1", "solo-written task", created_by=ME)
+    _person(storage, "p-me", ME["email"], name="Alice")
+    _person(storage, "p-teammate", TEAMMATE["email"], name="Bob")
+
+    result = generate_prime(storage, current_email=ME["email"])
+    assert "## Your Open Tasks" in result
+    assert "## Open Tasks\n" not in result
+
+
+def test_auto_duplicate_person_nodes_one_email_stays_global_fails_before(tmp_path):
+    """Replay-duplicate shape: TWO person nodes carrying the SAME email (the
+    write path's already_registered guard prevents this at write time, but not
+    on replay/hand-edited data). Must stay global -- a node-count implementation
+    would wrongly see 2 'registered persons' and flip; the correct set-of-emails
+    implementation sees exactly 1 distinct email."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t1", "solo task", created_by=ME)
+    _person(storage, "p-me-1", ME["email"], name="Alice")
+    _person(storage, "p-me-2", ME["email"], name="Alice (dup)")
+
+    result = generate_prime(storage, current_email=ME["email"])
+    assert "## Your Open Tasks" not in result
+    assert "## Open Tasks" in result
+
+
+def test_identity_header_all_fields(tmp_path):
+    """Pinned literal (peer-review M2): name + role + seniority + manager, with
+    the manager resolved by NAME (not the raw email) via the same person scan."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    manager = {"name": "Casey Lead", "email": "casey.lead@test.local"}
+    _person(storage, "p-mgr", manager["email"], name="Casey Lead")
+    _person(
+        storage, "p-me", ME["email"], name="Jamie Junior",
+        role="backend engineer", seniority="junior", reports_to_email=manager["email"],
+    )
+
+    result = generate_prime(storage, PrimeConfig(prime_personalize="on"), current_email=ME["email"])
+    assert (
+        "You are registered as Jamie Junior — backend engineer (junior), "
+        "reporting to Casey Lead." in result
+    )
+
+
+def test_identity_header_role_empty_rest_present(tmp_path):
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _person(storage, "p-mgr", "casey.lead@test.local", name="Casey Lead")
+    _person(
+        storage, "p-me", ME["email"], name="Jamie Junior",
+        role="", seniority="junior", reports_to_email="casey.lead@test.local",
+    )
+
+    result = generate_prime(storage, PrimeConfig(prime_personalize="on"), current_email=ME["email"])
+    assert "You are registered as Jamie Junior (junior), reporting to Casey Lead." in result
+
+
+def test_identity_header_only_name(tmp_path):
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _person(storage, "p-me", ME["email"], name="Jamie Junior", role="")
+
+    result = generate_prime(storage, PrimeConfig(prime_personalize="on"), current_email=ME["email"])
+    assert "You are registered as Jamie Junior." in result
+
+
+def test_identity_header_manager_email_unresolvable_falls_back_to_raw_email(tmp_path):
+    """No person node exists for the manager's email -- the header falls back to
+    showing the raw email rather than dropping the "reporting to" clause or
+    rendering the string "None"."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _person(
+        storage, "p-me", ME["email"], name="Jamie Junior",
+        role="backend engineer", seniority="junior", reports_to_email="casey.lead@test.local",
+    )
+
+    result = generate_prime(storage, PrimeConfig(prime_personalize="on"), current_email=ME["email"])
+    assert (
+        "You are registered as Jamie Junior — backend engineer (junior), "
+        "reporting to casey.lead@test.local." in result
+    )
+    assert "None" not in result
+
+
+def test_identity_header_and_new_here_banner_are_mutually_exclusive(tmp_path):
+    """A registered current_email gets the header and never the banner; an
+    unregistered current_email gets the banner and never the header -- asserted
+    together since they're gated on the exact same (inverted) condition."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _person(storage, "p-me", ME["email"], name="Jamie Junior")
+    _person(storage, "p-teammate", TEAMMATE["email"], name="Bob")  # >1 registered -> personalize
+
+    registered = generate_prime(storage, current_email=ME["email"])
+    assert "You are registered as" in registered
+    assert "## New Here?" not in registered
+
+    unregistered = generate_prime(storage, current_email="stranger@x.com")
+    assert "You are registered as" not in unregistered
+    assert "## New Here?" in unregistered
+
+
+def test_identity_header_absent_when_personalize_off_even_if_registered(tmp_path):
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _person(storage, "p-me", ME["email"], name="Jamie Junior")
+
+    result = generate_prime(storage, PrimeConfig(prime_personalize="off"), current_email=ME["email"])
+    assert "You are registered as" not in result
+
+
+def test_gate_d_s5_replay_shape_junior_gets_header_after_registration(tmp_path):
+    """Closes the Gate D S5 audit finding: one writer (the lead) has written
+    everything so far; lead/senior/junior are all registered, junior reports to
+    lead. Priming as the junior AFTER registration must personalize (auto),
+    show the identity header, and NOT show the New Here banner -- the exact
+    "first onboarded member gets zero payoff" gap this WP closes."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    lead = {"name": "Casey Lead", "email": "casey.lead@test.local"}
+    senior = {"name": "Sam Senior", "email": "sam.senior@test.local"}
+    junior = {"name": "Jamie Junior", "email": "jamie.junior@test.local"}
+    _task(storage, "t1", "everything so far", created_by=lead)
+    _person(storage, "p-lead", lead["email"], name=lead["name"], role="lead", seniority="senior")
+    _person(
+        storage, "p-senior", senior["email"], name=senior["name"],
+        role="engineer", seniority="senior", reports_to_email=lead["email"],
+    )
+    _person(
+        storage, "p-junior", junior["email"], name=junior["name"],
+        role="engineer", seniority="junior", reports_to_email=lead["email"],
+    )
+
+    result = generate_prime(storage, current_email=junior["email"])
+    assert "You are registered as Jamie Junior — engineer (junior), reporting to Casey Lead." in result
+    assert "## New Here?" not in result
+
+
+def test_derive_role_empty_email_short_circuit_constructs_without_crashing(tmp_path):
+    """Peer-review H1: _RoleContext has TWO constructor call sites in
+    _derive_role -- the early `not current_email` short-circuit is currently
+    DEAD CODE from generate_prime's perspective (it only derives a role inside
+    `if personalize:`, which already implies a non-empty email), so nothing in
+    the generate_prime-level test suite exercises it. Call _derive_role
+    directly with an empty email to lock in that this site still constructs a
+    valid _RoleContext (my_manager_name included) instead of a latent
+    TypeError if a future edit touches the dataclass fields."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _person(storage, "p-someone", "someone@x.com", name="Someone")
+
+    role = _derive_role(storage, "")
+    assert role.my_person is None
+    assert role.direct_reports == []
+    assert role.my_manager_email == ""
+    assert role.my_manager_name == ""
 
 
 # ── main() — hook payload ─────────────────────────────────────────────────────
