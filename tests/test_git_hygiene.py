@@ -2,6 +2,7 @@
 
 import contextlib
 import os
+import subprocess
 import time
 from pathlib import Path
 from unittest.mock import patch
@@ -33,6 +34,18 @@ def _run(repo: Path, cognition: Path, env: dict | None = None) -> None:
     env = env or {}
     with patch.dict(os.environ, env, clear=False):
         ensure_git_hygiene(repo, cognition)
+
+
+def _make_real_git_repo(tmp_path: Path) -> tuple[Path, Path]:
+    """Create a REAL git repo (via `git init`) + .cognition/ dir. Needed only for
+    the gate-F1 regression test below, which must exercise actual git
+    ignore-matching semantics (glob vs. bare filename) -- the fake .git/ marker
+    from _make_git_repo is sufficient everywhere else since ensure_git_hygiene
+    only checks (repo_path / ".git").exists()."""
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    cognition = tmp_path / ".cognition"
+    cognition.mkdir()
+    return tmp_path, cognition
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +279,36 @@ def test_gitignore_last_seen_added_via_version_refire(tmp_path):
     gi = (cognition / ".gitignore").read_text(encoding="utf-8")
     assert gi.count("last-seen.json") == 1
     assert int((cognition / _FLAG_FILENAME).read_text(encoding="utf-8").strip()) == GIT_HYGIENE_VERSION
+
+
+def test_gitignore_last_seen_tmp_sibling_ignored_by_git(tmp_path):
+    """WP-TC14 gate F1: last-seen.json.tmp -- the atomic-write sibling
+    _stamp_last_seen briefly creates before os.replace -- must be covered by
+    .cognition/.gitignore, not just the bare last-seen.json filename. A
+    process killed between write_text and os.replace would otherwise leave
+    the .tmp unignored, and the established journal-flush `git add
+    .cognition/` procedure would commit it: machine-local state syncing via
+    git, the exact property this file exists to prevent.
+
+    Fails-before: with _GITIGNORE_LAST_SEEN as the bare "last-seen.json"
+    string (pre-F1), `git check-ignore` on the .tmp sibling exits non-zero
+    (not ignored) since git does not glob-match a bare filename pattern
+    against a differently-named file."""
+    repo, cognition = _make_real_git_repo(tmp_path)
+    _run(repo, cognition)
+
+    tmp_file = cognition / "last-seen.json.tmp"
+    tmp_file.write_text("{}", encoding="utf-8")
+
+    result = subprocess.run(
+        ["git", "check-ignore", str(tmp_file)],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"last-seen.json.tmp is not git-ignored: stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
 
 
 # ---------------------------------------------------------------------------

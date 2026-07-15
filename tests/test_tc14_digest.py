@@ -179,6 +179,49 @@ def test_stamp_last_seen_unconditional_overwrite_self_heals_future_marker(tmp_pa
     assert restamped < datetime.now(UTC) + timedelta(minutes=1)
 
 
+def test_stamp_last_seen_cleans_up_stray_tmp_from_prior_crash(tmp_path):
+    """Gate F1: a process killed between write_text and os.replace on a prior
+    stamp leaves last-seen.json.tmp behind. The NEXT successful stamp cleans
+    it up as a side effect of its own write_text+os.replace (which truncate
+    and then rename over it) -- this test pins that end-to-end outcome; the
+    NEXT test below is the real fails-before proof for the entry-unlink
+    itself, since a successful write makes the explicit unlink redundant."""
+    cognition_dir = tmp_path / ".cognition"
+    cognition_dir.mkdir()
+    stray = cognition_dir / f"{LAST_SEEN_FILENAME}.tmp"
+    stray.write_text("torn-from-a-crash", encoding="utf-8")
+
+    _stamp_last_seen(cognition_dir, ME["email"])
+
+    assert not stray.exists()
+    data = json.loads(_marker_path(cognition_dir).read_text(encoding="utf-8"))
+    assert ME["email"] in data
+
+
+def test_stamp_last_seen_cleans_up_stray_tmp_even_if_this_stamp_also_fails(tmp_path, monkeypatch):
+    """Gate F1: the stray-tmp cleanup must happen on ENTRY (before the write
+    attempt), so even if THIS stamp call ALSO fails to write (e.g. a second
+    disk hiccup), the earlier crash's stray content does not survive --
+    unlike the previous test, a failed write_text here can't overwrite the
+    stray as an incidental side effect, so this genuinely isolates the
+    entry-unlink. Fails-before: without it, the stray's "torn-from-a-crash"
+    bytes are left untouched on disk."""
+    cognition_dir = tmp_path / ".cognition"
+    cognition_dir.mkdir()
+    stray = cognition_dir / f"{LAST_SEEN_FILENAME}.tmp"
+    stray.write_text("torn-from-a-crash", encoding="utf-8")
+
+    import vibe_cognition.cognition.prime as prime_module
+
+    def _boom(self, *a, **kw):
+        raise OSError("simulated disk hiccup")
+
+    monkeypatch.setattr(prime_module.Path, "write_text", _boom)
+    _stamp_last_seen(cognition_dir, ME["email"])  # must not raise
+
+    assert not stray.exists()
+
+
 def test_stamp_last_seen_skips_when_lock_held(tmp_path):
     """Fails-before proof that the lock is actually checked (not merely
     present but ignored): a fresh (non-stale) lock file held by "someone

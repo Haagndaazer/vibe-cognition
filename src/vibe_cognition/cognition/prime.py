@@ -684,6 +684,13 @@ def _stamp_last_seen(cognition_dir: Path, email: str) -> None:
     try:
         with contextlib.suppress(OSError):
             path = cognition_dir / LAST_SEEN_FILENAME
+            tmp_path = cognition_dir / f"{LAST_SEEN_FILENAME}.tmp"
+            # Clean up a stray .tmp left by a process killed between write_text
+            # and os.replace on a prior stamp -- gate F1: unlink is a no-op if
+            # nothing is there, so this never affects the happy path. Must run
+            # BEFORE the write attempt below, so a stray survives even if THIS
+            # stamp also fails to write (a second disk hiccup, say).
+            tmp_path.unlink(missing_ok=True)
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 if not isinstance(data, dict):
@@ -691,7 +698,6 @@ def _stamp_last_seen(cognition_dir: Path, email: str) -> None:
             except (OSError, json.JSONDecodeError, ValueError):
                 data = {}
             data[email] = datetime.now(UTC).isoformat()
-            tmp_path = cognition_dir / f"{LAST_SEEN_FILENAME}.tmp"
             tmp_path.write_text(json.dumps(data), encoding="utf-8")
             os.replace(tmp_path, path)
     finally:
