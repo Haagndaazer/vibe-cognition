@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**WP-TC15: curation-containment observability (`get_status` surfaces edge writes made outside curation runs).**
+
+### Added
+- **`get_status`'s `cognition_graph` gains `edge_sources` (dict) and `edges_outside_curation` (int).** Derived at read time in `get_statistics`'s existing edge-iteration pass (`storage.py`, `for _, _, edge_data in self._graph.edges(data=True)`) — no new persistence, no write-path changes, one pass. `edge_sources` is a full histogram of every edge `source` value seen; `edges_outside_curation` sums the subset NOT in the curation-legitimate set (`deterministic`, `task-parent`, `curate-skill`, `curate-conflict`, `curate-cluster`, `curator`) — i.e. `manual`, `batch`, or any unrecognized value, conservative by construction (a future legitimate producer must be exempted deliberately in code). A replayed journal entry with no `source` field at all falls back to the existing legacy default (`"curator"`, `storage.py`'s `_catch_up`) and is therefore exempt, so no pre-existing graph shows a false baseline. Both keys are always present, even on a zero-edge graph (`{}` and `0`).
+- **`agents/curate-orchestrator.md` Step 4** now sets `source="curate-cluster"` on cluster `part_of` edges (mirroring Step 2/3's own source wording) — without this, cluster edges defaulted to `"batch"` and conflated legitimate curation output with the exact bucket this WP counts as violations.
+- `get_status`'s docstring documents both new keys and the full exempt/counted source taxonomy (tool-surface audit: `get_status`'s output shape changed).
+
+### Notes
+- `get_statistics`'s return type widened `dict[str, int]` → `dict[str, int | dict[str, int]]` (peer-review HIGH — the un-widened annotation fails the pyright CI ratchet once a nested dict value is returned). The internal `stats` dict stays narrowly `dict[str, int]` throughout the function body (avoids rippling the union into every pre-existing `stats[key] += 1` line); the histogram is merged in as a sibling structure only at the return boundary.
+- Known day-one baseline on the real graph: 85 (`edges_outside_curation`) — 84 historical `"batch"`-sourced Step-2-style semantic edges predating consistent `curate-skill` tagging, plus 1 `"manual"` edge. Disclosed, not remediated — no journal rewriting, ever; `edge_sources` makes the baseline legible.
+- Trust model (documented, not enforced): `source` is caller-declared: a deliberately spoofed source defeats the counter. Ruled out of scope — the threat model is accidental misuse in a local trust domain, not adversarial. Token-handshake/auth designs for curation runs are permanently rejected.
+- No dashboard change, no journal format change, no new persistence, `mark_curated` untouched. The containment constraint itself stays docs-first — this is a smoke detector, not a lock.
+- Version bump: standalone 0.24.0 bump commit follows after the SECOND of TC14/TC15 merges (supersedes TC14's "batch's last WP carries the bump" note) — gated and merged like any WP, removing the double-/missed-bump race.
+
 **WP-TC14: "Since You Were Gone" digest (per-email last-seen marker + prime section).**
 
 ### Added

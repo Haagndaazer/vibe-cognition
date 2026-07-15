@@ -108,7 +108,7 @@ After all edge batches and the conflict pass are committed:
    - Verify the member nodes actually exist and are meaningfully connected (`cognition_get_neighbors` on a sample) — a group that's already fully and correctly edge-wired from a prior pass, with nothing new to synthesize, is not a gap; discard that proposal rather than minting a redundant node.
    - Verify the proposal's narrative gets each member's actual status/role right (e.g. a `done` task described as still-open) by checking the member node directly — don't trust the analyzer's summary-text inference alone. A proposal with a factual error about its own members should be discarded or corrected before use, never committed as-is.
 3. **Create approved summary nodes** via `cognition_record`.
-4. **For each summary node, create `part_of` edges** from its member nodes via `cognition_add_edges_batch`.
+4. **For each summary node, create `part_of` edges** from its member nodes via `cognition_add_edges_batch` — each edge object carries its own `"source": "curate-cluster"`.
 
 ## Embedded analyzer protocol (degraded/no-nesting mode only)
 

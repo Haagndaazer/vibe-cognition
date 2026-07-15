@@ -31,8 +31,35 @@ def register_service_tools(mcp) -> None:
               repo_name: str,
               repo_path: str,
               cognition_graph: {nodes, edges, <count per node type>,
-                                edge_<count per edge type>, uncurated}
-                               (or {"error": ...} if storage is not initialized),
+                                edge_<count per edge type>, uncurated,
+                                edges_outside_curation: int, edge_sources:
+                                dict[str, int]}
+                               (or {"error": ...} if storage is not initialized).
+                               edges_outside_curation (WP-TC15) is a
+                               curation-containment smoke detector: only the
+                               background curate-orchestrator agent (via
+                               /vibe-curate) is meant to write semantic edges
+                               (cognition_add_edge / cognition_add_edges_batch);
+                               this counts edges whose `source` is NOT one of
+                               the known-legitimate values -- "deterministic"
+                               (auto part_of/relates_to), "task-parent" (task
+                               parenting), "curate-skill"/"curate-conflict"/
+                               "curate-cluster" (the curator's own passes), or
+                               "curator" (legacy default, exempted so an
+                               existing graph doesn't show a false baseline).
+                               "manual", "batch" (the tools' own defaults when
+                               a caller doesn't pass source=), and any other
+                               unrecognized value all count -- conservative by
+                               construction, a new legitimate producer must be
+                               exempted deliberately in code. edge_sources is
+                               the full histogram (every source value seen,
+                               including the exempt ones) so a nonzero count is
+                               always interpretable at a glance. Both keys are
+                               always present, even on a zero-edge graph ({}
+                               and 0). This is a visibility signal only, not
+                               an enforcement mechanism -- source is
+                               caller-declared and a deliberate misreport is
+                               out of scope (local trust domain),
               rehydrate_events: null when no journal rehydrate-reset has occurred
                                 in this server process; otherwise
                                 {count: int, last: {at, nodes_before, nodes_after,

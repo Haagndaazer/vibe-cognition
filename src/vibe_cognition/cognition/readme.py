@@ -19,7 +19,12 @@ initialize handshake and re-injected after a compact, so it is already in your
 context. In brief: record with cognition_record as you work, then run /vibe-curate to
 launch the background curate-orchestrator agent, which adds semantic edges (led_to,
 resolved_by, supersedes, contradicts, relates_to) -- never author them yourself.
-Deterministic part_of edges are created automatically.
+Deterministic part_of edges are created automatically. This exclusivity is a
+documented convention, not an enforced lock -- get_status's cognition_graph.
+edges_outside_curation (WP-TC15) counts semantic-edge writes whose source isn't
+one of the curator's own values, surfacing accidental misuse of cognition_add_edge/
+cognition_add_edges_batch outside a curation run; edge_sources is the full
+per-source histogram alongside it.
 
 ## Tool groups
 

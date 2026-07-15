@@ -290,7 +290,11 @@ Deterministic edges (`part_of`, and `relates_to` for document→episode) are the
 edges created automatically (on record). This step adds the **semantic** relationships
 (`led_to`, `resolved_by`, `supersedes`, `contradicts`, `relates_to`) that make the graph
 navigable — only the `/vibe-curate` background curate-orchestrator creates these, never
-the main instance directly.
+the main instance directly. This exclusivity is a documented convention, not an
+enforced lock — `get_status`'s `cognition_graph.edges_outside_curation` counts
+semantic-edge writes whose `source` isn't one of the curator's own values, so hand-
+authoring an edge yourself (the exact misuse this rule exists to prevent) surfaces
+there instead of silently degrading edge provenance.
 
 ## Examples
 
