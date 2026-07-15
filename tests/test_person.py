@@ -175,6 +175,31 @@ def test_register_person_dangling_reports_to_is_legal(build_lc, make_ctx, mock_m
     assert result["reports_to_registered"] is False
 
 
+def test_register_person_cycle_via_dangling_reports_to_rejected(build_lc, make_ctx, mock_mcp, tmp_path):
+    """A cycle must be rejected even when it's only completed AT REGISTRATION time,
+    via a reports_to that was legally dangling when set. Fails-before: registration
+    only checked self-reporting, not the transitive chain -- so (1) B registers with
+    reports_to=a@example.com while a@example.com doesn't exist yet (legal dangling),
+    then (2) A registers with reports_to=b@example.com would silently close an
+    A -> B -> A loop with no guard firing."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+
+    b = mock_mcp.tools["cognition_register_person"](
+        ctx, name="B", role="r", seniority="mid", email="b@example.com",
+        reports_to_email="a@example.com",
+    )
+    assert "error" not in b, b
+    assert b["reports_to_registered"] is False  # a@example.com not registered yet
+
+    result = mock_mcp.tools["cognition_register_person"](
+        ctx, name="A", role="r", seniority="mid", email="a@example.com",
+        reports_to_email="b@example.com",
+    )
+    assert "error" in result
+
+
 def test_register_person_registered_reports_to_flagged_true(build_lc, make_ctx, mock_mcp, tmp_path):
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)

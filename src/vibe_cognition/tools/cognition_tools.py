@@ -1697,6 +1697,13 @@ def _register_person(
     reports_to = _casefold_email(reports_to_email or "")
     if reports_to and reports_to == resolved_email:
         return {"error": "A person cannot report to themselves"}
+    if reports_to and _reports_to_cycle(storage, resolved_email, reports_to):
+        return {
+            "error": (
+                f"reports_to rejected: '{reports_to}' transitively reports to "
+                f"'{resolved_email}' — would create a cycle"
+            )
+        }
 
     timestamp = datetime.now(UTC).isoformat()
     summary = _person_summary(name, role)
@@ -2326,7 +2333,8 @@ def register_cognition_tools(mcp) -> None:
             reports_to_email: Optional direct manager's email. Need not resolve to
                 an existing person node yet (a manager may register later) —
                 dangling is legal, surfaced as `reports_to_registered: false`.
-                Self-reporting is rejected.
+                Self-reporting and transitive cycles (A→B→...→A, walked through
+                already-registered people) are rejected.
             email: Omit to self-register (server-resolved git identity); pass to
                 register someone else.
             detail: Optional free-text bio/notes.
@@ -2342,8 +2350,8 @@ def register_cognition_tools(mcp) -> None:
             true` (dedup) branch returns the existing node as-is and omits it;
             use `cognition_get_person` if you need that flag for an existing
             person. Returns {"error": ...} for an invalid seniority,
-            self-reporting, a blank explicit email, or an unresolvable
-            self-email with no explicit email.
+            self-reporting, a reports_to cycle, a blank explicit email, or an
+            unresolvable self-email with no explicit email.
         """
         return _register_person(
             ctx, name, role, seniority,
