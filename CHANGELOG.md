@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**WP-DashV2: dashboard Workflows library, Documents table, Activity feed (phase V2 of 3).**
+
+### Added
+- **`GET /api/workflows`** — HEAD-only workflow cards (a node with no incoming `SUPERSEDES` edge), each with its version chain inline via `get_superseded_chain` (newest → oldest, one graph walk per HEAD, no N+1 round-trips). Superseded (non-HEAD) versions never appear as top-level cards, only inside their successor's chain.
+- **`GET /api/documents`** gains two fields per row: `freshness` (`unchanged`/`modified`/`missing` for reference-mode docs with a source path, via a full re-hash — `null`/"n/a" for copy-mode docs and path-less reference docs, since neither has a source to check) and `cited_by` (count of entity nodes citing the document via a `part_of` edge, `storage.get_predecessors(doc_id, PART_OF)` — derived at read time, never a stored counter).
+- **`GET /api/activity`** — chronological feed across episode/decision/fail/discovery/incident/constraint/pattern/assumption nodes (tasks, documents, workflows, and people are covered by their own views), newest-first, `limit` query param (default 100, capped 500). Rows reuse `_entity_row` verbatim, so `recorded_by` and `author` stay separate fields (the existing trust-class chip rendering needs both, not a pre-collapsed string).
+- Three new nav-rail views (Workflows, Documents, Activity) with matching frontend renderers; all fetch on tab activation only — none join the existing 30-second poll (explicit acceptance of the pre-existing threadpool-spawn risk, condition: no new polling).
+- `cognition/documents.py` gains `freshness_by_rehash()`, relocated from `cognition_tools._get_document`'s inline re-hash logic (single-implementation doctrine — the dashboard needed the same check outside the MCP tool layer). `_get_document`'s behavior is unchanged; existing document tests pass unmodified.
+
+### Notes
+- Freshness is a full SHA-256 re-hash of the referenced file (cost scales with file size), not the cheap stat-check (`cheap_staleness_signal`) the design doc's prose suggested — that helper structurally cannot detect a same-size content edit, which would make the "modified" badge state a lie. Disclosed deviation from the design doc, flagged for async review; no caching added (a stale freshness badge defeats its own purpose).
+- No MCP tool changed (dashboard-only) — no tool-surface audit required. No version bump on this branch — V2 is a 0.25.0 candidate; bump timing decided at merge.
+
 ## [0.24.0] — 2026-07-15
 
 **WP-TC15: curation-containment observability (`get_status` surfaces edge writes made outside curation runs).**

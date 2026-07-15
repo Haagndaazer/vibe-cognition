@@ -454,6 +454,173 @@ function toggleBoardMode() {
   renderBoard();
 }
 
+// ── Workflows library (WP-DashV2) ───────────────────────────────────────
+// Fetches fresh on EVERY activation (not a one-time lazy build like Graph,
+// not on the 30s poll either — matches the design doc's "no polling" call
+// for the new V2 views while still showing current data when visited).
+async function loadWorkflows() {
+  let data;
+  try {
+    data = await api("/api/workflows");
+  } catch (err) {
+    toast(`Workflows load failed: ${err.message}`, "error");
+    return;
+  }
+  renderWorkflows(data.workflows || []);
+}
+
+function workflowChainHTML(chain) {
+  // Newest -> oldest per the endpoint; render "v3 ⟵ v2 ⟵ v1" newest-first,
+  // each hop re-opens the shared drawer on that specific version's node.
+  return chain.map((c, i) => `${i > 0 ? '<span class="meta"> ⟵ </span>' : ""}<span class="chip person node-ref" data-id="${escapeHTML(c.id)}" title="${escapeHTML(c.summary || c.id)}">v${chain.length - i}</span>`).join("");
+}
+
+function renderWorkflows(list) {
+  const el = document.getElementById("workflows-grid");
+  if (!list.length) {
+    el.innerHTML = '<div class="meta" style="padding:14px 0">no workflows recorded</div>';
+    return;
+  }
+  el.innerHTML = list.map(w => `
+    <div class="card cardgrid-item clickable" data-id="${escapeHTML(w.id)}">
+      <div class="sum">${escapeHTML(w.summary || w.id)}</div>
+      <div class="row" style="margin:8px 0">
+        <span class="meta">by ${escapeHTML(w.author || "unknown")} · ${escapeHTML(formatTimestamp(w.timestamp))}</span>
+      </div>
+      <div class="chainstrip" data-nostop>${workflowChainHTML(w.chain || [])}</div>
+    </div>`).join("");
+
+  // Card click opens the drawer on the HEAD; a chain-hop click (inside the
+  // strip) must open its OWN node instead and not also trigger the card's
+  // handler — stopPropagation on the hop, not on the whole strip.
+  for (const card of el.querySelectorAll(".cardgrid-item[data-id]")) {
+    card.addEventListener("click", () => openDrawer(card.dataset.id));
+  }
+  for (const hop of el.querySelectorAll(".chainstrip .node-ref[data-id]")) {
+    hop.addEventListener("click", (evt) => {
+      evt.stopPropagation();
+      openDrawer(hop.dataset.id);
+    });
+  }
+}
+
+// ── Documents table (WP-DashV2) ─────────────────────────────────────────
+const FRESHNESS_LABEL = { unchanged: "unchanged", modified: "modified", missing: "missing" };
+
+async function loadDocuments() {
+  let data;
+  try {
+    data = await api("/api/documents");
+  } catch (err) {
+    toast(`Documents load failed: ${err.message}`, "error");
+    return;
+  }
+  renderDocuments(data.documents || []);
+}
+
+function freshnessBadgeHTML(freshness) {
+  if (!freshness) return '<span class="meta">n/a</span>';
+  const cls = freshness === "unchanged" ? "st done" : freshness === "modified" ? "st blocked" : "st cancelled";
+  return `<span class="${cls}">${escapeHTML(FRESHNESS_LABEL[freshness] || freshness)}</span>`;
+}
+
+function humanSize(bytes) {
+  if (bytes == null) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function renderDocuments(list) {
+  const tbody = document.getElementById("documents-tbody");
+  if (!list.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="meta" style="text-align:center;padding:14px 0">no documents stored</td></tr>';
+    return;
+  }
+  tbody.innerHTML = list.map(d => {
+    // Inert-doc flag is DERIVED client-side, no separate API field.
+    const uncited = (d.cited_by || 0) === 0
+      ? '<span class="chip" style="margin-left:6px">uncited</span>' : "";
+    return `<tr data-id="${escapeHTML(d.node_id)}">
+      <td class="clickable-cell" data-nav="${escapeHTML(d.node_id)}">${escapeHTML(d.filename || d.summary || d.node_id)}</td>
+      <td>${escapeHTML(d.mode || "")}</td>
+      <td>${escapeHTML(humanSize(d.size))}</td>
+      <td class="meta">${escapeHTML(formatTimestamp(d.timestamp))}</td>
+      <td>${freshnessBadgeHTML(d.freshness)}</td>
+      <td>${d.cited_by || 0}${uncited}</td>
+      <td><a class="mini-toggle" href="/api/document/${encodeURIComponent(d.node_id)}/download?token=${encodeURIComponent(TOKEN)}" download>Download</a></td>
+    </tr>`;
+  }).join("");
+  for (const el of tbody.querySelectorAll("[data-nav]")) {
+    el.addEventListener("click", () => openDrawer(el.dataset.nav));
+  }
+}
+
+// ── Activity feed (WP-DashV2) ───────────────────────────────────────────
+// §8 risk acceptance: fetch-on-activation only, no polling. Filters are
+// client-side over the already-fetched window (no round-trip per click).
+let activityCache = [];
+let activityTypeFilter = null; // null = all types
+const ACTIVITY_TYPES = ["episode", "decision", "fail", "discovery", "incident", "constraint", "pattern", "assumption"];
+
+async function loadActivity() {
+  let data;
+  try {
+    data = await api("/api/activity");
+  } catch (err) {
+    toast(`Activity load failed: ${err.message}`, "error");
+    return;
+  }
+  activityCache = data.activity || [];
+  renderActivityTypeFilter();
+  renderActivity();
+}
+
+function renderActivityTypeFilter() {
+  const el = document.getElementById("activity-type-filter");
+  const chip = (t, label) => `<span class="chip filterchip${activityTypeFilter === t ? " active" : ""}" data-type="${t || ""}">${escapeHTML(label)}</span>`;
+  el.innerHTML = chip(null, "All") + ACTIVITY_TYPES.map(t => chip(t, t)).join("");
+  for (const c of el.querySelectorAll("[data-type]")) {
+    c.addEventListener("click", () => {
+      activityTypeFilter = c.dataset.type || null;
+      renderActivityTypeFilter();
+      renderActivity();
+    });
+  }
+}
+
+function renderActivity() {
+  const el = document.getElementById("activity-list");
+  const authorQuery = (document.getElementById("activity-author-filter").value || "").trim().toLowerCase();
+  const rows = activityCache.filter(r => {
+    if (activityTypeFilter && r.type !== activityTypeFilter) return false;
+    if (authorQuery) {
+      const author = (r.author || "").toLowerCase();
+      const recorded = (r.recorded_by && (r.recorded_by.name || r.recorded_by.email) || "").toLowerCase();
+      if (!author.includes(authorQuery) && !recorded.includes(authorQuery)) return false;
+    }
+    return true;
+  });
+  if (!rows.length) {
+    el.innerHTML = '<li class="empty">no matching activity</li>';
+    return;
+  }
+  el.innerHTML = rows.map(r => `
+    <li class="row clickable" data-id="${escapeHTML(r.id)}">
+      <span class="chip type">${escapeHTML(r.type || "")}</span>
+      ${r.severity ? `<span class="chip ${severityChipClass(r.severity)}">${escapeHTML(r.severity)}</span>` : ""}
+      <span class="grow">${escapeHTML(r.summary || r.id)}</span>
+      ${identityChipHTML(r.recorded_by, r.author)}
+      ${fromAgentChipHTML(r.from_agent)}
+      <span class="meta">${escapeHTML(formatTimestamp(r.timestamp))}</span>
+    </li>`).join("");
+  wireRowClicks(el);
+}
+
+function wireActivityFilters() {
+  document.getElementById("activity-author-filter").addEventListener("input", debounce(renderActivity, 150));
+}
+
 // ── Graph (constellation, lazy — D-3 / WP-TC11) ─────────────────────────
 // The tab's BUILD (cytoscape() construction) happens exactly once, on first
 // activation. The 30s poll below refreshes data (stats/overview always;
@@ -599,6 +766,12 @@ function activateView(view) {
   document.querySelectorAll(".nav-btn").forEach(b => b.classList.toggle("active", b.dataset.view === view));
   document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === `view-${view}`));
   if (view === "graph") ensureGraphLoaded();
+  // WP-DashV2: unlike Graph's one-time lazy build, these three fetch fresh on
+  // EVERY activation (cheap JSON reads) but are deliberately NOT added to the
+  // 30s pollTick loop (§8 risk acceptance — no polling for the new views).
+  else if (view === "workflows") loadWorkflows();
+  else if (view === "documents") loadDocuments();
+  else if (view === "activity") loadActivity();
 }
 
 function wireNav() {
@@ -756,6 +929,7 @@ async function pollTick() {
 async function init() {
   wireNav();
   wireSearch();
+  wireActivityFilters();
   document.getElementById("drawer-close").addEventListener("click", closeDrawer);
   document.getElementById("board-tree-toggle").addEventListener("click", toggleBoardMode);
   document.getElementById("board-show-cancelled").addEventListener("change", renderBoard);

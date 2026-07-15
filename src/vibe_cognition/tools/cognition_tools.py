@@ -33,6 +33,7 @@ from ..cognition.documents import (
     blob_rel_path,
     cheap_staleness_signal,
     doc_ref,
+    freshness_by_rehash,
     gitignore_has_entry,
     read_text_sidecar,
     remove_gitignore_entry,
@@ -1222,18 +1223,11 @@ def _get_document(
 
     # Freshness (reference mode): re-hash the referenced original. A missing /
     # unreadable path returns "missing" — never raises. (Re-hash reads the full
-    # file; that cost scales with the referenced document's size.)
-    freshness = "unchanged"
+    # file; that cost scales with the referenced document's size.) WP-DashV2:
+    # relocated to documents.freshness_by_rehash (single-implementation
+    # doctrine) — same behavior, no-path still defaults to "unchanged" here.
+    freshness = freshness_by_rehash(meta)
     path = meta.get("path")
-    if path:
-        fp = Path(path)
-        if not fp.is_file():
-            freshness = "missing"
-        else:
-            try:
-                freshness = "unchanged" if sha256_file(fp) == sha else "modified"
-            except OSError:
-                freshness = "missing"
 
     return {
         "node_id": resolved_id,

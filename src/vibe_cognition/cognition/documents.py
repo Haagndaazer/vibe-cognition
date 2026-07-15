@@ -256,6 +256,38 @@ def find_orphaned_document_artifacts(cognition_dir: Path, storage: "CognitionSto
 # ── Cheap staleness signal (WP-12, db65f1568fa5) ──────────────────────────────
 
 
+def freshness_by_rehash(metadata: dict) -> str:
+    """Full re-hash freshness check for a document's referenced source path
+    (WP-DashV2, relocated from cognition_tools._get_document — single-
+    implementation doctrine). Unlike cheap_staleness_signal (path-existence
+    + size only, O(1)), this reads the ENTIRE referenced file, so it is the
+    only check that can detect a same-size content edit; cost scales with
+    the file's size, which is why cheap_staleness_signal exists for the
+    search hot path and this stays reserved for get_document / dashboard use.
+
+    No path key -> "unchanged" (the historical default: this reflects "no
+    check was possible", not a verified match — callers that need to
+    distinguish "no path to check" from "checked and clean" must inspect
+    metadata's path/mode themselves BEFORE calling this, e.g. the dashboard's
+    documents table, which renders null rather than repeating this
+    unchanged-by-default implication for mode="copy" or a pathless reference
+    doc). Path present but missing/unreadable -> "missing". Present and
+    readable -> "unchanged" or "modified" by sha256 comparison against
+    metadata["sha256"]. Never raises.
+    """
+    sha = metadata.get("sha256", "")
+    path = metadata.get("path")
+    if not path:
+        return "unchanged"
+    fp = Path(path)
+    if not fp.is_file():
+        return "missing"
+    try:
+        return "unchanged" if sha256_file(fp) == sha else "modified"
+    except OSError:
+        return "missing"
+
+
 def cheap_staleness_signal(metadata: dict) -> str | None:
     """Stat-only (no file read) staleness check for a document's referenced
     source path — for surfacing in cognition_search results, where re-hashing
