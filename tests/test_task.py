@@ -627,6 +627,219 @@ def test_update_task_owner_and_narrative(build_lc, make_ctx, mock_mcp, tmp_path)
     assert cleared["metadata"]["owner"] is None
 
 
+# ── assignment (WP-TC8) ─────────────────────────────────────────────────────────
+
+
+def test_add_task_seeds_assignment_and_first_audit_entry(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
+    """cognition_add_task(assigned_to_email=...): non-blank value casefolds, seeds
+    metadata.assigned_to AND the first metadata.assignments audit entry in one shot,
+    stamped by the server-resolved creator (not a client-supplied identity)."""
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Creator", "email": "creator@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+
+    t = mock_mcp.tools["cognition_add_task"](
+        ctx, summary="t", detail="d", context="c", assigned_to_email="Bob@X.com",
+    )
+    assert "error" not in t, t
+    meta = t["metadata"]
+    assert meta["assigned_to"] == "bob@x.com"
+    assert meta["assignments"] == [
+        {"to": "bob@x.com", "at": meta["assignments"][0]["at"],
+         "by": {"name": "Creator", "email": "creator@x.com"}}
+    ]
+
+
+def test_add_task_blank_assigned_to_email_seeds_nothing(build_lc, make_ctx, mock_mcp, tmp_path):
+    """Blank/whitespace-only assigned_to_email at CREATION time means NOT PROVIDED —
+    seeds neither assigned_to nor assignments (never stores "", unlike owner's
+    raw-store convention for the same sentinel)."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+
+    blank = mock_mcp.tools["cognition_add_task"](
+        ctx, summary="t1", detail="d", context="c", assigned_to_email="",
+    )
+    whitespace = mock_mcp.tools["cognition_add_task"](
+        ctx, summary="t2", detail="d", context="c", assigned_to_email="   ",
+    )
+    for t in (blank, whitespace):
+        assert "assigned_to" not in t["metadata"]
+        assert "assignments" not in t["metadata"]
+
+
+def test_add_task_omitted_assigned_to_email_seeds_nothing(build_lc, make_ctx, mock_mcp, tmp_path):
+    """The default (no assigned_to_email argument at all) behaves identically to a
+    blank value — no assigned_to/assignments keys."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    assert "assigned_to" not in t["metadata"]
+    assert "assignments" not in t["metadata"]
+
+
+def test_update_task_assigns_appends_one_entry(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
+    """Assigning a previously-unassigned task sets metadata.assigned_to and appends
+    exactly one metadata.assignments entry, stamped by (server-resolved), not the
+    client-supplied target email."""
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Assigner", "email": "assigner@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    assert "assigned_to" not in t["metadata"]
+
+    up = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], assigned_to_email="Alice@X.com")
+    assert "error" not in up, up
+    assert up["metadata"]["assigned_to"] == "alice@x.com"
+    assert len(up["metadata"]["assignments"]) == 1
+    entry = up["metadata"]["assignments"][0]
+    assert entry["to"] == "alice@x.com"
+    assert entry["by"] == {"name": "Assigner", "email": "assigner@x.com"}
+
+
+def test_update_task_reassign_appends_second_entry(build_lc, make_ctx, mock_mcp, tmp_path):
+    """Reassigning to a DIFFERENT email appends a second audit entry and updates the
+    current assigned_to — the audit trail is append-only, never overwritten."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], assigned_to_email="alice@x.com")
+    up = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], assigned_to_email="bob@x.com")
+
+    assert up["metadata"]["assigned_to"] == "bob@x.com"
+    assert [e["to"] for e in up["metadata"]["assignments"]] == ["alice@x.com", "bob@x.com"]
+
+
+def test_update_task_same_email_assignment_is_noop(build_lc, make_ctx, mock_mcp, tmp_path):
+    """Resubmitting the SAME (casefolded) email as the current assignment is a no-op:
+    appends NOTHING to metadata.assignments. As the sole field on the call, this
+    correctly falls through to the "No updatable fields" error — mirroring
+    _update_person's same-value reports_to_email no-op, not the owner block (which
+    unconditionally sets metadata_changed on any non-None value)."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], assigned_to_email="alice@x.com")
+
+    result = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], assigned_to_email="alice@x.com")
+    assert "error" in result and "No updatable fields" in result["error"]
+
+    fetched = mock_mcp.tools["cognition_get_node"](ctx, node_id=t["id"])
+    assert len(fetched["metadata"]["assignments"]) == 1  # nothing appended
+
+
+def test_update_task_same_email_noop_case_insensitive(build_lc, make_ctx, mock_mcp, tmp_path):
+    """The no-op comparison is casefolded — a differently-cased resubmission of the
+    SAME identity is still a no-op, not treated as a reassignment."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], assigned_to_email="alice@x.com")
+
+    result = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], assigned_to_email="ALICE@X.COM")
+    assert "error" in result and "No updatable fields" in result["error"]
+
+
+def test_update_task_unassign_pops_field_and_appends_empty_entry(build_lc, make_ctx, mock_mcp, tmp_path):
+    """assigned_to_email="" unassigns: metadata.assigned_to is POPPED (absent, never
+    stored as ""), and the audit trail gets one more entry with to=""."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], assigned_to_email="alice@x.com")
+
+    unassigned = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], assigned_to_email="")
+    assert "error" not in unassigned, unassigned
+    assert "assigned_to" not in unassigned["metadata"]
+    assert [e["to"] for e in unassigned["metadata"]["assignments"]] == ["alice@x.com", ""]
+
+
+def test_update_task_assigned_to_email_omitted_leaves_unchanged(build_lc, make_ctx, mock_mcp, tmp_path):
+    """Omitting assigned_to_email (None, the default) on a call that changes some
+    OTHER field leaves the existing assignment completely untouched."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], assigned_to_email="alice@x.com")
+
+    up = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], owner="new-owner")
+    assert "error" not in up, up
+    assert up["metadata"]["assigned_to"] == "alice@x.com"
+    assert len(up["metadata"]["assignments"]) == 1
+
+
+def test_update_task_unassign_when_already_unassigned_is_noop(build_lc, make_ctx, mock_mcp, tmp_path):
+    """assigned_to_email="" on a task that was never assigned is a no-op too (absent
+    treated as "" on both sides of the comparison) — no assignments entry created."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+
+    result = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], assigned_to_email="")
+    assert "error" in result and "No updatable fields" in result["error"]
+    fetched = mock_mcp.tools["cognition_get_node"](ctx, node_id=t["id"])
+    assert "assignments" not in fetched["metadata"]
+
+
+def test_list_tasks_carries_assigned_to(build_lc, make_ctx, mock_mcp, tmp_path):
+    """cognition_list_tasks rows surface assigned_to — the casefolded email when
+    assigned, None (never coerced) when not, mirroring the from_agent convention."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    assigned = mock_mcp.tools["cognition_add_task"](
+        ctx, summary="assigned task", detail="d", context="c", assigned_to_email="alice@x.com",
+    )
+    unassigned = mock_mcp.tools["cognition_add_task"](ctx, summary="unassigned task", detail="d", context="c")
+
+    rows = {t["id"]: t for t in mock_mcp.tools["cognition_list_tasks"](ctx)["tasks"]}
+    assert rows[assigned["id"]]["assigned_to"] == "alice@x.com"
+    assert rows[unassigned["id"]]["assigned_to"] is None
+
+
+def test_update_task_assignment_alone_does_not_touch_transitions_or_claimed_by(
+    build_lc, make_ctx, mock_mcp, tmp_path,
+):
+    """Assigning a task is NOT claiming it — no transition is appended and claimed_by
+    stays unset, distinct semantics per the brief (assign != claim)."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+
+    up = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], assigned_to_email="alice@x.com")
+    assert "error" not in up, up
+    assert len(up["metadata"]["transitions"]) == 1  # unchanged from creation
+    assert "claimed_by" not in up["metadata"]
+
+
+def test_update_task_no_fields_error_lists_assigned_to_email(build_lc, make_ctx, mock_mcp, tmp_path):
+    """The no-updatable-fields error names assigned_to_email alongside the other
+    updatable fields (tool-surface completeness)."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    t = mock_mcp.tools["cognition_add_task"](ctx, summary="t", detail="d", context="c")
+    result = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"])
+    assert "assigned_to_email" in result["error"]
+
+
 def test_update_task_note_recorded_on_transition(build_lc, make_ctx, mock_mcp, tmp_path):
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)

@@ -121,7 +121,7 @@ The embedding model (~250MB) also downloads on first use from Hugging Face. Afte
 | `cognition_record` | Record a knowledge node (decision, fail, discovery, pattern, episode, etc.) |
 | `cognition_add_task` | File a trackable task, server-attributed to the git user (open work + lifecycle) |
 | `cognition_list_tasks` | List the backlog: open tasks, priority-sorted, grouped by parent |
-| `cognition_update_task` | Update a task's status/owner/priority/parent in place (status-transition logged) |
+| `cognition_update_task` | Update a task's status/owner/priority/parent/assignment in place (status-transition and assignment logged) |
 | `cognition_register_person` | Register a HUMAN identity (never an agent) as a first-class person node |
 | `cognition_update_person` | Edit a person's profile fields in place (audit-trailed via `profile_history`) |
 | `cognition_get_person` | Get a person's full profile, including the `profile_history` audit trail |
@@ -376,11 +376,26 @@ authored the content themselves. It surfaces wherever provenance already does:
 node written before this feature shipped simply has no `from_agent` key — that surfaces
 as `null`/absent ("unverified/legacy"), **never** coerced to `true` or `false`.
 
+**Stamped task assignment.** `metadata.assigned_to` (set via `assigned_to_email` on
+`cognition_add_task`/`cognition_update_task`) is who a task is directed AT — an
+email-keyed, identity-matched target distinct from the free-text, never-matched
+`owner`. An assigned task surfaces under the assignee's "Your Open Tasks" at their next
+session start even if they neither created nor claimed it. Assigning is **not**
+claiming: the assignee still accepts the work by transitioning it to `in_progress`
+themselves, same as any other claim. Every EFFECTIVE (genuinely different-email)
+assignment, reassignment, or unassignment (`assigned_to_email=""`) appends one entry to
+the append-only `metadata.assignments` audit trail (`{to, at, by}`, `by`
+server-resolved); resubmitting the same email is a no-op. The target need not be a
+registered person node yet — dangling is legal, mirroring `reports_to_email`.
+
 **Known trust-model limits** (documented, not "fixed" — this is a local trust domain,
 not a security boundary): `reports_to_email` and `seniority` are trust-declared and
 freely peer-editable — the audit trail is the control, not an ACL, and anyone sharing
 the graph may update anyone's profile. `from_agent` is client-declared and unverifiable
-by the server (like the `author` field on `cognition_record`). Person data is only as
+by the server (like the `author` field on `cognition_record`). `assigned_to` is
+similarly client-declared and unverifiable — the server proves who made the assignment
+(`assignments[].by`), never that the assignee accepted or even saw it; there is no
+notification beyond the assignee's next session-start prime. Person data is only as
 fresh as the team keeps it — nothing enforces it, though the onboarding notice below
 reduces how often it goes stale.
 

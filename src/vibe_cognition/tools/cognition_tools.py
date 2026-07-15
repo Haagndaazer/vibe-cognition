@@ -1203,6 +1203,7 @@ def _add_task(
     parent_id: str | None = None,
     references: str | None = None,
     from_agent: bool = True,
+    assigned_to_email: str | None = None,
 ) -> dict[str, Any]:
     """Create a task node (testable core of cognition_add_task).
 
@@ -1211,7 +1212,12 @@ def _add_task(
     transition), mints a collision-free id, creates the explicit child→parent
     ``part_of`` edge when ``parent_id`` is given, and embeds (status/owner surfaced via
     the shared _embed_entity_node path). ``priority`` is stored as the node's
-    ``severity`` so it sorts via SEVERITY_ORDER for free."""
+    ``severity`` so it sorts via SEVERITY_ORDER for free.
+
+    ``assigned_to_email`` (WP-TC8): blank/whitespace-only at CREATION time means
+    NOT PROVIDED — seeds nothing (never stores ``""``, unlike ``owner``'s raw-store
+    convention). A non-blank value casefolds, seeds ``metadata.assigned_to`` AND
+    the first ``metadata.assignments`` audit entry in one shot."""
     if priority not in _TASK_PRIORITIES:
         return {"error": f"Invalid priority '{priority}'. Valid: {list(_TASK_PRIORITIES)}"}
 
@@ -1245,6 +1251,13 @@ def _add_task(
         "transitions": [{"status": "open", "at": timestamp, "by": created_by}],
         "from_agent": from_agent,
     }
+
+    # WP-TC8: creation-time assignment. Blank/whitespace == not provided — seed
+    # nothing (contrast with `owner` above, which stores the raw value including "").
+    assigned_to = _casefold_email(assigned_to_email) if assigned_to_email else ""
+    if assigned_to:
+        metadata["assigned_to"] = assigned_to
+        metadata["assignments"] = [{"to": assigned_to, "at": timestamp, "by": created_by}]
 
     node_id = generate_node_id(CognitionNodeType.TASK.value, summary, timestamp)
     node = CognitionNode(
@@ -1359,6 +1372,7 @@ def _list_tasks(
             "timestamp": t.get("timestamp"),
             "depth": _depth(t),
             "from_agent": meta.get("from_agent"),
+            "assigned_to": meta.get("assigned_to"),
         })
     return {"tasks": rows, "count": len(rows)}
 
@@ -1433,21 +1447,34 @@ def _update_task(
     detail: str | None = None,
     parent_id: str | None = None,
     note: str | None = None,
+    assigned_to_email: str | None = None,
 ) -> dict[str, Any]:
     """Edit a task's lifecycle + narrative in place (testable core of cognition_update_task).
 
-    This is the ONLY path to ``status``/``owner``/``parent_id``/transition edits:
-    ``cognition_update_node`` physically cannot write ``metadata`` (its whitelist is
+    This is the ONLY path to ``status``/``owner``/``parent_id``/``assigned_to``/transition
+    edits: ``cognition_update_node`` physically cannot write ``metadata`` (its whitelist is
     summary/detail/context/severity), so there is no competing path. Contract:
       - reject a non-task id (use cognition_update_node for other types);
       - validate the status transition against _TASK_TRANSITIONS;
       - READ-MODIFY-WRITE the WHOLE metadata dict (storage.update_node replaces fields
         wholesale, F8): set status, APPEND {status, at, by(git-resolved)} to transitions,
-        set owner, re-parent;
+        set owner, re-parent, set/clear assignment;
       - map priority→severity and summary/detail to top-level fields via storage.update_node;
       - RE-EMBED ONCE explicitly via _embed_entity_node on the fresh node (NOT via
         _update_node) so search/metadata reflect the new lifecycle, deferred if the model
         isn't ready.
+
+    ``assigned_to_email`` (WP-TC8): ``None`` = no change; ``""`` (or whitespace) unassigns;
+    a non-blank value sets/reassigns. Casefolded, then compared against the CURRENT
+    ``metadata.assigned_to`` (treating absent as ``""``) BEFORE appending — a same-email
+    resubmission is a no-op that appends NOTHING to ``metadata.assignments``, modeled on
+    ``_update_person``'s compare-before-append ``reports_to_email`` handling, not on the
+    `owner` block just above (which unconditionally sets ``metadata_changed`` on any
+    non-None value, including a same-value resubmission — the wrong template for an
+    audited field). An effective change appends exactly one ``{to, at, by}`` entry
+    (``to=""`` for an explicit unassign) and, since ``metadata.assigned_to`` must stay
+    ABSENT rather than ``""`` when unassigned (mirrors the seed-nothing rule in
+    ``_add_task``), pops the key on unassign rather than storing an empty string.
 
     claimed_by (WP-P13n-1) strictly mirrors the ``by`` of the last ACTUAL ->in_progress
     transition — a call that passes ``status="in_progress"`` while the task is ALREADY
@@ -1529,6 +1556,21 @@ def _update_task(
             return err
         metadata_changed = True
 
+    # --- assignment (WP-TC8): None = no change; "" unassigns; compare-before-append
+    # modeled on _update_person's reports_to_email handling, NOT the owner block above ---
+    if assigned_to_email is not None:
+        new_assigned_to = _casefold_email(assigned_to_email)
+        current_assigned_to = metadata.get("assigned_to") or ""
+        if new_assigned_to != current_assigned_to:
+            by = resolve_git_identity(storage.cognition_dir.parent)
+            entry = {"to": new_assigned_to, "at": datetime.now(UTC).isoformat(), "by": by}
+            metadata["assignments"] = [*metadata.get("assignments", []), entry]
+            if new_assigned_to:
+                metadata["assigned_to"] = new_assigned_to
+            else:
+                metadata.pop("assigned_to", None)
+            metadata_changed = True
+
     if metadata_changed:
         storage.update_node(node_id, metadata=metadata)
 
@@ -1547,7 +1589,7 @@ def _update_task(
         return {
             "error": (
                 "No updatable fields provided "
-                "(status, priority, owner, summary, detail, parent_id)"
+                "(status, priority, owner, summary, detail, parent_id, assigned_to_email)"
             )
         }
 
@@ -2162,6 +2204,7 @@ def register_cognition_tools(mcp) -> None:
         parent_id: str | None = None,
         references: str | None = None,
         from_agent: bool = True,
+        assigned_to_email: str | None = None,
     ) -> dict[str, Any]:
         """Create a trackable task — open, actionable work, attributed to the git user.
 
@@ -2173,7 +2216,7 @@ def register_cognition_tools(mcp) -> None:
         The creator is resolved SERVER-SIDE from this repo's git config — there is no
         `created_by` parameter and a client value cannot override it. The task is seeded
         `status="open"` with an initial transition record; change it later with
-        `cognition_update_task` (the only path to status/owner/parent edits).
+        `cognition_update_task` (the only path to status/owner/parent/assignment edits).
 
         Tasks support an ARBITRARY-depth parent hierarchy: pass `parent_id` to file this
         task under a parent task/epic (it creates an explicit `part_of` edge). Re-parent
@@ -2188,12 +2231,24 @@ def register_cognition_tools(mcp) -> None:
             priority: critical | high | normal | low (default normal). Stored as the
                 node's `severity`, so it sorts the backlog and the session-start view.
             owner: Optional free-text "who's on it" (distinct from the git creator).
+                Never identity-matched — use `assigned_to_email` for that.
             parent_id: Optional id of a parent task to file this under (must be a task).
             references: Optional external refs (issue/PR/commit), comma-separated.
             from_agent: Set false ONLY when the human explicitly dictated/authored this
                         task themselves; default true. When in doubt, leave the default.
                         Stamped as metadata.from_agent; surfaced in list_tasks rows and
                         search results (missing on pre-existing tasks, never coerced).
+            assigned_to_email: Optional email of the human this task is directed AT —
+                        distinct from `owner` (free text, unmatched): this is casefolded
+                        and IS identity-matched, so it surfaces under the assignee's "Your
+                        Open Tasks" at their next session start even if they neither
+                        created nor claimed it. Need not be a registered person yet
+                        (dangling is legal). Blank/whitespace is treated as NOT PROVIDED
+                        (seeds nothing) — pass a real email or omit entirely; there is no
+                        "assign at creation to nobody" case. Anyone may assign anyone (no
+                        ACL); the append-only `metadata.assignments` audit trail is the
+                        control. Assigning is NOT claiming — the assignee still claims it
+                        via `cognition_update_task(status="in_progress")` to accept it.
 
         Returns:
             The created task node ({id, type, summary, ..., severity, metadata}) or
@@ -2202,7 +2257,7 @@ def register_cognition_tools(mcp) -> None:
         return _add_task(
             ctx, summary, detail, context,
             priority=priority, owner=owner, parent_id=parent_id, references=references,
-            from_agent=from_agent,
+            from_agent=from_agent, assigned_to_email=assigned_to_email,
         )
 
     @dispatch_tool(mcp)
@@ -2231,7 +2286,10 @@ def register_cognition_tools(mcp) -> None:
 
         Returns:
             {"tasks": [{id, summary, status, priority, owner, parent_id, created_by,
-             timestamp, depth}, ...], "count": N} or {"error": ...} for a bad status.
+             timestamp, depth, from_agent, assigned_to}, ...], "count": N} or
+            {"error": ...} for a bad status. `assigned_to` is the casefolded email of
+            who this task is directed at, or None when unassigned (WP-TC8; never
+            coerced, same convention as `from_agent`).
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         return _list_tasks(
@@ -2251,19 +2309,28 @@ def register_cognition_tools(mcp) -> None:
         detail: str | None = None,
         parent_id: str | None = None,
         note: str | None = None,
+        assigned_to_email: str | None = None,
     ) -> dict[str, Any]:
-        """Update a task's lifecycle or narrative in place — the ONLY path to status/owner/parent.
+        """Update a task's lifecycle or narrative in place — the ONLY path to
+        status/owner/parent/assignment.
 
-        `cognition_update_node` cannot edit a task's `status`/`owner`/`parent` (they live
-        in metadata, which it doesn't touch) — use this tool for those. A status change
-        is validated against the legal transitions and appends an audit record
-        (`{status, at, by}`, `by` server-resolved) to the task's transition log.
-        Reopening a done/cancelled task (→ open) is allowed.
+        `cognition_update_node` cannot edit a task's `status`/`owner`/`parent`/
+        `assigned_to` (they live in metadata, which it doesn't touch) — use this tool
+        for those. A status change is validated against the legal transitions and
+        appends an audit record (`{status, at, by}`, `by` server-resolved) to the
+        task's transition log. Reopening a done/cancelled task (→ open) is allowed.
 
         Re-parent via `parent_id`: a task id moves this task (and its whole subtree) under
         that task; the empty string `""` DETACHES it to top-level; omitting it leaves the
         parent unchanged. A move is rejected if it would create a cycle or the target is
         not a task.
+
+        Assign via `assigned_to_email` (WP-TC8): sets/reassigns who this task is directed
+        at, distinct from claiming it (`status="in_progress"`) — assigning does not claim,
+        and claiming does not require being the assignee. Anyone may assign anyone (no
+        ACL; the audit trail is the control). Each EFFECTIVE change (a genuinely different
+        email, casefolded) appends one entry to `metadata.assignments`; resubmitting the
+        SAME email is a no-op and appends nothing.
 
         Args:
             node_id: The task to update (must be a task node).
@@ -2274,10 +2341,15 @@ def register_cognition_tools(mcp) -> None:
             detail: New description, if changing.
             parent_id: Re-parent target task id, "" to detach, or omit for no change.
             note: Optional annotation recorded on the status transition (with `status`).
+            assigned_to_email: New assignee's email; pass "" to unassign; omit (None,
+                the default) for no change. Casefolded before comparing/storing, so
+                resubmitting the SAME email in a different case is still a no-op, not
+                a reassignment. Need not be a registered person yet.
 
         Returns:
             The updated task node plus `reembed` ("done" | "deferred"), or {"error": ...}
-            for a non-task id, an illegal/invalid status, a bad re-parent, or no fields.
+            for a non-task id, an illegal/invalid status, a bad re-parent, or no fields
+            (including a same-email assignment resubmission with nothing else to apply).
         """
         lc = get_lifespan(ctx)
         # WP-Wedge (AC4): compute readiness FIRST, then read the generator
@@ -2297,6 +2369,7 @@ def register_cognition_tools(mcp) -> None:
             detail=detail,
             parent_id=parent_id,
             note=note,
+            assigned_to_email=assigned_to_email,
         )
 
     @dispatch_tool(mcp)

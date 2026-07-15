@@ -50,14 +50,18 @@ def _add(storage: CognitionStorage, node_id: str, ntype: CognitionNodeType,
 
 def _task(storage: CognitionStorage, node_id: str, summary: str, *, severity: str | None = None,
           timestamp: str | None = None, created_by: dict | None = None,
-          claimed_by: dict | None = None, status: str = "open") -> None:
-    """Seed a task node with WP-P13n-1 provenance stamps (created_by/claimed_by),
-    for WP-P13n-2 email-matching tests."""
+          claimed_by: dict | None = None, status: str = "open",
+          assigned_to: str | None = None) -> None:
+    """Seed a task node with WP-P13n-1 provenance stamps (created_by/claimed_by) and/or
+    a WP-TC8 assignment, for email-matching tests. `assigned_to` is a bare casefolded
+    email STRING (not a {name,email} stamp dict), matching the real tool's shape."""
     meta: dict = {"status": status}
     if created_by is not None:
         meta["created_by"] = created_by
     if claimed_by is not None:
         meta["claimed_by"] = claimed_by
+    if assigned_to is not None:
+        meta["assigned_to"] = assigned_to
     _add(storage, node_id, CognitionNodeType.TASK, summary, severity=severity,
          timestamp=timestamp, metadata=meta)
 
@@ -427,6 +431,42 @@ def test_your_open_tasks_matches_via_claimed_by(tmp_path):
     result = generate_prime(storage, PrimeConfig(prime_personalize="on"), current_email=ME["email"])
     assert "claimed by me" in result
     assert "not mine" not in result
+
+
+def test_your_open_tasks_matches_via_assigned_to(tmp_path):
+    """WP-TC8: a task created AND claimed by a teammate but assigned to the current
+    user counts as "yours" too -- created_by OR claimed_by OR assigned_to, any one.
+    Uses prime_personalize="on" for the same auto-detect-isolation reason as the
+    claimed_by test above (assigned_to never feeds _distinct_stamped_emails)."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t-assigned", "assigned to me", created_by=TEAMMATE, assigned_to=ME["email"])
+    _task(storage, "t-theirs", "not mine", created_by=TEAMMATE)
+
+    result = generate_prime(storage, PrimeConfig(prime_personalize="on"), current_email=ME["email"])
+    assert "assigned to me" in result
+    assert "not mine" not in result
+
+
+def test_your_open_tasks_matches_assigned_to_case_insensitively(tmp_path):
+    """assigned_to matching is casefolded, same as every other email match in this
+    module."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t-assigned", "assigned to me", created_by=TEAMMATE, assigned_to="ALICE@X.COM")
+
+    result = generate_prime(storage, PrimeConfig(prime_personalize="on"), current_email=ME["email"])
+    assert "assigned to me" in result
+
+
+def test_assigned_to_does_not_flip_multiuser_auto_detect(tmp_path):
+    """assigned_to must NEVER feed _distinct_stamped_emails -- a solo graph (one
+    creator) with a task assigned to a SECOND email must stay global under 'auto'
+    (only recorded_by/created_by drive the multi-user signal, by design)."""
+    storage = CognitionStorage(tmp_path / ".cognition")
+    _task(storage, "t1", "solo task", created_by=ME, assigned_to=TEAMMATE["email"])
+
+    result = generate_prime(storage, current_email=ME["email"])
+    assert "## Your Open Tasks" not in result
+    assert "## Open Tasks" in result
 
 
 def test_team_critical_excludes_tasks_already_shown_under_your_open_tasks(tmp_path):

@@ -5,7 +5,7 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.21.0] — 2026-07-15
 
 **WP-TC7: prime-triggered new-user onboarding.**
 
@@ -17,6 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Notes
 - Mutually exclusive with the empty-graph `ONBOARDING_BLOCK`: `main()`'s empty-graph branch never calls `generate_prime`, so the two onboarding paths never both fire in the same session.
 - The decline file is read-only to the server/prime process; nothing new writes it programmatically — an agent appends to it with an ordinary file write per the notice's own instructions, no new MCP tool.
+
+**WP-TC8: stamped task assignment.**
+
+### Added
+- **`assigned_to_email` on `cognition_add_task` / `cognition_update_task`** — directs a task at an email, identity-matched (unlike the free-text, never-matched `owner`), so it surfaces under the assignee's "Your Open Tasks" at their next session start even without creating or claiming it. Assigning is not claiming — the assignee still transitions the task to `in_progress` themselves.
+- **`metadata.assigned_to`** (a casefolded email string, absent when unassigned — never stored as `""`) and an append-only **`metadata.assignments`** audit trail (`{to, at, by}`, `by` server-resolved) on the task node. Blank/whitespace `assigned_to_email` at creation time seeds nothing; every EFFECTIVE (genuinely different-email) assign/reassign/unassign appends exactly one entry; a same-email resubmission is a no-op.
+- `cognition_list_tasks` rows now carry `assigned_to` (`None` when absent, never coerced — same convention as `from_agent`).
+- `generate_prime`'s "Your Open Tasks" personalization now also matches `metadata.assigned_to` (alongside the existing `created_by`/`claimed_by` match) — assignment never feeds the multi-user auto-detect signal, so it can't flip a solo graph to personalized on its own.
+
+### Notes
+- No-op guard modeled on `cognition_update_person`'s compare-before-append `reports_to_email` handling, not the adjacent `owner` block (which unconditionally marks the update as changed on any non-None value — the wrong template for an audited field).
+- Anyone may assign anyone; the assignee need not be a registered person node yet (dangling is legal, mirroring `reports_to_email`). `assigned_to` is client-declared and unverifiable by the server, same trust class as `from_agent` — the server proves who made the assignment, never that it was accepted.
+- Tool-surface self-sufficiency audit (workflow `67751ebc39bd`) re-run over both changed tools.
 
 ## [0.20.0] — 2026-07-15
 

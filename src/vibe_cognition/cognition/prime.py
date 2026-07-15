@@ -184,9 +184,11 @@ def _should_personalize(storage: CognitionStorage, config: PrimeConfig, current_
 
 
 def _task_matches_email(node: dict, email: str) -> bool:
-    """A task is "yours" if you created it OR currently hold the claim -- either
-    stamp is server-resolved (WP-P13n-1), never the free-text `owner`. Matched
-    case-insensitively (casefold, not lower) on both sides -- `email` is already
+    """A task is "yours" if you created it, currently hold the claim, OR are the
+    assignee -- created_by/claimed_by are server-resolved stamp dicts (WP-P13n-1),
+    while `assigned_to` (WP-TC8) is a bare casefolded email STRING (client-declared,
+    trust-based -- see cognition_update_task), never the free-text `owner`. Matched
+    case-insensitively (casefold, not lower) on all sides -- `email` is already
     casefolded by the single normalization point in `generate_prime`, but this
     function casefolds the stamp (and re-casefolds `email`) so it's correct
     called in isolation too."""
@@ -196,7 +198,8 @@ def _task_matches_email(node: dict, email: str) -> bool:
         stamp = meta.get(key)
         if isinstance(stamp, dict) and stamp.get("email") and stamp["email"].casefold() == email:
             return True
-    return False
+    assigned_to = meta.get("assigned_to")
+    return bool(isinstance(assigned_to, str) and assigned_to and assigned_to.casefold() == email)
 
 
 def _open_tasks(storage: CognitionStorage) -> list[dict]:

@@ -60,6 +60,10 @@ Tasks (trackable open work, server-attributed to the git user):
   (open/in_progress/blocked/done/cancelled) + priority + arbitrary-depth parent
   hierarchy. Open tasks inject at session start; list/edit via cognition_list_tasks /
   cognition_update_task. Check open tasks before picking up work.
+  assigned_to_email (on add/update_task) directs a task AT an email -- distinct
+  from the free-text, unmatched owner -- surfacing it under the assignee's Your
+  Open Tasks; assigning is not claiming, the assignee still claims it via
+  status=in_progress.
 
 Documents (stored files with text sidecar for search):
   document -- use the /vibe-document skill
