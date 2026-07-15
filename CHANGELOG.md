@@ -20,6 +20,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tool-surface self-sufficiency audit re-run over `cognition_update_task`.
 - Version bump held — batches with the next WP.
 
+**WP-TC9: seniority + agent-origin weighting on `cognition_search`.**
+
+### Added
+- **Penalty-only ranking weight on every `cognition_search` hit** — `weighted_score = score * weight.multiplier`, `multiplier` always in `(0, 1.0]` (never a boost). `score` (raw similarity) is never mutated, and weighting can only push a hit lower relative to its peers — it never hides a hit from `results` or wipes it. Every hit carries `weight: {multiplier, seniority, from_agent, basis}`, present even when neutral (`multiplier == 1.0`) — never silent. `basis` is one of `exempt:<node_type>` (constraint/incident, always pinned at 1.0), `agent` (`from_agent` stamped `true` — the multiplier is strictly below every human seniority tier, so human input always outweighs agent input), `human:<seniority>` (stamped + a matching registered person node — `owner`/`senior` 1.0, `mid` 0.95, `junior` 0.9), `human:unregistered` (stamped, no matching person node), or `unverified` (no identity stamp at all). Constraint/incident hits are never outranked by this mechanism — the exempt multiplier is pinned, not merely favored.
+- **Multi-project (`project="*"`) resort now uses `weighted_score`, not raw `score`**, for the post-fan-out merge — without this the mechanism would silently no-op for aggregate search while single-project search still weighted correctly. Each fan-out entry builds and applies its own person registry (per-entry, not shared/merged across projects).
+- **`cognition_get_workflow` deliberately inherits weighting** via its shared internal top-1 match search — this can change WHICH workflow a name/topic lookup resolves to, not just the order of a candidate list. Documented explicitly, not a silent side effect.
+
+### Changed
+- Person-email→seniority lookup is memoized once per top-level `cognition_search` call (one `get_nodes_by_type(PERSON)` scan), reused across every adaptive-widening round of that call — not rebuilt per round.
+
+### Notes
+- Scope: `cognition_search` only. `cognition_get_history`, `cognition_list_tasks`, session-start priming, and the dashboard's own search path are unaffected.
+- Ruling (Colton): weighting never wipes or hides lower-seniority/agent findings; weights are always visible, never silent; constraints/incidents are never outranked by seniority; human input always outweighs agent input.
+- Tool-surface self-sufficiency audit re-run over `cognition_search` (return shape gained `weight`/`weighted_score`).
+- Version bump held — batches with WP-TC4 above.
+
 ## [0.22.0] — 2026-07-15
 
 **WP-TC1: curation conflict lens.**

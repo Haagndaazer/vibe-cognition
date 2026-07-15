@@ -107,6 +107,17 @@ explicitly asks to filter someone out for that call; there is no persistent muti
 A filtered call discloses excluded_count/excluded_for whenever something was
 actually dropped.
 
+## Search ranking: seniority & agent-origin weighting
+
+cognition_search ranks by weighted_score (score * weight.multiplier), penalty-only
+(multiplier always (0, 1.0] -- never a boost): a hit is never hidden by this, only
+ever pushed lower relative to peers. Every hit carries weight (multiplier, seniority,
+from_agent, basis), even when neutral -- never silent. basis: exempt:<node_type>
+(constraint/incident, always pinned 1.0), agent (from_agent true -- always weighted
+below every human seniority tier), human:<seniority> (stamped + registered person),
+human:unregistered (stamped, no matching person node), unverified (no stamp at all).
+cognition_get_workflow's internal match search shares this path and inherits it too.
+
 ## Edge types
 
   part_of (auto), led_to, resolved_by, supersedes, contradicts, relates_to

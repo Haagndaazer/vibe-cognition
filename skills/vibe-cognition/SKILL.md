@@ -234,6 +234,15 @@ for that call. Matched on the server-resolved identity stamp, never free-text
 exempts constraint/incident hits. A filtered call discloses `excluded_count`/
 `excluded_for` whenever something was actually dropped.
 
+`cognition_search` also ranks by `weighted_score` (`score * weight.multiplier`), a
+penalty-only adjustment (`multiplier` always `(0, 1.0]` — never a boost): a hit is
+never hidden or wiped by this, only ever pushed lower relative to peers. Every hit
+carries `weight` (`{multiplier, seniority, from_agent, basis}`) even when neutral —
+never silent. Agent-authored hits (`basis: "agent"`) are always weighted below every
+human seniority tier; constraint/incident hits (`basis: "exempt:<node_type>"`) are
+always pinned at 1.0. `cognition_get_workflow`'s internal match search inherits this
+too, so it can change which workflow a lookup resolves to.
+
 ## Workflow Integration
 
 - **During planning:** Record `decision` and `assumption` nodes
