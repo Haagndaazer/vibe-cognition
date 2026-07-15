@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-07-15
+
 **WP-DashV3: dashboard team-cognition wiring — People view, seniority chips, list-level conflict flags (phase V3 of 3, final).**
 
 ### Added
