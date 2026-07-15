@@ -1,0 +1,26 @@
+# Scope: WP-TC1 — Curation Conflict Lens (contradiction/supersession hunting, precision-gated)
+
+Status: APPROVED (peer-reviewed 2026-07-15, 4 corrections — two HIGH: candidate-list timing; eval-runner split). Vorpid implements; Vince gates AND authors the labeled eval set (labeler independence). Epic cedf4a8457e9; task ad3a9c794814; feeds TC2 (888a21f729dd — ships only after TC1 produces real edges). Ruled: precision measured on a labeled sample BEFORE ship.
+
+## PROBLEM
+2 contradicts edges in ~900 — the edge-analyzer calls contradicts "genuinely rare" with no hunting criteria (curate-edge-analyzer.md:34). Signal consumers (dashboard banners, TC2) are built; the producer is missing.
+
+## DESIGN
+NEW dedicated analyzer agents/curate-conflict-analyzer.md (haiku pin, read-only tools: get_node/get_neighbors/search/get_history), propose-only, spawned by the orchestrator as `vibe-cognition:curate-conflict-analyzer`. NOT extra prose in the edge-analyzer (different retrieval pattern; attributable precision).
+
+Candidate set (timing LOAD-BEARING): stance-bearing nodes (decision/constraint/pattern/assumption) captured from the Step-1 cognition_get_uncurated_nodes worklist and passed explicitly — NEVER re-fetched at the pass's insertion point: Step 2 marks batches curated as it goes (curate-orchestrator.md:61), so a post-Step-2 uncurated fetch returns EMPTY (silent zero-edge failure mode).
+
+Lens criteria: contradicts ONLY for incompatible stances on the same subject, both HEAD; supersedes instead for same-lineage evolution (esp. same recorded_by); never for scope differences/refinement/topic overlap/already-connected pairs; every proposal carries reason + verbatim stance quotes from BOTH nodes; output = established JSON contract with source "curate-conflict" (distinct provenance for TC15 + post-ship tracking).
+
+Orchestrator: new step between edge curation and clustering; explicit model override at spawn (fail f09e770da046); review hardening: quotes must oppose; HEAD both endpoints; prefer supersedes on lineage; suspect-run cap over the WHOLE RUN, only when ≥15 candidates examined — contradicts proposals >20% of examined → discard the pass's proposals and say so. Report template at curate-orchestrator.md:12-14 MUST be edited to include "conflict pass: X proposed, Y committed, Z discarded" within the length cap.
+
+Precision gate (RULED): Vince authors labeled set (~30-40 pairs: ~10 true conflicts, ~25+ hard negatives — supersession lineages, scope differences, refinements, topic-overlap-no-stance; real-graph-drawn where possible). Eval split (a standalone script CANNOT reach an LLM here — no anthropic dep, no API keys by design): (a) scripts/eval_conflict_lens.py validates the fixture + scores a results file; (b) model exercise is AGENT-DRIVEN IN-SESSION — iterate pairs, spawn the SHIPPED analyzer .md per pair via the Agent tool with the explicit haiku pin, write results JSON for (a). No mocked stand-in. BAR: contradicts precision ≥ 0.9; recall reported, not gated. Below bar at haiku → escalate pin to sonnet and re-measure (model cost is the knob, never the bar); below at sonnet → STOP, report to Vince.
+
+NOT changed: no src/ code (agent files + tests/docs/scripts only; zero src diff at gate); containment (orchestrator sole writer; analyzer read-only); SKILL.md launcher; edge idempotency; search/prime (TC2 territory); no new MCP tools.
+
+## ACCEPTANCE
+New analyzer file per contract; orchestrator step with Step-1-capture candidates (re-fetch = named silent-failure mode), whole-run ≥15 cap, template :12-14 edited; source "curate-conflict" + both-node quotes. Labeled set (Vince) checked in; scoring script; agent-driven eval on the shipped definition + pinned model; precision ≥0.9 recorded in gate report BEFORE merge. Doc-drift: mirror test_doc_drift.py:71-81 source-field pin for the new analyzer. Real-graph smoke: full /vibe-curate on a COPY of production graph at pinned commit; conflict report line present; committed conflict edges manually reviewed by Vince. README/CHANGELOG paragraph. Gate: pytest+ruff, zero src/ diff, isolated worktree, pinned commit. Version 0.22.0 batching TC10+TC1 (contingent on TC10 landing first — else renumber). Journal untouched on branch.
+
+## REJECTED: criteria folded into edge-analyzer (retrieval mismatch, unattributable precision, prompt bloat); auto-commit without review (containment); gating recall (asymmetric cost); LLM-authored labels (ground truth must be human-delegated judgment, not the measured model class); new conflict node type (edges exist, dashboard-rendered, TC2's contract).
+
+## KNOWN LIMITS: lens sees only current-run worklist candidates (two OLD conflicting nodes found only when one is re-touched — acceptable, the backlog case is new-vs-standing); finite labeled set (production monitoring via distinct source + TC15); haiku variance absorbed by review + cap.

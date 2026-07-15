@@ -1,0 +1,25 @@
+# Scope: WP-TC10 — Per-Person Search Filter (user-invoked) + "Returned N of M" Completeness
+
+Status: APPROVED (peer-reviewed 2026-07-15, 7 corrections). Vorpid implements; Vince gates. Epic cedf4a8457e9; task 5222c93ca8f5. Rulings: filter optional param, default none, USER-INVOKED ONLY per docstring; M4 N-of-M approved. Zero Wave 2 dependencies.
+
+## DESIGN — filter
+cognition_search gains exclude_people: str|None (comma-separated emails, casefolded). Docstring guard: "Include ONLY when the human explicitly asked to filter people out this session; never volunteer it." Matching: server-resolved metadata.recorded_by.email (non-task) / created_by.email (task) — prime.py:137-159 _node_email doctrine; free-text author NEVER matched; unstamped pre-P13n nodes NEVER excluded (unverifiable ≠ excludable).
+Where: _format_search_results — requires ADDING an unconditional storage.get_node per hit (N1 ghost filter is membership-only, storage.py:144-153; full fetch exists today only for document hits). Exclusion before limit fill so adaptive widening refills. excluded_count: NEVER accumulate across widening rounds — adaptive_vector_search re-runs dedupe from scratch each round and discards prior output (embeddings/storage.py:403-422); take only the terminating round's count.
+Disclosure: excluded_count (distinct nodes) + excluded_for (casefolded list) present iff the param was passed and something was excluded; silent exclusion forbidden.
+Scope: cognition_search only (single + multi-project uniformly).
+
+## DESIGN — N of M (M4)
+cognition_search gains total_found (distinct live nodes discovered before stopping) + exhaustive (true = Chroma exhausted, M exact; false = stopped at limit/cap, M is a floor). Implementation: changes adaptive_vector_search's dedupe contract — remove _format_search_results' early break at limit (cognition_tools.py:593-594; bounded by _SEARCH_OVERQUERY_CAP=500), return list+count; exhaustive from terminating round's len(results)<n. THREE call sites: MCP path + dashboard/api.py _dedupe closure (api.py:238-265) which gets a MECHANICAL CONFORMANCE update (plus tests test_dashboard.py:372,382) — in-scope plumbing, NOT a dashboard feature change; dashboard JSON does not expose the new fields.
+Multi-project (cognition_tools.py:2850-2909): total_found SUMMED across entries; exhaustive AND-reduced; docstring notes post-merge truncation can make count<total_found independent of exclusion/exhaustion.
+cognition_get_history: context_term branch total_found free (slices at call site :3141); recency branch needs an ADDITIVE change to storage.get_recent_nodes (slices internally, storage.py:451-473; other callers prime.py:353,363 + dashboard/api.py:449 must be behaviorally untouched). exhaustive always true.
+cognition_get_edgeless_nodes: OUT OF SCOPE — already compliant via total_edgeless (cognition_tools.py:3347); no duplicate key.
+
+## NOT CHANGED
+No weighting/ordering/prime changes; no dashboard feature changes (conformance edit is plumbing). Chroma metadata unchanged (identity deliberately absent from vector store). get_node/list_tasks/get_edgeless untouched.
+
+## ACCEPTANCE
+exclude_people: excluded absent; refill-to-limit fixture; excluded_count distinct-exact; excluded_for casefolded; unstamped never excluded (fixture: free-text author matches local-part); keys absent when unused; multi-project honored per entry. Docstring guard + matching semantics stated. total_found/exhaustive: >limit fixture → exhaustive=false, total_found>=limit; <limit fixture → exhaustive=true, total_found==count; get_history both branches exact; get_recent_nodes additive non-breaking (prime/dashboard tests unmodified, passing); dashboard closure conformance covered by existing tests. Multi-project sum/AND/truncation asserted. Self-sufficiency audit over cognition_search + cognition_get_history. Docs: docstrings, README search paragraph, SKILL.md, readme.py, CHANGELOG. Gate: pytest+ruff isolated worktree pinned commit import-provenance. Version bump HOLD — batch with next Wave 2 WP (alone → 0.22.0 minor, not patch). Journal untouched on branch.
+
+## REJECTED: allowlist filter (different feature, TC9 territory); free-text author matching; Chroma where-clause filtering (identity would duplicate into vector store and drift); exact-M full-graph scan per query (floor+exhaustive is honest and cheap).
+
+## KNOWN LIMITS: exclude_people trusts caller restraint (docstring guard behavioral, unverifiable — from_agent trust class); total_found floor unless exhaustive; excluding a prolific author on a small graph legitimately under-fills — disclosed, not padded.
