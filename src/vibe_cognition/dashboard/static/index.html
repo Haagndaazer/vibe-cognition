@@ -63,11 +63,9 @@
 
         <section class="view" id="view-board">
           <h2>Board
-            <button id="board-tree-toggle" class="mini-toggle" type="button">Tree view</button>
             <label class="mini-toggle"><input type="checkbox" id="board-show-cancelled" /> Show cancelled</label>
           </h2>
           <div class="board" id="board-columns"></div>
-          <ul class="tree" id="board-tree" hidden></ul>
         </section>
 
         <section class="view" id="view-workflows">
@@ -100,6 +98,9 @@
         <section class="view" id="view-people">
           <h2>People</h2>
           <div class="cardgrid" id="people-grid"></div>
+
+          <h3>Unregistered writers <span class="meta">(stamped emails with no person node)</span></h3>
+          <div class="card"><ul class="plain" id="people-unregistered"></ul></div>
         </section>
 
         <section class="view" id="view-graph">

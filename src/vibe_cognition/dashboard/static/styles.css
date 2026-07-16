@@ -177,12 +177,18 @@ ul.plain li.clickable:hover { background: var(--panel-2); }
 .tcard .sum { font-size: 13px; margin-bottom: 8px; line-height: 1.35; }
 .tcard.ghost { opacity: .6; }
 
-.tree { list-style: none; margin: 0; padding: 0; }
-.tree li {
-  padding: 8px 10px; border-bottom: 1px solid var(--border); cursor: pointer; display: flex; gap: 8px; align-items: center;
+/* Epic grouping within a Board column (task e984f2c7c65a) — the epic header
+   is a thin divider row, not a card; the trailing "(no epic)" header is
+   identical chrome minus the priority chip (no node behind it to open). */
+.epic-group { margin-bottom: 4px; }
+.epic-header {
+  display: flex; gap: 8px; align-items: center; padding: 6px 4px; margin: 6px 0 6px;
+  border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 600; cursor: pointer;
 }
-.tree li:hover { background: var(--panel-2); }
-.tree .crumb-indent { color: var(--muted-2); font-family: ui-monospace, monospace; }
+.epic-header:hover { color: var(--accent); }
+.epic-header.no-epic-header { cursor: default; color: var(--muted); font-weight: 400; font-style: italic; }
+.epic-header.no-epic-header:hover { color: var(--muted); }
+.epic-group:first-child .epic-header { margin-top: 0; }
 
 .warnbanner { background: var(--warn-bg); border: 1px solid var(--warn-bd); border-radius: 8px; padding: 8px 12px; margin: 8px 0; font-size: 12.5px; }
 

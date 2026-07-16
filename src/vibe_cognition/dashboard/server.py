@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import logging
 import secrets
 import socket
@@ -15,7 +16,7 @@ from typing import Any
 
 import uvicorn
 from starlette.applications import Starlette
-from starlette.responses import FileResponse
+from starlette.responses import HTMLResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
@@ -29,6 +30,7 @@ from .api import (
     get_people,
     get_stats,
     get_tasks,
+    get_unregistered_writers,
     get_workflows,
     list_documents,
     search,
@@ -50,6 +52,23 @@ def _resolve_static_dir(stack: ExitStack) -> Path:
     return stack.enter_context(resources.as_file(traversable))
 
 
+class _NoCacheStaticFiles(StaticFiles):
+    """StaticFiles with Cache-Control: no-cache on every response (200 or 304).
+
+    Task 3f43360014ee: a plain reload after a plugin upgrade must fetch the new
+    CSS/JS. Default StaticFiles ships only etag+last-modified, so browsers can
+    skip revalidation entirely (heuristic caching) — the 0.18.0 -> 0.27.0
+    upgrade shipped mangled/unstyled HTML from exactly this gap. no-cache
+    forces an always-revalidate (an ETag round-trip, cheap on localhost), not
+    no-store — repeat loads of an unchanged asset still get a fast 304.
+    """
+
+    def file_response(self, *args: Any, **kwargs: Any):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 def build_app(lifespan_ctx: dict[str, Any], token: str) -> tuple[Starlette, ExitStack]:
     """Build the Starlette app for the dashboard.
 
@@ -60,7 +79,21 @@ def build_app(lifespan_ctx: dict[str, Any], token: str) -> tuple[Starlette, Exit
     static_dir = _resolve_static_dir(stack)
 
     def index(request):
-        return FileResponse(static_dir / "index.html")
+        # Task 99fa0d4da1ad: the tab title must lead with the project folder
+        # name from initial page load (not a post-load JS patch), so it's
+        # correct even while data is still fetching and survives tab-width
+        # truncation with several project dashboards open side by side.
+        project_name = lifespan_ctx["cognition_storage"].cognition_dir.parent.name
+        index_html = (static_dir / "index.html").read_text(encoding="utf-8")
+        index_html = index_html.replace(
+            "<title>Vibe Cognition Dashboard</title>",
+            f"<title>{html.escape(project_name)} — Vibe Cognition Dashboard</title>",
+            1,
+        )
+        # Task 3f43360014ee (coupled with the title change, same brief): a
+        # hand-built response doesn't inherit FileResponse's auto etag/
+        # last-modified, so Cache-Control must be set explicitly here too.
+        return HTMLResponse(index_html, headers={"Cache-Control": "no-cache"})
 
     routes = [
         Route("/", endpoint=index, methods=["GET"]),
@@ -74,9 +107,10 @@ def build_app(lifespan_ctx: dict[str, Any], token: str) -> tuple[Starlette, Exit
         Route("/api/documents", endpoint=list_documents, methods=["GET"]),
         Route("/api/activity", endpoint=get_activity, methods=["GET"]),
         Route("/api/people", endpoint=get_people, methods=["GET"]),
+        Route("/api/people/unregistered", endpoint=get_unregistered_writers, methods=["GET"]),
         Route("/api/document/{node_id}/download", endpoint=download_document, methods=["GET"]),
         Route("/api/stats", endpoint=get_stats, methods=["GET"]),
-        Mount("/static", app=StaticFiles(directory=static_dir), name="static"),
+        Mount("/static", app=_NoCacheStaticFiles(directory=static_dir), name="static"),
     ]
 
     app = Starlette(

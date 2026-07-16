@@ -191,7 +191,14 @@ def get_graph(request):
 
 
 def get_node(request):
-    """Return full node data + neighbors."""
+    """Return full node data + neighbors.
+
+    A PERSON node additionally gains `person_activity` (WP-DashV3, task
+    5d4e2bd60d17): the drilldown the People-view drawer renders in place —
+    node counts by type, last-active timestamp, currently-claimed tasks,
+    open tasks created. Read-only; wired from the SAME roster-row click that
+    already opens this drawer, no new endpoint or click surface.
+    """
     lc = _ctx(request)
     storage = lc["cognition_storage"]
     node_id = request.path_params["node_id"]
@@ -209,12 +216,16 @@ def get_node(request):
         for sid, ed in storage.get_predecessors(node_id)
     ]
 
-    return JSONResponse({
+    result = {
         "id": node_id,
         **node_data,
         "successors": successors,
         "predecessors": predecessors,
-    })
+    }
+    if node_data.get("type") == CognitionNodeType.PERSON.value:
+        email = ((node_data.get("metadata") or {}).get("person") or {}).get("email") or ""
+        result["person_activity"] = _person_activity(storage, email)
+    return JSONResponse(result)
 
 
 def delete_node(request):
@@ -659,6 +670,127 @@ def get_activity(request):
     return JSONResponse({"activity": rows, "count": len(rows)})
 
 
+def _stamped_identity(node: dict[str, Any]) -> tuple[str, str | None]:
+    """A node's ONE stamped (email, name) pair, mirroring prime._node_email's
+    precedence (recorded_by, else created_by for task nodes; never the
+    free-text `author` fallback) -- a local sibling, not an import, matching
+    this file's existing SEVERITY_ORDER precedent of keeping the dashboard's
+    import surface independent of prime.py's markdown/CLI-facing deps.
+    Casefolded email; empty string when the node carries no live stamp."""
+    meta = node.get("metadata", {}) or {}
+    for key in ("recorded_by", "created_by"):
+        stamp = meta.get(key)
+        if isinstance(stamp, dict) and stamp.get("email"):
+            return stamp["email"].casefold(), stamp.get("name")
+    return "", None
+
+
+def _registered_person_emails(storage: CognitionStorage) -> set[str]:
+    """Casefolded emails of every registered PERSON node -- shared by get_people
+    and get_unregistered_writers so the two views can't disagree on who counts
+    as registered."""
+    emails = {
+        (n.get("metadata", {}).get("person", {}).get("email") or "").casefold()
+        for n in storage.get_nodes_by_type(CognitionNodeType.PERSON)
+    }
+    emails.discard("")
+    return emails
+
+
+def get_unregistered_writers(request):
+    """Emails stamped on graph nodes with NO matching person node (task
+    5d4e2bd60d17, People-view management gap): the "who is writing to the
+    graph and needs onboarding" list. One full node scan (same cost class as
+    other dashboard endpoints); casefolded-email semantics match
+    prime._distinct_stamped_emails via _stamped_identity above.
+    """
+    lc = _ctx(request)
+    storage = lc["cognition_storage"]
+    registered = _registered_person_emails(storage)
+
+    writers: dict[str, dict[str, Any]] = {}
+    for n in storage.get_all_nodes():
+        email, name = _stamped_identity(n)
+        if not email or email in registered:
+            continue
+        ts = n.get("timestamp")
+        w = writers.setdefault(email, {
+            "email": email, "names": set(), "node_count": 0,
+            "first_seen": ts, "last_seen": ts,
+        })
+        w["names"].add(name or email)
+        w["node_count"] += 1
+        if ts:
+            if not w["first_seen"] or ts < w["first_seen"]:
+                w["first_seen"] = ts
+            if not w["last_seen"] or ts > w["last_seen"]:
+                w["last_seen"] = ts
+
+    out = [{**w, "names": sorted(w["names"])} for w in writers.values()]
+    out.sort(key=lambda w: w["node_count"], reverse=True)
+    return JSONResponse({"unregistered_writers": out, "count": len(out)})
+
+
+def _person_activity(storage: CognitionStorage, email: str) -> dict[str, Any]:
+    """Drilldown stats for one registered person's email (task 5d4e2bd60d17):
+    node counts by type, last-active timestamp, currently-claimed tasks
+    (status in_progress + claimed_by match), open tasks created (status open
+    + created_by match). One full node scan; read-only.
+
+    Claimed-tasks membership is checked against EVERY task node, not gated by
+    the creator-stamp match node_counts/created_tasks use — a task created by
+    one person and claimed by another must show under the CLAIMANT's
+    claimed_tasks (see the loop body for why a naive single gate breaks this)."""
+    email = (email or "").casefold()
+    empty = {"node_counts": {}, "last_active": None, "claimed_tasks": [], "created_tasks": []}
+    if not email:
+        return empty
+
+    node_counts: dict[str, int] = {}
+    last_active: str | None = None
+    claimed_tasks: list[dict[str, Any]] = []
+    created_tasks: list[dict[str, Any]] = []
+    for n in storage.get_all_nodes():
+        ntype = n.get("type", "")
+
+        # Vince's catch (Train A review): claiming is a distinct action from
+        # creation. A task's _stamped_identity resolves to its CREATOR
+        # (created_by, tasks carry no recorded_by) -- gating this check on
+        # that match would skip every task claimed by X but created by
+        # someone else, which is exactly the manager-assigns/subordinate-
+        # claims flow this drilldown exists to answer. Evaluated against
+        # EVERY task node, independent of the creator-stamp gate below.
+        if ntype == CognitionNodeType.TASK.value:
+            meta = n.get("metadata", {}) or {}
+            claimed_by = meta.get("claimed_by")
+            if (
+                meta.get("status", "open") == "in_progress"
+                and isinstance(claimed_by, dict)
+                and (claimed_by.get("email") or "").casefold() == email
+            ):
+                claimed_tasks.append({"id": n["id"], "summary": n.get("summary")})
+
+        node_email, _name = _stamped_identity(n)
+        if node_email != email:
+            continue
+        node_counts[ntype] = node_counts.get(ntype, 0) + 1
+        ts = n.get("timestamp")
+        if ts and (last_active is None or ts > last_active):
+            last_active = ts
+
+        if ntype == CognitionNodeType.TASK.value:
+            meta = n.get("metadata", {}) or {}
+            if meta.get("status", "open") == "open":
+                created_tasks.append({"id": n["id"], "summary": n.get("summary")})
+
+    return {
+        "node_counts": node_counts,
+        "last_active": last_active,
+        "claimed_tasks": claimed_tasks,
+        "created_tasks": created_tasks,
+    }
+
+
 def get_people(request):
     """Roster for the People view (WP-DashV3): one row per PERSON node, sorted
     by name (mirrors cognition_list_people's sort only — see below for why the
@@ -676,10 +808,7 @@ def get_people(request):
     lc = _ctx(request)
     storage = lc["cognition_storage"]
     nodes = storage.get_nodes_by_type(CognitionNodeType.PERSON)
-    registered_emails = {
-        (n.get("metadata", {}).get("person", {}).get("email") or "") for n in nodes
-    }
-    registered_emails.discard("")
+    registered_emails = _registered_person_emails(storage)
 
     rows = []
     for n in nodes:
@@ -693,7 +822,7 @@ def get_people(request):
             "role": person.get("role"),
             "seniority": person.get("seniority"),
             "reports_to_email": reports_to,
-            "reports_to_registered": bool(reports_to) and reports_to in registered_emails,
+            "reports_to_registered": bool(reports_to) and (reports_to or "").casefold() in registered_emails,
             "recorded_by": meta.get("recorded_by"),
             "from_agent": meta.get("from_agent"),
             "timestamp": n.get("timestamp"),
