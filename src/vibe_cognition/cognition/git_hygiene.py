@@ -8,9 +8,11 @@ Two writes (both idempotent, locked, crash-proof):
   1. repo-root .gitattributes  — .cognition/journal.jsonl merge=union
   2. .cognition/.gitignore     — chromadb/, .git-hygiene-managed, *.lock,
                                  .last-rehydrate.json (local loss-alert flag),
-                                 onboard-declined (local onboarding decline file), and
+                                 onboard-declined (local onboarding decline file),
                                  last-seen.json* (local "Since You Were Gone" marker
-                                 + its .tmp sibling from the atomic write)
+                                 + its .tmp sibling from the atomic write), and
+                                 backfill-identity-map.skeleton.json (legacy-identity-
+                                 backfill's dry-run scratch artifact)
 
 `merge=union` is a MERGE-DRIVER attribute — it only changes 3-way merge resolution
 and never participates in checkout/checkin filtering, so adding it does NOT
@@ -44,7 +46,12 @@ logger = logging.getLogger(__name__)
 #     digest marker -- machine-local, per-email, must never sync via git). Amended
 #     in place (not v5, since v4 had not shipped anywhere yet) to a glob,
 #     last-seen.json*, covering the .tmp sibling of the atomic write (gate F1).
-GIT_HYGIENE_VERSION = 4
+# v5: backfill-identity-map.skeleton.json added to .cognition/.gitignore (task
+#     962ab7b442d5, Train C review finding a) -- the legacy-identity-backfill
+#     CLI's dry-run scratch artifact (the user edits it, then re-supplies it
+#     via --map-file). A working file, not graph history -- must never ride
+#     into a journal-flush `git add .cognition/` commit.
+GIT_HYGIENE_VERSION = 5
 
 _GITATTRIBUTES_MARKER = "# vibe-cognition: append-only journal union-merge (safe to remove)"
 _GITATTRIBUTES_RULE = ".cognition/journal.jsonl merge=union"
@@ -66,6 +73,10 @@ _GITIGNORE_ONBOARD_DECLINED = "onboard-declined"
 # F1: machine-local state syncing via git, the exact property this file exists
 # to prevent).
 _GITIGNORE_LAST_SEEN = "last-seen.json*"
+# Legacy-identity-backfill's dry-run skeleton map file (backfill_identity's own
+# default --skeleton-out path) -- string duplicated here for the same reason
+# as _GITIGNORE_REHYDRATE above.
+_GITIGNORE_BACKFILL_SKELETON = "backfill-identity-map.skeleton.json"
 _FLAG_FILENAME = ".git-hygiene-managed"
 
 # A lock older than this is assumed stale (leftover from a hard-killed process).
@@ -191,7 +202,8 @@ def _needs_gitignore_entry(gitignore_path: Path, entry: str, bare: str) -> bool:
 
 def _write_gitignore(cognition_dir: Path) -> bool:
     """Ensure .cognition/.gitignore contains chromadb/, .git-hygiene-managed, *.lock,
-    .last-rehydrate.json, onboard-declined, and last-seen.json.
+    .last-rehydrate.json, onboard-declined, last-seen.json, and the
+    legacy-identity-backfill skeleton file.
     Returns True if the file is correct after the call (success or already-present)."""
     gitignore_path = cognition_dir / ".gitignore"
     lock = cognition_dir / ".gitignore.lock"
@@ -210,9 +222,12 @@ def _write_gitignore(cognition_dir: Path) -> bool:
         need_last_seen = _needs_gitignore_entry(
             gitignore_path, _GITIGNORE_LAST_SEEN, _GITIGNORE_LAST_SEEN
         )
+        need_backfill_skeleton = _needs_gitignore_entry(
+            gitignore_path, _GITIGNORE_BACKFILL_SKELETON, _GITIGNORE_BACKFILL_SKELETON
+        )
         if not any((
             need_chromadb, need_flag, need_locks, need_rehydrate,
-            need_onboard_declined, need_last_seen,
+            need_onboard_declined, need_last_seen, need_backfill_skeleton,
         )):
             return True
 
@@ -230,6 +245,8 @@ def _write_gitignore(cognition_dir: Path) -> bool:
                 lines_to_add.append(_GITIGNORE_ONBOARD_DECLINED)
             if need_last_seen:
                 lines_to_add.append(_GITIGNORE_LAST_SEEN)
+            if need_backfill_skeleton:
+                lines_to_add.append(_GITIGNORE_BACKFILL_SKELETON)
             try:
                 gitignore_path.write_text("\n".join(lines_to_add) + "\n", encoding="utf-8")
             except OSError as exc:
@@ -256,6 +273,8 @@ def _write_gitignore(cognition_dir: Path) -> bool:
             lines_to_add.append(_GITIGNORE_ONBOARD_DECLINED)
         if need_last_seen:
             lines_to_add.append(_GITIGNORE_LAST_SEEN)
+        if need_backfill_skeleton:
+            lines_to_add.append(_GITIGNORE_BACKFILL_SKELETON)
 
         prefix = "" if (not existing or existing.endswith("\n")) else "\n"
         addition = prefix + "\n".join(lines_to_add) + "\n"
