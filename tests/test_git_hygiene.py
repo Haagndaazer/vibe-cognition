@@ -311,6 +311,45 @@ def test_gitignore_last_seen_tmp_sibling_ignored_by_git(tmp_path):
     )
 
 
+def test_gitignore_backfill_skeleton_is_listed(tmp_path):
+    """Task 962ab7b442d5 (Train C review finding a): the legacy-identity-
+    backfill CLI's dry-run skeleton map file is listed in
+    .cognition/.gitignore after a fresh run -- a working file the user edits
+    and re-supplies via --map-file, not graph history, so it must never ride
+    into a journal-flush `git add .cognition/` commit."""
+    repo, cognition = _make_git_repo(tmp_path)
+    _run(repo, cognition)
+
+    gi = (cognition / ".gitignore").read_text(encoding="utf-8")
+    assert "backfill-identity-map.skeleton.json" in gi
+
+
+def test_gitignore_backfill_skeleton_added_via_version_refire(tmp_path):
+    """GIT_HYGIENE_VERSION 4 -> 5: a flag stamped at the OLD version on an
+    existing install (v4 .gitignore already has every earlier entry but NOT
+    the backfill skeleton) triggers exactly one re-run that appends only the
+    new entry -- mirrors test_gitignore_last_seen_added_via_version_refire but
+    pins the specific new rule this bump exists to add."""
+    repo, cognition = _make_git_repo(tmp_path)
+    (cognition / ".gitignore").write_text(
+        "# vibe-cognition managed - do not remove\n"
+        "chromadb/\n"
+        f"{_FLAG_FILENAME}\n"
+        "*.lock\n"
+        ".last-rehydrate.json\n"
+        "onboard-declined\n"
+        "last-seen.json*\n",
+        encoding="utf-8",
+    )
+    (cognition / _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION - 1), encoding="utf-8")
+
+    _run(repo, cognition)
+
+    gi = (cognition / ".gitignore").read_text(encoding="utf-8")
+    assert gi.count("backfill-identity-map.skeleton.json") == 1
+    assert int((cognition / _FLAG_FILENAME).read_text(encoding="utf-8").strip()) == GIT_HYGIENE_VERSION
+
+
 # ---------------------------------------------------------------------------
 # Flag / opt-out / idempotency / announce tests
 # ---------------------------------------------------------------------------

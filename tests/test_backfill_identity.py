@@ -161,6 +161,22 @@ def test_parse_map_file_defaults_source_to_manual_when_absent(tmp_path):
     assert parse_map_file(p) == {"a": ("a@x.com", "manual")}
 
 
+def test_parse_map_file_coerces_invalid_source_to_manual(tmp_path):
+    """Vince's Train C review, finding 1 (BLOCKING): skeleton()'s own "none"
+    placeholder -- the ~180-node majority case's unedited default -- must
+    never reach the graph as backfill_source verbatim; neither should a
+    typo'd source. Both coerce to "manual" at parse time."""
+    p = tmp_path / "map.json"
+    p.write_text(json.dumps([
+        {"email": "a@x.com", "aliases": ["A"], "source": "none"},
+        {"email": "b@x.com", "aliases": ["B"], "source": "bogus-typo"},
+    ]), encoding="utf-8")
+    assert parse_map_file(p) == {
+        "a": ("a@x.com", "manual"),
+        "b": ("b@x.com", "manual"),
+    }
+
+
 # ── blame_suggestions (real git repo fixtures) ───────────────────────────────
 
 
@@ -295,6 +311,66 @@ def test_apply_writes_confirmed_mapping_and_marks_backfilled(tmp_path):
     assert node["author"] == "Vince"  # untouched
 
 
+def test_kept_suggested_email_preserves_declared_source(tmp_path):
+    """Vince's Train C review, finding 2: a confirmed entry whose email
+    matches what this run would have suggested (the human kept it as-is) is
+    trusted to carry the declared source through to the write."""
+    repo = tmp_path / "repo"
+    cognition = _init_repo(repo)
+    storage = CognitionStorage(cognition)
+    storage.add_node(_node("n1", "Vince"))
+    _commit_journal(repo, "Vince", "vince@x.com", "1700000000 +0000")
+
+    plan = BackfillPlan(
+        storage, recompute_backfilled=False,
+        confirmed={"vince": ("vince@x.com", "git-history")}, repo_path=repo,
+    )
+    assert plan.suggestion_for("vince") == ("vince@x.com", "git-history")
+    _node_, _email, source = plan.to_write[0]
+    assert source == "git-history"
+
+
+def test_edited_suggested_email_downgrades_source_to_manual(tmp_path):
+    """Vince's Train C review, finding 2: a confirmed entry whose email
+    DIFFERS from what this run would have suggested (a hand-correction) must
+    not carry the stale suggestion-source label -- the marker would falsely
+    claim machine-suggestion provenance for a human-corrected email."""
+    repo = tmp_path / "repo"
+    cognition = _init_repo(repo)
+    storage = CognitionStorage(cognition)
+    storage.add_node(_node("n1", "Vince"))
+    _commit_journal(repo, "Vince", "vince@x.com", "1700000000 +0000")
+
+    # Map file still claims source="git-history", but the email was hand-
+    # corrected away from the git-history suggestion (vince@x.com).
+    plan = BackfillPlan(
+        storage, recompute_backfilled=False,
+        confirmed={"vince": ("corrected@x.com", "git-history")}, repo_path=repo,
+    )
+    _node_, email, source = plan.to_write[0]
+    assert email == "corrected@x.com"
+    assert source == "manual"
+
+
+def test_no_suggestion_downgrades_source_to_manual_regardless_of_file_claim(tmp_path):
+    """A name with no suggestion at all (neither roster nor blame) -- e.g. an
+    agent-persona author -- downgrades to "manual" even if a hand-authored
+    map-file entry claims otherwise."""
+    repo = tmp_path / "repo"
+    cognition = _init_repo(repo)
+    storage = CognitionStorage(cognition)
+    storage.add_node(_node("n1", "curate-orchestrator"))
+    _commit_journal(repo, "The Flusher", "flusher@x.com", "1700000000 +0000")
+
+    plan = BackfillPlan(
+        storage, recompute_backfilled=False,
+        confirmed={"curate-orchestrator": ("vince@x.com", "roster")}, repo_path=repo,
+    )
+    assert plan.suggestion_for("curate-orchestrator") is None
+    _node_, _email, source = plan.to_write[0]
+    assert source == "manual"
+
+
 def test_apply_appends_exactly_n_update_node_events_and_replay_reproduces(tmp_path):
     repo = tmp_path / "repo"
     cognition = _init_repo(repo)
@@ -399,6 +475,29 @@ def test_auto_flip_forecast_flips_on_confirmed_backfill(tmp_path):
 
 
 # ── CLI end-to-end ────────────────────────────────────────────────────────────
+
+
+def test_cli_map_arg_wins_over_map_file_on_alias_collision(tmp_path, capsys):
+    """Vince's Train C review, minor finding b: on the same alias, --map (a
+    one-off CLI override) wins over --map-file."""
+    repo = tmp_path / "repo"
+    cognition = _init_repo(repo)
+    storage = CognitionStorage(cognition)
+    storage.add_node(_node("n1", "Vince"))
+    _commit_journal(repo, "Vince", "vince@x.com", "1700000000 +0000")
+
+    map_file = tmp_path / "map.json"
+    map_file.write_text(json.dumps([
+        {"email": "from-file@x.com", "aliases": ["Vince"]},
+    ]), encoding="utf-8")
+
+    rc = main([str(repo), "--map-file", str(map_file), "--map", "Vince=from-cli@x.com", "--apply"])
+    assert rc == 0
+
+    replayed = CognitionStorage(cognition)
+    node = replayed.get_node("n1")
+    assert node is not None
+    assert node["metadata"]["recorded_by"]["email"] == "from-cli@x.com"
 
 
 def test_cli_dry_run_writes_skeleton_and_no_journal_change(tmp_path, capsys):

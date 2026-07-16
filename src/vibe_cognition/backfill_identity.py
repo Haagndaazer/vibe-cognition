@@ -262,6 +262,13 @@ def blame_suggestions(
 
 # ── Source 3: explicit human-confirmed mapping (the ONLY write authority) ───
 
+# The closed set backfill_source may ever carry (design doc's honesty-marking
+# section). Anything else -- a typo, or skeleton()'s own "none" placeholder
+# left untouched by a user who filled in the email but didn't think to edit
+# this field (the common case: nobody edits a field they don't need to) --
+# must never reach the graph verbatim (Vince's Train C review, finding 1).
+_VALID_BACKFILL_SOURCES = frozenset({"roster", "git-history", "manual"})
+
 
 def parse_map_args(entries: list[str]) -> dict[str, tuple[str, str]]:
     """``--map "Name=email"`` entries -> {casefolded name: (email, "manual")}.
@@ -284,8 +291,11 @@ def parse_map_file(path: Path) -> dict[str, tuple[str, str]]:
     "roster"|"git-history"|"manual"}, ...]``. Each alias, casefolded, maps to
     that entry's email. ``source`` is optional (defaults to "manual" -- an
     entry the user hand-added to the file, not one that started life as a
-    skeleton suggestion) and is carried through to the write's
-    ``backfill_source`` marker."""
+    skeleton suggestion), validated against the closed set (anything else,
+    including skeleton()'s own "none" placeholder, coerces to "manual" --
+    never smuggled into the graph verbatim), and carried through to the
+    write's ``backfill_source`` marker (subject to BackfillPlan's own
+    suggestion-match downgrade -- see its to_write construction)."""
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, list):
         raise ValueError(f"map file must be a JSON array of entries: {path}")
@@ -294,6 +304,8 @@ def parse_map_file(path: Path) -> dict[str, tuple[str, str]]:
         email = (entry.get("email") or "").strip()
         aliases = entry.get("aliases") or []
         source = entry.get("source") or "manual"
+        if source not in _VALID_BACKFILL_SOURCES:
+            source = "manual"  # e.g. skeleton()'s "none" placeholder, left untouched
         if not email or not aliases:
             continue  # unfinished skeleton row -- alias stays unmapped, never guessed
         for alias in aliases:
@@ -350,6 +362,16 @@ class BackfillPlan:
         # to_write: node -> (email, source) for every eligible node whose
         # author name IS in the confirmed map -- these are the ONLY writes
         # `apply()` performs.
+        #
+        # Kept-vs-edited (Vince's Train C review, finding 2): a confirmed
+        # entry's `source` is trustworthy ONLY when the confirmed email
+        # matches what this run would have suggested for that name -- i.e.
+        # the human kept the suggestion as-is. If they changed the email (or
+        # there was never a suggestion to begin with), the file's source
+        # field is downgraded to "manual" here regardless of what it says --
+        # the marker must describe what actually happened, never trust a
+        # human to keep a bookkeeping field in sync with an edit they made
+        # for an unrelated reason.
         self.to_write: list[tuple[dict[str, Any], str, str]] = []
         for node in eligible_nodes:
             author = (node.get("author") or "").strip()
@@ -357,6 +379,9 @@ class BackfillPlan:
             hit = confirmed.get(key)
             if hit is not None:
                 email, source = hit
+                suggestion = self.suggestion_for(key)
+                if suggestion is None or suggestion[0].casefold() != email.casefold():
+                    source = "manual"
                 self.to_write.append((node, email, source))
 
     def suggestion_for(self, name_key: str) -> tuple[str, str] | None:
@@ -540,11 +565,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: no .cognition/ directory at {repo_path}", file=sys.stderr)
         return 1
 
+    # Precedence on an alias collision: --map wins over --map-file (applied
+    # last, so it overwrites) -- a CLI arg is a more explicit, one-off
+    # override of whatever the file says for that name (Vince's Train C
+    # review, minor finding b).
     confirmed: dict[str, tuple[str, str]] = {}
     try:
-        confirmed.update(parse_map_args(args.map))
         if args.map_file:
             confirmed.update(parse_map_file(Path(args.map_file)))
+        confirmed.update(parse_map_args(args.map))
     except (ValueError, OSError, json.JSONDecodeError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
