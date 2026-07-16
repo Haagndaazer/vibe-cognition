@@ -744,6 +744,38 @@ def test_cognition_store_document_not_ready_still_stores(tmp_path, mock_mcp, bui
     assert "doc_ref" in result
 
 
+def test_cognition_store_document_stamps_recorded_by(
+    tmp_path, mock_mcp, build_lc, make_ctx, monkeypatch
+):
+    """A freshly stored document's metadata carries recorded_by {name, email}
+    matching server-resolved git identity (WP-provenance-smalls, task 2858ae93bf17).
+
+    Fails-before: if _store_document didn't stamp recorded_by at all, the document
+    node would carry only the free-text `author` with no verifiable identity.
+    """
+    monkeypatch.setattr(
+        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        lambda repo: {"name": "Server Resolved", "email": "srv@x.com"},
+    )
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    ctx = make_ctx(lc)
+
+    result = mock_mcp.tools["cognition_store_document"](  # type: ignore[arg-type]
+        ctx,
+        title="spec beta",
+        document_text="beta specification text",
+        context="specs",
+        author="Client Author",
+        content_text="beta specification text",
+    )
+    assert "error" not in result, result
+    node = lc["cognition_storage"].get_node(result["node_id"])
+    assert node is not None
+    assert node["metadata"]["recorded_by"] == {"name": "Server Resolved", "email": "srv@x.com"}
+    assert node["author"] == "Client Author"  # author stays free text, untouched
+
+
 # ── sweep: all remaining wrappers invoked once ────────────────────────────────
 #
 # Each test sets up minimum state, calls the wrapper, asserts:
@@ -868,6 +900,32 @@ def test_add_edge_docstrings_list_exactly_the_accepted_edge_types(mock_mcp):
         assert "duplicate_of" in doc, f"{tool_name} docstring never mentions duplicate_of"
         assert "retire" in doc.lower(), (
             f"{tool_name} docstring mentions duplicate_of but doesn't explain it was retired"
+        )
+
+
+def test_register_and_update_person_docstrings_instruct_asking_seniority(mock_mcp):
+    """Task 9c7094bbbe0e: Colton's live experience — he said "owner, senior"
+    during his own registration and the agent had to guess, landing on the
+    wrong tier (seniority=senior when owner was correct). The docstrings
+    alone must lead a fresh-eyes assistant to ENUMERATE the four seniority
+    tiers to the human and ask which applies, not silently map free text.
+
+    Tool-surface self-sufficiency audit standard: check the docstring
+    CONTENT, not the code — the fix is entirely in what the assistant reads
+    before calling the tool.
+    """
+    register_cognition_tools(mock_mcp)
+    for tool_name in ("cognition_register_person", "cognition_update_person"):
+        doc = mock_mcp.tools[tool_name].__doc__ or ""
+        for tier in ("owner", "senior", "mid", "junior"):
+            assert tier in doc, f"{tool_name} docstring missing seniority tier '{tier}'"
+        assert "ask" in doc.lower(), (
+            f"{tool_name} docstring must instruct the assistant to ASK the human "
+            "which seniority tier applies, not just list the closed set"
+        )
+        assert "role" in doc.lower() and "free text" in doc.lower(), (
+            f"{tool_name} docstring must distinguish role (free text) from "
+            "seniority (closed set)"
         )
 
 

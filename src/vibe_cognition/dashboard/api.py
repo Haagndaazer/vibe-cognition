@@ -570,6 +570,11 @@ def list_documents(request):
     a PART_OF edge INTO it; _deterministic_edge_for_pair mints entity/doc
     part_of as entity_id -> document_id, so get_predecessors on the document
     node returns the citing sources — storage.py:702-747, esp. :736-740).
+
+    `recorded_by` (task 2858ae93bf17, display-only): present on documents
+    stored after the live-path fix, absent (None) on older ones — same
+    trust-class shape every other list view already carries, no new
+    consumer logic needed.
     """
     lc = _ctx(request)
     storage = lc["cognition_storage"]
@@ -587,6 +592,7 @@ def list_documents(request):
             "filename": meta.get("filename", ""),
             "indexed_text_chars": meta.get("indexed_text_chars"),
             "timestamp": n.get("timestamp", ""),
+            "recorded_by": meta.get("recorded_by"),
             "has_blob": _document_has_blob(n),
             "freshness": _document_freshness(meta),
             "cited_by": len(storage.get_predecessors(n["id"], CognitionEdgeType.PART_OF)),

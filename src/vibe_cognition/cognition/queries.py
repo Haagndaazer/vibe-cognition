@@ -206,6 +206,61 @@ def conflict_flags(
     return conflicted, superseded_by
 
 
+def conflict_details(
+    storage: CognitionStorage,
+    node_id: str,
+) -> list[dict[str, Any]]:
+    """Sibling to conflict_flags (task 888a21f729dd, TC2): names each CONTRADICTS
+    counterparty -- id, summary, author, reason -- for search's per-result
+    ``conflicted_with`` list. Deliberately NOT folded into conflict_flags's
+    return: that function's strict 2-tuple is unpacked positionally at two call
+    sites (dashboard/api.py, cognition_tools.py search formatting) and widening
+    it would break both (peer-review-pinned constraint). Called ONLY from the
+    search formatting loop, ONLY when conflict_flags already reported
+    ``conflicted=True`` for this node -- read-side advisory only, no write-time
+    equivalent (Colton ruled that permanently out, decision 1583c5391354).
+
+    Bidirectional, same membership as conflict_flags's ``conflicted`` (an
+    incoming OR an outgoing CONTRADICTS edge both count) -- reuses
+    get_predecessors/get_successors, which already return (id, edge_data)
+    pairs (see the supersedes tie-break above).
+
+    ``author``: the counterparty's ``recorded_by`` stamp (name, else email)
+    when present, else its free-text ``author`` field -- never fabricated.
+    ``reason``: the CONTRADICTS edge's own ``reason`` field, null when the
+    edge carries none -- never fabricated either.
+
+    A dangling edge target (node deleted, edge not yet cleaned up) is
+    silently skipped -- never a row for a node that doesn't exist.
+    """
+    pairs = (
+        storage.get_predecessors(node_id, CognitionEdgeType.CONTRADICTS)
+        + storage.get_successors(node_id, CognitionEdgeType.CONTRADICTS)
+    )
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for other_id, edge_data in pairs:
+        if other_id in seen:
+            continue
+        seen.add(other_id)
+        other = storage.get_node(other_id)
+        if other is None:
+            continue
+        meta = other.get("metadata", {}) or {}
+        recorded_by = meta.get("recorded_by")
+        author = None
+        if isinstance(recorded_by, dict):
+            author = recorded_by.get("name") or recorded_by.get("email")
+        author = author or other.get("author")
+        out.append({
+            "id": other_id,
+            "summary": other.get("summary"),
+            "author": author,
+            "reason": edge_data.get("reason") if isinstance(edge_data, dict) else None,
+        })
+    return out
+
+
 def get_history_for_context(
     storage: CognitionStorage,
     context_term: str,

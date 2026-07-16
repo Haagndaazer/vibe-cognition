@@ -593,6 +593,28 @@ class TestDocuments:
         assert docs["docref01"]["doc_ref"] == "doc:aaaaaaaaaaaa"
         assert docs["docref01"]["summary"] == "Ref doc" and docs["docref01"]["filename"] == "a.txt"
 
+    def test_list_documents_recorded_by_present_when_stamped_absent_otherwise(self, client):
+        """recorded_by (task 2858ae93bf17): surfaced verbatim for a document stamped
+        by the live store_document fix, None for a pre-fix document that never
+        carried the key -- same trust-class shape as every other list view."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(_doc_node("docstamped", "Stamped doc", {
+            "mode": "reference", "size": 10, "mime": "text/plain", "filename": "a.txt",
+            "sha256": "a" * 64, "indexed_text_chars": 5,
+            "recorded_by": {"name": "Server Resolved", "email": "srv@x.com"},
+        }, "doc:cccccccccccc"))
+        s.add_node(_doc_node("docunstamped", "Unstamped doc", {
+            "mode": "reference", "size": 10, "mime": "text/plain", "filename": "b.txt",
+            "sha256": "d" * 64, "indexed_text_chars": 5,
+        }, "doc:dddddddddddd"))
+
+        r = c.get("/api/documents", headers=_hdr())
+        assert r.status_code == 200
+        docs = {d["node_id"]: d for d in r.json()["documents"]}
+        assert docs["docstamped"]["recorded_by"] == {"name": "Server Resolved", "email": "srv@x.com"}
+        assert docs["docunstamped"]["recorded_by"] is None
+
     def test_list_documents_empty_when_none(self, client):
         c, _ = client  # fixture graph has only a decision + a discovery, no documents
         r = c.get("/api/documents", headers=_hdr())
