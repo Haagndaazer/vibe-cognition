@@ -2467,3 +2467,14 @@
 {"action": "add_edge", "data": {"from_id": "60b8fb6dfdad", "to_id": "e2cd30115d75", "edge_type": "part_of", "timestamp": "2026-07-16T19:53:27.455507+00:00", "source": "deterministic", "reason": null}}
 {"action": "add_edge", "data": {"from_id": "5ff5270ef1ad", "to_id": "e2cd30115d75", "edge_type": "relates_to", "timestamp": "2026-07-16T19:53:27.456507+00:00", "source": "deterministic", "reason": null}}
 {"action": "add_edge", "data": {"from_id": "4464db1cdc2d", "to_id": "e2cd30115d75", "edge_type": "relates_to", "timestamp": "2026-07-16T19:53:27.456507+00:00", "source": "deterministic", "reason": null}}
+{"action": "add_edge", "data": {"from_id": "4464db1cdc2d", "to_id": "6e173090c0a5", "edge_type": "supersedes", "timestamp": "2026-07-16T19:58:49.931801+00:00", "source": "curate-skill", "reason": null}}
+{"action": "add_edge", "data": {"from_id": "833e9f67de4d", "to_id": "4464db1cdc2d", "edge_type": "led_to", "timestamp": "2026-07-16T19:58:49.943391+00:00", "source": "curate-skill", "reason": null}}
+{"action": "add_edge", "data": {"from_id": "4464db1cdc2d", "to_id": "5ff5270ef1ad", "edge_type": "led_to", "timestamp": "2026-07-16T19:58:49.954513+00:00", "source": "curate-skill", "reason": null}}
+{"action": "update_node", "data": {"id": "4464db1cdc2d", "curated_by_skill_at": "2026-07-16T19:58:50.264488+00:00"}}
+{"action": "update_node", "data": {"id": "0b360384cbad", "curated_by_skill_at": "2026-07-16T19:58:50.277614+00:00"}}
+{"action": "update_node", "data": {"id": "cf201e2fe650", "curated_by_skill_at": "2026-07-16T19:58:50.288662+00:00"}}
+{"action": "update_node", "data": {"id": "5ff5270ef1ad", "curated_by_skill_at": "2026-07-16T19:58:50.299750+00:00"}}
+{"action": "update_node", "data": {"id": "bcce7f606c08", "curated_by_skill_at": "2026-07-16T19:58:50.310951+00:00"}}
+{"action": "update_node", "data": {"id": "9af560fd7777", "curated_by_skill_at": "2026-07-16T19:58:50.322490+00:00"}}
+{"action": "update_node", "data": {"id": "d41c6d2a101f", "curated_by_skill_at": "2026-07-16T19:58:50.332588+00:00"}}
+{"action": "update_node", "data": {"id": "e2cd30115d75", "curated_by_skill_at": "2026-07-16T19:58:50.342779+00:00"}}
