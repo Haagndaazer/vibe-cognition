@@ -735,7 +735,12 @@ def _person_activity(storage: CognitionStorage, email: str) -> dict[str, Any]:
     """Drilldown stats for one registered person's email (task 5d4e2bd60d17):
     node counts by type, last-active timestamp, currently-claimed tasks
     (status in_progress + claimed_by match), open tasks created (status open
-    + created_by match). One full node scan; read-only."""
+    + created_by match). One full node scan; read-only.
+
+    Claimed-tasks membership is checked against EVERY task node, not gated by
+    the creator-stamp match node_counts/created_tasks use — a task created by
+    one person and claimed by another must show under the CLAIMANT's
+    claimed_tasks (see the loop body for why a naive single gate breaks this)."""
     email = (email or "").casefold()
     empty = {"node_counts": {}, "last_active": None, "claimed_tasks": [], "created_tasks": []}
     if not email:
@@ -746,10 +751,28 @@ def _person_activity(storage: CognitionStorage, email: str) -> dict[str, Any]:
     claimed_tasks: list[dict[str, Any]] = []
     created_tasks: list[dict[str, Any]] = []
     for n in storage.get_all_nodes():
+        ntype = n.get("type", "")
+
+        # Vince's catch (Train A review): claiming is a distinct action from
+        # creation. A task's _stamped_identity resolves to its CREATOR
+        # (created_by, tasks carry no recorded_by) -- gating this check on
+        # that match would skip every task claimed by X but created by
+        # someone else, which is exactly the manager-assigns/subordinate-
+        # claims flow this drilldown exists to answer. Evaluated against
+        # EVERY task node, independent of the creator-stamp gate below.
+        if ntype == CognitionNodeType.TASK.value:
+            meta = n.get("metadata", {}) or {}
+            claimed_by = meta.get("claimed_by")
+            if (
+                meta.get("status", "open") == "in_progress"
+                and isinstance(claimed_by, dict)
+                and (claimed_by.get("email") or "").casefold() == email
+            ):
+                claimed_tasks.append({"id": n["id"], "summary": n.get("summary")})
+
         node_email, _name = _stamped_identity(n)
         if node_email != email:
             continue
-        ntype = n.get("type", "")
         node_counts[ntype] = node_counts.get(ntype, 0) + 1
         ts = n.get("timestamp")
         if ts and (last_active is None or ts > last_active):
@@ -757,15 +780,7 @@ def _person_activity(storage: CognitionStorage, email: str) -> dict[str, Any]:
 
         if ntype == CognitionNodeType.TASK.value:
             meta = n.get("metadata", {}) or {}
-            status = meta.get("status", "open")
-            claimed_by = meta.get("claimed_by")
-            if (
-                status == "in_progress"
-                and isinstance(claimed_by, dict)
-                and (claimed_by.get("email") or "").casefold() == email
-            ):
-                claimed_tasks.append({"id": n["id"], "summary": n.get("summary")})
-            if status == "open":
+            if meta.get("status", "open") == "open":
                 created_tasks.append({"id": n["id"], "summary": n.get("summary")})
 
     return {

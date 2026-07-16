@@ -1252,6 +1252,38 @@ class TestPersonActivityDrilldown:
         assert [t["id"] for t in act["claimed_tasks"]] == ["dtaskclaimed"]
         assert [t["id"] for t in act["created_tasks"]] == ["dtaskcreated"]
 
+    def test_claimed_task_shows_under_claimant_not_creator(self, client):
+        """Vince's Train A review catch: a task's _stamped_identity resolves to
+        its CREATOR (created_by; tasks carry no recorded_by) -- gating the
+        claimed-tasks check on that match would show zero claimed tasks for
+        the claimant in the ordinary manager-assigns/subordinate-claims flow.
+        Fails-before: claimed_tasks must list the task under the CLAIMANT
+        (Bob) and NOT under the creator (Alice)."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._person("palice", "Alice", "alice@example.com"))
+        s.add_node(self._person("pbob", "Bob", "bob@example.com"))
+        alice = {"name": "Alice", "email": "alice@example.com"}
+        bob = {"name": "Bob", "email": "bob@example.com"}
+        s.add_node(CognitionNode(
+            id="tassigned", type=CognitionNodeType.TASK, summary="Alice assigns, Bob claims",
+            detail="d", context=[], references=[], author="Alice",
+            timestamp=datetime.now(UTC).isoformat(),
+            metadata={"status": "in_progress", "created_by": alice, "claimed_by": bob},
+        ))
+
+        alice_body = c.get("/api/node/palice", headers=_hdr()).json()
+        bob_body = c.get("/api/node/pbob", headers=_hdr()).json()
+        assert [t["id"] for t in bob_body["person_activity"]["claimed_tasks"]] == ["tassigned"], \
+            "claimant (Bob) must see the task in claimed_tasks"
+        assert alice_body["person_activity"]["claimed_tasks"] == [], \
+            "creator (Alice) must NOT see a task she didn't claim in claimed_tasks"
+        # node_counts/created_tasks stay creator-stamp-based: Alice created it (open
+        # count would apply if status were open; here it's in_progress, so neither
+        # created_tasks list gains it, but the TASK count attributes to Alice, not Bob).
+        assert alice_body["person_activity"]["node_counts"].get("task") == 1
+        assert bob_body["person_activity"]["node_counts"].get("task") is None
+
     def test_no_activity_yields_empty_shape(self, client):
         c, lc = client
         s = lc["cognition_storage"]
