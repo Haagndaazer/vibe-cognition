@@ -7,6 +7,121 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-07-16
+
+**team-cognition epic (cedf4a8457e9) — CLOSED.** Three trains, same-day: dashboard
+polish, provenance smalls, and legacy identity backfill v1.
+
+**Train A — Dashboard (Board epic-grouping, tab title, People view management gaps, cache headers).**
+
+### Added
+- **Board's Kanban columns are now grouped by epic** — each column shows a header
+  per top-level epic (walking `part_of` ancestry to the topmost epic task) with a
+  trailing "(no epic)" group for tasks with no epic ancestor, sorted by severity
+  within each group. The separate Tree-view toggle and its `#board-tree` markup
+  are fully removed — one board rendering, not two.
+- **Dashboard tab title** now includes the project's folder name
+  ("`{project} — Vibe Cognition Dashboard`"), so multiple open dashboard tabs
+  (one per project) are distinguishable at a glance. HTML-escaped; served via a
+  templated `HTMLResponse` rather than the prior static `FileResponse`.
+- **People view gains an "Unregistered writers" section** (`/api/people/unregistered`)
+  — every stamped email with no matching person node, the management-gap list a
+  team lead needs to know who to onboard. Person nodes in the People view are
+  drilldown-clickable (read-only) into a drawer showing `node_counts` by type,
+  `last_active`, and `claimed_tasks`/`created_tasks` — `claimed_tasks` matches
+  against ALL task nodes' `claimed_by` (not gated on the claimant being the
+  node's own creator-stamped identity — a task created by one person and claimed
+  by another now correctly shows under the claimant, not the creator).
+- **`Cache-Control: no-cache` on every dashboard response** (index HTML + static
+  assets, both 200 and 304), via a `_NoCacheStaticFiles` StaticFiles subclass —
+  closes the stale-browser-cache bug where a plain reload after a plugin
+  upgrade could render new HTML with cached pre-upgrade CSS/JS (the
+  mangled-dashboard incident). Distinct from the still-open server-side
+  stale-first-session race (fail fb24257ee2da, task 43d3c3dab10f) — this fix
+  addresses only the browser asset cache, not that server-side class.
+
+### Notes
+- Gate parity: `uv run pytest` 1074 passed/1 skipped (was 1056/1, +18 new tests),
+  `uv run ruff check .` clean, `uv run pyright` 39 errors (unchanged baseline).
+- No new JS test harness introduced — new frontend logic is covered by the
+  existing `TestFrontendStructure` string/structure-presence idiom (this repo
+  has no JS test runner), matching established convention.
+- A pre-existing circular import in `python -m vibe_cognition.dashboard.cli`
+  (unrelated to this WP, confirmed via `git stash` on the unmodified checkout)
+  was discovered and filed separately rather than fixed in-WP.
+
+**Train B — Provenance smalls (store_document recorded_by, seniority-tier docstrings, search conflicted_with).**
+
+### Added
+- **`cognition_store_document` now stamps `metadata.recorded_by`** on newly
+  created document nodes (server-resolved git identity, same verbatim shape as
+  `_record_node`/`_add_task`/`_register_person`) — document nodes were the one
+  write path WP-P13n-1 never reached. The dedup branch (re-storing an existing
+  sha) is untouched; backfilling already-stored legacy documents is out of scope
+  here (legacy-identity-backfill's job). Dashboard's `list_documents` surfaces
+  the field (display-only, `None` on pre-fix documents).
+- **`cognition_search`'s conflicted hits gain `conflicted_with`** —
+  `[{id, summary, author, reason}]` naming each `CONTRADICTS` counterparty (both
+  directions), via a new sibling function `cognition.queries.conflict_details`.
+  `conflict_flags`'s pinned 2-tuple return is untouched — the new field is
+  computed only for hits already flagged `conflicted=True`. `author` resolves
+  from the counterparty's `recorded_by` stamp (name, else email) when present,
+  else its free-text `author`; `reason` is the edge's own `reason` field, null
+  if absent. A dangling edge target is silently skipped.
+
+### Changed
+- **`cognition_register_person`/`cognition_update_person` docstrings** now spell
+  out the closed 4-tier seniority set and instruct the assistant to present the
+  options and ask, clarifying that `role` stays free text.
+
+### Notes
+- Gate parity: `uv run pytest` 1081 passed/1 skipped (was 1074/1, +7 new tests),
+  `uv run ruff check .` clean, `uv run pyright` 39 errors (unchanged baseline).
+- Live-verified `conflicted_with` against this repo's own two real `contradicts`
+  pairs (f09e770da046↔d79cd9a93a02, 3c16d91417cb↔03ae7b2cd063) in addition to
+  unit tests.
+
+**Train C — Legacy identity backfill v1 (task 962ab7b442d5, design doc rev 2, decision 833e9f67de4d).**
+
+### Added
+- **New standalone CLI, `python -m vibe_cognition.backfill_identity <project-path>
+  [--map "Name=email"]... [--map-file <path>] [--apply] [--recompute-backfilled]`**
+  — stamps pre-P13n-1 legacy nodes (free-text `author` only) with an inferred
+  `recorded_by`/`created_by`, so an existing project's history benefits from the
+  identity features already built for new writes (personalized prime, search
+  identity weighting, exclude-people filters, activity attribution,
+  unregistered-writers view). NO auto-stamping: registered-roster match and
+  journal git-blame are suggestion generators only — the only path that writes
+  is a human-confirmed map file (a dry run emits a skeleton pre-filled with
+  suggestions; the owner edits it; `--apply --map-file` writes exactly that).
+  Every stamp this tool writes carries `backfilled: true` +
+  `backfill_source: "roster"|"git-history"|"manual"`, validated against that
+  closed set and downgraded to `"manual"` whenever the confirmed email doesn't
+  match the original suggestion — the marker never claims more provenance than
+  actually happened. PERSON nodes, DOCUMENT nodes, and task
+  claims/transitions reconstruction are permanently out of v1 scope. A
+  journal-mtime recheck aborts `--apply` if the journal changed since the run
+  started, rather than racing a live session's append.
+
+### Notes
+- Gate parity: `uv run pytest` 1115 passed/1 skipped (was 1081/1, +34 new
+  tests), `uv run ruff check .` clean, `uv run pyright` 39 errors (unchanged
+  baseline).
+- Live-verified (dry-run only, no `--apply` against the production graph) on
+  this repo's own 352 eligible legacy nodes: matched the design doc's own
+  predicted findings, including the "Colton Dyck" email-drift case (this
+  repo's blame history really does resolve that name to two distinct emails)
+  and the agent-persona-authors-are-the-majority-unmapped-case observation.
+- `.cognition/.gitignore`'s managed rule set (git_hygiene.py) gained
+  `backfill-identity-map.skeleton.json` (version bumped to v5) — the CLI's
+  dry-run scratch artifact must never ride into a journal-flush commit.
+
+### Fixed
+- `_run_git`'s subprocess call used `text=True`, which decodes via the
+  platform-locale codec — cp1252 on Windows — and raised `UnicodeDecodeError`
+  on a real non-cp1252 byte encountered live in this repo's own commit history.
+  Now decodes UTF-8 explicitly, with replacement.
+
 ## [0.27.0] — 2026-07-15
 
 **WP-doc-fix: README/skill/docstring consistency sweep (Gate B-final findings, doc-only, zero behavior changes).**
