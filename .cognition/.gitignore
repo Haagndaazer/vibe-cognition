@@ -4,3 +4,4 @@ chromadb/
 *.lock
 .last-rehydrate.json
 onboard-declined
+last-seen.json*
