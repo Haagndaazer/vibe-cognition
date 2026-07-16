@@ -15,6 +15,7 @@ from vibe_cognition.cognition import (
     CognitionNodeType,
     CognitionStorage,
 )
+from vibe_cognition.cognition.queries import conflict_details
 from vibe_cognition.embeddings import ChromaDBStorage, EmbeddingGenerator
 from vibe_cognition.tools.cognition_tools import (
     _load_project_core,
@@ -244,6 +245,96 @@ def test_ranking_unaffected_by_conflicted_or_superseded_flags(tmp_path):
     assert rows["flagged"]["superseded_by"] == "newer"
     assert rows["flagged"]["score"] == rows["clean"]["score"]
     assert rows["flagged"]["weighted_score"] == rows["clean"]["weighted_score"]
+    embed.close()
+
+
+# ── conflict_details: sibling to conflict_flags, names counterparties ──────────
+
+
+def test_conflict_details_unit_names_both_directions_with_author_and_reason(tmp_path):
+    """conflict_details is bidirectional (incoming AND outgoing CONTRADICTS) and
+    resolves each counterparty's author from its recorded_by stamp when present,
+    falling back to free-text author otherwise; reason comes from the edge."""
+    s = CognitionStorage(tmp_path / "cog")
+    s.add_node(_entity("a", summary="claim a"))
+    s.add_node(CognitionNode(
+        id="b", type=CognitionNodeType.DECISION, summary="claim b", detail="d",
+        context=[], references=[], timestamp="2026-07-15T00:00:00+00:00",
+        author="free text author", metadata={"recorded_by": {"name": "Stamped Name", "email": "s@x.com"}},
+    ))
+    s.add_node(CognitionNode(
+        id="c", type=CognitionNodeType.DECISION, summary="claim c", detail="d",
+        context=[], references=[], timestamp="2026-07-15T00:00:00+00:00",
+        author="free text only",
+    ))
+    _add_edge(s, "b", "a", CognitionEdgeType.CONTRADICTS)  # incoming on "a"
+    s.add_edge(CognitionEdge(
+        from_id="a", to_id="c", edge_type=CognitionEdgeType.CONTRADICTS,
+        timestamp="2026-07-15T00:00:00+00:00", source="test", reason="scope disagreement",
+    ))  # outgoing on "a"
+
+    details = conflict_details(s, "a")
+    by_id = {d["id"]: d for d in details}
+    assert set(by_id) == {"b", "c"}
+    assert by_id["b"]["author"] == "Stamped Name"  # recorded_by name wins over free-text author
+    assert by_id["b"]["reason"] is None  # edge minted with no reason
+    assert by_id["c"]["author"] == "free text only"  # falls back when no recorded_by
+    assert by_id["c"]["reason"] == "scope disagreement"
+
+
+def test_conflict_details_unit_clean_node_returns_empty(tmp_path):
+    s = CognitionStorage(tmp_path / "cog")
+    s.add_node(_entity("clean"))
+
+    assert conflict_details(s, "clean") == []
+
+
+def test_conflict_details_unit_skips_dangling_edge_target(tmp_path):
+    """A CONTRADICTS edge pointing at a node id the graph no longer has a node
+    for (deleted, edge not yet cleaned up) is silently skipped -- never a row
+    for a node that doesn't exist. add_edge() itself refuses this, so the
+    dangling state is reproduced by writing directly to the underlying graph,
+    the same transient shape a deleted-but-not-yet-reconciled edge would leave."""
+    s = CognitionStorage(tmp_path / "cog")
+    s.add_node(_entity("a"))
+    s._graph.add_edge(
+        "ghost", "a", key=CognitionEdgeType.CONTRADICTS.value,
+        type=CognitionEdgeType.CONTRADICTS.value,
+        timestamp="2026-07-15T00:00:00+00:00", source="test", reason=None,
+    )
+
+    assert conflict_details(s, "a") == []
+
+
+# ── conflicted_with wired into cognition_search ─────────────────────────────────
+
+
+def test_search_conflicted_with_present_only_when_conflicted(tmp_path):
+    """conflicted_with names the counterparty ONLY for conflicted hits -- a clean
+    hit never pays the conflict_details cost and never carries the key."""
+    s = CognitionStorage(tmp_path / "cog")
+    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    s.add_node(_entity("a", summary="claim a"))
+    s.add_node(CognitionNode(
+        id="b", type=CognitionNodeType.DECISION, summary="claim b", detail="d",
+        context=[], references=[], timestamp="2026-07-15T00:00:00+00:00",
+        author="t", metadata={"recorded_by": {"name": "Author B", "email": "b@x.com"}},
+    ))
+    s.add_node(_entity("clean", summary="clean hit"))
+    s.add_edge(CognitionEdge(
+        from_id="b", to_id="a", edge_type=CognitionEdgeType.CONTRADICTS,
+        timestamp="2026-07-15T00:00:00+00:00", source="test", reason="conflicting scope",
+    ))
+    _upsert(embed, "a", [1.0, 0.0, 0.0], summary="claim a")
+    _upsert(embed, "clean", [1.0, 0.0, 0.0], summary="clean hit")
+    gen = cast(EmbeddingGenerator, _FixedGen([1.0, 0.0, 0.0]))
+
+    res = _search_cognition(s, embed, gen, "q", limit=5)
+    rows = {r["id"]: r for r in res["results"]}
+    assert rows["a"]["conflicted_with"] == [
+        {"id": "b", "summary": "claim b", "author": "Author B", "reason": "conflicting scope"}
+    ]
+    assert "conflicted_with" not in rows["clean"]
     embed.close()
 
 

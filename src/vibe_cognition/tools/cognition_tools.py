@@ -15,6 +15,7 @@ from ..cognition import (
     CognitionNode,
     CognitionNodeType,
     CognitionStorage,
+    conflict_details,
     conflict_flags,
     delete_cognition_node,
     generate_node_id,
@@ -698,7 +699,11 @@ def _format_search_results(
 
     WP-SearchFlags: each entry also carries ``conflicted``/``superseded_by``
     (see ``cognition.queries.conflict_flags`` for the semantics) — computed here,
-    once, in this per-result loop, not a second pass.
+    once, in this per-result loop, not a second pass. TC2 (888a21f729dd): a
+    conflicted entry additionally carries ``conflicted_with`` — the list of
+    counterparty decisions naming id/summary/author/reason (see
+    ``cognition.queries.conflict_details``) — so the caller doesn't have to
+    chase the bare boolean down themselves.
 
     Returns ``(all live deduped (post-exclusion) hits for this round, excluded_count)``
     — the list is NOT capped to ``limit`` (the caller, ``adaptive_vector_search``,
@@ -765,6 +770,11 @@ def _format_search_results(
             "conflicted": conflicted,
             "superseded_by": superseded_by,
         }
+        # Task 888a21f729dd (TC2): NAME the counterparty when conflicted -- a bare
+        # boolean makes the caller go fetch the conflicting decision themselves.
+        # Only computed for conflicted hits (a clean hit never pays this cost).
+        if conflicted:
+            entry["conflicted_with"] = conflict_details(storage, node_id)
         if node_type == CognitionNodeType.DOCUMENT.value:
             staleness = cheap_staleness_signal(node.get("metadata", {}))
             if staleness:
@@ -1157,6 +1167,13 @@ def _store_document(
     # WP-ID: id-collision minting is now unified into storage.add_node (mint_unique_id);
     # the document-scoped salt loop here is removed (one mechanism — ledger 11).
     node_id = generate_node_id(CognitionNodeType.DOCUMENT.value, title, timestamp)
+    # Task 2858ae93bf17: documents previously never stamped recorded_by, unlike every
+    # other write path (_record_node, _add_task, _register_person) — same
+    # resolve_git_identity, same verbatim shape. This is the live-path fix only; it does
+    # NOT touch the dedup ("already_stored") branch above, which returns an existing node
+    # as-is — backfilling legacy documents is legacy-identity-backfill's job (962ab7b442d5),
+    # scoped OUT of that WP until this ships (v2 there, not here).
+    recorded_by = resolve_git_identity(cognition_dir.parent)
     metadata: dict[str, Any] = {
         "filename": filename,
         "mime": mime or "",
@@ -1165,6 +1182,7 @@ def _store_document(
         "mode": mode,
         "indexed_text_chars": indexed_chars,
         "from_agent": from_agent,
+        "recorded_by": recorded_by,
         **blob_meta,
     }
     if source_path:
@@ -2862,10 +2880,22 @@ def register_cognition_tools(mcp) -> None:
         never a silent duplicate, never a data-losing error. To edit an existing
         person's profile, use `cognition_update_person` instead.
 
+        SENIORITY IS A CLOSED SET, ROLE IS NOT: `role` is free text (whatever the
+        human says — "backend engineer", "PM", "lead", anything). `seniority` is
+        exactly one of owner | senior | mid | junior — nothing else is valid.
+        Before calling this tool, PRESENT these four options to the human and ask
+        which applies; do NOT silently infer/guess a tier from a role title or an
+        offhand word (a human saying "owner, senior" was previously mapped to the
+        wrong tier because the assistant guessed instead of asking — don't repeat
+        that).
+
         Args:
             name: The person's display name.
-            role: Their role (e.g. "backend engineer", "PM").
+            role: Their role (e.g. "backend engineer", "PM") — free text, not the
+                closed set below.
             seniority: One of: owner, senior, mid, junior (closed set, casefolded).
+                Ask the human to pick one of these four words; never map free text
+                onto a tier yourself.
             reports_to_email: Optional direct manager's email. Need not resolve to
                 an existing person node yet (a manager may register later) —
                 dangling is legal, surfaced as `reports_to_registered: false`.
@@ -2914,11 +2944,19 @@ def register_cognition_tools(mcp) -> None:
         control, not an ACL. `summary` ("Name — role") auto-regenerates whenever
         name or role changes, so display never desyncs from the profile.
 
+        SENIORITY IS A CLOSED SET, ROLE IS NOT: `role` is free text; `seniority`
+        is exactly one of owner | senior | mid | junior — nothing else is valid.
+        If the human wants to change seniority, PRESENT these four options and
+        ask which applies; do NOT silently infer/guess a tier from a role title
+        or an offhand word.
+
         Args:
             email_or_id: The person's email OR node id.
             name: New name, if changing.
-            role: New role, if changing.
-            seniority: New seniority (owner | senior | mid | junior), if changing.
+            role: New role, if changing — free text, not the closed set below.
+            seniority: New seniority (owner | senior | mid | junior), if
+                changing. Ask the human to pick one of these four words; never
+                map free text onto a tier yourself.
             reports_to_email: New manager's email; pass "" to clear (top of chain);
                 omit for no change. Self-reporting and cycles are rejected; a
                 dangling (unregistered) email is legal.
@@ -3020,6 +3058,11 @@ def register_cognition_tools(mcp) -> None:
                         the default. Stamped as metadata.from_agent (new documents
                         only — a dedup hit on an existing document is unaffected);
                         surfaced in search results (missing on pre-existing docs).
+
+        New documents are also stamped `metadata.recorded_by` (server-resolved git
+        identity, verbatim — same shape as every other write path). Same caveat as
+        from_agent: only new documents get it; a dedup hit on an existing
+        (pre-existing) document is unaffected and may still lack the stamp.
 
         Returns:
             {node_id, doc_ref, mode, size, indexed_text_chars, already_stored?,
@@ -3294,6 +3337,13 @@ def register_cognition_tools(mcp) -> None:
                                          # similarity places it, same as any other hit;
                                          # these two fields are the ONLY marker that it
                                          # has been superseded or is in conflict.
+                                         # conflicted_with: [{id, summary, author, reason}],
+                                         # present ONLY when conflicted is true — names
+                                         # each CONTRADICTS counterparty (both directions).
+                                         # author is the counterparty's recorded_by name/
+                                         # email when stamped, else its free-text author;
+                                         # reason is the edge's own reason field, null if
+                                         # the edge carries none (TC2, task 888a21f729dd).
               ],
               count: int,                # len(results) — may be < total_found
               total_found: int,          # distinct live (post-exclusion) matches
