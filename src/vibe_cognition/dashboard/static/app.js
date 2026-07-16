@@ -303,6 +303,31 @@ function relatedNodesHTML(node) {
   }).join("")).join("");
 }
 
+// Person-node drilldown (task 5d4e2bd60d17): renders INSIDE the shared drawer
+// via type-conditional rendering, not a new surface — node counts by type,
+// last-active timestamp, currently claimed tasks, open tasks created.
+// Read-only: no register/edit/deregister affordance anywhere here.
+function personActivityHTML(node) {
+  if (node.type !== "person") return "";
+  const act = node.person_activity || {};
+  const counts = act.node_counts || {};
+  const countChips = Object.keys(counts).length
+    ? Object.entries(counts).map(([t, n]) => `<span class="chip type">${escapeHTML(t)} · ${n}</span>`).join(" ")
+    : '<span class="meta">no stamped activity</span>';
+  const taskListHTML = (tasks) => tasks.length
+    ? `<ul>${tasks.map(t => `<li class="node-ref" data-id="${escapeHTML(t.id)}">${escapeHTML(t.summary || t.id)}</li>`).join("")}</ul>`
+    : '<div class="meta">none</div>';
+  return `<div class="detail-section">
+    <h3>Activity</h3>
+    <div class="row" style="margin-bottom:8px;flex-wrap:wrap">${countChips}</div>
+    <div class="meta" style="margin-bottom:8px">last active: ${act.last_active ? escapeHTML(formatTimestamp(act.last_active)) : "never"}</div>
+    <div class="meta" style="margin-bottom:4px">currently claimed tasks</div>
+    ${taskListHTML(act.claimed_tasks || [])}
+    <div class="meta" style="margin:8px 0 4px">open tasks created</div>
+    ${taskListHTML(act.created_tasks || [])}
+  </div>`;
+}
+
 function renderDrawer(node) {
   const type = node.type || "";
   const severity = node.severity;
@@ -318,6 +343,7 @@ function renderDrawer(node) {
     <div class="detail-summary">${escapeHTML(node.summary || "(no summary)")}</div>
     <pre class="detail-body">${escapeHTML(node.detail || "(no detail)")}</pre>
     ${provenanceHTML(node)}
+    ${personActivityHTML(node)}
     ${timelineHTML(node)}
     <div class="detail-section">
       <h3>Related nodes</h3>
@@ -434,8 +460,13 @@ function renderOverviewFeed(elId, list) {
 }
 
 // ── Board ────────────────────────────────────────────────────────────────
+// Column (kanban) view ONLY (Colton's ruling, task e984f2c7c65a) — the former
+// Tree-view toggle rendered the graph constellation instead of a task tree
+// (root cause: the flat tree's list rows carried no card chrome at all, so
+// on a screen with many rows it read as an undifferentiated dot-per-row list
+// indistinguishable at a glance from the Graph tab's node list; not a wiring
+// bug, just a view nobody wants) — removed rather than fixed.
 let boardTasksCache = [];
-let boardMode = "columns"; // "columns" | "tree"
 
 async function loadBoard() {
   let data;
@@ -451,8 +482,44 @@ async function loadBoard() {
 
 function renderBoard() {
   const showCancelled = document.getElementById("board-show-cancelled").checked;
-  if (boardMode === "tree") renderBoardTree(boardTasksCache, showCancelled);
-  else renderBoardColumns(boardTasksCache, showCancelled);
+  renderBoardColumns(boardTasksCache, showCancelled);
+}
+
+// Top-level ancestor walk (mirrors the server's _task_row depth walk, but
+// returns the root id itself, cached per render since boardTasksCache is
+// static for the duration of one renderBoard() call).
+function topAncestorId(taskId, byId, cache) {
+  if (cache.has(taskId)) return cache.get(taskId);
+  const seen = new Set();
+  let ancestor = taskId;
+  let cur = (byId.get(taskId) || {}).parent_id;
+  while (cur && byId.has(cur) && !seen.has(cur)) {
+    seen.add(cur);
+    ancestor = cur;
+    cur = byId.get(cur).parent_id;
+  }
+  cache.set(taskId, ancestor);
+  return ancestor;
+}
+
+// An id counts as an "epic" only if some OTHER task's ancestor walk resolves
+// to it -- i.e. it has at least one real descendant. A childless top-level
+// task (parent_id null, nothing points through it) is just an ordinary task
+// and falls into the trailing "(no epic)" group, not a header of one.
+function findEpicIds(tasks, byId, ancestorCache) {
+  const epics = new Set();
+  for (const t of tasks) {
+    const anc = topAncestorId(t.id, byId, ancestorCache);
+    if (anc !== t.id) epics.add(anc);
+  }
+  return epics;
+}
+
+function epicHeaderHTML(epic) {
+  return `<div class="epic-header" data-id="${escapeHTML(epic.id)}">
+    <span class="chip ${severityChipClass(epic.priority)}">${escapeHTML(epic.priority || "normal")}</span>
+    <span class="grow">${escapeHTML(epic.summary || epic.id)}</span>
+  </div>`;
 }
 
 function taskCardHTML(t) {
@@ -475,25 +542,70 @@ function taskCardHTML(t) {
   </div>`;
 }
 
-function boardColumnHTML(label, items, total) {
+const BOARD_SEVERITY_ORDER = { critical: 0, high: 1, normal: 2, low: 3 };
+
+// Groups `items` (one status column's tasks) by top-level-ancestor epic:
+// epic groups first (ordered by epic priority then recency), a trailing
+// "(no epic)" group always last (task e984f2c7c65a acceptance: "'(no epic)'
+// group present and trailing").
+function boardColumnHTML(label, items, byId, epicIds, ancestorCache, total) {
   const count = total != null ? total : items.length;
   const capNote = (total != null && total > items.length)
     ? ` <span class="meta">(showing ${items.length})</span>` : "";
-  const cards = items.length ? items.map(taskCardHTML).join("")
-    : '<div class="meta" style="padding:8px 4px">none</div>';
-  return `<div class="col"><h4>${escapeHTML(label)} · ${count}${capNote}</h4>${cards}</div>`;
+
+  if (!items.length) {
+    return `<div class="col"><h4>${escapeHTML(label)} · ${count}${capNote}</h4>
+      <div class="meta" style="padding:8px 4px">none</div></div>`;
+  }
+
+  const groups = new Map(); // epicId -> member tasks (non-epic descendants only)
+  const noEpic = [];
+  for (const t of items) {
+    if (epicIds.has(t.id)) continue; // epics render ONLY as headers, never as cards
+    const anc = topAncestorId(t.id, byId, ancestorCache);
+    if (epicIds.has(anc)) {
+      if (!groups.has(anc)) groups.set(anc, []);
+      groups.get(anc).push(t);
+    } else {
+      noEpic.push(t);
+    }
+  }
+
+  const epicOrder = [...groups.keys()].sort((a, b) => {
+    const ea = byId.get(a) || {}, eb = byId.get(b) || {};
+    const sa = BOARD_SEVERITY_ORDER[ea.priority || "normal"] ?? 2;
+    const sb = BOARD_SEVERITY_ORDER[eb.priority || "normal"] ?? 2;
+    if (sa !== sb) return sa - sb;
+    return (eb.timestamp || "").localeCompare(ea.timestamp || ""); // recency, newest first
+  });
+
+  const sections = epicOrder.map(epicId => {
+    const epic = byId.get(epicId) || { id: epicId, summary: epicId };
+    return `<div class="epic-group">${epicHeaderHTML(epic)}${groups.get(epicId).map(taskCardHTML).join("")}</div>`;
+  });
+  sections.push(`<div class="epic-group no-epic">
+    <div class="epic-header no-epic-header"><span class="grow">(no epic)</span></div>
+    ${noEpic.length ? noEpic.map(taskCardHTML).join("") : '<div class="meta" style="padding:4px">none</div>'}
+  </div>`);
+
+  return `<div class="col"><h4>${escapeHTML(label)} · ${count}${capNote}</h4>${sections.join("")}</div>`;
 }
 
 function wireCardClicks(container) {
   for (const el of container.querySelectorAll(".tcard[data-id]")) {
     el.addEventListener("click", () => openDrawer(el.dataset.id));
   }
+  for (const el of container.querySelectorAll(".epic-header[data-id]")) {
+    el.addEventListener("click", () => openDrawer(el.dataset.id));
+  }
 }
 
 function renderBoardColumns(tasks, showCancelled) {
-  document.getElementById("board-tree").hidden = true;
   const board = document.getElementById("board-columns");
-  board.hidden = false;
+
+  const byId = new Map(tasks.map(t => [t.id, t]));
+  const ancestorCache = new Map();
+  const epicIds = findEpicIds(tasks, byId, ancestorCache);
 
   const cols = { open: [], in_progress: [], blocked: [], done: [], cancelled: [] };
   for (const t of tasks) (cols[t.status] || cols.open).push(t);
@@ -502,39 +614,16 @@ function renderBoardColumns(tasks, showCancelled) {
   const doneShown = cols.done.slice(0, DONE_CAP);
 
   const parts = [
-    boardColumnHTML("Open", cols.open),
-    boardColumnHTML("In progress", cols.in_progress),
-    boardColumnHTML("Blocked", cols.blocked),
-    boardColumnHTML("Done", doneShown, doneTotal),
+    boardColumnHTML("Open", cols.open, byId, epicIds, ancestorCache),
+    boardColumnHTML("In progress", cols.in_progress, byId, epicIds, ancestorCache),
+    boardColumnHTML("Blocked", cols.blocked, byId, epicIds, ancestorCache),
+    boardColumnHTML("Done", doneShown, byId, epicIds, ancestorCache, doneTotal),
   ];
-  if (showCancelled) parts.push(boardColumnHTML("Cancelled", cols.cancelled));
+  if (showCancelled) parts.push(boardColumnHTML("Cancelled", cols.cancelled, byId, epicIds, ancestorCache));
 
   board.style.gridTemplateColumns = `repeat(${parts.length}, minmax(0, 1fr))`;
   board.innerHTML = parts.join("");
   wireCardClicks(board);
-}
-
-function renderBoardTree(tasks, showCancelled) {
-  document.getElementById("board-columns").hidden = true;
-  const tree = document.getElementById("board-tree");
-  tree.hidden = false;
-
-  const rows = tasks.filter(t => showCancelled || t.status !== "cancelled");
-  rows.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
-  tree.innerHTML = rows.length ? rows.map(t => `
-    <li data-id="${escapeHTML(t.id)}">
-      <span class="crumb-indent">${"—".repeat(t.depth)}</span>
-      <span class="st ${escapeHTML(t.status)}">${escapeHTML(t.status)}</span>
-      <span class="grow">${escapeHTML(t.summary || t.id)}</span>
-      <span class="chip ${severityChipClass(t.priority)}">${escapeHTML(t.priority || "normal")}</span>
-    </li>`).join("") : '<li class="empty">no tasks</li>';
-  wireRowClicks(tree);
-}
-
-function toggleBoardMode() {
-  boardMode = boardMode === "columns" ? "tree" : "columns";
-  document.getElementById("board-tree-toggle").textContent = boardMode === "columns" ? "Tree view" : "Board view";
-  renderBoard();
 }
 
 // ── Workflows library (WP-DashV2) ───────────────────────────────────────
@@ -710,18 +799,37 @@ function wireActivityFilters() {
 // Also seeds the roster cache directly from this response, so a seniority
 // chip render right after visiting this view doesn't cost a second round-trip.
 async function loadPeople() {
-  let data;
   try {
-    data = await api("/api/people");
+    const data = await api("/api/people");
+    const list = data.people || [];
+    const map = new Map();
+    for (const p of list) if (p.email) map.set(p.email.toLowerCase(), p);
+    _rosterByEmail = map;
+    renderPeople(list, map);
   } catch (err) {
     toast(`People load failed: ${err.message}`, "error");
+  }
+  try {
+    const unreg = await api("/api/people/unregistered");
+    renderUnregisteredWriters(unreg.unregistered_writers || []);
+  } catch (err) {
+    toast(`Unregistered writers load failed: ${err.message}`, "error");
+  }
+}
+
+function renderUnregisteredWriters(list) {
+  const el = document.getElementById("people-unregistered");
+  if (!list.length) {
+    el.innerHTML = '<li class="empty">none — every stamped writer is registered</li>';
     return;
   }
-  const list = data.people || [];
-  const map = new Map();
-  for (const p of list) if (p.email) map.set(p.email.toLowerCase(), p);
-  _rosterByEmail = map;
-  renderPeople(list, map);
+  el.innerHTML = list.map(w => `
+    <li class="row">
+      <span class="grow">${escapeHTML(w.email)}</span>
+      <span class="meta">${escapeHTML((w.names || []).join(", "))}</span>
+      <span class="meta">${w.node_count} node${w.node_count === 1 ? "" : "s"}</span>
+      <span class="meta">${escapeHTML(formatTimestamp(w.first_seen))} – ${escapeHTML(formatTimestamp(w.last_seen))}</span>
+    </li>`).join("");
 }
 
 function personCardHTML(p, byEmail) {
@@ -1093,7 +1201,6 @@ async function init() {
   wireSearch();
   wireActivityFilters();
   document.getElementById("drawer-close").addEventListener("click", closeDrawer);
-  document.getElementById("board-tree-toggle").addEventListener("click", toggleBoardMode);
   document.getElementById("board-show-cancelled").addEventListener("change", renderBoard);
   document.getElementById("refresh-btn").addEventListener("click", () => {
     refreshStats().then(applyEmbeddingBannerState);

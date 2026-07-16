@@ -174,6 +174,82 @@ class TestAuth:
             "IPv6 loopback host [::1]: should be accepted by middleware (was 403)"
 
 
+class TestIndexPage:
+    """WP-DashV3: task 99fa0d4da1ad (tab title) + task 3f43360014ee (cache
+    headers), coupled per the brief -- both land on the same hand-built index
+    response, so both are asserted against it here."""
+
+    def test_title_leads_with_project_folder_name(self, client, tmp_path):
+        """The title must be correct on INITIAL PAGE LOAD (server-side
+        substitution), not only after a JS data fetch -- asserted directly on
+        the raw HTML body, no script execution involved."""
+        c, _ = client
+        r = c.get("/?token=testtok")
+        assert r.status_code == 200
+        assert f"<title>{tmp_path.name} — Vibe Cognition Dashboard</title>" in r.text
+
+    def test_two_projects_get_distinguishable_titles(self, tmp_path):
+        """Acceptance: two dashboards for two different projects show
+        distinguishable tab titles, each starting with its own folder name."""
+        proj_a = tmp_path / "alpha"
+        proj_b = tmp_path / "beta"
+        lc_a = {
+            "config": None, "cognition_storage": CognitionStorage(proj_a / ".cognition"),
+            "cognition_embedding_storage": _FakeEmbeddingStorage(),
+            "embedding_generator": None, "embedding_ready": threading.Event(),
+            "embedding_error": None,
+        }
+        lc_b = {
+            "config": None, "cognition_storage": CognitionStorage(proj_b / ".cognition"),
+            "cognition_embedding_storage": _FakeEmbeddingStorage(),
+            "embedding_generator": None, "embedding_ready": threading.Event(),
+            "embedding_error": None,
+        }
+        app_a, stack_a = build_app(lc_a, token="tok")
+        app_b, stack_b = build_app(lc_b, token="tok")
+        try:
+            with TestClient(app_a, base_url="http://127.0.0.1:7842") as ca, \
+                 TestClient(app_b, base_url="http://127.0.0.1:7843") as cb:
+                title_a = ca.get("/?token=tok").text
+                title_b = cb.get("/?token=tok").text
+            assert "<title>alpha — Vibe Cognition Dashboard</title>" in title_a
+            assert "<title>beta — Vibe Cognition Dashboard</title>" in title_b
+        finally:
+            stack_a.close()
+            stack_b.close()
+
+    def test_index_response_has_no_cache_control(self, client):
+        """Task 3f43360014ee: a hand-built response doesn't inherit
+        FileResponse's auto etag/last-modified -- Cache-Control must be set
+        explicitly, so a plain reload after a plugin upgrade fetches the new
+        HTML instead of a browser-cached copy."""
+        c, _ = client
+        r = c.get("/?token=testtok")
+        assert r.status_code == 200
+        assert r.headers.get("cache-control") == "no-cache"
+
+    def test_static_asset_has_cache_control(self, client):
+        """Simulates the upgrade-then-plain-reload scenario at the header
+        level: /static responses must carry Cache-Control so a browser
+        revalidates instead of heuristically skipping the request entirely
+        (the 0.18.0 -> 0.27.0 mangled-page incident, task 917822052e46)."""
+        c, _ = client
+        r = c.get("/static/styles.css", headers=_hdr())
+        assert r.status_code == 200
+        assert r.headers.get("cache-control") == "no-cache"
+
+    def test_static_asset_304_still_has_cache_control(self, client):
+        """The no-cache header must survive the ETag-revalidation (304) path
+        too, not just the first 200 -- a repeat load is exactly the case this
+        fix targets."""
+        c, _ = client
+        first = c.get("/static/styles.css", headers=_hdr())
+        etag = first.headers["etag"]
+        second = c.get("/static/styles.css", headers={**_hdr(), "if-none-match": etag})
+        assert second.status_code == 304
+        assert second.headers.get("cache-control") == "no-cache"
+
+
 class TestRouteTable:
     """WP-DashV2 acceptance: read-only surface -- no new non-GET route joins
     the two pre-existing ones (DELETE /api/node/{id}, the only mutation; POST
@@ -1038,6 +1114,155 @@ class TestPeopleAPI:
         assert report["reports_to_registered"] is False
 
 
+class TestUnregisteredWriters:
+    """WP-DashV3: GET /api/people/unregistered — task 5d4e2bd60d17."""
+
+    def _person(self, node_id, name, email):
+        return CognitionNode(
+            id=node_id, type=CognitionNodeType.PERSON, summary=f"{name}", detail="",
+            context=[], references=[], timestamp=datetime.now(UTC).isoformat(), author=name,
+            metadata={"person": {"email": email.casefold(), "name": name, "role": "engineer",
+                                  "seniority": "mid", "reports_to_email": ""}},
+        )
+
+    def _stamped(self, node_id, stamp_key, name, email, ts=None):
+        return CognitionNode(
+            id=node_id, type=CognitionNodeType.DECISION, summary=f"by {name}", detail="d",
+            context=[], references=[], author=name,
+            timestamp=ts or datetime.now(UTC).isoformat(),
+            metadata={stamp_key: {"name": name, "email": email}},
+        )
+
+    def test_no_token_rejected(self, client):
+        c, _ = client
+        assert c.get("/api/people/unregistered").status_code == 403
+
+    def test_registered_writer_excluded(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._person("preg", "Ada", "ada@example.com"))
+        s.add_node(self._stamped("nreg", "recorded_by", "Ada", "ada@example.com"))
+
+        body = c.get("/api/people/unregistered", headers=_hdr()).json()
+        emails = {w["email"] for w in body["unregistered_writers"]}
+        assert "ada@example.com" not in emails
+
+    def test_unregistered_writer_listed_with_shape(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._stamped("nunreg1", "recorded_by", "Ghost", "ghost@example.com",
+                                  ts="2026-01-01T00:00:00+00:00"))
+        s.add_node(self._stamped("nunreg2", "created_by", "Ghost", "ghost@example.com",
+                                  ts="2026-02-01T00:00:00+00:00"))
+
+        body = c.get("/api/people/unregistered", headers=_hdr()).json()
+        row = next(w for w in body["unregistered_writers"] if w["email"] == "ghost@example.com")
+        assert row["names"] == ["Ghost"]
+        assert row["node_count"] == 2
+        assert row["first_seen"] == "2026-01-01T00:00:00+00:00"
+        assert row["last_seen"] == "2026-02-01T00:00:00+00:00"
+
+    def test_casefold_matches_registered_person(self, client):
+        """Mixed-case git-stamped email must still match a lowercase-registered
+        person -- same casefold discipline as the rest of the identity surface."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._person("preg2", "Bo", "bo@example.com"))
+        s.add_node(self._stamped("nreg2", "recorded_by", "Bo", "BO@EXAMPLE.COM"))
+
+        body = c.get("/api/people/unregistered", headers=_hdr()).json()
+        emails = {w["email"] for w in body["unregistered_writers"]}
+        assert "bo@example.com" not in emails
+
+    def test_unstamped_node_not_listed(self, client):
+        """A node with no recorded_by/created_by at all (free-text author only)
+        contributes nothing -- there is no email to list."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(CognitionNode(
+            id="nolegacy", type=CognitionNodeType.DECISION, summary="legacy", detail="d",
+            context=[], references=[], timestamp=datetime.now(UTC).isoformat(), author="OldAuthor",
+        ))
+        body = c.get("/api/people/unregistered", headers=_hdr()).json()
+        assert body["unregistered_writers"] == []
+
+
+class TestPersonActivityDrilldown:
+    """WP-DashV3: GET /api/node/{id} gains `person_activity` for PERSON nodes
+    only — task 5d4e2bd60d17, the read-only drawer drilldown."""
+
+    def _person(self, node_id, name, email):
+        return CognitionNode(
+            id=node_id, type=CognitionNodeType.PERSON, summary=name, detail="",
+            context=[], references=[], timestamp=datetime.now(UTC).isoformat(), author=name,
+            metadata={"person": {"email": email.casefold(), "name": name, "role": "engineer",
+                                  "seniority": "mid", "reports_to_email": ""}},
+        )
+
+    def test_non_person_node_has_no_person_activity(self, client, storage):
+        c, _ = client
+        node_id = next(iter(storage.graph.nodes))
+        body = c.get(f"/api/node/{node_id}", headers=_hdr()).json()
+        assert "person_activity" not in body
+
+    def test_counts_last_active_and_claimed_created_tasks(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._person("pdrill", "Dana", "dana@example.com"))
+        who = {"name": "Dana", "email": "dana@example.com"}
+
+        s.add_node(CognitionNode(
+            id="ddec1", type=CognitionNodeType.DECISION, summary="Dana's decision", detail="d",
+            context=[], references=[], author="Dana",
+            timestamp="2026-01-01T00:00:00+00:00", metadata={"recorded_by": who},
+        ))
+        s.add_node(CognitionNode(
+            id="ddec2", type=CognitionNodeType.DECISION, summary="Dana's later decision", detail="d",
+            context=[], references=[], author="Dana",
+            timestamp="2026-03-01T00:00:00+00:00", metadata={"recorded_by": who},
+        ))
+        s.add_node(CognitionNode(
+            id="dtaskclaimed", type=CognitionNodeType.TASK, summary="Dana's claim", detail="d",
+            context=[], references=[], author="Dana", timestamp="2026-02-01T00:00:00+00:00",
+            metadata={"status": "in_progress", "created_by": who, "claimed_by": who},
+        ))
+        s.add_node(CognitionNode(
+            id="dtaskcreated", type=CognitionNodeType.TASK, summary="Dana's open task", detail="d",
+            context=[], references=[], author="Dana", timestamp="2026-02-15T00:00:00+00:00",
+            metadata={"status": "open", "created_by": who},
+        ))
+        # A task Dana created but that's already done must NOT count as "open".
+        s.add_node(CognitionNode(
+            id="dtaskdone", type=CognitionNodeType.TASK, summary="Dana's done task", detail="d",
+            context=[], references=[], author="Dana", timestamp="2026-02-20T00:00:00+00:00",
+            metadata={"status": "done", "created_by": who},
+        ))
+        # Someone else's node must not be attributed to Dana.
+        s.add_node(CognitionNode(
+            id="other", type=CognitionNodeType.DECISION, summary="Not Dana's", detail="d",
+            context=[], references=[], author="Someone",
+            timestamp="2026-03-05T00:00:00+00:00",
+            metadata={"recorded_by": {"name": "Someone", "email": "someone@example.com"}},
+        ))
+
+        body = c.get("/api/node/pdrill", headers=_hdr()).json()
+        act = body["person_activity"]
+        assert act["node_counts"] == {"decision": 2, "task": 3}
+        assert act["last_active"] == "2026-03-01T00:00:00+00:00"
+        assert [t["id"] for t in act["claimed_tasks"]] == ["dtaskclaimed"]
+        assert [t["id"] for t in act["created_tasks"]] == ["dtaskcreated"]
+
+    def test_no_activity_yields_empty_shape(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._person("plonely", "Nobody", "nobody@example.com"))
+
+        body = c.get("/api/node/plonely", headers=_hdr()).json()
+        assert body["person_activity"] == {
+            "node_counts": {}, "last_active": None, "claimed_tasks": [], "created_tasks": [],
+        }
+
+
 class TestConflictedFlag:
     """WP-DashV3: `conflicted` bool on /api/tasks and /api/activity rows.
 
@@ -1784,3 +2009,56 @@ class TestFrontendStructure:
             "ensureRosterLoaded must short-circuit once loaded/loading -- else "
             "every identityChipHTML render would refetch the roster"
         )
+
+    def test_board_tree_toggle_fully_removed(self):
+        """Task e984f2c7c65a: the Tree-view toggle and all board-tree markup/
+        logic are REMOVED, not fixed -- Colton's ruling. No DOM toggle, no JS
+        entry point for it anywhere."""
+        html = self._read("index.html")
+        js = self._read("app.js")
+        assert "board-tree" not in html
+        assert "Tree view" not in html
+        for token in ("toggleBoardMode", "renderBoardTree", "boardMode", 'id="board-tree"'):
+            assert token not in js, f"tree-view remnant still present: {token}"
+        assert 'id="board-show-cancelled"' in html, "the cancelled toggle must survive the tree removal"
+
+    def test_board_groups_by_top_level_epic_ancestor(self):
+        """Task e984f2c7c65a acceptance: tasks group under their top-level
+        ancestor epic; a childless top-level task is NOT an epic (falls to
+        '(no epic)'); the trailing group is literally named that."""
+        js = self._read("app.js")
+        assert "function topAncestorId(" in js
+        assert "function findEpicIds(" in js
+        assert "(no epic)" in js
+        # The degenerate rule: an epic never renders as its own card.
+        board_col_start = js.index("function boardColumnHTML(")
+        board_col_body = js[board_col_start:js.index("\nfunction wireCardClicks", board_col_start)]
+        assert "if (epicIds.has(t.id)) continue" in board_col_body, (
+            "an epic must never be duplicated as a card beneath its own header"
+        )
+
+    def test_people_view_wires_unregistered_writers(self):
+        """Task 5d4e2bd60d17 A3.1: the People view fetches and renders the
+        unregistered-writers list on activation, same fetch-on-activation
+        pattern as the roster itself."""
+        html = self._read("index.html")
+        js = self._read("app.js")
+        assert 'id="people-unregistered"' in html
+        assert "/api/people/unregistered" in js
+        assert "function renderUnregisteredWriters(" in js
+
+    def test_person_drawer_drilldown_wired_not_a_new_surface(self):
+        """Task 5d4e2bd60d17 A3.2: the drilldown renders INSIDE the shared
+        drawer via type-conditional rendering (personActivityHTML gated on
+        node.type === "person"), reachable from the SAME roster-row click
+        that already opens the drawer -- no new click surface, and the
+        existing 'View activity' button must survive untouched."""
+        html = self._read("index.html")
+        js = self._read("app.js")
+        assert "function personActivityHTML(" in js
+        assert 'if (node.type !== "person") return ""' in js
+        render_drawer_start = js.index("function renderDrawer(")
+        render_drawer_body = js[render_drawer_start:js.index("\nasync function deleteNode", render_drawer_start)]
+        assert "personActivityHTML(node)" in render_drawer_body
+        assert 'data-activity="' in html or "data-activity" in js, "existing View-activity affordance must remain"
+        assert "function viewPersonActivity(" in js, "existing View-activity handler must remain"
