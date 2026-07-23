@@ -16,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -119,7 +120,10 @@ LOG="${FAKE_CONTROL_DIR}/invocations.log"
   echo "ARGS: $*"
   echo "UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT:-}"
   echo "VIBE_MIGRATION_NOTE=${VIBE_MIGRATION_NOTE:-}"
+  echo "VIBE_UPDATE_NOTE=${VIBE_UPDATE_NOTE:-}"
   echo "REPO_PATH=${REPO_PATH:-}"
+  echo "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT:-}"
+  echo "CLAUDE_PLUGIN_DATA=${CLAUDE_PLUGIN_DATA:-}"
   echo "---"
 } >> "$LOG"
 
@@ -142,6 +146,10 @@ case "$ARGS" in
   *"vibe_cognition.migrate_mcp"*)
     _read_ctrl migrate_stdout ""
     exit "$(_read_ctrl migrate_exit 0)"
+    ;;
+  *"vibe_cognition.update_check"*)
+    _read_ctrl update_stdout ""
+    exit "$(_read_ctrl update_exit 0)"
     ;;
   *"vibe_cognition.cognition.prime"*)
     _read_ctrl prime_stdout '{}'
@@ -201,6 +209,7 @@ def hook_env(tmp_path):
             self, hook_path: Path, *,
             plugin_root_override: str | None = None,
             omit_plugin_data: bool = False,
+            extra_env: dict | None = None,
         ):
             extra = {
                 "PATH": str(self.bin_dir),
@@ -210,6 +219,8 @@ def hook_env(tmp_path):
             }
             if not omit_plugin_data:
                 extra["CLAUDE_PLUGIN_DATA"] = str(self.plugin_data)
+            if extra_env:
+                extra.update(extra_env)
             env = _minimal_env(extra)
             return subprocess.run(
                 [_BASH, _msys_path(hook_path)],
@@ -300,6 +311,134 @@ def test_no_migrate_note_forwards_empty_string(hook_env):
     assert any("VIBE_MIGRATION_NOTE=\n" in b or b.rstrip().endswith("VIBE_MIGRATION_NOTE=") for b in prime_blocks)
 
 
+# ── update_check (WP-Nudge-1): kill switch, throttle gate, note forwarding ───
+
+
+def test_update_check_invoked_on_first_run_no_stamp_note_forwarded(hook_env):
+    """No existing stamp (first run): update_check.py IS invoked, and its
+    printed note reaches prime via VIBE_UPDATE_NOTE -- same wiring shape as
+    the migrate-note forwarding tests above."""
+    note = "vibe-cognition v0.29.0 is available (you have v0.28.0)."
+    hook_env.seed("health_probe_exit", "0")
+    hook_env.seed("update_stdout", note)
+
+    result = hook_env.run(_SESSION_START)
+
+    assert result.returncode == 0, result.stderr
+    log = hook_env.log_text()
+    blocks = log.split("---\n")
+    assert any("vibe_cognition.update_check" in b for b in blocks), (
+        f"update_check was never invoked: {log}"
+    )
+    prime_blocks = [b for b in blocks if "vibe_cognition.cognition.prime" in b]
+    assert prime_blocks, f"prime was never invoked: {log}"
+    assert any(f"VIBE_UPDATE_NOTE={note}" in b for b in prime_blocks), (
+        f"update note not forwarded to prime's invocation: {prime_blocks}"
+    )
+
+
+def test_no_update_note_forwards_empty_string(hook_env):
+    """update_check prints nothing (the common case) -> prime must see an
+    EMPTY VIBE_UPDATE_NOTE, not a stale/leftover value."""
+    hook_env.seed("health_probe_exit", "0")
+    hook_env.seed("update_stdout", "")
+
+    result = hook_env.run(_SESSION_START)
+
+    assert result.returncode == 0, result.stderr
+    log = hook_env.log_text()
+    blocks = log.split("---\n")
+    prime_blocks = [b for b in blocks if "vibe_cognition.cognition.prime" in b]
+    assert prime_blocks
+    assert any(
+        "VIBE_UPDATE_NOTE=\n" in b or b.rstrip().endswith("VIBE_UPDATE_NOTE=")
+        for b in prime_blocks
+    )
+
+
+def test_update_check_skipped_when_stamp_fresh(hook_env):
+    """A stamp file written just now (< 24h old): update_check.py is NEVER
+    invoked -- no uv process, no network, per the throttle gate."""
+    hook_env.plugin_data.mkdir(parents=True, exist_ok=True)
+    stamp = hook_env.plugin_data / "update-check.json"
+    stamp.write_text('{"checked_at": "", "remote_version": ""}', encoding="utf-8")
+
+    hook_env.seed("health_probe_exit", "0")
+    hook_env.seed("update_stdout", "should never be seen")
+
+    result = hook_env.run(_SESSION_START)
+
+    assert result.returncode == 0, result.stderr
+    log = hook_env.log_text()
+    blocks = log.split("---\n")
+    assert not any("vibe_cognition.update_check" in b for b in blocks), (
+        f"update_check was invoked despite a fresh stamp: {log}"
+    )
+
+
+def test_update_check_proceeds_when_stamp_older_than_24h(hook_env):
+    """The mirror of the fresh-stamp case (Vince's redirect): a stamp OLDER
+    than 24h must still trigger an update_check invocation -- pins that the
+    gate reads `find`'s OUTPUT (empty when nothing matches -mtime -1), not
+    its exit status (0 regardless of a match), which would otherwise make a
+    stale stamp silently read as "fresh" forever after day one.
+
+    Fails-before (the exact bug Vince flagged): gating on `find`'s exit code
+    instead of its output -- `find` exits 0 whether or not anything matched,
+    so a naive `if find "$STAMP" -mtime -1 >/dev/null; then SKIP` would never
+    proceed again once a stamp existed.
+    """
+    hook_env.plugin_data.mkdir(parents=True, exist_ok=True)
+    stamp = hook_env.plugin_data / "update-check.json"
+    stamp.write_text('{"checked_at": "", "remote_version": ""}', encoding="utf-8")
+    old_time = time.time() - (25 * 3600)
+    os.utime(stamp, (old_time, old_time))
+
+    hook_env.seed("health_probe_exit", "0")
+    hook_env.seed("update_stdout", "vibe-cognition v0.29.0 is available.")
+
+    result = hook_env.run(_SESSION_START)
+
+    assert result.returncode == 0, result.stderr
+    log = hook_env.log_text()
+    blocks = log.split("---\n")
+    assert any("vibe_cognition.update_check" in b for b in blocks), (
+        f"update_check was not invoked despite a stale (25h) stamp: {log}"
+    )
+
+
+def test_update_check_skipped_when_nudge_off(hook_env):
+    """VIBE_UPDATE_NUDGE=off skips the check entirely, even with no stamp at
+    all (would otherwise be a guaranteed-invoke case) -- the kill switch is
+    checked bash-side BEFORE the throttle gate, so it also saves the process
+    spawn, not just the nudge text."""
+    hook_env.seed("health_probe_exit", "0")
+    hook_env.seed("update_stdout", "should never be seen")
+
+    result = hook_env.run(_SESSION_START, extra_env={"VIBE_UPDATE_NUDGE": "off"})
+
+    assert result.returncode == 0, result.stderr
+    log = hook_env.log_text()
+    blocks = log.split("---\n")
+    assert not any("vibe_cognition.update_check" in b for b in blocks), (
+        f"update_check was invoked despite VIBE_UPDATE_NUDGE=off: {log}"
+    )
+
+
+def test_update_check_breadcrumbs_present(hook_env):
+    """update_check_start/done breadcrumbs appear on stderr, matching the
+    other two `uv run` call sites' instrumentation."""
+    hook_env.seed("health_probe_exit", "0")
+
+    result = hook_env.run(_SESSION_START)
+
+    assert result.returncode == 0, result.stderr
+    assert "update_check_start" in result.stderr
+    assert "update_check_done" in result.stderr
+    assert "update_check_start" not in result.stdout
+    assert "update_check_done" not in result.stdout
+
+
 # ── health-probe branch selection ─────────────────────────────────────────────
 
 
@@ -364,11 +503,11 @@ def test_no_uv_on_path_emits_warning_and_exits_zero(hook_env):
 # ── WP-A 1b (decision 9022f7de94e9): uv-run timing breadcrumbs ───────────────
 
 
-def test_three_uv_run_breadcrumb_pairs_appear_on_stderr(hook_env):
-    """Each of the three `uv run` call sites (health probe, migrate_mcp,
-    prime) must emit a start+done breadcrumb pair to STDERR (never stdout --
-    that must stay reserved for the hook's JSON output), tagged with the
-    hook's own PID.
+def test_four_uv_run_breadcrumb_pairs_appear_on_stderr(hook_env):
+    """Each of the four `uv run` call sites (health probe, migrate_mcp,
+    update_check (WP-Nudge-1), prime) must emit a start+done breadcrumb pair
+    to STDERR (never stdout -- that must stay reserved for the hook's JSON
+    output), tagged with the hook's own PID.
 
     Fails-before: no instrumentation existed, so hook-vs-server venv overlap
     (distinguishing H1 venv-lock contention from H5 baseline cold-start tax)
@@ -382,6 +521,7 @@ def test_three_uv_run_breadcrumb_pairs_appear_on_stderr(hook_env):
     for label in (
         "probe_start", "probe_done_ok",
         "migrate_mcp_start", "migrate_mcp_done",
+        "update_check_start", "update_check_done",
         "prime_start", "prime_done",
     ):
         assert label in result.stderr, f"missing breadcrumb {label!r} in stderr: {result.stderr}"

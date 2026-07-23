@@ -5,7 +5,7 @@
 ![MCP](https://img.shields.io/badge/MCP-Server-purple?style=flat)
 # Vibe Cognition
 
-A fully local [MCP](https://modelcontextprotocol.io/) server for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that captures project knowledge — decisions, failures, discoveries, patterns, and more — so future sessions have context on *why* the code is the way it is. After a one-time model download, all processing and storage happens on your machine — no API keys, no cloud services.
+A fully local [MCP](https://modelcontextprotocol.io/) server for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that captures project knowledge — decisions, failures, discoveries, patterns, and more — so future sessions have context on *why* the code is the way it is. After a one-time model download, all processing and storage happens on your machine — no API keys needed. (A small, optional, read-only version check reaches GitHub once a day by default; see [Update Notifications](#update-notifications).)
 
 ## Quick Start
 
@@ -44,6 +44,7 @@ search work immediately, before that.
 - [How It Works](#how-it-works)
 - [What's Included](#whats-included)
 - [Prerequisites](#prerequisites)
+- [Update Notifications](#update-notifications)
 - [MCP Tools](#mcp-tools)
 - [Dashboard](#dashboard)
 - [Storage](#storage)
@@ -64,7 +65,7 @@ search work immediately, before that.
 - **Curation Skill**: `/vibe-curate` skill with edge-analyzer, conflict-analyzer, and cluster-analyzer subagents for semantic edge creation, deliberate contradiction/supersession hunting, and cluster identification
 - **Local Dashboard**: Interactive graph viewer with semantic search and node-detail sidebar — launch in your browser from Claude or the CLI
 - **Session Context Injection**: Start every Claude Code session with recent project context via hooks
-- **Local-First**: All processing and storage happens on your machine — no API keys, no cloud services
+- **Local-First**: All processing and storage happens on your machine — no API keys needed (see [Update Notifications](#update-notifications) for the one narrow, optional exception)
 - **Git-Committed Knowledge**: The cognition journal is designed to be committed to Git and shared with your team
 
 ## How It Works
@@ -111,6 +112,16 @@ The plugin bundles everything needed — no manual configuration required:
 The first time the MCP server starts in a new session, `uv` automatically installs Python dependencies. This takes 30-60 seconds on the first run. Subsequent sessions start instantly.
 
 The embedding model (~250MB) also downloads on first use from Hugging Face. After that, it's cached locally at `~/.cache/huggingface/`.
+
+## Update Notifications
+
+Claude Code doesn't auto-update third-party marketplace plugins, so there's normally no signal that a new version of Vibe Cognition exists. To fix that, the SessionStart hook makes a small, read-only check once every 24 hours:
+
+- **What's fetched**: two unauthenticated HTTPS GETs to `raw.githubusercontent.com` — the marketplace's `marketplace.json` (to find the released version's pin) and that version's `plugin.json`. Nothing about your project, your graph, or your machine is sent; these are plain GET requests with no request body.
+- **What happens with it**: the fetched version string is compared to your installed version. If a newer one is available, one line is added to your session-start context naming the new version and how to update — nothing is installed or changed automatically. Updating is always your call.
+- **Throttling**: at most once per 24 hours, tracked by a local timestamp file in the plugin's data directory (never committed, never synced).
+- **How to disable**: set `VIBE_UPDATE_NUDGE=off` (also accepts `0`/`false`/`no`) in your environment. This skips the check entirely — no network request, no nudge.
+- **Contributing to this repo**: a dev session on this repo makes the same daily check like any other project, unless you set `VIBE_UPDATE_NUDGE=off`.
 
 ## MCP Tools
 

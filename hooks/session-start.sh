@@ -131,13 +131,53 @@ MIGRATE_NOTE=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
     python -m vibe_cognition.migrate_mcp "$MCP_JSON" 2>/dev/null) || MIGRATE_NOTE=""
 _bc "migrate_mcp_done"
 
-# ── Step 4: Inject project context (+ any migration note) via prime ──────
-# prime self-guards: it emits output when there is a migration note OR a
-# .cognition/ dir, and exits silently otherwise.
+# ── Step 3b: Check for a newer released version, nudge-only ──────────────
+# Nudge-only: no auto-update, no cloud service touched beyond a couple of
+# read-only GETs the check module itself makes. Kill switch VIBE_UPDATE_NUDGE
+# (off/0/false/no) skips WITHOUT spawning uv/python at all -- checked here,
+# bash-side, before either the kill-switch or throttle gate below would
+# otherwise cost a process spawn. Guarded for set -e: a failure -> "".
+UPDATE_NOTE=""
+NUDGE_OFF=false
+case "${VIBE_UPDATE_NUDGE:-}" in
+    off|OFF|Off|0|false|False|FALSE|no|No|NO) NUDGE_OFF=true ;;
+esac
+
+STAMP2="${PLUGIN_DATA_NATIVE}/update-check.json"
+# 24h throttle keyed off the stamp file's MTIME, not its JSON payload --
+# parsing checked_at in bash needs jq/python and reintroduces the process
+# spawn this gate exists to avoid. `find -mtime -1` is identical GNU/BSD
+# (unlike `stat -c` vs `stat -f`), so this stays portable off Windows too.
+# IMPORTANT: `find ... -mtime -1` exits 0 whether or not anything matched --
+# the predicate filters OUTPUT, it does not set the exit code. Gate on the
+# output being non-empty, and keep this as an explicit if/fi (not a bare
+# `[ ]` test at top level) -- the routine "stale -> proceed" case is NOT an
+# error and must never trip `set -e`.
+STAMP_FRESH=false
+if [ -f "$STAMP2" ]; then
+    if [ -n "$(find "$STAMP2" -mtime -1 2>/dev/null)" ]; then
+        STAMP_FRESH=true
+    fi
+fi
+
+if [ "$NUDGE_OFF" = false ] && [ "$STAMP_FRESH" = false ]; then
+    _bc "update_check_start"
+    UPDATE_NOTE=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
+        CLAUDE_PLUGIN_ROOT="${PLUGIN_ROOT_NATIVE}" \
+        CLAUDE_PLUGIN_DATA="${PLUGIN_DATA_NATIVE}" \
+        uv run --no-sync --project "${PLUGIN_ROOT}" \
+        python -m vibe_cognition.update_check 2>/dev/null) || UPDATE_NOTE=""
+    _bc "update_check_done"
+fi
+
+# ── Step 4: Inject project context (+ any migration/update note) via prime ─
+# prime self-guards: it emits output when there is a migration note, an
+# update note, OR a .cognition/ dir, and exits silently otherwise.
 _bc "prime_start"
 PRIME_OUTPUT=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
     REPO_PATH="${PROJECT_DIR_NATIVE}" \
     VIBE_MIGRATION_NOTE="${MIGRATE_NOTE}" \
+    VIBE_UPDATE_NOTE="${UPDATE_NOTE}" \
     uv run --no-sync --project "${PLUGIN_ROOT}" \
     python -m vibe_cognition.cognition.prime 2>/dev/null) || PRIME_OUTPUT=""
 _bc "prime_done"

@@ -992,8 +992,10 @@ def main(argv: list[str] | None = None):
     Outputs JSON for Claude Code SessionStart hooks.
     Reads REPO_PATH env var or uses cwd. Optionally prepends a one-line
     migration note from VIBE_MIGRATION_NOTE (set by the SessionStart hook when
-    it removes a stale per-project MCP entry), so that note is surfaced in the
-    same hook output instead of suppressing project-context injection.
+    it removes a stale per-project MCP entry) and/or a one-line update nudge
+    from VIBE_UPDATE_NOTE (set by the hook's update_check step), so either note
+    is surfaced in the same hook output instead of suppressing project-context
+    injection.
 
     When the graph is empty (.cognition/ absent OR nodes == 0), injects an
     onboarding block instructing the LLM to alert the user and call
@@ -1020,12 +1022,15 @@ def main(argv: list[str] | None = None):
     parser.parse_args(argv)  # WP-13 (4aaef22e25ea): --help correctness only, no new flags
 
     note = os.environ.get("VIBE_MIGRATION_NOTE", "").strip()
+    update_note = os.environ.get("VIBE_UPDATE_NOTE", "").strip()
     repo_path = resolve_repo_path_env()
     cognition_dir = repo_path / ".cognition"
 
     sections: list[str] = []
     if note:
         sections.append(note)
+    if update_note:
+        sections.append(update_note)
 
     try:
         hygiene_state = check_hygiene_state(repo_path, cognition_dir)
