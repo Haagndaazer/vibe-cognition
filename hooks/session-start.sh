@@ -134,16 +134,28 @@ _bc "migrate_mcp_done"
 # ── Step 3b: Check for a newer released version, nudge-only ──────────────
 # Nudge-only: no auto-update, no cloud service touched beyond a couple of
 # read-only GETs the check module itself makes. Kill switch VIBE_UPDATE_NUDGE
-# (off/0/false/no) skips WITHOUT spawning uv/python at all -- checked here,
-# bash-side, before either the kill-switch or throttle gate below would
-# otherwise cost a process spawn. Guarded for set -e: a failure -> "".
+# (off/0/false/no, any case) skips WITHOUT spawning uv/python at all --
+# checked here, bash-side, before the throttle gate below would otherwise
+# cost a process spawn. Lowercased ONCE via `tr` so the case list doesn't
+# have to enumerate every casing (oFf, Off, OFF, ...) individually. Guarded
+# for set -e: a failure -> "".
 UPDATE_NOTE=""
+NUDGE_SETTING=$(printf '%s' "${VIBE_UPDATE_NUDGE:-}" | tr '[:upper:]' '[:lower:]')
 NUDGE_OFF=false
-case "${VIBE_UPDATE_NUDGE:-}" in
-    off|OFF|Off|0|false|False|FALSE|no|No|NO) NUDGE_OFF=true ;;
+case "$NUDGE_SETTING" in
+    off|0|false|no) NUDGE_OFF=true ;;
 esac
 
 STAMP2="${PLUGIN_DATA_NATIVE}/update-check.json"
+# `find` PATH hazard: on Windows, if System32 precedes Git's usr/bin on the
+# ambient hook PATH, plain `find` resolves to the Windows string-search tool
+# (a completely different program), and the throttle gate below silently
+# degrades to "always stale" (network call every session). Prefer Git
+# Bash's own find explicitly; fall back to PATH lookup off Windows.
+FIND_BIN="/usr/bin/find"
+if [ ! -x "$FIND_BIN" ]; then
+    FIND_BIN="find"
+fi
 # 24h throttle keyed off the stamp file's MTIME, not its JSON payload --
 # parsing checked_at in bash needs jq/python and reintroduces the process
 # spawn this gate exists to avoid. `find -mtime -1` is identical GNU/BSD
@@ -155,7 +167,7 @@ STAMP2="${PLUGIN_DATA_NATIVE}/update-check.json"
 # error and must never trip `set -e`.
 STAMP_FRESH=false
 if [ -f "$STAMP2" ]; then
-    if [ -n "$(find "$STAMP2" -mtime -1 2>/dev/null)" ]; then
+    if [ -n "$("$FIND_BIN" "$STAMP2" -mtime -1 2>/dev/null)" ]; then
         STAMP_FRESH=true
     fi
 fi
@@ -171,8 +183,9 @@ if [ "$NUDGE_OFF" = false ] && [ "$STAMP_FRESH" = false ]; then
 fi
 
 # ── Step 4: Inject project context (+ any migration/update note) via prime ─
-# prime self-guards: it emits output when there is a migration note, an
-# update note, OR a .cognition/ dir, and exits silently otherwise.
+# prime ALWAYS emits something -- a migration note and/or update note when
+# present, the full project-context digest when .cognition/ has nodes, or
+# the onboarding block when the graph is empty/absent. It never exits silent.
 _bc "prime_start"
 PRIME_OUTPUT=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
     REPO_PATH="${PROJECT_DIR_NATIVE}" \

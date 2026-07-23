@@ -119,7 +119,7 @@ Claude Code doesn't auto-update third-party marketplace plugins, so there's norm
 
 - **What's fetched**: two unauthenticated HTTPS GETs to `raw.githubusercontent.com` — the marketplace's `marketplace.json` (to find the released version's pin) and that version's `plugin.json`. Nothing about your project, your graph, or your machine is sent; these are plain GET requests with no request body.
 - **What happens with it**: the fetched version string is compared to your installed version. If a newer one is available, one line is added to your session-start context naming the new version and how to update — nothing is installed or changed automatically. Updating is always your call.
-- **Throttling**: at most once per 24 hours, tracked by a local timestamp file in the plugin's data directory (never committed, never synced).
+- **Throttling**: at most once per 24 hours, tracked by a local timestamp file in the plugin's data directory (never committed, never synced). The network phase has a hard ~8 second wall-clock ceiling — a slow or stalled connection is treated as "couldn't check" and never blocks your session start beyond that.
 - **How to disable**: set `VIBE_UPDATE_NUDGE=off` (also accepts `0`/`false`/`no`) in your environment. This skips the check entirely — no network request, no nudge.
 - **Contributing to this repo**: a dev session on this repo makes the same daily check like any other project, unless you set `VIBE_UPDATE_NUDGE=off`.
 
