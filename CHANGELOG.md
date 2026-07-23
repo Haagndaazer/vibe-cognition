@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0]
+
+### Added
+- **Session-start update nudge (WP-Nudge-1)**: the SessionStart hook now checks once every 24 hours whether a newer released version of the plugin is available and, if so, surfaces a one-line nudge (with the exact `/plugin update` command) alongside the usual context injection. Nudge-only — nothing is installed or changed automatically, updating is always the user's call. Compares version strings (never SHAs — an installed `gitCommitSha` need not match the marketplace pin's SHA at the same released version) against the marketplace's release pin (never this repo's `main`, which can carry unreleased versions). Throttled via a local, machine-only timestamp file — at most one check per 24h, a hard ~8s wall-clock ceiling on the network phase, zero cost otherwise. Default on; disable with `VIBE_UPDATE_NUDGE=off` (also accepts `0`/`false`/`no`). New `src/vibe_cognition/update_check.py` (stdlib-only, mirrors `migrate_mcp.py`'s standalone style), new `vibe_update_nudge` config field, README "Update Notifications" section, two "no cloud services" claims narrowed to name this one exception.
+
 ## [0.28.0] — 2026-07-16
 
 **team-cognition epic (cedf4a8457e9) — CLOSED.** Three trains, same-day: dashboard

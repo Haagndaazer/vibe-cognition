@@ -85,6 +85,22 @@ class Settings(BaseSettings):
         ),
     )
 
+    # WP-Nudge-1: session-start "new version available" nudge (see
+    # update_check.py). This field is documentation/config-surface for the
+    # SAME env var the SessionStart hook and update_check.py's CLI both read
+    # directly (update_check.py is stdlib-only and never constructs a
+    # Settings instance) -- not a separate config channel. Plain bool, not
+    # the prime knobs' Literal["auto","on","off"] tri-state.
+    vibe_update_nudge: bool = Field(
+        default=True,
+        description=(
+            "Whether the session-start hook checks for a newer released "
+            "plugin version and surfaces a one-line update nudge. Default on "
+            "-- the point is users stay on latest; the nudge itself names "
+            "this switch. Set VIBE_UPDATE_NUDGE=off to disable."
+        ),
+    )
+
     # Embedding backend settings
     embedding_backend: Literal["sentence-transformers", "ollama"] = Field(
         default="sentence-transformers",

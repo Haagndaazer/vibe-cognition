@@ -172,6 +172,31 @@ def test_no_git_hygiene_set_true_from_env(tmp_path, monkeypatch):
     assert s.vibe_cognition_no_git_hygiene is True
 
 
+# ── VIBE_UPDATE_NUDGE binding (WP-Nudge-1) ───────────────────────────────────
+# update_check.py itself is stdlib-only and reads the env var directly (never
+# constructs a Settings instance) -- this field is the honest config-surface
+# for that SAME env var, not a separate channel. Confirms pydantic-settings
+# derives VIBE_UPDATE_NUDGE from the vibe_ prefix, same trick as
+# vibe_cognition_no_git_hygiene above.
+
+
+def test_update_nudge_defaults_true(tmp_path):
+    """vibe_update_nudge: unset -> True (nudge on by default -- Colton's ruling)."""
+    s = Settings(repo_path=tmp_path)
+    assert s.vibe_update_nudge is True
+
+
+def test_update_nudge_set_false_from_env(tmp_path, monkeypatch):
+    """VIBE_UPDATE_NUDGE=off is the bash/module-side kill switch value; the
+    pydantic field itself is a plain bool, so pydantic-settings' own bool
+    coercion is what's under test here (0/false/no -- accepted boolean
+    spellings), not the "off" string (a bash/module convenience, not a
+    pydantic bool literal)."""
+    monkeypatch.setenv("VIBE_UPDATE_NUDGE", "false")
+    s = Settings(repo_path=tmp_path)
+    assert s.vibe_update_nudge is False
+
+
 # ── DISPATCH_STALL_THRESHOLD binding (WP-Wedge-2 §W2-f) ──────────────────────
 
 
