@@ -393,6 +393,45 @@ def test_check_missing_installed_plugin_json_silent_no_crash(tmp_path):
     assert whats_new.check(str(plugin_root), str(plugin_data)) == ""
 
 
+def test_check_unparsable_installed_version_no_write_perpetual(tmp_path):
+    """Unparsable INSTALLED (a maintainer-broken plugin.json version field):
+    ruled acceptable to leave the marker untouched and stay silent -- see
+    the module's `check()` docstring/comment. This is the one branch that
+    is allowed to perpetual-spawn; it's covered here so the ruling itself
+    stays pinned, not just asserted in a code comment."""
+    plugin_root = tmp_path / "root"
+    plugin_data = tmp_path / "data"
+    _write_plugin_json(plugin_root, "not-a-version")
+    _seed_marker(plugin_data, "0.29.0")
+
+    assert whats_new.check(str(plugin_root), str(plugin_data)) == ""
+    assert _read_marker(plugin_data) == "0.29.0", "marker must be left untouched when INSTALLED is unparsable"
+
+
+def test_check_unparsable_seen_marker_self_heals(tmp_path):
+    """Vince's fix-required finding: a corrupted marker (SEEN unparsable,
+    INSTALLED fine) must self-heal -- write marker = installed and stay
+    silent once -- not return "" forever with the garbage marker left in
+    place (which would silently drop every future announcement, since the
+    bash-side fast path never matches a marker that never advances)."""
+    plugin_root = tmp_path / "root"
+    plugin_data = tmp_path / "data"
+    _write_plugin_json(plugin_root, "0.30.0")
+    _write_whats_new_json(plugin_root, {"0.30.0": ["Whats-new feature."]})
+    _seed_marker(plugin_data, "garbage")
+
+    note = whats_new.check(str(plugin_root), str(plugin_data))
+
+    assert note == ""
+    assert _read_marker(plugin_data) == "0.30.0"
+
+    # The self-heal must actually stick: the NEXT check() call (mirroring the
+    # bash fast-path re-derivation) sees marker == installed and is silent.
+    note_again = whats_new.check(str(plugin_root), str(plugin_data))
+    assert note_again == ""
+    assert _read_marker(plugin_data) == "0.30.0"
+
+
 # ── marker write: exact bytes, atomicity ────────────────────────────────────
 
 

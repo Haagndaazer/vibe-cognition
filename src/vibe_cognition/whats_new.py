@@ -61,7 +61,11 @@ _UNSEEN_FLOOR = "0.0.0"
 # tuple with zeros to this width (rather than pairwise-padding each compared
 # pair) makes "1.2" == "1.2.0" == "1.2.0.0" hold consistently across every
 # comparison in this module, not just between whichever two happen to be
-# compared together.
+# compared together. Known limit (ruled acceptable -- unreachable with our
+# 3-part maintainer-authored versions): a version with MORE than 6 parts
+# compares by raw tuple, not by this fixed-width padding, so two such
+# versions of unequal length can misorder (the shorter reads as older than
+# its zero-extended equal would suggest).
 _VERSION_TUPLE_WIDTH = 6
 
 # Pure ASCII, exact text (an acceptance criterion) -- a Windows pipe emits
@@ -189,10 +193,11 @@ def _format_block(seen: str, installed: str, bullets: list[str], version_overflo
 def check(plugin_root: str, plugin_data: str) -> str:
     """Run one what's-new check and return the notice block, or "" when
     there is nothing to show (already current, a pin rollback, a truly fresh
-    install, or every candidate version in range has no usable bullets).
-    Advances the seen marker on every path except: a truly fresh install
-    (marker set to installed, handled inline) and an unparsable installed
-    version (nothing safe to write)."""
+    install, a corrupted marker self-healing, or every candidate version in
+    range has no usable bullets). Advances the seen marker on every path
+    except: a truly fresh install (marker set to installed, handled inline)
+    and an unparsable INSTALLED version (nothing safe to write -- see the
+    ruling below)."""
     installed = _read_installed_version(plugin_root)
     if not installed:
         return ""
@@ -206,9 +211,25 @@ def check(plugin_root: str, plugin_data: str) -> str:
             return ""  # truly fresh install -- onboarding owns this, not us
 
     installed_key = _version_key(installed)
+    if installed_key is None:
+        # Unparsable INSTALLED version (a maintainer-broken plugin.json) ->
+        # nothing safe to write, so this perpetual-spawns every session until
+        # fixed. Ruled acceptable: a broken plugin.json breaks far more than
+        # this feature, and persisting a garbage string to the marker isn't
+        # worth the extra branch.
+        return ""
+
     seen_key = _version_key(seen)
-    if installed_key is None or seen_key is None:
-        return ""  # can't safely compare -- nothing safe to write either
+    if seen_key is None:
+        # Unparsable SEEN marker (corrupted on disk) -- unlike the installed
+        # case above, self-heal it: write marker = installed and stay silent
+        # once, the same shape as the downgrade-normalize path below. Without
+        # this, a corrupted marker would never bash-side fast-path-match
+        # again, spawning the module every session while every candidate
+        # version in range keeps comparing against a None key and returning
+        # "" -- silently losing every future announcement forever.
+        _write_seen_marker(plugin_data, installed)
+        return ""
 
     if seen_key >= installed_key:
         # Already current, or a pin rollback -- normalize the marker and
