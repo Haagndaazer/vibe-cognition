@@ -1,0 +1,34 @@
+# WP-WhatsNew-1: Post-update "what's new" notice in the session-start prime
+
+Status: APPROVED (Colton, 2026-07-23) — peer-reviewed (needs-rework verdict; both blockers + all should-fixes folded in). Implementer: Vorpid. Manager: Vince. Train: upgrade-UX (complements WP-Nudge-1: nudge says "update"; this says "here's what you got"). Colton directive: release-procedure workflow node gains the whats-new step (Vince, by supersession, at merge time before the 0.30.0 release).
+
+PROBLEM: After an update nothing tells the user what's newly available (Colton: "ensure users know what is available to use now", modeled on vibe-memory). No spam: show once, track seen, silence.
+
+CONTENT SOURCE — curated .claude-plugin/whats-new.json, NOT the CHANGELOG: {"0.29.0": ["bullet"...], "0.30.0": [...]} — 1-3 short user-facing PURE-ASCII bullets per version, maintainer-written at release time. CHANGELOG entries are ~150-word dev prose (token bloat, fragile parsing). Version with no entry = silently skipped. Missing/malformed file = silence, never crash. Seed with 0.29.0 (nudge) + 0.30.0 (this feature) entries. Release procedure gains the bullets step.
+
+SEEN-TRACKING — per-MACHINE marker ${CLAUDE_PLUGIN_DATA}/whats-new-seen, PLAIN TEXT bare version string (bash gate string-compares without jq/python). Deliberately NOT .cognition/ (per-project would show N times for N projects; TC7's decline file is per-project for ITS purpose — don't align). Pinned write: write_text(version, encoding="utf-8", newline="") — no trailing newline EVER (Windows CRLF conversion breaks the bash compare; same invisible-byte class as cp1252). Unit test asserts raw bytes == version string. Atomic temp+os.replace, never raises, last-writer-wins.
+
+FRESH-VS-EXISTING (peer-review BLOCKER — naive "no marker = fresh = silence" would show nothing to 100% of existing users on rollout day, and tests would stay green because the upgrade AC could only be reached by pre-seeding a marker that never exists in the wild): marker absent → check ${CLAUDE_PLUGIN_DATA}/update-check.json (written every session since 0.29.0). Present → prior use → seen floor "0.0.0", show capped backlog once. Absent → truly fresh → marker=installed, show nothing (onboarding owns new users). VALID ONLY because the whats-new step runs BEFORE the update-check step (else a fresh install's same-session stamp write fakes "prior use"). Documented limitation: VIBE_UPDATE_NUDGE=off-since-0.29 users misread as fresh once, self-heals.
+
+LIFECYCLE: marker==installed → silence, zero cost (bash gate, no spawn). marker<installed → show entries in (marker, installed], newest first, then marker=installed. marker>installed (rollback) → marker=installed, silence.
+
+MECHANISM: new src/vibe_cognition/whats_new.py — stdlib-only, mirrors migrate_mcp/update_check: reads CLAUDE_PLUGIN_ROOT (whats-new.json + plugin.json) + CLAUDE_PLUGIN_DATA (marker), prints block or nothing, always exit 0, top-level try/except → 0, NO NETWORK. Hook step BEFORE update-check (fast local never queues behind 8s network; fresh-signal validity). Bash gates: VIBE_WHATS_NEW kill switch (tr-lowercased off|0|false|no) → version grep/sed from plugin.json vs marker content; equal → skip spawn. THE EXTRACTION LINE MUST CARRY `|| VAR=""` (peer-review BLOCKER, empirically reproduced: unguarded command substitution under set -euo pipefail aborts the WHOLE hook on no-match — bare {} out, no prime at all). Extraction empty → spawn module anyway (module authoritative). Breadcrumbs whats_new_start/done. Note → VIBE_WHATSNEW_NOTE env → prime main() inserts IMMEDIATELY AFTER update_note, BEFORE hygiene_line. generate_prime() stays pure (marker written only by module; WP-TC14 doctrine).
+
+BLOCK (exact, an AC):
+INSTRUCTION: Tell the user what's new in this plugin update before continuing.
+vibe-cognition updated (v{seen} -> v{installed}) - new since your last session:
+- {bullet}
+(Shown once per update. Full details: the plugin's CHANGELOG.md. Disable these notices with VIBE_WHATS_NEW=off.)
+INSTRUCTION: prefix = ONBOARDING_BLOCK house style. {seen} renders "first install"-style wording on the 0.0.0 floor. Pure ASCII: .isascii() unit tests on BOTH shipped whats-new.json bullets AND the module's own static template strings; stdout reconfigure utf-8 belt-and-braces (getattr form). CAPS: max 3 versions (newest first), max 9 bullets (3x3; 8 was self-contradictory). Version overflow → "(...and older versions - see CHANGELOG.md.)". Bullet-only overflow → drop trailing oldest silently, NO overflow line. Marker always advances.
+
+USER CONTROL: vibe_whats_new: bool = True (vibe_ prefix load-bearing → env VIBE_WHATS_NEW), plain bool, honored bash-side AND module-side. Default ON.
+
+OUT OF SCOPE: CHANGELOG parsing/summarizing; per-project/per-email tracking; re-show on demand (/whats-new later); network; localization.
+
+KNOWN-INTENTIONAL: generate_prime purity; hook stdout JSON-reserved; set -euo pipefail live; --no-sync; TC7 decline file per-project (don't align); update-check stamp JSON vs this marker plain-text (deliberate divergence: string-compare vs mtime); CHANGELOG stays canonical detail, whats-new.json is announcement layer.
+
+ACCEPTANCE CRITERIA (15): 1 upgrade path w/ marker → exact block, marker advances, next session no spawn/no block. 2 ROLLOUT-DAY (no marker + update-check.json present) → capped backlog shown WITHOUT pre-seeded marker — the launch scenario is the tested state. 3 truly fresh (neither file) → silence, marker written. 4 marker==installed → no spawn (fake-uv log). 5 downgrade → silence, marker rewritten. 6 entry-less versions skipped; all-entry-less span → no block, marker advances. 7 caps (a) >3 versions → newest 3 + overflow line (b) ≤3 versions >9 bullets → drop oldest silently, no line (c) ≤9 always. 8 kill switch any case + config false → no spawn/block/marker write; env-derivation test. 9 malformed whats-new.json any shape → silence, exit 0, marker advances. 10 bash extraction fails → hook exit 0 AND prime emits real output (not {}) AND module spawned — wide assertion so a missing guard fails loudly. 11 ASCII: shipped bullets + module template strings .isascii(), bullets ≤200 chars. 12 full prime sequence asserted: migration → nudge → whats-new → hygiene → rest. 13 marker raw bytes == version exactly; concurrent race no torn file. 14 docs: README section, CHANGELOG, bump both files 0.30.0, release-procedure doc note. 15 Windows-safe, no live network in tests.
+
+GATE (pinned, whole repo, exact): uv run python -m pytest ; uv run ruff check . ; uv run pyright. Sign-off at exact SHA. Vince's gate adds real-Windows-pipe smoke (hex-check non-ASCII; rollout-day scenario live) — cp1252 class invisible to in-process tests.
+
+SEAMS: nudge co-occurrence fine (different markers, ordering pinned); stale-first-session unaffected (reads new plugin root on disk); process leak no interaction; cp1252 covered; prime token budget bounded by caps; journal/graph untouched.
