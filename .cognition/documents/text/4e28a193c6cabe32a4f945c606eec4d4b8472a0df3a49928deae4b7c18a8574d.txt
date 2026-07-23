@@ -1,0 +1,39 @@
+# WP-Nudge-1: Session-start update nudge with call-to-action
+
+Status: APPROVED (Colton, 2026-07-23) — peer-reviewed (Sonnet, approve-with-edits, all findings folded in). Implementer: Vorpid. Manager: Vince. Train: upgrade-UX (siblings: stale-first-session 43d3c3dab10f, process leak d2a62f38cc88 — not dependencies, see Seams).
+
+PROBLEM: Claude Code plugin auto-update is off by default for third-party marketplaces and the maintainer cannot enable it (no autoUpdate in marketplace.json schema; extraKnownMarketplaces.autoUpdate is managed-settings-only). Users get no new-version signal. Colton's ruling: nudge-only alert with CTA; user in control at all times; default ON with opt-out ("this is really meant to ensure users always have latest").
+
+APPROACH: new module src/vibe_cognition/update_check.py invoked from hooks/session-start.sh as a step between migrate-mcp and prime, mirroring migrate_mcp exactly: prints one-line note (or nothing) to stdout; hook captures into VIBE_UPDATE_NOTE env; prime surfaces it like VIBE_MIGRATION_NOTE.
+
+VERSION DISCOVERY (verified 2026-07-23 on Colton's machine):
+1. Installed: ${CLAUDE_PLUGIN_ROOT}/.claude-plugin/plugin.json -> version.
+2. Latest released: unauthenticated HTTPS GETs (both verified 200): raw.githubusercontent.com/Haagndaazer/colton-claude-plugins/main/.claude-plugin/marketplace.json -> vibe-cognition entry -> source.sha (release pin); then raw.githubusercontent.com/Haagndaazer/vibe-cognition/<sha>/.claude-plugin/plugin.json -> version.
+3. Compare VERSION STRINGS, never SHAs. Ground truth: installed_plugins.json gitCommitSha 811350d != marketplace pin 5199ee3, both v0.28.0 — SHA compare would false-nudge today. Parse as dotted-int tuples; unparsable -> treat as equal (no nudge). Nudge ONLY when remote > installed (pin rollback must not nudge). Read the PIN, never code-repo main (main runs ahead of pin; pin-relay batching — main would announce unreleased versions).
+
+THROTTLE (zero steady-state cost): stamp file ${CLAUDE_PLUGIN_DATA}/update-check.json ({checked_at, remote_version}; machine-local, never git). Bash-side gate keyed off the stamp file's MTIME, not its JSON payload (parsing checked_at in bash needs jq/python and reintroduces the process spawn the gate exists to avoid) — find/stat-style mtime compare; fresher than 24h -> skip entirely (no uv process, no network). set -e hazard: the "stale -> proceed" branch is the ROUTINE false-exit-code path — structure as explicit if, not a bare [ ] test. When the check runs: hard 3s per-request timeout (urllib, stdlib only), worst case ~6s once per 24h. Any failure (timeout, 404, DNS, parse, entry missing) -> empty note, exit 0, stamp still written. Nudge cadence = check cadence (max one per 24h while outdated). No per-version dismissal in v1.
+
+NUDGE TEXT (exact, an acceptance criterion):
+"vibe-cognition v{remote} is available (you have v{installed}). To update: run /plugin update vibe-cognition@{marketplace}, then restart Claude Code. Updating is always your call — this notice is informational only. Disable it with VIBE_UPDATE_NUDGE=off."
+- {marketplace} DERIVED from plugin cache path (.../cache/<marketplace>/vibe-cognition/<version> — grandparent dir of CLAUDE_PLUGIN_ROOT); fallback to plain "/plugin update vibe-cognition" phrasing if derivation fails. Version-check URL stays pinned to canonical marketplace repo; non-canonical installs 404 -> silence (correct).
+- CTA says RESTART, not /reload-plugins (reload leaks prior server d2a62f38cc88 and skips SessionStart hooks 43d3c3dab10f). Vorpid: verify exact /plugin update syntax against current docs; name@marketplace form believed correct.
+
+USER CONTROL & PRIVACY: Nudge-only — module performs GETs + writes its own stamp; never invokes claude, never touches plugin cache, never mutates the install. Kill switch: config field vibe_update_nudge: bool = True — the vibe_ prefix is LOAD-BEARING: pydantic-settings derives VIBE_UPDATE_NUDGE from the field name (same trick as vibe_cognition_no_git_hygiene -> VIBE_COGNITION_NO_GIT_HYGIENE); a bare update_nudge would derive UPDATE_NUDGE and silently ignore the documented env var. Also honored bash-side (off/0/false skips without spawning Python). Do NOT copy the prime knobs' Literal["auto","on","off"] tri-state — plain bool. RULED: default ON with opt-out; README prominent disclosure; notice text itself names the off switch. Opt-in rejected (near-zero adoption defeats purpose).
+
+OUT OF SCOPE: auto-update / hook-invoked claude plugin update (rejected by Colton); teammate-comms nudge (portable pattern, separate WP); fixing stale-first-session or process leak (own tasks); any marketplace.json in THIS repo (standing constraint); per-version dismissal memory (v2 if naggy).
+
+KNOWN-INTENTIONAL (do NOT fix): uv run --no-sync everywhere (venv-lock rationale; stale-first-session task owns re-examining); generate_prime() pure read-only — stamps written only by hook-side code (update stamp follows same doctrine); hook stdout reserved for final JSON, diagnostics to stderr via _bc breadcrumbs (add update_check_start/done); hook must exit 0 on every path (set -euo pipefail live — guard new commands like migrate_mcp does); marketplace schema having no version field is upstream reality.
+
+ACCEPTANCE CRITERIA:
+1. Remote pin > installed: session-start context contains exactly the nudge line; all other prime output unchanged.
+2. Remote == installed, remote < installed, unparsable: no nudge.
+3. Network down/timeout/404/malformed/entry absent: no nudge, hook exits 0, prime context intact, latency bounded by request timeouts.
+4. Stamp fresher than 24h: no update-check uv/python invocation in the fake-uv invocation log (test_hooks_shell.py pattern).
+5. vibe_update_nudge=false or VIBE_UPDATE_NUDGE=off: no network, no nudge, no stamp write.
+6. Concurrent session starts racing on the stamp: no crash, no torn stamp (write-temp-rename or tolerate-and-rewrite; pick one, test it).
+7. Tests: version parse/compare units (unequal-length, junk), fetch layer mocked (NO live network), stamp throttle, bash skip path; Windows-safe (thread-based timeout norm).
+8. Docs: README section (what/what-is-fetched/how-to-disable); narrow the two absolute "no cloud services" claims (README ~L8, ~L67) to "all processing and storage happens on your machine"; contributor note that dev sessions on this repo make the daily check unless VIBE_UPDATE_NUDGE=off; CHANGELOG; version bump in both pyproject.toml and plugin.json.
+
+GATE (pinned, whole repo, exact): uv run python -m pytest ; uv run ruff check . ; uv run pyright. Handed greens at narrower scope are not greens. Sign-off at exact commit SHA.
+
+SEAMS CHECKED: stale-first-session (nudge reads disk+network, never the running server; CTA restart partly because of this); process leak (no interaction — spawns no server, exits after printing); venv-lock (--no-sync, no sync added); hook timing (bash 24h gate, breadcrumbs); journal/graph untouched.
