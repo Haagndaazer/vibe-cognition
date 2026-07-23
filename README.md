@@ -45,6 +45,7 @@ search work immediately, before that.
 - [What's Included](#whats-included)
 - [Prerequisites](#prerequisites)
 - [Update Notifications](#update-notifications)
+- [What's New](#whats-new)
 - [MCP Tools](#mcp-tools)
 - [Dashboard](#dashboard)
 - [Storage](#storage)
@@ -122,6 +123,15 @@ Claude Code doesn't auto-update third-party marketplace plugins, so there's norm
 - **Throttling**: at most once per 24 hours, tracked by a local timestamp file in the plugin's data directory (never committed, never synced). The network phase has a hard ~8 second wall-clock ceiling — a slow or stalled connection is treated as "couldn't check" and never blocks your session start beyond that.
 - **How to disable**: set `VIBE_UPDATE_NUDGE=off` (also accepts `0`/`false`/`no`) in your environment. This skips the check entirely — no network request, no nudge.
 - **Contributing to this repo**: a dev session on this repo makes the same daily check like any other project, unless you set `VIBE_UPDATE_NUDGE=off`.
+
+## What's New
+
+The nudge above tells you a new version exists; this is the other half — after you actually update, the next session-start shows a short, one-time summary of what changed.
+
+- **What's shown**: a curated, hand-written list of bullets for each version between the one you last saw and the one now installed — not the raw CHANGELOG (too verbose to skim in a session-start digest; the CHANGELOG is always the full record). Capped at the 3 most recent versions and 9 bullets total, so a long gap between sessions never floods your context.
+- **When it appears**: once per version bump, the first session after an update. A local marker file (in the plugin's data directory, never committed, never synced) tracks the last version you've seen; nothing repeats it after that.
+- **How to disable**: set `VIBE_WHATS_NEW=off` (also accepts `0`/`false`/`no`) in your environment.
+- **No network involved**: unlike the update check above, this reads only local files — the installed `plugin.json` and a bundled `whats-new.json` — nothing is fetched from anywhere.
 
 ## MCP Tools
 

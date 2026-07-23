@@ -1106,6 +1106,68 @@ def test_main_migration_note_precedes_update_note(tmp_path, monkeypatch):
     assert migration_pos < update_pos < onboard_pos
 
 
+def test_main_whatsnew_note_prepended(tmp_path, monkeypatch):
+    """main(): VIBE_WHATSNEW_NOTE (WP-WhatsNew-1, set by the hook's whats_new
+    step) surfaces before the prime body, mirroring VIBE_UPDATE_NOTE."""
+    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.delenv("VIBE_MIGRATION_NOTE", raising=False)
+    monkeypatch.delenv("VIBE_UPDATE_NOTE", raising=False)
+    monkeypatch.setenv(
+        "VIBE_WHATSNEW_NOTE",
+        "vibe-cognition updated (v0.29.0 -> v0.30.0) - new since your last session:",
+    )
+
+    buf = io.StringIO()
+    monkeypatch.setattr("sys.stdout", buf)
+    main(argv=[])  # WP-13: explicit argv, not pytest's own sys.argv
+
+    data = json.loads(buf.getvalue())
+    ctx = data["hookSpecificOutput"]["additionalContext"]
+    note_pos = ctx.index("vibe-cognition updated (v0.29.0 -> v0.30.0)")
+    onboard_pos = ctx.index(ONBOARDING_BLOCK[:30])
+    assert note_pos < onboard_pos, "whats-new note must appear before the body"
+
+
+def test_main_no_whatsnew_note_when_env_absent(tmp_path, monkeypatch):
+    """main(): no VIBE_WHATSNEW_NOTE set -> no crash, nothing extra injected."""
+    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.delenv("VIBE_MIGRATION_NOTE", raising=False)
+    monkeypatch.delenv("VIBE_UPDATE_NOTE", raising=False)
+    monkeypatch.delenv("VIBE_WHATSNEW_NOTE", raising=False)
+
+    buf = io.StringIO()
+    monkeypatch.setattr("sys.stdout", buf)
+    main(argv=[])  # WP-13: explicit argv, not pytest's own sys.argv
+
+    data = json.loads(buf.getvalue())
+    ctx = data["hookSpecificOutput"]["additionalContext"]
+    assert "new since your last session" not in ctx
+
+
+def test_main_update_note_precedes_whatsnew_note(tmp_path, monkeypatch):
+    """Pinned order (full three-note chain): migration, then update nudge,
+    then what's-new, all ahead of the onboarding block."""
+    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("VIBE_MIGRATION_NOTE", "Removed stale MCP entry: vibe-cognition")
+    monkeypatch.setenv("VIBE_UPDATE_NOTE", "vibe-cognition v0.29.0 is available (you have v0.28.0).")
+    monkeypatch.setenv(
+        "VIBE_WHATSNEW_NOTE",
+        "vibe-cognition updated (v0.29.0 -> v0.30.0) - new since your last session:",
+    )
+
+    buf = io.StringIO()
+    monkeypatch.setattr("sys.stdout", buf)
+    main(argv=[])  # WP-13: explicit argv, not pytest's own sys.argv
+
+    data = json.loads(buf.getvalue())
+    ctx = data["hookSpecificOutput"]["additionalContext"]
+    migration_pos = ctx.index("Removed stale MCP entry")
+    update_pos = ctx.index("vibe-cognition v0.29.0 is available")
+    whatsnew_pos = ctx.index("vibe-cognition updated (v0.29.0 -> v0.30.0)")
+    onboard_pos = ctx.index(ONBOARDING_BLOCK[:30])
+    assert migration_pos < update_pos < whatsnew_pos < onboard_pos
+
+
 # ── main() — WP-P13n-2 identity wiring ────────────────────────────────────────
 
 

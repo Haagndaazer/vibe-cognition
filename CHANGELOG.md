@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0]
+
+### Added
+- **Post-update "what's new" notice (WP-WhatsNew-1)**: the complementary half of the update-nudge pair — after you actually update, the next session-start shows a short, one-time summary of what changed, drawn from a curated `.claude-plugin/whats-new.json` map (not the CHANGELOG — too verbose for a session-start digest). Shown once per version bump, tracked via a local, machine-only marker file distinct from the update-check throttle stamp; capped at the 3 most recent versions and 9 bullets total, with an overflow line when older versions are trimmed. Handles the "rollout day" case correctly: an existing user with no marker yet (because the feature is new, not because they're new) sees the capped backlog once instead of silence, distinguished from a truly fresh install by the pre-existing presence of the update-check throttle stamp. No network involved — local files only. Default on; disable with `VIBE_WHATS_NEW=off` (also accepts `0`/`false`/`no`). New `src/vibe_cognition/whats_new.py` (stdlib-only, mirrors `update_check.py`/`migrate_mcp.py`'s standalone style), new `.claude-plugin/whats-new.json` seed data, new `vibe_whats_new` config field, README "What's New" section.
+
 ## [0.29.0]
 
 ### Added

@@ -131,6 +131,58 @@ MIGRATE_NOTE=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
     python -m vibe_cognition.migrate_mcp "$MCP_JSON" 2>/dev/null) || MIGRATE_NOTE=""
 _bc "migrate_mcp_done"
 
+# ── Step 3a: Show what's new since last update, once per version bump ────
+# The other half of the upgrade-UX pair: update_check (Step 3b) says "an
+# update is available"; this says "here's what you got" after you take it.
+# MUST run BEFORE Step 3b -- rollout-day validity depends on checking
+# whether update-check.json already exists BEFORE update_check writes it
+# this same session (a fresh install's own same-session stamp would
+# otherwise be misread as "existing user"). Kill switch VIBE_WHATS_NEW
+# (off/0/false/no, any case, tr-lowercased same as the nudge switch) skips
+# WITHOUT spawning uv/python. Guarded for set -e: a failure -> "".
+WHATSNEW_NOTE=""
+WHATSNEW_SETTING=$(printf '%s' "${VIBE_WHATS_NEW:-}" | tr '[:upper:]' '[:lower:]')
+WHATSNEW_OFF=false
+case "$WHATSNEW_SETTING" in
+    off|0|false|no) WHATSNEW_OFF=true ;;
+esac
+
+if [ "$WHATSNEW_OFF" = false ]; then
+    # Fast path: if the seen marker already string-equals the installed
+    # version, nothing changed since last time -- skip the spawn entirely.
+    # Both reads are best-effort; either coming back empty just means "can't
+    # tell from here, ask the module" (fail toward spawning, not toward
+    # silence).
+    WHATSNEW_MARKER="${PLUGIN_DATA_NATIVE}/whats-new-seen"
+    SEEN_VERSION=""
+    if [ -f "$WHATSNEW_MARKER" ]; then
+        SEEN_VERSION=$(cat "$WHATSNEW_MARKER" 2>/dev/null) || SEEN_VERSION=""
+    fi
+
+    # HOOK-KILLING EXTRACTION HAZARD: this command substitution MUST carry
+    # `|| INSTALLED_VERSION=""` -- empirically reproduced: under
+    # `set -euo pipefail`, an unguarded `VAR=$(cmd)` where cmd exits non-zero
+    # (e.g. grep finds no match on an unexpected plugin.json shape) aborts
+    # the ENTIRE hook right here, producing bare `{}` with no prime output at
+    # all. A no-match here must degrade to an empty extraction, not a dead
+    # hook -- the module below is authoritative and re-derives this properly.
+    INSTALLED_VERSION=$(grep -o '"version"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        "${PLUGIN_ROOT_NATIVE}/.claude-plugin/plugin.json" 2>/dev/null \
+        | head -1 | sed -E 's/.*"([^"]*)"[[:space:]]*$/\1/') || INSTALLED_VERSION=""
+
+    if [ -n "$SEEN_VERSION" ] && [ -n "$INSTALLED_VERSION" ] && [ "$SEEN_VERSION" = "$INSTALLED_VERSION" ]; then
+        : # nothing changed since last time -- skip the spawn entirely
+    else
+        _bc "whats_new_start"
+        WHATSNEW_NOTE=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
+            CLAUDE_PLUGIN_ROOT="${PLUGIN_ROOT_NATIVE}" \
+            CLAUDE_PLUGIN_DATA="${PLUGIN_DATA_NATIVE}" \
+            uv run --no-sync --project "${PLUGIN_ROOT}" \
+            python -m vibe_cognition.whats_new 2>/dev/null) || WHATSNEW_NOTE=""
+        _bc "whats_new_done"
+    fi
+fi
+
 # ── Step 3b: Check for a newer released version, nudge-only ──────────────
 # Nudge-only: no auto-update, no cloud service touched beyond a couple of
 # read-only GETs the check module itself makes. Kill switch VIBE_UPDATE_NUDGE
@@ -182,15 +234,16 @@ if [ "$NUDGE_OFF" = false ] && [ "$STAMP_FRESH" = false ]; then
     _bc "update_check_done"
 fi
 
-# ── Step 4: Inject project context (+ any migration/update note) via prime ─
-# prime ALWAYS emits something -- a migration note and/or update note when
-# present, the full project-context digest when .cognition/ has nodes, or
-# the onboarding block when the graph is empty/absent. It never exits silent.
+# ── Step 4: Inject project context (+ any migration/update/whatsnew note) ──
+# prime ALWAYS emits something -- any of the three notes when present, the
+# full project-context digest when .cognition/ has nodes, or the onboarding
+# block when the graph is empty/absent. It never exits silent.
 _bc "prime_start"
 PRIME_OUTPUT=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
     REPO_PATH="${PROJECT_DIR_NATIVE}" \
     VIBE_MIGRATION_NOTE="${MIGRATE_NOTE}" \
     VIBE_UPDATE_NOTE="${UPDATE_NOTE}" \
+    VIBE_WHATSNEW_NOTE="${WHATSNEW_NOTE}" \
     uv run --no-sync --project "${PLUGIN_ROOT}" \
     python -m vibe_cognition.cognition.prime 2>/dev/null) || PRIME_OUTPUT=""
 _bc "prime_done"
