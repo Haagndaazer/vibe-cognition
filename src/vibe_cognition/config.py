@@ -101,6 +101,18 @@ class Settings(BaseSettings):
         ),
     )
 
+    # WP-WhatsNew-1: post-update "what's new" notice (see whats_new.py). Same
+    # documentation/config-surface pattern as vibe_update_nudge -- whats_new.py
+    # is stdlib-only and reads VIBE_WHATS_NEW directly, never via Settings.
+    vibe_whats_new: bool = Field(
+        default=True,
+        description=(
+            "Whether the session-start hook shows a one-time 'what's new' "
+            "summary after a plugin update. Default on. Set VIBE_WHATS_NEW=off "
+            "to disable."
+        ),
+    )
+
     # Embedding backend settings
     embedding_backend: Literal["sentence-transformers", "ollama"] = Field(
         default="sentence-transformers",

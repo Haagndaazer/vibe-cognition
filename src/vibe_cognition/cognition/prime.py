@@ -990,11 +990,12 @@ def main(argv: list[str] | None = None):
     """Entry point for vibe-cognition-prime CLI command.
 
     Outputs JSON for Claude Code SessionStart hooks.
-    Reads REPO_PATH env var or uses cwd. Optionally prepends a one-line
-    migration note from VIBE_MIGRATION_NOTE (set by the SessionStart hook when
-    it removes a stale per-project MCP entry) and/or a one-line update nudge
-    from VIBE_UPDATE_NOTE (set by the hook's update_check step), so either note
-    is surfaced in the same hook output instead of suppressing project-context
+    Reads REPO_PATH env var or uses cwd. Optionally prepends, in this pinned
+    order, a migration note (VIBE_MIGRATION_NOTE, set by the hook's
+    migrate_mcp step), an update nudge (VIBE_UPDATE_NOTE, set by the hook's
+    update_check step), and a what's-new notice (VIBE_WHATSNEW_NOTE, set by
+    the hook's whats_new step) -- any subset may be present, and all are
+    surfaced in the same hook output instead of suppressing project-context
     injection.
 
     When the graph is empty (.cognition/ absent OR nodes == 0), injects an
@@ -1023,6 +1024,7 @@ def main(argv: list[str] | None = None):
 
     note = os.environ.get("VIBE_MIGRATION_NOTE", "").strip()
     update_note = os.environ.get("VIBE_UPDATE_NOTE", "").strip()
+    whatsnew_note = os.environ.get("VIBE_WHATSNEW_NOTE", "").strip()
     repo_path = resolve_repo_path_env()
     cognition_dir = repo_path / ".cognition"
 
@@ -1031,6 +1033,8 @@ def main(argv: list[str] | None = None):
         sections.append(note)
     if update_note:
         sections.append(update_note)
+    if whatsnew_note:
+        sections.append(whatsnew_note)
 
     try:
         hygiene_state = check_hygiene_state(repo_path, cognition_dir)

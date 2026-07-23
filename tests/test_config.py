@@ -197,6 +197,27 @@ def test_update_nudge_set_false_from_env(tmp_path, monkeypatch):
     assert s.vibe_update_nudge is False
 
 
+# ── VIBE_WHATS_NEW binding (WP-WhatsNew-1) ───────────────────────────────────
+# whats_new.py itself is stdlib-only and reads the env var directly (never
+# constructs a Settings instance) -- this field is the honest config-surface
+# for that SAME env var, mirroring vibe_update_nudge above.
+
+
+def test_whats_new_defaults_true(tmp_path):
+    """vibe_whats_new: unset -> True (shown by default -- Colton's ruling)."""
+    s = Settings(repo_path=tmp_path)
+    assert s.vibe_whats_new is True
+
+
+def test_whats_new_set_false_from_env(tmp_path, monkeypatch):
+    """VIBE_WHATS_NEW=off is the bash/module-side kill switch value; the
+    pydantic field itself is a plain bool, so pydantic-settings' own bool
+    coercion is what's under test here (0/false/no), not the "off" string."""
+    monkeypatch.setenv("VIBE_WHATS_NEW", "false")
+    s = Settings(repo_path=tmp_path)
+    assert s.vibe_whats_new is False
+
+
 # ── DISPATCH_STALL_THRESHOLD binding (WP-Wedge-2 §W2-f) ──────────────────────
 
 

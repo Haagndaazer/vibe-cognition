@@ -1,0 +1,10 @@
+{
+  "0.29.0": [
+    "Session-start now checks once a day for a newer released plugin version and shows a one-line reminder if you're behind (disable with VIBE_UPDATE_NUDGE=off).",
+    "Nothing is installed automatically -- updating is always your call; the reminder just tells you the exact /plugin update command to run."
+  ],
+  "0.30.0": [
+    "After an update, session-start shows a one-time summary of what's new since your last session (disable with VIBE_WHATS_NEW=off).",
+    "The summary is curated and short -- full details always live in CHANGELOG.md."
+  ]
+}

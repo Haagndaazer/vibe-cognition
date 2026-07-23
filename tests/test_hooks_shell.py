@@ -121,6 +121,7 @@ LOG="${FAKE_CONTROL_DIR}/invocations.log"
   echo "UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT:-}"
   echo "VIBE_MIGRATION_NOTE=${VIBE_MIGRATION_NOTE:-}"
   echo "VIBE_UPDATE_NOTE=${VIBE_UPDATE_NOTE:-}"
+  echo "VIBE_WHATSNEW_NOTE=${VIBE_WHATSNEW_NOTE:-}"
   echo "REPO_PATH=${REPO_PATH:-}"
   echo "CLAUDE_PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT:-}"
   echo "CLAUDE_PLUGIN_DATA=${CLAUDE_PLUGIN_DATA:-}"
@@ -150,6 +151,10 @@ case "$ARGS" in
   *"vibe_cognition.update_check"*)
     _read_ctrl update_stdout ""
     exit "$(_read_ctrl update_exit 0)"
+    ;;
+  *"vibe_cognition.whats_new"*)
+    _read_ctrl whatsnew_stdout ""
+    exit "$(_read_ctrl whatsnew_exit 0)"
     ;;
   *"vibe_cognition.cognition.prime"*)
     _read_ctrl prime_stdout '{}'
@@ -200,6 +205,15 @@ def hook_env(tmp_path):
 
         def seed(self, name: str, content: str) -> None:
             (self.control_dir / name).write_text(content, encoding="utf-8", newline="\n")
+
+        def write_plugin_version(self, version: str) -> None:
+            d = self.plugin_root / ".claude-plugin"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "plugin.json").write_text(f'{{"version": "{version}"}}', encoding="utf-8")
+
+        def write_whatsnew_marker(self, version: str) -> None:
+            self.plugin_data.mkdir(parents=True, exist_ok=True)
+            (self.plugin_data / "whats-new-seen").write_text(version, encoding="utf-8", newline="")
 
         def log_text(self) -> str:
             log = self.control_dir / "invocations.log"
@@ -309,6 +323,152 @@ def test_no_migrate_note_forwards_empty_string(hook_env):
     prime_blocks = [b for b in blocks if "vibe_cognition.cognition.prime" in b]
     assert prime_blocks
     assert any("VIBE_MIGRATION_NOTE=\n" in b or b.rstrip().endswith("VIBE_MIGRATION_NOTE=") for b in prime_blocks)
+
+
+# ── whats_new (WP-WhatsNew-1): fast-path skip, kill switch, note forwarding ──
+
+
+def test_whatsnew_invoked_on_first_run_no_marker_note_forwarded(hook_env):
+    """No existing marker (first run): whats_new.py IS invoked, and its
+    printed note reaches prime via VIBE_WHATSNEW_NOTE."""
+    note = "vibe-cognition updated (v0.29.0 -> v0.30.0) - new since your last session:\n- x"
+    hook_env.write_plugin_version("0.30.0")
+    hook_env.seed("health_probe_exit", "0")
+    hook_env.seed("whatsnew_stdout", note)
+
+    result = hook_env.run(_SESSION_START)
+
+    assert result.returncode == 0, result.stderr
+    log = hook_env.log_text()
+    blocks = log.split("---\n")
+    assert any("vibe_cognition.whats_new" in b for b in blocks), (
+        f"whats_new was never invoked: {log}"
+    )
+    prime_blocks = [b for b in blocks if "vibe_cognition.cognition.prime" in b]
+    assert prime_blocks, f"prime was never invoked: {log}"
+    assert any(f"VIBE_WHATSNEW_NOTE={note}" in b for b in prime_blocks), (
+        f"whatsnew note not forwarded to prime's invocation: {prime_blocks}"
+    )
+
+
+def test_no_whatsnew_note_forwards_empty_string(hook_env):
+    """whats_new prints nothing (the common steady-state case) -> prime must
+    see an EMPTY VIBE_WHATSNEW_NOTE, not a stale/leftover value."""
+    hook_env.write_plugin_version("0.30.0")
+    hook_env.seed("health_probe_exit", "0")
+    hook_env.seed("whatsnew_stdout", "")
+
+    result = hook_env.run(_SESSION_START)
+
+    assert result.returncode == 0, result.stderr
+    log = hook_env.log_text()
+    blocks = log.split("---\n")
+    prime_blocks = [b for b in blocks if "vibe_cognition.cognition.prime" in b]
+    assert prime_blocks
+    assert any(
+        "VIBE_WHATSNEW_NOTE=\n" in b or b.rstrip().endswith("VIBE_WHATSNEW_NOTE=")
+        for b in prime_blocks
+    )
+
+
+def test_whatsnew_skipped_when_marker_equals_installed(hook_env):
+    """Fast path: the seen marker already string-equals the installed version
+    -- the module is never spawned at all, saving the process cost on the
+    (overwhelmingly common) steady-state session."""
+    hook_env.write_plugin_version("0.30.0")
+    hook_env.write_whatsnew_marker("0.30.0")
+    hook_env.seed("health_probe_exit", "0")
+    hook_env.seed("whatsnew_stdout", "should never be seen")
+
+    result = hook_env.run(_SESSION_START)
+
+    assert result.returncode == 0, result.stderr
+    log = hook_env.log_text()
+    blocks = log.split("---\n")
+    assert not any("vibe_cognition.whats_new" in b for b in blocks), (
+        f"whats_new was invoked despite marker == installed version: {log}"
+    )
+
+
+def test_whatsnew_proceeds_when_marker_differs_from_installed(hook_env):
+    """The mirror of the fast-path-skip case: a marker present but for an
+    OLDER version must still trigger a whats_new invocation."""
+    hook_env.write_plugin_version("0.30.0")
+    hook_env.write_whatsnew_marker("0.29.0")
+    hook_env.seed("health_probe_exit", "0")
+    hook_env.seed("whatsnew_stdout", "something new")
+
+    result = hook_env.run(_SESSION_START)
+
+    assert result.returncode == 0, result.stderr
+    log = hook_env.log_text()
+    blocks = log.split("---\n")
+    assert any("vibe_cognition.whats_new" in b for b in blocks), (
+        f"whats_new was not invoked despite marker != installed version: {log}"
+    )
+
+
+def test_whatsnew_skipped_when_kill_switch_on(hook_env):
+    """VIBE_WHATS_NEW=off skips the check entirely, even with no marker at
+    all (would otherwise be a guaranteed-invoke case) -- checked bash-side
+    before the fast-path comparison, so it also saves the extraction work,
+    not just the note text."""
+    hook_env.write_plugin_version("0.30.0")
+    hook_env.seed("health_probe_exit", "0")
+    hook_env.seed("whatsnew_stdout", "should never be seen")
+
+    result = hook_env.run(_SESSION_START, extra_env={"VIBE_WHATS_NEW": "OFF"})
+
+    assert result.returncode == 0, result.stderr
+    log = hook_env.log_text()
+    blocks = log.split("---\n")
+    assert not any("vibe_cognition.whats_new" in b for b in blocks), (
+        f"whats_new was invoked despite VIBE_WHATS_NEW=OFF: {log}"
+    )
+
+
+def test_whatsnew_breadcrumbs_present(hook_env):
+    """whats_new_start/done breadcrumbs appear on stderr, matching the other
+    `uv run` call sites' instrumentation."""
+    hook_env.write_plugin_version("0.30.0")
+    hook_env.seed("health_probe_exit", "0")
+
+    result = hook_env.run(_SESSION_START)
+
+    assert result.returncode == 0, result.stderr
+    assert "whats_new_start" in result.stderr
+    assert "whats_new_done" in result.stderr
+    assert "whats_new_start" not in result.stdout
+    assert "whats_new_done" not in result.stdout
+
+
+def test_whatsnew_malformed_plugin_json_extraction_failure_survives(hook_env):
+    """HOOK-KILLING EXTRACTION HAZARD guard: if the grep/sed INSTALLED_VERSION
+    extraction finds no match (an unexpectedly-shaped plugin.json), the hook
+    must still exit 0 with real prime output -- not die under `set -e` on the
+    unguarded command substitution. The empty extraction must degrade to
+    "proceed with the spawn" (fail toward spawning, not toward a dead hook).
+
+    Fails-before: an unguarded `VAR=$(cmd)` where cmd's grep/head/sed pipeline
+    exits non-zero aborts the entire hook under `set -euo pipefail`, producing
+    bare `{}` with no prime output at all.
+    """
+    d = hook_env.plugin_root / ".claude-plugin"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "plugin.json").write_text("not valid json at all", encoding="utf-8")
+    hook_env.seed("health_probe_exit", "0")
+    hook_env.seed("whatsnew_stdout", "")
+    hook_env.seed("prime_stdout", '{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "hi"}}')
+
+    result = hook_env.run(_SESSION_START)
+
+    assert result.returncode == 0, result.stderr
+    assert "hi" in result.stdout
+    log = hook_env.log_text()
+    blocks = log.split("---\n")
+    assert any("vibe_cognition.whats_new" in b for b in blocks), (
+        f"whats_new should still be spawned when extraction fails (fail toward spawning): {log}"
+    )
 
 
 # ── update_check (WP-Nudge-1): kill switch, throttle gate, note forwarding ───
@@ -503,16 +663,17 @@ def test_no_uv_on_path_emits_warning_and_exits_zero(hook_env):
 # ── WP-A 1b (decision 9022f7de94e9): uv-run timing breadcrumbs ───────────────
 
 
-def test_four_uv_run_breadcrumb_pairs_appear_on_stderr(hook_env):
-    """Each of the four `uv run` call sites (health probe, migrate_mcp,
-    update_check (WP-Nudge-1), prime) must emit a start+done breadcrumb pair
-    to STDERR (never stdout -- that must stay reserved for the hook's JSON
-    output), tagged with the hook's own PID.
+def test_five_uv_run_breadcrumb_pairs_appear_on_stderr(hook_env):
+    """Each of the five `uv run` call sites (health probe, migrate_mcp,
+    whats_new (WP-WhatsNew-1), update_check (WP-Nudge-1), prime) must emit a
+    start+done breadcrumb pair to STDERR (never stdout -- that must stay
+    reserved for the hook's JSON output), tagged with the hook's own PID.
 
     Fails-before: no instrumentation existed, so hook-vs-server venv overlap
     (distinguishing H1 venv-lock contention from H5 baseline cold-start tax)
     was undiagnosable from a log the user could read.
     """
+    hook_env.write_plugin_version("0.30.0")
     hook_env.seed("health_probe_exit", "0")
 
     result = hook_env.run(_SESSION_START)
@@ -521,6 +682,7 @@ def test_four_uv_run_breadcrumb_pairs_appear_on_stderr(hook_env):
     for label in (
         "probe_start", "probe_done_ok",
         "migrate_mcp_start", "migrate_mcp_done",
+        "whats_new_start", "whats_new_done",
         "update_check_start", "update_check_done",
         "prime_start", "prime_done",
     ):
