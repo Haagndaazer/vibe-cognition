@@ -1,13 +1,24 @@
 [project]
 name = "vibe-cognition"
-version = "0.30.0"
+version = "0.31.0"
 description = "MCP server for project knowledge graphs — decisions, failures, discoveries, patterns"
 authors = [{ name = "Colton Dyck" }]
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    "fastmcp>=2.0.0",
+    # fastmcp upper-bounded: a fastmcp 4.x could vendor its own stdio
+    # transport, bypassing the mcp<2 pin's protection below.
+    "fastmcp>=2.0.0,<4",
+    # mcp declared DIRECTLY (otherwise transitive via fastmcp) to pin <2:
+    # mcp 2.0.0's stdio_server() serves from a private DUPLICATE of stdin and
+    # repoints fd 0 to the null device -- that would silently blind BOTH
+    # lifecycle.py watches that read the process stdin handle (arm_stdin_watch's
+    # PeekNamedPipe poll and resolve_stdin_pipe_peer's pipe-end resolution):
+    # they arm inside the lifespan, which runs after stdio_server() is entered,
+    # so arm ordering can never win. Re-validate both watches before ANY mcp
+    # 2.x upgrade (WP-Lifecycle-2 rev 4, AC-PIN; see tests/test_dependency_pins.py).
+    "mcp<2",
     "networkx>=3.0",
     "chromadb>=0.5.0",
     "sentence-transformers>=3.0.0",

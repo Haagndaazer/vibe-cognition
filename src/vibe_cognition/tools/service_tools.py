@@ -124,6 +124,24 @@ def register_service_tools(mcp) -> None:
                                 stale for a few seconds after startup (the check
                                 runs in the background init thread, same as
                                 embedding model load, before this field settles),
+              stale_server_sweep: dict | None,  # MACHINE-WIDE (all sessions/
+                                # projects, INCLUDES this server) sweep of live
+                                # vibe_cognition.server processes, deduped to
+                                # real interpreters. Log-only telemetry: nothing
+                                # is ever acted on. Keys: server_count (int),
+                                # server_pids (list[int]), oldest_server_age_
+                                # seconds (float|null), unverified_interpreter_
+                                # count (int: uv-managed pythons whose command
+                                # line was unreadable -- possible over-count,
+                                # reported separately, never folded in), method
+                                # ("cmdline" | "cmdline+image-only-degraded"),
+                                # own_pid (int), scope (str label). On POSIX:
+                                # {"skipped": "posix"}; {"error": str} on sweep
+                                # failure. Null until the background init
+                                # thread has run the sweep (~seconds after
+                                # startup). A count > live session count
+                                # suggests leaked/stale servers -- surface to
+                                # the human; do NOT kill anything.
               loaded_foreign_projects: int,   # count of loaded foreign projects
                                               # (use cognition_list_projects for
                                               # details; absent if no registry)
@@ -176,6 +194,13 @@ def register_service_tools(mcp) -> None:
                 result["cognition_embeddings"] = {"error": str(e)}
         else:
             result["cognition_embeddings"] = 0
+
+        # WP-Lifecycle-2 Stage 1 (F4): machine-wide stale-sibling sweep result,
+        # LOG-ONLY (count + oldest age of live vibe_cognition.server real
+        # interpreters across ALL sessions/projects on this machine — labeled
+        # machine-wide inside the dict itself; nothing is ever acted on). Null
+        # until the background init thread has run the sweep.
+        result["stale_server_sweep"] = lc.get("stale_server_sweep")
 
         # Home embedding model/dim drift (WP-2): null when clean (the common
         # case), matching rehydrate_events' null-when-clean shape.

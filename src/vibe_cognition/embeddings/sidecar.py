@@ -25,12 +25,17 @@ a time (this is a synchronous request/response wire, not a concurrent
 server) -- "generate" already takes a list of texts, so there is no need
 for request pipelining.
 
-Parent-death safety: arms WP-Lifecycle's OWN ancestor-death watch at
-depth=1 (direct parent, no intermediary) -- the sidecar's real parent IS
-the server process itself (server spawns it directly via subprocess.Popen,
-no uv/shell in between for the CHILD side of this spawn, unlike the
-server's own uv-intermediated launch), so the orphan problem this WP would
-otherwise double is closed the same way the server's own is.
+Parent-death safety (corrected by WP-Lifecycle-2): arms WP-Lifecycle's
+ancestor-death watch at depth=1 -- which in PRODUCTION watches this
+process's uv-trampoline parent, NOT the server. The server's
+subprocess.Popen targets the venv's Scripts\\python.exe, which is a uv
+trampoline that stays resident and spawns the real interpreter (this
+process) as ITS child. When the server dies via os._exit (every
+death-watch path), that trampoline survives, so the depth-1 watch never
+fires and the sidecar pair can leak. Stage 1 therefore also receives the
+server's pid explicitly (VIBE_SUPERVISOR_PID) and LOGS its resolution --
+report-only; Stage 2 arms a second watch on that pid once field logs prove
+the identification correct (docs/wp-lifecycle2-plan.md rev 4).
 """
 
 from __future__ import annotations
@@ -138,6 +143,10 @@ def _do_load(args: dict) -> EmbeddingBackend:
 def main() -> None:
     _startup_timing.stamp_and_flush("sidecar_start")
     lifecycle.arm_ancestor_watch(depth=1)
+    # WP-Lifecycle-2 Stage 1 (report-only): breadcrumb what the supervisor
+    # pid the server handed us resolves to. Arms nothing; see module
+    # docstring for why the depth-1 watch above is not sufficient alone.
+    lifecycle.log_supervisor_identity()
 
     backend: EmbeddingBackend | None = None
 

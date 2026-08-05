@@ -41,7 +41,7 @@ description: You MUST use this skill any time you need to retrieve information a
 
 | Service / dashboard tool | Purpose |
 |------|---------|
-| `get_status` | Server status: graph stats + embedding readiness + foreign project count |
+| `get_status` | Server status: graph stats + embedding readiness + foreign project count + machine-wide stale-server sweep (log-only telemetry — never act on it) |
 | `cognition_dashboard` | Start/stop the local graph dashboard |
 | `cognition_readme` | Orientation guide + getting-started procedure (call on an empty graph or to explain vibe-cognition) |
 

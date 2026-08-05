@@ -1,5 +1,43 @@
 # WP-Lifecycle-2 (high): the shipped self-exit watches are vacuous under the uv-trampoline topology
 
+Status: rev 4 / STAGE 1 — 2026-07-29. Rev 3 (below, kept verbatim) remains
+the technical scoping of record; rev 4 amends it after two events:
+
+1. **Incident (critical, graph node 8a9640112d78):** a rev-3 implementation
+   attempt on a secondary machine destroyed its Windows install and wiped
+   most of its main drive (command unknown). Consequences, all ruled by
+   Colton: destructive-op containment rules K1-K5/FS1-FS5 are mandatory and
+   machine-checked (tests/test_containment_gate.py); **shipped plugin code
+   never terminates, signals, or acts on any process other than itself**
+   (sole pre-existing exception: the sidecar supervisor's kill of its OWN
+   spawned child); and the rollout is TWO-STAGE.
+2. **Two-stage rollout:** **Stage 1 (v0.31.0, this branch) is REPORT-ONLY**
+   — F1's pipe-peer resolution and F2's supervisor-pid handoff ship as
+   identification + breadcrumbs only; NO new watch is armed and exit
+   behavior is byte-for-byte v0.30.0's. F4's log-only sweep ships (doubles
+   as leak-recurrence telemetry). Stage 2 (separate release, separate
+   approval) arms the watches only after several days of Stage-1 field logs
+   show verdict=ok / peer=claude.exe on 100% of real sessions.
+
+Rev-4 amendments to rev 3's details: SessionEnd-hook ideas are REJECTED
+(plugin-declared SessionEnd hooks never fire, claude-code#33458; manual
+per-user setup breaks self-containment — Colton's ruling); `mcp<2` +
+`fastmcp<4` pinned as direct deps (mcp 2.0.0 repoints fd 0 to the null
+device, which would blind both stdin-handle watches — re-validate before
+any 2.x upgrade; tests/test_dependency_pins.py); uv >= 0.9.28 documents the
+trampoline Job Object (uv PR #17500) — recorded as an environment
+assumption, backstopped by the shipped depth-2 ancestor watch; I-1's live
+evidence died with a reboot (stale trees gone) — I-1' = synthetic-repro
+forensics, Stage 2; F4's cmdline reads pinned to NtQueryInformationProcess
+class 60 (no PEB walks, no WMI), unreadable cmdlines degrade to a labeled
+image-only count. G4's fix ships in Stage 1: the HEALTHY arm path now
+breadcrumbs its full chain with image names on every startup.
+
+Stage-1 implementer: Claude (Fable), branch `wp-lifecycle2-stage1` in a
+worktree under `C:\Users\colto\Documents\Projects\Worktrees\vibe-cognition`.
+
+---
+
 Status: rev 3 — Vince, 2026-07-24. Scoping for graph task d2a62f38cc88
 (MCP server process leak, 13 trees / ~3.5GB since 7/13). Rev 1 Fable peer
 review: FAIL (1 BLOCKER / 5 MAJOR / 3 MINOR) — folded into rev 2. Rev 2
