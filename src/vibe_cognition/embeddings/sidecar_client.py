@@ -38,7 +38,7 @@ import threading
 import time
 from typing import TYPE_CHECKING, Any
 
-from .. import _startup_timing
+from .. import _startup_timing, lifecycle
 from . import _sidecar_protocol
 from ._backend import EmbeddingBackend
 
@@ -278,6 +278,13 @@ class SidecarSupervisor:
 
     def _spawn(self) -> _SidecarProcess:
         env = dict(os.environ)
+        # WP-Lifecycle-2 Stage 1: hand the sidecar OUR pid explicitly. In
+        # production the sidecar's real parent is a uv trampoline, not this
+        # server (sidecar.py's module docstring has the full topology), so
+        # the sidecar cannot infer its supervisor from ancestry. Plain env
+        # inheritance survives the trampoline hop. The sidecar only LOGS its
+        # resolution this release; Stage 2 arms a watch on it.
+        env[lifecycle.SUPERVISOR_PID_ENV] = str(os.getpid())
         proc = _SidecarProcess(
             python_exe=sys.executable,
             module="vibe_cognition.embeddings.sidecar",

@@ -32,6 +32,7 @@ from .embeddings import ChromaDBStorage, EmbeddingGenerator
 from .embeddings import sidecar_client
 from .instructions import SERVER_INSTRUCTIONS
 from . import lifecycle
+from .stale_sweep import run_stale_sweep
 from .tools import register_all_tools
 from .tools.dispatch import prewarm_dispatch_executor
 from .tools.cognition_tools import (
@@ -390,6 +391,18 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
     _startup_timing.stamp_and_flush("bg_thread_start")
     _startup_timing.prune_old_logs()
 
+    # WP-Lifecycle-2 Stage 1 (F4): machine-wide stale-sibling sweep, LOG-ONLY
+    # (never acts on anything; auto-kill needs an explicit human ruling and is
+    # out of scope). Execution site pinned here — never pre-yield (enumeration
+    # costs 100ms-2s: handshake latency), never a new post-yield thread
+    # (WP-Wedge INV-1). Doubles as leak-recurrence telemetry for Stage 2.
+    try:
+        sweep = run_stale_sweep()
+        context["stale_server_sweep"] = sweep
+        logger.info(f"Stale-sibling sweep (machine-wide, log-only): {sweep}")
+    except Exception as e:  # pragma: no cover - defensive, must never block startup
+        context["stale_server_sweep"] = {"error": str(e)}
+
     try:
         # Home model/dim drift guard (WP-2): a cheap metadata comparison (no
         # model load needed), run FIRST so it can't add to embedding_ready
@@ -676,6 +689,18 @@ async def lifespan(server: FastMCP):
         lifecycle.arm_stdin_watch()
     except Exception as e:
         logger.warning(f"Failed to arm stdin-pipe watch (non-fatal): {e}")
+
+    # WP-Lifecycle-2 Stage 1 (report-only): identify the stdin pipe PEER --
+    # the real client (claude.exe: uv passes stdio handles through, it does
+    # not re-pipe) -- and breadcrumb pid + image + verdict. IDENTIFICATION
+    # ONLY: the resolved peer is NOT watched and no exit behavior changes in
+    # this release; Stage 2 arms it only after field logs prove the
+    # identification correct (docs/wp-lifecycle2-plan.md rev 4). Handle-opens
+    # only, closed before return -- pre-yield-safe, no new threads (INV-1).
+    try:
+        lifecycle.resolve_stdin_pipe_peer()
+    except Exception as e:
+        logger.warning(f"Pipe-peer identification failed (non-fatal, log-only): {e}")
 
     bg_thread = threading.Thread(
         target=_load_embeddings_and_sync,

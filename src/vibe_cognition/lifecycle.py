@@ -156,6 +156,24 @@ if _IS_WINDOWS:
     ]
     _kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
 
+    # WP-Lifecycle-2 Stage 1 (report-only): pipe-end pid resolution. Both
+    # calls return the pid of the process that CREATED the pipe, recorded at
+    # creation time -- for the anonymous CreatePipe pipes Claude Code uses for
+    # MCP stdio, both ends resolve to the creator (empirically validated in
+    # the rev-3 scoping against anonymous pipes, a pass-through uv chain, and
+    # a Node/libuv creator).
+    _kernel32.GetNamedPipeServerProcessId.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    _kernel32.GetNamedPipeServerProcessId.restype = wintypes.BOOL
+
+    _kernel32.GetNamedPipeClientProcessId.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    _kernel32.GetNamedPipeClientProcessId.restype = wintypes.BOOL
+
 
 def _filetime_to_int(ft) -> int:
     return (ft.dwHighDateTime << 32) | ft.dwLowDateTime
@@ -233,6 +251,29 @@ def _raw_last_error() -> int:
     return ctypes.get_last_error()
 
 
+def _raw_get_std_input_handle():
+    """Seam: the process stdin handle (tests monkeypatch to drive pipe/console
+    scenarios without rebinding real std handles)."""
+    return _kernel32.GetStdHandle(_STD_INPUT_HANDLE)
+
+
+def _raw_get_file_type(handle) -> int:
+    return _kernel32.GetFileType(handle)
+
+
+def _raw_get_pipe_end_pids(handle) -> tuple[int | None, int | None]:
+    """Seam: (server_end_pid, client_end_pid) of a pipe handle, each None on
+    API failure. Both return the pipe CREATOR's pid for anonymous pipes."""
+    server_pid = wintypes.DWORD(0)
+    client_pid = wintypes.DWORD(0)
+    server_ok = _kernel32.GetNamedPipeServerProcessId(handle, ctypes.byref(server_pid))
+    client_ok = _kernel32.GetNamedPipeClientProcessId(handle, ctypes.byref(client_pid))
+    return (
+        int(server_pid.value) if server_ok else None,
+        int(client_pid.value) if client_ok else None,
+    )
+
+
 def _open_ancestor(pid: int) -> _OpenResult:
     handle = _raw_open_process(_PROCESS_ACCESS, pid)
     if handle:
@@ -276,6 +317,175 @@ def _exit_now(reason: str, detail: str = "") -> None:
     except Exception:
         pass
     os._exit(0)
+
+
+# ── WP-Lifecycle-2 Stage 1: report-only identification ──────────────────────
+# Everything below in this section only OBSERVES and LOGS. No watch is armed,
+# no exit behavior changes, no process other than ourselves is ever touched
+# (read-only PROCESS_QUERY_LIMITED_INFORMATION opens, closed before return).
+# Stage 2 arms these resolutions only after field logs prove them correct
+# (docs/wp-lifecycle2-plan.md rev 4, two-stage rollout ruling 2026-07-29).
+
+SUPERVISOR_PID_ENV = "VIBE_SUPERVISOR_PID"
+
+
+def _log_identity(kind: str, result: dict) -> None:
+    parts = " ".join(f"{k}={v}" for k, v in result.items() if v is not None)
+    try:
+        sys.stderr.write(f"[vibe-lifecycle] {kind}: {parts}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def resolve_stdin_pipe_peer() -> dict:
+    """Identify (report-only) the process on the far end of our stdin pipe --
+    the REAL client (claude.exe in production: uv passes stdio handles
+    through, it does not re-pipe). Returns a verdict dict and breadcrumbs it;
+    never raises, never keeps a handle, never affects any watch.
+
+    Verdicts: ok | skipped_posix | skipped_console | api_failed |
+    peer_is_self | ends_disagree | peer_inside_ancestor_set | peer_gone |
+    peer_access_denied | peer_younger_than_self | unresolved.
+    A verdict other than `ok` on a real session blocks Stage 2 until
+    explained -- that is the whole point of this release."""
+    result: dict = {"verdict": "unresolved", "peer_pid": None, "peer_image": None}
+    try:
+        if not _IS_WINDOWS:
+            result["verdict"] = "skipped_posix"
+            _startup_timing.stamp("pipe_peer_skipped_posix")
+            return result
+
+        stdin_handle = _raw_get_std_input_handle()
+        if _raw_get_file_type(stdin_handle) & _FILE_TYPE_MASK != _FILE_TYPE_PIPE:
+            # Console/dev run -- same rule as arm_stdin_watch: nothing to
+            # resolve, never treat as a finding.
+            result["verdict"] = "skipped_console"
+            _startup_timing.stamp("pipe_peer_skipped_console")
+            _log_identity("pipe_peer_resolved", result)
+            return result
+
+        server_end, client_end = _raw_get_pipe_end_pids(stdin_handle)
+        result["server_end_pid"] = server_end
+        result["client_end_pid"] = client_end
+        if server_end is None and client_end is None:
+            result["verdict"] = "api_failed"
+            result["last_error"] = _raw_last_error()
+            _startup_timing.stamp("pipe_peer_resolved")
+            _log_identity("pipe_peer_resolved", result)
+            return result
+
+        own_pid = os.getpid()
+        candidates = {p for p in (server_end, client_end) if p and p != own_pid}
+        if not candidates:
+            result["verdict"] = "peer_is_self"
+            _startup_timing.stamp("pipe_peer_resolved")
+            _log_identity("pipe_peer_resolved", result)
+            return result
+        if len(candidates) > 1:
+            # Anonymous pipes report the creator on both ends; disagreement
+            # means a topology we have not seen -- report it, resolve nothing.
+            result["verdict"] = "ends_disagree"
+            _startup_timing.stamp("pipe_peer_resolved")
+            _log_identity("pipe_peer_resolved", result)
+            return result
+        peer_pid = candidates.pop()
+        result["peer_pid"] = peer_pid
+
+        # Spike criterion (rev 3, pinned): a peer inside the depth-<=2
+        # ancestor set means an intermediary re-piped stdio -- Stage 2 would
+        # engage the fallback walk, Stage 1 reports it.
+        own_parent = get_parent_pid_via_handle(_kernel32.GetCurrentProcess())
+        grandparent = None
+        if own_parent is not None:
+            parent_probe = _open_ancestor(own_parent)
+            if parent_probe.handle:
+                grandparent = get_parent_pid_via_handle(parent_probe.handle)
+                _kernel32.CloseHandle(parent_probe.handle)
+        if peer_pid in {own_parent, grandparent}:
+            result["verdict"] = "peer_inside_ancestor_set"
+            _startup_timing.stamp("pipe_peer_resolved")
+            _log_identity("pipe_peer_resolved", result)
+            return result
+
+        peer_probe = _open_ancestor(peer_pid)
+        if peer_probe.pid_gone:
+            result["verdict"] = "peer_gone"
+        elif peer_probe.access_denied:
+            result["verdict"] = "peer_access_denied"
+        else:
+            try:
+                if is_younger_than_self(peer_probe.handle) is True:
+                    # Creation-time guard: the pipe creator predates us by
+                    # construction, so a younger pid is a reused pid.
+                    result["verdict"] = "peer_younger_than_self"
+                else:
+                    result["peer_image"] = _query_image_name(peer_probe.handle)
+                    result["verdict"] = "ok"
+            finally:
+                _kernel32.CloseHandle(peer_probe.handle)
+        _startup_timing.stamp("pipe_peer_resolved")
+        _log_identity("pipe_peer_resolved", result)
+        return result
+    except Exception as e:  # pragma: no cover - defensive: log-only code must never break startup
+        result["verdict"] = "unresolved"
+        result["error"] = repr(e)
+        _log_identity("pipe_peer_resolved", result)
+        return result
+
+
+def log_supervisor_identity() -> dict:
+    """Sidecar-side (report-only): resolve the supervisor pid the server
+    handed us via VIBE_SUPERVISOR_PID and breadcrumb what we find. Stage 1
+    arms nothing on it; the existing depth-1 parent watch is unchanged.
+
+    Verdicts: ok | env_absent | env_invalid | skipped_posix |
+    supervisor_gone | access_denied | younger_than_self."""
+    result: dict = {"verdict": "unresolved", "supervisor_pid": None, "supervisor_image": None}
+    try:
+        raw = os.environ.get(SUPERVISOR_PID_ENV)
+        if not raw:
+            # Expected when spawned by a pre-Stage-1 server or run directly.
+            result["verdict"] = "env_absent"
+            _startup_timing.stamp("supervisor_pid_env_absent")
+            return result
+        try:
+            pid = int(raw)
+        except ValueError:
+            result["verdict"] = "env_invalid"
+            result["raw"] = raw
+            _log_identity("supervisor_pid_resolved", result)
+            return result
+        result["supervisor_pid"] = pid
+        if not _IS_WINDOWS:
+            result["verdict"] = "skipped_posix"
+            return result
+
+        probe = _open_ancestor(pid)
+        if probe.pid_gone:
+            # Report-only in Stage 1; Stage 2 pins this to exit-now (a dead
+            # supervisor at arm time is unambiguous orphaning, the mirror of
+            # F1's pre-dead-peer rule).
+            result["verdict"] = "supervisor_gone"
+        elif probe.access_denied:
+            result["verdict"] = "access_denied"
+        else:
+            try:
+                if is_younger_than_self(probe.handle) is True:
+                    result["verdict"] = "younger_than_self"
+                else:
+                    result["supervisor_image"] = _query_image_name(probe.handle)
+                    result["verdict"] = "ok"
+            finally:
+                _kernel32.CloseHandle(probe.handle)
+        _startup_timing.stamp("supervisor_pid_resolved")
+        _log_identity("supervisor_pid_resolved", result)
+        return result
+    except Exception as e:  # pragma: no cover - defensive: log-only code must never break startup
+        result["verdict"] = "unresolved"
+        result["error"] = repr(e)
+        _log_identity("supervisor_pid_resolved", result)
+        return result
 
 
 def arm_ancestor_watch(
@@ -329,6 +539,9 @@ def arm_ancestor_watch(
                 )
                 return None
             watched_handles.append(["wait", handle, own_parent_pid])
+            parent_image = _query_image_name(handle)
+            if parent_image:
+                chain_breadcrumb.append(f"parent_image={parent_image}")
 
             if depth >= 2:
                 grandparent_pid = get_parent_pid_via_handle(handle)
@@ -418,6 +631,13 @@ def arm_ancestor_watch(
         )
     else:
         _startup_timing.stamp("parent_watch_armed")
+        # WP-Lifecycle-2 Stage 1 (G4 fold): the HEALTHY path now states what
+        # it is watching, with image names, on every startup. One line of
+        # `grandparent_image=uv.exe` (instead of claude.exe) would have
+        # exposed the vacuous depth-2 watch on day one.
+        sys.stderr.write(
+            f"[vibe-lifecycle] parent_watch_armed: {', '.join(chain_breadcrumb)}\n"
+        )
     return thread
 
 
