@@ -58,7 +58,7 @@ if os.environ.get("VIBE_LIFECYCLE_TEST_WEDGE_BG"):
         _release_never_set.wait()
         return SimpleNamespace()
 
-    _server.EmbeddingGenerator.from_config = staticmethod(_hung_from_config)
+    _server.EmbeddingGenerator.from_config = staticmethod(_hung_from_config)  # type: ignore[assignment]
 
 _watches_armed = threading.Event()
 

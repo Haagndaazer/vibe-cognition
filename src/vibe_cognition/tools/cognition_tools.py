@@ -1294,7 +1294,7 @@ def _get_node(storage: CognitionStorage, node_id: str) -> dict[str, Any]:
 def _update_node(
     storage: CognitionStorage,
     embedding_storage: "ChromaDBStorage",
-    generator: "EmbeddingGenerator",
+    generator: "EmbeddingGenerator | None",
     *,
     node_id: str,
     embeddings_ready: bool,
@@ -1353,6 +1353,7 @@ def _update_node(
     # ready, defer (the vector/metadata stay stale until a future re-embed — rare, an
     # edit needs a loaded model anyway).
     if embeddings_ready:
+        assert generator is not None  # callers pass a generator whenever ready=True
         post = storage.get_node(node_id)
         assert post is not None  # just updated it; cannot vanish under the lock
         cnode = _node_from_dict(node_id, post)
@@ -1709,7 +1710,7 @@ def _reparent_task(
 def _update_task(
     storage: CognitionStorage,
     embedding_storage: "ChromaDBStorage",
-    generator: "EmbeddingGenerator",
+    generator: "EmbeddingGenerator | None",
     *,
     node_id: str,
     embeddings_ready: bool,
@@ -2013,6 +2014,7 @@ def _update_task(
     # narrative land in Chroma. Deferred if the model isn't ready (rare — an edit needs a
     # loaded model anyway).
     if embeddings_ready:
+        assert generator is not None  # callers pass a generator whenever ready=True
         post = storage.get_node(node_id)
         assert post is not None  # just updated it; cannot vanish under the lock
         cnode = _node_from_dict(node_id, post)

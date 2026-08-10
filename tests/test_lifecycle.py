@@ -48,10 +48,11 @@ def test_is_younger_than_self_true_when_other_created_after_self(monkeypatch):
 
 
 def test_is_younger_than_self_false_when_other_created_before_self():
-    def fake_creation_time(handle):
-        return next(fake_creation_time.values)
+    values = iter([50, 100])  # other=50, self=100
 
-    fake_creation_time.values = iter([50, 100])  # other=50, self=100
+    def fake_creation_time(handle):
+        return next(values)
+
     import vibe_cognition.lifecycle as mod
 
     orig = mod._get_process_creation_time

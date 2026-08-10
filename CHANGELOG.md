@@ -32,6 +32,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `chromadb/` gitignore line keeps being written for repos shared with teammates on
   older plugin versions. Journal and documents stay in-repo, unchanged.
 
+## [0.31.0] — 2026-08-05
+
+*(Entry backfilled during the 0.32.0 cycle — this release originally shipped
+without one; the release workflow now mandates a CHANGELOG entry per release.)*
+
+### Added
+- **WP-Lifecycle-2 Stage 1: report-only lifecycle identification.** First half of
+  the post-incident two-stage rollout against leaked server processes. Stage 1
+  ships IDENTIFICATION ONLY — exit behavior is byte-identical to v0.30.0, no new
+  watch is armed, and shipped code never acts on any process other than itself.
+  `lifecycle.resolve_stdin_pipe_peer()` resolves the stdin pipe creator (the real
+  client) with ancestor-set, creation-time, and image checks and breadcrumbs the
+  verdict; the sidecar receives and logs `VIBE_SUPERVISOR_PID`; the healthy
+  ancestor-watch arm path breadcrumbs its full chain with image names on every
+  startup; a machine-wide stale-sibling sweep (log-only) is surfaced in
+  `get_status`. Deps pinned `mcp<2` + `fastmcp<4` (mcp 2.0.0 repoints fd 0,
+  blinding the stdin-handle watches); a containment-gate test machine-checks the
+  destructive-op rules across src/tests/hooks.
+
 ## [0.30.0]
 
 ### Added

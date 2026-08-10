@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from typing import Any
 
 from vibe_cognition import _heavy_import_guard
 
@@ -13,7 +14,7 @@ def test_find_heavy_modules_returns_empty_when_none_present(monkeypatch):
 
 
 def test_find_heavy_modules_detects_a_real_match(monkeypatch):
-    fake_modules = dict(sys.modules)
+    fake_modules: dict[str, Any] = dict(sys.modules)
     fake_modules["torch"] = object()
     fake_modules["scipy.interpolate"] = object()
     monkeypatch.setattr(sys, "modules", fake_modules)
@@ -49,7 +50,7 @@ def test_find_heavy_modules_does_not_false_positive_on_similar_names(monkeypatch
 
 
 def test_check_and_log_writes_to_stderr_on_violation(monkeypatch, capsys):
-    fake_modules = dict(sys.modules)
+    fake_modules: dict[str, Any] = dict(sys.modules)
     fake_modules["sentence_transformers"] = object()
     monkeypatch.setattr(sys, "modules", fake_modules)
 
@@ -70,7 +71,7 @@ def test_check_and_log_silent_when_clean(monkeypatch, capsys):
 
 
 def test_check_and_log_never_raises_even_on_violation(monkeypatch):
-    fake_modules = dict(sys.modules)
+    fake_modules: dict[str, Any] = dict(sys.modules)
     fake_modules["torch"] = object()
     monkeypatch.setattr(sys, "modules", fake_modules)
 

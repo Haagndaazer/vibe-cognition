@@ -38,6 +38,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
+from typing import Any, cast
 
 from . import _startup_timing
 
@@ -173,6 +174,11 @@ if _IS_WINDOWS:
         ctypes.POINTER(wintypes.DWORD),
     ]
     _kernel32.GetNamedPipeClientProcessId.restype = wintypes.BOOL
+else:
+    # POSIX: every wintypes use below sits on a Windows-only path that never
+    # runs here — this binding exists solely so the name is never unbound for
+    # static analysis (Any: its attributes must not be type errors either).
+    wintypes = cast(Any, None)
 
 
 def _filetime_to_int(ft) -> int:
@@ -507,7 +513,9 @@ def arm_ancestor_watch(
     own_parent_pid = get_parent_pid_via_handle(_kernel32.GetCurrentProcess())
     chain_breadcrumb = [f"self={own_pid}"]
 
-    watched_handles: list[int] = []
+    # Each entry is a mutable [kind ("wait"|"poll"), handle_or_None, pid] list —
+    # see _watch below, which flips kinds in place on WAIT_FAILED.
+    watched_handles: list[list[Any]] = []
     degraded = False
 
     if own_parent_pid is None:
