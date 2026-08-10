@@ -1,4 +1,8 @@
 {
+  "0.32.0": [
+    "Vector embeddings (chromadb) now live in the plugin's data dir, not inside your repo -- the .cognition/chromadb folder in your projects is no longer used and is SAFE TO DELETE.",
+    "Embeddings rebuild automatically at the new location the first time each project opens (one-time; larger graphs take a few minutes). Your journal and documents stay in the repo as before."
+  ],
   "0.29.0": [
     "Session-start now checks once a day for a newer released plugin version and shows a one-line reminder if you're behind (disable with VIBE_UPDATE_NUDGE=off).",
     "Nothing is installed automatically -- updating is always your call; the reminder just tells you the exact /plugin update command to run."

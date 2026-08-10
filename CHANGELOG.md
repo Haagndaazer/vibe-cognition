@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0]
+
+### Changed
+- **ChromaDB vector store moved out of the repo (WP-Chroma-Home)**: the per-project
+  vector store now lives under the plugin's persistent data directory
+  (`${CLAUDE_PLUGIN_DATA}/chromadb/<project>-<hash>/`) instead of
+  `<repo>/.cognition/chromadb/`, so it can never be source-controlled, never holds
+  file handles inside the repo (Windows: unblocks `git clean`/branch ops/repo
+  deletion while a server runs), and never churns cloud-sync on repos under
+  OneDrive-managed folders. Resolution order: `VIBE_CHROMADB_DIR` (exact-dir
+  override) → `VIBE_DATA_DIR` (new explicit `plugin.json` env entry) / bare
+  `CLAUDE_PLUGIN_DATA` → single-match discovery of
+  `~/.claude/plugins/data/vibe-cognition-*` for env-less launches → legacy in-repo
+  path as last resort. One shared key-derivation helper (`chroma_project_key`,
+  `sha256(normcase(resolved path))`, readable slug prefix) serves the server
+  lifespan, the standalone dashboard CLI (new `--data-dir` flag), and
+  `cognition_load_project` (which now prefers a foreign project's keyed dir when it
+  exists, falling back read-only to its legacy in-repo dir). **Migration is always
+  fresh**: nothing is copied or moved — the journal re-embeds into the empty new
+  location on first startup (one-time cost per project) — and the old
+  `.cognition/chromadb/` is left untouched; **it is unused and safe to delete**.
+  `get_status` now reports the resolved `chromadb_path`. The auto-hygiene
+  `chromadb/` gitignore line keeps being written for repos shared with teammates on
+  older plugin versions. Journal and documents stay in-repo, unchanged.
+
 ## [0.30.0]
 
 ### Added

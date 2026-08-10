@@ -81,10 +81,24 @@ def main() -> int:
         action="store_true",
         help="Skip loading the embedding model — search will return 503 (faster startup for UI work)",
     )
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Plugin data root holding the keyed chromadb dirs (default: $VIBE_DATA_DIR, "
+            "then auto-discovery of ~/.claude/plugins/data/vibe-cognition-*; the legacy "
+            "in-repo .cognition/chromadb is the last resort)"
+        ),
+    )
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
 
     setup_logging(args.log_level)
+
+    if args.data_dir is not None:
+        # Same channel plugin.json uses — Settings' resolution picks it up.
+        os.environ["VIBE_DATA_DIR"] = str(args.data_dir)
 
     repo_path = args.repo_path or resolve_repo_path_env()
     repo_path = repo_path.resolve()
