@@ -57,6 +57,16 @@ def main() -> int:
     print(f"pyright errors: {count} (baseline: {baseline}, files analyzed: {files_analyzed})")
 
     if count > baseline:
+        # Print the actual diagnostics: a platform-dependent error that only
+        # reproduces on THIS leg is otherwise undiagnosable from the count
+        # alone (the exact blind spot that let the count drift unnoticed).
+        for diag in report.get("generalDiagnostics", []):
+            if diag.get("severity") != "error":
+                continue
+            file = diag.get("file", "?")
+            line = diag.get("range", {}).get("start", {}).get("line", 0) + 1
+            message = diag.get("message", "").splitlines()[0]
+            print(f"  {file}:{line}: {diag.get('rule', '?')}: {message}")
         print(
             f"::error::pyright error count {count} exceeds baseline {baseline}. "
             "Fix the new type errors (or, if intentional, justify and raise the baseline)."

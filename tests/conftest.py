@@ -81,6 +81,27 @@ class _MockMcp:
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 
+@pytest.fixture(autouse=True)
+def _isolate_chroma_resolution(monkeypatch, tmp_path):
+    """WP-Chroma-Home: keep chromadb path resolution off the real machine.
+
+    Without this, any test that builds Settings() and touches
+    cognition_chromadb_path on a dev machine resolves into the REAL
+    ~/.claude/plugins/data/vibe-cognition-* dir (the discovery glob finds it —
+    confirmed live during scoping). Clearing the env vars and pointing the
+    discovery seam at a nonexistent tmp dir restores the legacy in-repo
+    fallback for every test by default; resolution-order tests set env vars /
+    seed the seam dir explicitly on top of this baseline.
+    """
+    from vibe_cognition import config as config_module
+
+    for var in ("VIBE_CHROMADB_DIR", "VIBE_DATA_DIR", "CLAUDE_PLUGIN_DATA"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(
+        config_module, "_home_plugins_data_dir", lambda: tmp_path / "_no_plugins_data"
+    )
+
+
 @pytest.fixture
 def fake_generator() -> EmbeddingGenerator:
     """A text-keyed fake embedder (3-D, no model load)."""

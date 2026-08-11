@@ -1,6 +1,6 @@
 {
   "name": "vibe-cognition",
-  "version": "0.31.0",
+  "version": "0.32.0",
   "description": "Project knowledge graph — captures decisions, failures, discoveries, patterns, and reasoning chains. Fully local, no API keys.",
   "author": { "name": "Colton Dyck" },
   "license": "MIT",
@@ -20,6 +20,7 @@
       ],
       "env": {
         "REPO_PATH": "${CLAUDE_PROJECT_DIR}",
+        "VIBE_DATA_DIR": "${CLAUDE_PLUGIN_DATA}",
         "UV_PROJECT_ENVIRONMENT": "${CLAUDE_PLUGIN_DATA}/.venv"
       }
     }

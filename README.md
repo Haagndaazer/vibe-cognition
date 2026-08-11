@@ -257,34 +257,32 @@ The CLI runs uvicorn in the foreground; press Ctrl-C to stop.
 
 ## Storage
 
-Vibe Cognition stores all data in a single `.cognition/` directory within your project:
+Vibe Cognition keeps the shared graph in a `.cognition/` directory within your project, and the machine-local vector store **outside** it, under the plugin's data directory:
 
 ```
 your-project/
 ├── .cognition/
-│   ├── journal.jsonl       # Cognition graph (Git-committed, team-shared)
-│   └── chromadb/            # Cognition vector embeddings (gitignored, regenerable)
+│   └── journal.jsonl       # Cognition graph (Git-committed, team-shared)
 └── ... your code
+
+~/.claude/plugins/data/vibe-cognition-<marketplace>/
+└── chromadb/
+    └── <project>-<hash>/   # Vector embeddings (machine-local, regenerable)
 ```
 
 `.cognition/` is the **only** thing the plugin writes into your project. The MCP server is declared by the plugin itself and resolves your project directory automatically (via `CLAUDE_PROJECT_DIR`), so there is no per-project `.mcp.json` to manage. Python dependencies live in the plugin's own data directory, not in your repo. (If you installed an earlier version that wrote a `vibe-cognition` entry into your project's `.mcp.json`, the plugin removes just that entry on next start — other servers are left untouched.)
 
 - **`.cognition/journal.jsonl`** should be **committed to Git** — it's the shared project knowledge base
-- **`.cognition/chromadb/`** should be in `.gitignore` — it's a regenerable cache (rebuilt automatically on next server startup if deleted)
+- **The chromadb vector store** lives per-project under the plugin data dir since v0.32.0 — it can never end up in source control, and it's a regenerable cache (rebuilt automatically from the journal if deleted). The resolved path is surfaced in `get_status` as `chromadb_path`. A leftover `.cognition/chromadb/` from earlier versions is unused and **safe to delete**.
 
-> **Important:** Only gitignore `.cognition/chromadb/`, NOT the entire `.cognition/` directory. The journal file must be committed to Git for team sharing.
-
-Add to your project's `.gitignore`:
-```bash
-echo '.cognition/chromadb/' >> .gitignore
-```
+> **Important:** Never gitignore the entire `.cognition/` directory. The journal file must be committed to Git for team sharing.
 
 ### Automatic Git Hygiene
 
 On first startup in a new project, vibe-cognition automatically configures two git hygiene rules for `.cognition/`:
 
 1. **`.gitattributes`** — adds `.cognition/journal.jsonl merge=union` so concurrent journal appends from different branches/clones union-merge cleanly instead of conflicting. (`merge=union` is a built-in git merge driver; it only affects 3-way merge resolution and never rewrites the journal blob.)
-2. **`.cognition/.gitignore`** — adds `chromadb/` so the regenerable vector cache is never accidentally committed.
+2. **`.cognition/.gitignore`** — adds `chromadb/` so a vector cache written into the repo is never accidentally committed. (Since v0.32.0 the store lives outside the repo, but this line is still written: teammates on older plugin versions sharing the repo still create an in-repo cache.)
 
 Both writes are **idempotent** (existing files are appended, never clobbered) and happen exactly once per working copy, tracked by a local flag file `.cognition/.git-hygiene-managed`. The committed rules (`.gitattributes`, `.cognition/.gitignore`) travel to teammates via git; the flag is git-ignored so every fresh clone self-heals with one pass on first startup.
 
@@ -605,8 +603,10 @@ shared working directory specifically (not just multiple independent sessions), 
 [topology guide](docs/topology-guide.md) — that setup has its own protocol.
 
 **ChromaDB lock / database errors** — this is unrelated to running multiple sessions
-(see above); check for a stale lock file under `.cognition/chromadb/` from a process
-that didn't shut down cleanly, or antivirus/backup software holding a file open.
+(see above); check for a stale lock file under the project's chromadb directory (the
+`chromadb_path` in `get_status`; since v0.32.0 under the plugin data dir, on older
+versions `.cognition/chromadb/`) from a process that didn't shut down cleanly, or
+antivirus/backup software holding a file open.
 
 **Journal permanently shows as modified, or replay resets after merges (Windows / autocrlf)** — The journal is replayed by byte offset, so line-ending normalization must never rewrite its bytes; on `core.autocrlf` setups this holds only by convention. If `git status` permanently shows `.cognition/journal.jsonl` as modified, or logs show "re-hydrated from top" after merges/pulls, add `.cognition/*.jsonl merge=union -text` to your repo-root `.gitattributes` — EARLY in the graph's life. Do not retrofit `-text` onto a grown shared-checkout journal without a planned cut-over: the first commit after adding it re-normalizes the file once, which live sessions see as a replaced journal. (Auto-configuration writes only `merge=union`, never `-text`.)
 
@@ -630,7 +630,7 @@ automatic self-exit yet. Workaround: periodically check Task Manager (or
 processes with no corresponding open Claude Code window, and end them manually. Don't
 end a process tied to a session you're still using.
 
-**General** — `.cognition/chromadb/` is always safe to delete. It is fully regenerated on the next server startup.
+**General** — the chromadb vector store (see `chromadb_path` in `get_status`) is always safe to delete. It is fully regenerated on the next server startup. A leftover `.cognition/chromadb/` inside a project is unused since v0.32.0 and equally safe to delete.
 
 ## Uninstall / Cleanup
 
@@ -644,7 +644,11 @@ end a process tied to a session you're still using.
    claude plugin marketplace remove coltondyck
    ```
 
-3. Delete the regenerable cache from your project:
+3. Delete the regenerable vector caches (all projects; also removes the plugin venv):
+   ```bash
+   rm -rf ~/.claude/plugins/data/vibe-cognition-coltondyck/
+   ```
+   Projects set up before v0.32.0 may also have a leftover in-repo cache:
    ```bash
    rm -rf .cognition/chromadb/
    ```

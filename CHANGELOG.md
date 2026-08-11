@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0]
+
+### Changed
+- **ChromaDB vector store moved out of the repo (WP-Chroma-Home)**: the per-project
+  vector store now lives under the plugin's persistent data directory
+  (`${CLAUDE_PLUGIN_DATA}/chromadb/<project>-<hash>/`) instead of
+  `<repo>/.cognition/chromadb/`, so it can never be source-controlled, never holds
+  file handles inside the repo (Windows: unblocks `git clean`/branch ops/repo
+  deletion while a server runs), and never churns cloud-sync on repos under
+  OneDrive-managed folders. Resolution order: `VIBE_CHROMADB_DIR` (exact-dir
+  override) → `VIBE_DATA_DIR` (new explicit `plugin.json` env entry) / bare
+  `CLAUDE_PLUGIN_DATA` → single-match discovery of
+  `~/.claude/plugins/data/vibe-cognition-*` for env-less launches → legacy in-repo
+  path as last resort. One shared key-derivation helper (`chroma_project_key`,
+  `sha256(normcase(resolved path))`, readable slug prefix) serves the server
+  lifespan, the standalone dashboard CLI (new `--data-dir` flag), and
+  `cognition_load_project` (which now prefers a foreign project's keyed dir when it
+  exists, falling back read-only to its legacy in-repo dir). **Migration is always
+  fresh**: nothing is copied or moved — the journal re-embeds into the empty new
+  location on first startup (one-time cost per project) — and the old
+  `.cognition/chromadb/` is left untouched; **it is unused and safe to delete**.
+  `get_status` now reports the resolved `chromadb_path`. The auto-hygiene
+  `chromadb/` gitignore line keeps being written for repos shared with teammates on
+  older plugin versions. Journal and documents stay in-repo, unchanged.
+
+## [0.31.0] — 2026-08-05
+
+*(Entry backfilled during the 0.32.0 cycle — this release originally shipped
+without one; the release workflow now mandates a CHANGELOG entry per release.)*
+
+### Added
+- **WP-Lifecycle-2 Stage 1: report-only lifecycle identification.** First half of
+  the post-incident two-stage rollout against leaked server processes. Stage 1
+  ships IDENTIFICATION ONLY — exit behavior is byte-identical to v0.30.0, no new
+  watch is armed, and shipped code never acts on any process other than itself.
+  `lifecycle.resolve_stdin_pipe_peer()` resolves the stdin pipe creator (the real
+  client) with ancestor-set, creation-time, and image checks and breadcrumbs the
+  verdict; the sidecar receives and logs `VIBE_SUPERVISOR_PID`; the healthy
+  ancestor-watch arm path breadcrumbs its full chain with image names on every
+  startup; a machine-wide stale-sibling sweep (log-only) is surfaced in
+  `get_status`. Deps pinned `mcp<2` + `fastmcp<4` (mcp 2.0.0 repoints fd 0,
+  blinding the stdin-handle watches); a containment-gate test machine-checks the
+  destructive-op rules across src/tests/hooks.
+
 ## [0.30.0]
 
 ### Added

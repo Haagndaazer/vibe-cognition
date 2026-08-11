@@ -146,10 +146,135 @@ def test_cognition_dir_is_dot_cognition_under_repo(tmp_path):
     assert s.cognition_dir == tmp_path.resolve() / ".cognition"
 
 
-def test_cognition_chromadb_path_is_chromadb_under_cognition(tmp_path):
-    """cognition_chromadb_path: always .cognition/chromadb/ under repo_path."""
+def test_cognition_chromadb_path_legacy_fallback(tmp_path):
+    """cognition_chromadb_path, no env + no discoverable plugin data root
+    (the conftest autouse baseline): legacy .cognition/chromadb under
+    repo_path — the WP-Chroma-Home rule-4 last resort, and the pre-0.32.0
+    behavior every env-less test/CI launch keeps."""
     s = Settings(repo_path=tmp_path)
     assert s.cognition_chromadb_path == tmp_path.resolve() / ".cognition" / "chromadb"
+
+
+# ── WP-Chroma-Home: chromadb path resolution ─────────────────────────────────
+# The store lives OUTSIDE the repo by default. Resolution order:
+# (a) VIBE_CHROMADB_DIR exact override → (b) VIBE_DATA_DIR / CLAUDE_PLUGIN_DATA
+# keyed → (c) single-match discovery glob keyed → (d) legacy in-repo fallback.
+# The conftest autouse fixture guarantees (d) is every test's baseline.
+
+
+def test_chromadb_dir_override_is_exact_dir(tmp_path, monkeypatch):
+    """Rule (a): VIBE_CHROMADB_DIR names the persist dir EXACTLY — no keying.
+
+    Fails-before: any keying under the override would break every test/power
+    user pointing it at a specific directory."""
+    override = tmp_path / "exact-chroma"
+    monkeypatch.setenv("VIBE_CHROMADB_DIR", str(override))
+    s = Settings(repo_path=tmp_path)
+    assert s.cognition_chromadb_path == override
+
+
+def test_chromadb_dir_from_vibe_data_dir_is_keyed(tmp_path, monkeypatch):
+    """Rule (b): VIBE_DATA_DIR (the explicit plugin.json entry) → keyed subdir."""
+    from vibe_cognition.config import chroma_project_key
+
+    data = tmp_path / "plugin-data"
+    monkeypatch.setenv("VIBE_DATA_DIR", str(data))
+    s = Settings(repo_path=tmp_path)
+    assert s.cognition_chromadb_path == data / "chromadb" / chroma_project_key(tmp_path)
+
+
+def test_chromadb_dir_from_claude_plugin_data_defensive(tmp_path, monkeypatch):
+    """Rule (b) defensive second read: bare CLAUDE_PLUGIN_DATA works too, but
+    VIBE_DATA_DIR wins when both are set (it's the proven channel)."""
+    from vibe_cognition.config import chroma_project_key
+
+    bare = tmp_path / "bare"
+    explicit = tmp_path / "explicit"
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(bare))
+    s = Settings(repo_path=tmp_path)
+    assert s.cognition_chromadb_path == bare / "chromadb" / chroma_project_key(tmp_path)
+    monkeypatch.setenv("VIBE_DATA_DIR", str(explicit))
+    s = Settings(repo_path=tmp_path)
+    assert s.cognition_chromadb_path == explicit / "chromadb" / chroma_project_key(tmp_path)
+
+
+def test_chromadb_dir_empty_env_values_are_absent(tmp_path, monkeypatch):
+    """Empty-string env values fall through (the present-but-empty trap
+    resolve_repo_path_env documents) — resolution lands on the legacy fallback,
+    never Path('')."""
+    monkeypatch.setenv("VIBE_CHROMADB_DIR", "")
+    monkeypatch.setenv("VIBE_DATA_DIR", "")
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", "")
+    s = Settings(repo_path=tmp_path)
+    assert s.cognition_chromadb_path == tmp_path.resolve() / ".cognition" / "chromadb"
+
+
+def test_chromadb_dir_discovery_single_match(tmp_path, monkeypatch):
+    """Rule (c): env-less launch on a machine with exactly one
+    vibe-cognition-* plugin data dir discovers and keys under it — plugin and
+    dev-CLI launches of the same project converge on the same directory."""
+    from vibe_cognition import config as config_module
+    from vibe_cognition.config import chroma_project_key
+
+    plugins_data = tmp_path / "plugins-data"
+    only = plugins_data / "vibe-cognition-somemarket"
+    only.mkdir(parents=True)
+    monkeypatch.setattr(config_module, "_home_plugins_data_dir", lambda: plugins_data)
+    s = Settings(repo_path=tmp_path)
+    assert s.cognition_chromadb_path == only / "chromadb" / chroma_project_key(tmp_path)
+
+
+def test_chromadb_dir_discovery_ambiguous_falls_back_to_legacy(tmp_path, monkeypatch):
+    """Rule (c) ambiguity: two vibe-cognition-* dirs (two marketplaces) → never
+    guess; fall through to the legacy in-repo path."""
+    from vibe_cognition import config as config_module
+
+    plugins_data = tmp_path / "plugins-data"
+    (plugins_data / "vibe-cognition-marketa").mkdir(parents=True)
+    (plugins_data / "vibe-cognition-marketb").mkdir(parents=True)
+    monkeypatch.setattr(config_module, "_home_plugins_data_dir", lambda: plugins_data)
+    s = Settings(repo_path=tmp_path)
+    assert s.cognition_chromadb_path == tmp_path.resolve() / ".cognition" / "chromadb"
+
+
+def test_chroma_project_key_stable_and_sanitized(tmp_path):
+    """Key derivation: deterministic for one path, distinct across paths, and
+    the slug survives hostile dir names (identity lives in the hash)."""
+    from vibe_cognition.config import chroma_project_key
+
+    a = tmp_path / "proj-a"
+    b = tmp_path / "proj-b"
+    a.mkdir()
+    b.mkdir()
+    assert chroma_project_key(a) == chroma_project_key(a)
+    assert chroma_project_key(a) != chroma_project_key(b)
+    key = chroma_project_key(a)
+    assert key.startswith("proj-a-") and len(key.split("-")[-1]) == 12
+    hostile = tmp_path / "we ird$name"
+    hostile.mkdir()
+    hkey = chroma_project_key(hostile)
+    assert " " not in hkey and "$" not in hkey
+
+
+def test_foreign_chromadb_dir_prefers_existing_keyed_else_legacy(tmp_path, monkeypatch):
+    """resolve_foreign_chromadb_dir: keyed plugin-data dir only when it EXISTS
+    (foreign opens are read-only), else the project's legacy in-repo dir; and
+    VIBE_CHROMADB_DIR is deliberately ignored (it names the HOME store —
+    honoring it would collapse home and foreign into one collection)."""
+    from vibe_cognition.config import chroma_project_key, resolve_foreign_chromadb_dir
+
+    foreign = tmp_path / "foreign-proj"
+    foreign.mkdir()
+    data = tmp_path / "plugin-data"
+    monkeypatch.setenv("VIBE_DATA_DIR", str(data))
+    monkeypatch.setenv("VIBE_CHROMADB_DIR", str(tmp_path / "home-exact"))
+
+    legacy = foreign / ".cognition" / "chromadb"
+    assert resolve_foreign_chromadb_dir(foreign) == legacy
+
+    keyed = data / "chromadb" / chroma_project_key(foreign)
+    keyed.mkdir(parents=True)
+    assert resolve_foreign_chromadb_dir(foreign) == keyed
 
 
 # ── VIBE_COGNITION_NO_GIT_HYGIENE binding ────────────────────────────────────

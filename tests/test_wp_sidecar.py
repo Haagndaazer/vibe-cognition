@@ -156,6 +156,7 @@ def test_sidecar_killed_mid_request_returns_error_then_respawn_recovers(tmp_path
         # the NEXT generate() call must observe the dead process cleanly.
         with supervisor._state_lock:
             live_proc = supervisor._process
+        assert live_proc is not None  # ensure_ready() above spawned it
         live_proc.kill()
 
         t0 = time.monotonic()
@@ -537,6 +538,7 @@ def test_sidecar_dies_within_bound_when_its_server_dies(tmp_path):
         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, cwd=str(_REPO_ROOT),
     )
     try:
+        assert ancestor.stdout is not None  # stdout=PIPE above
         line = ancestor.stdout.readline()
         assert "SPAWNED" in line
 

@@ -36,7 +36,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 from vibe_cognition.cognition.models import (
     CognitionEdge,
@@ -392,7 +392,7 @@ def bench_b4_embeds_per_operation(tmp_path: Path) -> dict[str, Any]:
         storage: CognitionStorage = lc["cognition_storage"]
         chroma: ChromaDBStorage = lc["cognition_embedding_storage"]
         upd = _update_task(
-            storage, chroma, counter,
+            storage, chroma, cast(Any, counter),
             node_id=task["id"], embeddings_ready=True,
             assigned_to_email="second-bencher@bench.local",
         )

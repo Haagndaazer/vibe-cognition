@@ -30,6 +30,9 @@ def register_service_tools(mcp) -> None:
             {
               repo_name: str,
               repo_path: str,
+              chromadb_path: str,  # resolved vector-store persist directory
+                                   # (WP-Chroma-Home: under the plugin data
+                                   # dir by default, NOT inside the repo)
               cognition_graph: {nodes, edges, <count per node type>,
                                 edge_<count per edge type>, uncurated,
                                 edges_outside_curation: int, edge_sources:
@@ -159,6 +162,12 @@ def register_service_tools(mcp) -> None:
             "repo_name": config.effective_repo_name if config else "unknown",
             "repo_path": str(config.repo_path) if config else "unknown",
         }
+
+        # WP-Chroma-Home: the store lives outside the repo now, so "where did
+        # my vectors go" must be answerable from here. getattr: test lifespans
+        # stub config with a SimpleNamespace that has no such property.
+        chroma_path = getattr(config, "cognition_chromadb_path", None)
+        result["chromadb_path"] = str(chroma_path) if chroma_path is not None else "unknown"
 
         # Cognition graph stats
         if cognition_storage:

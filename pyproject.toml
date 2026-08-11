@@ -1,6 +1,6 @@
 [project]
 name = "vibe-cognition"
-version = "0.31.0"
+version = "0.32.0"
 description = "MCP server for project knowledge graphs — decisions, failures, discoveries, patterns"
 authors = [{ name = "Colton Dyck" }]
 license = { text = "MIT" }
@@ -81,6 +81,14 @@ ignore = ["E501"]
 
 [tool.pyright]
 pythonVersion = "3.11"
+# The fleet is Windows (lifecycle.py's whole design is Windows-first ctypes;
+# POSIX deliberately degrades). Unpinned, each CI leg analyzed its OWN
+# platform, so the ubuntu legs flagged Windows-only ctypes APIs
+# (WinError/get_last_error) in code that never runs there — and the error
+# count differed per leg (41 vs 63), which is how the ratchet drifted red
+# for a month undiagnosed. Pin the analysis platform so every leg and every
+# dev machine checks the same thing.
+pythonPlatform = "Windows"
 typeCheckingMode = "standard"
 
 # This is a CPU-inference tool (nomic-embed runs fine on CPU); the default

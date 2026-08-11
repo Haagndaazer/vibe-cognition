@@ -88,13 +88,15 @@ class _SidecarProcess:
         self._event_callback = callback
 
     def _writer_loop(self) -> None:
+        stdin = self._proc.stdin
+        assert stdin is not None  # stdin=PIPE in __init__
         while True:
             item = self._outbound.get()
             if item is None:  # shutdown sentinel (kill())
                 return
             try:
-                self._proc.stdin.write(_sidecar_protocol.encode_line(item))
-                self._proc.stdin.flush()
+                stdin.write(_sidecar_protocol.encode_line(item))
+                stdin.flush()
             except Exception as e:
                 # A broken pipe (process killed/crashed) is expected and
                 # silent; anything else is a real bug -- log it loudly
@@ -108,8 +110,10 @@ class _SidecarProcess:
                 return
 
     def _reader_loop(self) -> None:
+        stdout = self._proc.stdout
+        assert stdout is not None  # stdout=PIPE in __init__
         try:
-            for raw_line in self._proc.stdout:
+            for raw_line in stdout:
                 line = raw_line.strip()
                 if not line:
                     continue
@@ -122,6 +126,8 @@ class _SidecarProcess:
                         self._event_callback(obj["event"])
                     continue
                 request_id = obj.get("id")
+                if request_id is None:  # not a response frame; nothing pends on it
+                    continue
                 with self._pending_lock:
                     entry = self._pending.pop(request_id, None)
                 if entry is not None:

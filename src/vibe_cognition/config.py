@@ -1,7 +1,9 @@
 """Configuration management for Vibe Cognition."""
 
+import hashlib
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -42,6 +44,99 @@ def resolve_repo_path_env(*, default: Path | None = None) -> Path:
     if value:
         return Path(value)
     return default if default is not None else Path.cwd()
+
+
+def chroma_project_key(repo_path: Path) -> str:
+    """Stable per-project subdirectory name under the shared chromadb root.
+
+    THE single key derivation (WP-Chroma-Home) — server lifespan, the
+    dashboard CLI, and cognition_load_project must all go through this (via
+    resolve_chromadb_dir/resolve_foreign_chromadb_dir), or plugin-launched
+    and standalone launches of the same project silently diverge into
+    different directories.
+
+    ``normcase`` folds Windows case-insensitive spellings of the same path to
+    one key. The readable slug is best-effort debugging aid only — identity
+    lives in the hash — so filesystem-hostile characters and Windows-hostile
+    trailing dots/spaces are stripped rather than preserved.
+    """
+    resolved = Path(repo_path).resolve()
+    digest = hashlib.sha256(os.path.normcase(str(resolved)).encode("utf-8")).hexdigest()[:12]
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", resolved.name).strip("-. ")[:40]
+    return f"{slug}-{digest}" if slug else digest
+
+
+def _home_plugins_data_dir() -> Path:
+    """Claude Code's per-plugin data root (discovery seam — tests patch this
+    so the rule-3 glob below can never touch a dev machine's real ~/.claude)."""
+    return Path.home() / ".claude" / "plugins" / "data"
+
+
+def resolve_chroma_data_root() -> Path | None:
+    """The plugin-data root that keyed chromadb dirs live under, or None.
+
+    Resolution (WP-Chroma-Home): VIBE_DATA_DIR (the explicit plugin.json
+    entry — the only PROVEN channel is ${CLAUDE_PLUGIN_DATA} substitution
+    there; bare-var auto-injection into MCP servers is unevidenced) → bare
+    CLAUDE_PLUGIN_DATA as a defensive second read → glob discovery of
+    ~/.claude/plugins/data/vibe-cognition-* for env-less launches (standalone
+    dashboard CLI, dev shells), used ONLY on an unambiguous single match —
+    two marketplaces both providing the plugin means two matches, and
+    guessing between them would silently split a project's vectors.
+
+    Empty-string env values are treated as absent (the same present-but-empty
+    trap resolve_repo_path_env documents), hence the truthiness checks.
+    """
+    for var in ("VIBE_DATA_DIR", "CLAUDE_PLUGIN_DATA"):
+        value = os.environ.get(var)
+        if value:
+            return Path(value)
+    try:
+        matches = [p for p in _home_plugins_data_dir().glob("vibe-cognition-*") if p.is_dir()]
+    except OSError:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def resolve_chromadb_dir(repo_path: Path) -> Path:
+    """The chromadb persist directory for the HOME project at ``repo_path``.
+
+    VIBE_CHROMADB_DIR (exact directory, no keying — tests and power users)
+    → ``<data root>/chromadb/<project key>`` when a data root resolves
+    → legacy ``<repo>/.cognition/chromadb`` as the last resort (no plugin
+    install discoverable: CI, bare dev shells). Migration is ALWAYS fresh
+    (Colton, WP-Chroma-Home): nothing is ever copied or moved from the
+    legacy dir, and shipped code never deletes it — startup sync re-embeds
+    the journal into an empty new location.
+    """
+    override = os.environ.get("VIBE_CHROMADB_DIR")
+    if override:
+        return Path(override)
+    root = resolve_chroma_data_root()
+    if root is not None:
+        return root / "chromadb" / chroma_project_key(repo_path)
+    return Path(repo_path) / ".cognition" / "chromadb"
+
+
+def resolve_foreign_chromadb_dir(repo_path: Path) -> Path:
+    """The chromadb directory to READ for a foreign project (cognition_load_project).
+
+    Deliberately ignores VIBE_CHROMADB_DIR: that override names ONE exact
+    directory for the home project, and honoring it here would collapse home
+    and foreign collections into the same store. Prefers the keyed
+    plugin-data dir only when it actually exists (foreign opens are
+    read-only, never create) and falls back to the project's legacy in-repo
+    dir — a project not yet re-opened since the relocation still has its
+    vectors there.
+    """
+    root = resolve_chroma_data_root()
+    if root is not None:
+        keyed = root / "chromadb" / chroma_project_key(repo_path)
+        if keyed.exists():
+            return keyed
+    return Path(repo_path) / ".cognition" / "chromadb"
 
 
 class Settings(BaseSettings):
@@ -389,8 +484,16 @@ class Settings(BaseSettings):
 
     @property
     def cognition_chromadb_path(self) -> Path:
-        """Get the cognition ChromaDB storage path (gitignored, regenerable)."""
-        return self.repo_path / ".cognition" / "chromadb"
+        """The cognition ChromaDB persist directory (machine-local, regenerable).
+
+        WP-Chroma-Home: lives OUTSIDE the repo by default — under the plugin
+        data dir (``${CLAUDE_PLUGIN_DATA}/chromadb/<project-key>``) so it can
+        never be source-controlled and never holds file handles inside the
+        repo. See resolve_chromadb_dir for the full resolution order; the
+        legacy in-repo ``.cognition/chromadb`` remains only as the last-resort
+        fallback when no plugin data root is resolvable.
+        """
+        return resolve_chromadb_dir(self.repo_path)
 
 
 def setup_logging(level: str) -> None:

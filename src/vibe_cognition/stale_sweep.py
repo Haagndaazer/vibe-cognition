@@ -43,8 +43,13 @@ SERVER_CMDLINE_MARKER = "vibe_cognition.server"
 
 # The uv-managed base-interpreter dir's stable path segment. The trampoline
 # lives under `...\.venv\Scripts\python.exe` and uv.exe elsewhere entirely, so
-# this segment uniquely selects the REAL interpreter of each tree.
-_REAL_INTERPRETER_MARKER = f"{os.sep}uv{os.sep}python{os.sep}"
+# this segment uniquely selects the REAL interpreter of each tree. Hardcoded
+# backslashes, NOT os.sep: the rows come from the Windows-only Toolhelp
+# enumerator, so the paths are Windows paths regardless of the host analyzing
+# them — an os.sep marker silently broke classify_rows' pure-function
+# semantics on POSIX (caught by the ubuntu CI legs the first time they got
+# past the month-red pyright gate).
+_REAL_INTERPRETER_MARKER = "\\uv\\python\\"
 
 # FILETIME (100ns ticks since 1601-01-01) to Unix-epoch conversion.
 _FILETIME_EPOCH_DIFF_SECONDS = 11_644_473_600

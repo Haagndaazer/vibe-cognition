@@ -52,6 +52,7 @@ from ..cognition.prime import SEVERITY_ORDER, _node_email
 # implementation itself lives in task_meta.py (shared with prime, which
 # cannot import cognition_tools).
 from ..cognition.task_meta import _task_claimed_at  # noqa: F401
+from ..config import resolve_foreign_chromadb_dir
 from ..embeddings import ChromaDBStorage, EmbeddingGenerator, adaptive_vector_search
 from .dispatch import dispatch_tool
 from .project_registry import (
@@ -1293,7 +1294,7 @@ def _get_node(storage: CognitionStorage, node_id: str) -> dict[str, Any]:
 def _update_node(
     storage: CognitionStorage,
     embedding_storage: "ChromaDBStorage",
-    generator: "EmbeddingGenerator",
+    generator: "EmbeddingGenerator | None",
     *,
     node_id: str,
     embeddings_ready: bool,
@@ -1352,6 +1353,7 @@ def _update_node(
     # ready, defer (the vector/metadata stay stale until a future re-embed — rare, an
     # edit needs a loaded model anyway).
     if embeddings_ready:
+        assert generator is not None  # callers pass a generator whenever ready=True
         post = storage.get_node(node_id)
         assert post is not None  # just updated it; cannot vanish under the lock
         cnode = _node_from_dict(node_id, post)
@@ -1708,7 +1710,7 @@ def _reparent_task(
 def _update_task(
     storage: CognitionStorage,
     embedding_storage: "ChromaDBStorage",
-    generator: "EmbeddingGenerator",
+    generator: "EmbeddingGenerator | None",
     *,
     node_id: str,
     embeddings_ready: bool,
@@ -2012,6 +2014,7 @@ def _update_task(
     # narrative land in Chroma. Deferred if the model isn't ready (rare — an edit needs a
     # loaded model anyway).
     if embeddings_ready:
+        assert generator is not None  # callers pass a generator whenever ready=True
         post = storage.get_node(node_id)
         assert post is not None  # just updated it; cannot vanish under the lock
         cnode = _node_from_dict(node_id, post)
@@ -2380,8 +2383,10 @@ def _load_project_core(lc: dict[str, Any], path: str) -> dict[str, Any]:
     b_storage = CognitionStorage(resolved / ".cognition")
     node_count = b_storage.get_statistics().get("nodes", 0)
 
-    # Open B's chroma — read-only path (never creates)
-    b_chroma_dir = resolved / ".cognition" / "chromadb"
+    # Open B's chroma — read-only path (never creates). WP-Chroma-Home: keyed
+    # plugin-data dir when it exists, else B's legacy in-repo dir (B may not
+    # have been opened since the relocation).
+    b_chroma_dir = resolve_foreign_chromadb_dir(resolved)
     b_embeddings = ChromaDBStorage.open_existing(b_chroma_dir)
 
     # Load-time guard — THE single model/dim drift check (also used for the

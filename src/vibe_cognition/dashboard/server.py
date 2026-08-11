@@ -69,6 +69,14 @@ class _NoCacheStaticFiles(StaticFiles):
         return response
 
 
+class _NoSignalServer(uvicorn.Server):
+    """uvicorn.Server that never installs signal handlers — the dashboard runs
+    uvicorn in a daemon thread, and signal.signal() crashes off-main-thread."""
+
+    def install_signal_handlers(self) -> None:
+        pass
+
+
 def build_app(lifespan_ctx: dict[str, Any], token: str) -> tuple[Starlette, ExitStack]:
     """Build the Starlette app for the dashboard.
 
@@ -209,8 +217,7 @@ def start_dashboard(
         lifespan="off",
         log_config=None,
     )
-    server = uvicorn.Server(config)
-    server.install_signal_handlers = lambda: None  # signal.signal() crashes off-main-thread
+    server = _NoSignalServer(config)
 
     thread = threading.Thread(target=server.run, daemon=True, name="dashboard-uvicorn")
     thread.start()

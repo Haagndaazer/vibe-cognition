@@ -80,7 +80,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType, generate_node_id
 from vibe_cognition.cognition.prime import PrimeConfig, generate_prime
@@ -334,7 +334,7 @@ def bench_search(
         for _ in range(n_reps):
             start = time.perf_counter()
             last_result = cognition_tools._search_cognition(
-                storage, embed, gen, query_text, limit=limit,
+                storage, embed, cast(Any, gen), query_text, limit=limit,
             )
             times.append(time.perf_counter() - start)
     finally:

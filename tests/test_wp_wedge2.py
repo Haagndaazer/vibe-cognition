@@ -14,6 +14,7 @@ import asyncio
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
@@ -109,7 +110,7 @@ def _iter_function_body_imports(tree: ast.AST):
             self.depth = 0
             self.found: list[tuple[int, int, str]] = []
 
-        def visit_FunctionDef(self, node):
+        def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef):
             self.depth += 1
             self.generic_visit(node)
             self.depth -= 1
@@ -234,7 +235,7 @@ async def test_lifespan_survives_chroma_pre_exercise_failure(tmp_path, monkeypat
 def _mw_context(lc: dict, tool_name: str = "slow_tool") -> MiddlewareContext:
     return MiddlewareContext(
         message=SimpleNamespace(name=tool_name),
-        fastmcp_context=SimpleNamespace(lifespan_context=lc),
+        fastmcp_context=cast(Any, SimpleNamespace(lifespan_context=lc)),
     )
 
 
@@ -435,7 +436,9 @@ async def test_ac1_every_tool_returns_within_bound_during_the_load_window(
         },
     ):
         async with Client(mcp) as client:
-            assert not mcp._lifespan_result["embedding_ready"].is_set(), (
+            lc = mcp._lifespan_result
+            assert lc is not None  # client is connected; lifespan has yielded
+            assert not lc["embedding_ready"].is_set(), (
                 "embeddings already ready -- the load window wasn't held open"
             )
             results = await _call_all_tools(client)
@@ -476,6 +479,7 @@ async def test_ac1_every_tool_returns_within_bound_in_the_sidecar_degraded_state
     ):
         async with Client(mcp) as client:
             lc = mcp._lifespan_result
+            assert lc is not None  # client is connected; lifespan has yielded
             for _ in range(500):
                 if lc.get("embedding_error"):
                     break
@@ -532,6 +536,7 @@ async def test_ac3_dispatch_storm_causes_zero_thread_start_from_loop_thread(
     ):
         async with Client(mcp) as client:
             lc = mcp._lifespan_result
+            assert lc is not None  # client is connected; lifespan has yielded
             for _ in range(500):
                 if lc["embedding_ready"].is_set():
                     break
