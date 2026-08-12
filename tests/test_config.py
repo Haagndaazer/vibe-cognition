@@ -146,11 +146,12 @@ def test_cognition_dir_is_dot_cognition_under_repo(tmp_path):
     assert s.cognition_dir == tmp_path.resolve() / ".cognition"
 
 
-def test_cognition_chromadb_path_legacy_fallback(tmp_path):
-    """cognition_chromadb_path, no env + no discoverable plugin data root
-    (the conftest autouse baseline): legacy .cognition/chromadb under
-    repo_path — the WP-Chroma-Home rule-4 last resort, and the pre-0.32.0
-    behavior every env-less test/CI launch keeps."""
+def test_cognition_chromadb_path_legacy_fallback(tmp_path, monkeypatch):
+    """cognition_chromadb_path, no env + no discoverable plugin data root:
+    legacy .cognition/chromadb under repo_path — the WP-Chroma-Home rule-4
+    last resort. The conftest baseline SETS VIBE_CHROMADB_DIR (subprocess
+    containment), so this test clears it explicitly to reach rule 4."""
+    monkeypatch.delenv("VIBE_CHROMADB_DIR", raising=False)
     s = Settings(repo_path=tmp_path)
     assert s.cognition_chromadb_path == tmp_path.resolve() / ".cognition" / "chromadb"
 
@@ -177,6 +178,7 @@ def test_chromadb_dir_from_vibe_data_dir_is_keyed(tmp_path, monkeypatch):
     """Rule (b): VIBE_DATA_DIR (the explicit plugin.json entry) → keyed subdir."""
     from vibe_cognition.config import chroma_project_key
 
+    monkeypatch.delenv("VIBE_CHROMADB_DIR", raising=False)
     data = tmp_path / "plugin-data"
     monkeypatch.setenv("VIBE_DATA_DIR", str(data))
     s = Settings(repo_path=tmp_path)
@@ -188,6 +190,7 @@ def test_chromadb_dir_from_claude_plugin_data_defensive(tmp_path, monkeypatch):
     VIBE_DATA_DIR wins when both are set (it's the proven channel)."""
     from vibe_cognition.config import chroma_project_key
 
+    monkeypatch.delenv("VIBE_CHROMADB_DIR", raising=False)
     bare = tmp_path / "bare"
     explicit = tmp_path / "explicit"
     monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(bare))
@@ -216,6 +219,7 @@ def test_chromadb_dir_discovery_single_match(tmp_path, monkeypatch):
     from vibe_cognition import config as config_module
     from vibe_cognition.config import chroma_project_key
 
+    monkeypatch.delenv("VIBE_CHROMADB_DIR", raising=False)
     plugins_data = tmp_path / "plugins-data"
     only = plugins_data / "vibe-cognition-somemarket"
     only.mkdir(parents=True)
@@ -229,6 +233,7 @@ def test_chromadb_dir_discovery_ambiguous_falls_back_to_legacy(tmp_path, monkeyp
     guess; fall through to the legacy in-repo path."""
     from vibe_cognition import config as config_module
 
+    monkeypatch.delenv("VIBE_CHROMADB_DIR", raising=False)
     plugins_data = tmp_path / "plugins-data"
     (plugins_data / "vibe-cognition-marketa").mkdir(parents=True)
     (plugins_data / "vibe-cognition-marketb").mkdir(parents=True)

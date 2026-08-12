@@ -88,15 +88,27 @@ def _isolate_chroma_resolution(monkeypatch, tmp_path):
     Without this, any test that builds Settings() and touches
     cognition_chromadb_path on a dev machine resolves into the REAL
     ~/.claude/plugins/data/vibe-cognition-* dir (the discovery glob finds it —
-    confirmed live during scoping). Clearing the env vars and pointing the
-    discovery seam at a nonexistent tmp dir restores the legacy in-repo
-    fallback for every test by default; resolution-order tests set env vars /
-    seed the seam dir explicitly on top of this baseline.
+    confirmed live during scoping). Two layers, because monkeypatch only
+    reaches THIS process:
+
+    - VIBE_CHROMADB_DIR is SET (not just cleared) to a per-test tmp dir: env
+      vars propagate to spawned subprocesses, and tests that launch a REAL
+      server (wp_lifecycle_launcher) otherwise resolve the new plugin-data
+      location for real — six junk `repo-<hash>` dirs leaked into the live
+      plugin data dir this exact way before this line existed (2026-08-12).
+    - The discovery seam is pointed at a nonexistent tmp dir so in-process
+      tests that explicitly delenv the override (the resolution-order tests)
+      still can't glob into the real ~/.claude.
+
+    Resolution-order tests manage these env vars explicitly on top of this
+    baseline; monkeypatch's own setenv/delenv in the test body wins over the
+    fixture's.
     """
     from vibe_cognition import config as config_module
 
-    for var in ("VIBE_CHROMADB_DIR", "VIBE_DATA_DIR", "CLAUDE_PLUGIN_DATA"):
+    for var in ("VIBE_DATA_DIR", "CLAUDE_PLUGIN_DATA"):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("VIBE_CHROMADB_DIR", str(tmp_path / "_chroma_isolated"))
     monkeypatch.setattr(
         config_module, "_home_plugins_data_dir", lambda: tmp_path / "_no_plugins_data"
     )
