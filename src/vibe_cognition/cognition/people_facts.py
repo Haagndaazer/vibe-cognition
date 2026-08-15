@@ -56,6 +56,12 @@ _SLUG_HASH_LEN = 12
 # never silently LRU-evicted, which would be data loss for a still-real machine.
 DEFAULT_MACHINE_CAP = 10
 
+# "Key absent" sentinel for set_fact's old-value lookup. None is a LEGAL stored
+# value (JSON null), so using None as the missing-marker would silently swallow
+# a first write of value=None as a "noop" (verifier finding, Stage 1 gate) —
+# only a private object no caller can store distinguishes the two.
+_MISSING = object()
+
 
 def email_slug(email: str) -> str:
     """Deterministic filesystem-safe slug for a (raw) identity email.
@@ -159,9 +165,11 @@ class PeopleFactsRegistry:
         fact_key = self._require_key(key, "key")
 
         machines = self._facts.get(folded, {})
-        old = machines.get(machine_key, {}).get(fact_key)
-        if machine_key in machines and old == value:
+        old = machines.get(machine_key, {}).get(fact_key, _MISSING)
+        if old is not _MISSING and old == value:
             return {"written": False, "noop": True, "old": old}
+        if old is _MISSING:
+            old = None  # journaled/returned shape: null means "was absent"
         if machine_key not in machines and len(machines) >= machine_cap:
             raise ValueError(
                 f"machine cap reached ({machine_cap}) for '{folded}' — prune a "
@@ -227,9 +235,11 @@ class PeopleFactsRegistry:
         """
         folded = self._require_email(email)
         machines = self._facts.get(folded, {})
+        # cleared_keys is UNIFORMLY "machine/key" strings in both scopes, so a
+        # disclosure-string builder never needs to branch on the scope.
         if machine is not None:
             machine_key = self._require_key(machine, "machine")
-            cleared = sorted(machines.get(machine_key, {}))
+            cleared = sorted(f"{machine_key}/{k}" for k in machines.get(machine_key, {}))
         else:
             machine_key = None
             cleared = sorted(
@@ -258,9 +268,15 @@ class PeopleFactsRegistry:
         """Fold deltas appended since the last pass; return folded line count.
 
         Cost contract (peer-review HIGH): one dir stat gates the listdir; each
-        known file is stat-gated before any read; a no-change pass does ZERO
-        reads and ZERO listdirs. Truncation/rewrite of ONE file re-folds that
-        file only — never a global reset, never touching the graph.
+        known file is stat-gated before any read — a no-change pass costs
+        1 + N_known_files stats, ZERO reads, ZERO listdirs (stats scale with
+        file count; reads never do). Truncation/rewrite of ONE file re-folds
+        that file only — never a global reset, never touching the graph.
+
+        Residual (shared with the main journal's _catch_up, disclosed not
+        fixed): a rewrite that coincidentally matches BOTH a file's size and
+        its st_mtime_ns evades that file's cheap path (vanishing at ns
+        granularity) until its next real change.
         """
         try:
             dir_stat = self._people_dir.stat()

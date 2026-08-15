@@ -131,7 +131,7 @@ def test_delete_and_clear_write_delta_lines(tmp_path):
     assert store.get_env_facts("colton@example.com")["desk"] == {"shell": "pwsh"}
 
     r = store.clear_env_facts("colton@example.com", "laptop", BY)
-    assert r["cleared_keys"] == ["os"]
+    assert r["cleared_keys"] == ["laptop/os"]  # uniform machine/key shape
     facts = store.get_env_facts("colton@example.com")
     assert "laptop" not in facts and facts["desk"] == {"shell": "pwsh"}
 
@@ -144,6 +144,21 @@ def test_delete_and_clear_write_delta_lines(tmp_path):
     size = path.stat().st_size
     r = store.clear_env_facts("colton@example.com", None, BY)
     assert r["noop"] is True and path.stat().st_size == size
+
+
+def test_none_value_is_a_real_fact_not_a_noop(tmp_path):
+    """Regression (Stage 1 verification gate, HIGH): storing a literal None
+    for a NEW key on a machine that already has other facts must WRITE, not
+    vanish as a mislabeled noop (None-as-missing-sentinel confusion)."""
+    store = _store(tmp_path)
+    store.set_env_fact("a@x.com", "desk", "os", "linux", BY)
+    r = store.set_env_fact("a@x.com", "desk", "new_key", None, BY)
+    assert r["written"] is True and r["noop"] is False
+    assert "new_key" in store.get_env_facts("a@x.com")["desk"]
+    assert store.get_env_facts("a@x.com")["desk"]["new_key"] is None
+    # Re-setting the SAME None value IS a noop (real equality, not sentinel).
+    r = store.set_env_fact("a@x.com", "desk", "new_key", None, BY)
+    assert r["noop"] is True
 
 
 def test_delete_absent_key_is_noop(tmp_path):
@@ -230,28 +245,40 @@ def test_cross_instance_convergence(tmp_path):
     assert b.get_env_facts("colton@example.com")["desk"]["shell"] == "pwsh"
 
 
-def test_no_change_pass_does_zero_reads_and_zero_listdirs(tmp_path, monkeypatch):
-    """The peer-review HIGH, as a test: at N=50 person files, a no-change
-    catch-up performs NO file reads and NO directory listing."""
+@pytest.mark.parametrize("n_people", [50, 100])
+def test_no_change_pass_does_zero_reads_and_zero_listdirs(tmp_path, monkeypatch, n_people):
+    """The peer-review HIGH, as a test, at both brief-mandated team sizes:
+    a no-change catch-up performs NO file reads, NO directory listing, and
+    exactly 1 dir stat + 1 stat per known file (stats scale with file count;
+    reads never do — the honest cost contract)."""
     cog = tmp_path / ".cognition"
     reg = PeopleFactsRegistry(cog)
-    for i in range(50):
+    for i in range(n_people):
         reg.set_fact(f"user{i}@example.com", "desk", "os", "linux", BY, True)
     reg.catch_up()  # fold everything; steady state
+    reg.catch_up()  # settle mtime bookkeeping so the next pass is truly no-change
 
     reads: list[str] = []
     listdirs: list[str] = []
+    stats: list[str] = []
     real_read_bytes = Path.read_bytes
     real_iterdir = Path.iterdir
+    real_stat = Path.stat
     monkeypatch.setattr(
         Path, "read_bytes", lambda self: (reads.append(str(self)), real_read_bytes(self))[1]
     )
     monkeypatch.setattr(
         Path, "iterdir", lambda self: (listdirs.append(str(self)), real_iterdir(self))[1]
     )
+    monkeypatch.setattr(
+        Path,
+        "stat",
+        lambda self, **kw: (stats.append(str(self)), real_stat(self, **kw))[1],
+    )
     reg.catch_up()  # nothing changed since the fold
     assert reads == []
     assert listdirs == []
+    assert len(stats) == 1 + n_people  # dir gate + per-file stat gates, nothing more
 
 
 def test_torn_tail_parks_then_recovers(tmp_path):
