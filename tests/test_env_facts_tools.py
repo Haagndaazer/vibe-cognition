@@ -119,6 +119,39 @@ def test_unresolvable_hostname_is_retryable_error(build_lc, make_ctx, mock_mcp, 
     assert r["written"] is True
 
 
+def test_explicit_blank_machine_is_retryable_error(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
+    """machine='' / whitespace-only errors on every write tool (final-gate LOW:
+    the error text must cover the blank-argument case, not just an
+    unresolvable hostname), and nothing is written."""
+    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch)
+    for call in (
+        lambda: mock_mcp.tools["cognition_set_env_fact"](ctx, key="k", value=1, machine="   "),
+        lambda: mock_mcp.tools["cognition_delete_env_fact"](ctx, key="k", machine=""),
+        lambda: mock_mcp.tools["cognition_clear_env_facts"](ctx, machine="  "),
+    ):
+        r = call()
+        assert "error" in r and "blank" in r["error"]
+    assert not (tmp_path / "home" / ".cognition" / "people").exists()
+
+
+def test_person_removal_leaves_fact_file_registered_false(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
+    """Final-gate regression: cognition_remove_node on a person node does NOT
+    touch their env-fact file — facts persist and surface as registered:false
+    (the documented orphaned-file KNOWN LIMIT)."""
+    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch)
+    reg = mock_mcp.tools["cognition_register_person"](ctx, name="Colton", role="owner", seniority="owner")
+    mock_mcp.tools["cognition_set_env_fact"](ctx, key="os", value="w11")
+    assert mock_mcp.tools["cognition_list_env_facts"](ctx)["registered"] is True
+
+    removed = mock_mcp.tools["cognition_remove_node"](ctx, node_id=reg["id"])
+    assert removed.get("removed") is True, removed
+
+    r = mock_mcp.tools["cognition_list_env_facts"](ctx)
+    assert r["registered"] is False  # person gone, facts remain
+    assert r["environment"] == {"desktop-abc": {"os": "w11"}}
+    assert _person_file(tmp_path, SELF_FOLDED).exists()
+
+
 # ── disclosure contract ─────────────────────────────────────────────────────
 
 

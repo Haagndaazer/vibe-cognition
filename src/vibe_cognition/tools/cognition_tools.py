@@ -2367,8 +2367,8 @@ _NO_IDENTITY_ERROR = (
     "email — set user.email in git config, then retry"
 )
 _NO_MACHINE_ERROR = (
-    "no machine key: hostname is unresolvable on this system — pass machine= "
-    "explicitly, then retry"
+    "no machine key: the machine argument was blank, or (when omitted) this "
+    "system's hostname is unresolvable — pass a non-empty machine=, then retry"
 )
 
 
@@ -4619,6 +4619,14 @@ def register_cognition_tools(mcp) -> None:
         the children; they keep reporting the deleted id as their `parent_id`
         (this stale-pointer behavior is deliberate, not a bug). Reparent or
         close children first if that matters.
+
+        WARNING — person nodes: deleting a person node does NOT touch their
+        env-fact file (.cognition/people/<slug>.jsonl) — the facts registry is
+        graph-independent, so their stored environment facts persist and keep
+        surfacing via cognition_list_env_facts as `registered: false` until
+        THEY run cognition_clear_env_facts (self-only) or the file is removed
+        from git by hand. Removing a person is the natural moment to prompt
+        that cleanup.
 
         Args:
             node_id: ID of the node to delete.

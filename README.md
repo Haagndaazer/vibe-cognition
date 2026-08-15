@@ -592,7 +592,10 @@ be detected instead of tripped over.
   trail and the shared journal never bloats. The files union-merge like the
   journal (git hygiene manages the `.gitattributes` rule). Deleting a fact
   removes it from live state, but like every journal write the historical line
-  remains in git history.
+  remains in git history. Deleting a *person node* does **not** touch their
+  fact file — their facts persist (surfaced as `registered: false`) until they
+  clear them or the file is removed from git; person removal is the natural
+  moment to prompt that cleanup.
 - **Shared-checkout teams:** the flush protocol covers these files too — see
   [the topology guide](docs/topology-guide.md).
 
