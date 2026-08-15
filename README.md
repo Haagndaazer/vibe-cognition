@@ -145,8 +145,12 @@ The nudge above tells you a new version exists; this is the other half — after
 | `cognition_update_task` | Update a task's status/owner/priority/parent/assignment in place (status-transition and assignment logged) |
 | `cognition_register_person` | Register a HUMAN identity (never an agent) as a first-class person node |
 | `cognition_update_person` | Edit a person's profile fields in place (audit-trailed via `profile_history`) |
-| `cognition_get_person` | Get a person's full profile, including the `profile_history` audit trail |
+| `cognition_get_person` | Get a person's full profile, including the `profile_history` audit trail and stored environment facts |
 | `cognition_list_people` | List every registered person — the team roster |
+| `cognition_set_env_fact` | Store one durable environment fact about yourself (self-only, per-machine; see [Environment Facts](#environment-facts)) |
+| `cognition_delete_env_fact` | Remove one of your own stored environment facts |
+| `cognition_clear_env_facts` | Bulk-remove your own environment facts (one machine, or all with no args) |
+| `cognition_list_env_facts` | List stored environment facts — yours by default, or any teammate's |
 | `cognition_store_document` | Store a document (reference or copy mode) + extracted text as a first-class node |
 | `cognition_get_document` | Retrieve a stored document: metadata + full text + freshness |
 | `cognition_readme` | Get the full orientation guide + getting-started walkthrough (same content as the `/vibe-cognition` skill) |
@@ -558,6 +562,40 @@ placeholder person node) instead of registering them. The notice disappears the
 session after a matching person node lands, or immediately once declined. Set
 `PRIME_ONBOARD=false` to disable the notice outright.
 
+### Environment Facts
+
+Teammates' machines differ — different project roots, different OSes, podman on
+one box and docker on another — and a shared graph that bakes in one person's
+setup silently misleads everyone else's sessions. **Environment facts** store
+each person's durable, per-machine setup truths in the graph so divergence can
+be detected instead of tripped over.
+
+- **Self-only writes, by construction.** `cognition_set_env_fact` /
+  `cognition_delete_env_fact` / `cognition_clear_env_facts` have **no email
+  parameter at all** — they always target the server-resolved git identity, so
+  writing someone else's facts isn't blocked by a permission check, it's
+  structurally impossible. Reads (`cognition_list_env_facts`,
+  `cognition_get_person`'s `environment` field) are open to everyone —
+  divergence checks need them.
+- **Per-machine.** Facts key by casefolded hostname (override with `machine=`
+  to record facts about your other machines). Distinct machines per person are
+  capped (`ENV_FACT_MACHINE_CAP`, default 10); at the cap a NEW machine is
+  rejected with an error naming the prune remedy — never silently evicted.
+- **Loud disclosure.** Every successful write returns a `disclosure` string the
+  agent must surface: you are always told when something about you is stored,
+  and you can have any of it removed —
+  `cognition_clear_env_facts` with no arguments is the one-call "forget
+  everything you stored about me" path.
+- **Storage shape.** Facts live in per-person delta files —
+  `.cognition/people/<slug>.jsonl`, committed to git, one JSON line per change
+  (`fact_set`/`fact_delete`/`fact_clear`), so the file itself is the audit
+  trail and the shared journal never bloats. The files union-merge like the
+  journal (git hygiene manages the `.gitattributes` rule). Deleting a fact
+  removes it from live state, but like every journal write the historical line
+  remains in git history.
+- **Shared-checkout teams:** the flush protocol covers these files too — see
+  [the topology guide](docs/topology-guide.md).
+
 ## Configuration
 
 All configuration is optional. Vibe Cognition works out of the box with sensible defaults.
@@ -572,6 +610,7 @@ All configuration is optional. Vibe Cognition works out of the box with sensible
 | `EMBEDDING_REVISION` | (unset — Hub HEAD) | Pin the sentence-transformers model to a specific HuggingFace Hub revision (branch, tag, or commit SHA), instead of always pulling HEAD of the model's remote code. Recommended for production/reproducible setups. |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL (if using Ollama for embeddings) |
 | `OLLAMA_MODEL` | `nomic-embed-text` | Ollama embedding model |
+| `ENV_FACT_MACHINE_CAP` | `10` | Max distinct machine entries per person in the env-facts store (see [Environment Facts](#environment-facts)) |
 | `LOG_LEVEL` | `INFO` | Logging level |
 
 ### Using Ollama for Embeddings (Optional)

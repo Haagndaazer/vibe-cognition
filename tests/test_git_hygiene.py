@@ -10,6 +10,7 @@ from unittest.mock import patch
 from vibe_cognition.cognition.git_hygiene import (
     _FLAG_FILENAME,
     _GITATTRIBUTES_MARKER,
+    _GITATTRIBUTES_PEOPLE_RULE,
     _GITATTRIBUTES_RULE,
     GIT_HYGIENE_VERSION,
     check_hygiene_state,
@@ -94,7 +95,8 @@ def test_gitattributes_trailing_newline_normalized(tmp_path):
 
 
 def test_gitattributes_skip_when_merge_token_already_present(tmp_path):
-    """No duplicate appended when an existing journal-path line already has merge=."""
+    """No duplicate journal rule when an existing journal-path line already has
+    merge= — v6: the people rule is still appended (it wasn't covered)."""
     repo, cognition = _make_git_repo(tmp_path)
     existing = ".cognition/journal.jsonl merge=union\n"
     (repo / ".gitattributes").write_text(existing, encoding="utf-8")
@@ -102,7 +104,23 @@ def test_gitattributes_skip_when_merge_token_already_present(tmp_path):
     _run(repo, cognition)
 
     ga = (repo / ".gitattributes").read_text(encoding="utf-8")
-    assert ga.count("merge=union") == 1
+    assert ga.count(".cognition/journal.jsonl merge=union") == 1  # not duplicated
+    assert ga.count(_GITATTRIBUTES_PEOPLE_RULE) == 1  # v6 rule added
+
+
+def test_gitattributes_skip_when_both_rules_present(tmp_path):
+    """Nothing appended (not even the marker) when BOTH managed rules are covered."""
+    repo, cognition = _make_git_repo(tmp_path)
+    existing = (
+        ".cognition/journal.jsonl merge=union\n"
+        ".cognition/people/*.jsonl merge=union\n"
+    )
+    (repo / ".gitattributes").write_text(existing, encoding="utf-8")
+
+    _run(repo, cognition)
+
+    ga = (repo / ".gitattributes").read_text(encoding="utf-8")
+    assert ga == existing  # byte-identical: fully covered, no append at all
 
 
 def test_gitattributes_append_when_journal_line_has_no_merge(tmp_path):
@@ -363,7 +381,8 @@ def test_no_dup_on_second_run(tmp_path):
 
     ga = (repo / ".gitattributes").read_text(encoding="utf-8")
     gi = (cognition / ".gitignore").read_text(encoding="utf-8")
-    assert ga.count("merge=union") == 1
+    assert ga.count(_GITATTRIBUTES_RULE) == 1
+    assert ga.count(_GITATTRIBUTES_PEOPLE_RULE) == 1
     assert ga.count(_GITATTRIBUTES_MARKER) == 1
     assert gi.count("chromadb/") == 1
 
@@ -444,7 +463,8 @@ def test_no_dup_on_concurrent_double_call(tmp_path):
     # Verify only one block was written
     ga = (repo / ".gitattributes").read_text(encoding="utf-8")
     assert ga.count(_GITATTRIBUTES_MARKER) == 1
-    assert ga.count("merge=union") == 1
+    assert ga.count(_GITATTRIBUTES_RULE) == 1
+    assert ga.count(_GITATTRIBUTES_PEOPLE_RULE) == 1
 
     # Now remove flag + re-run: re-check inside lock must detect existing merge= line
     (cognition / _FLAG_FILENAME).unlink()
@@ -452,7 +472,8 @@ def test_no_dup_on_concurrent_double_call(tmp_path):
 
     ga2 = (repo / ".gitattributes").read_text(encoding="utf-8")
     assert ga2.count(_GITATTRIBUTES_MARKER) == 1
-    assert ga2.count("merge=union") == 1
+    assert ga2.count(_GITATTRIBUTES_RULE) == 1
+    assert ga2.count(_GITATTRIBUTES_PEOPLE_RULE) == 1
 
 
 def test_stale_lock_is_broken(tmp_path):
@@ -521,6 +542,26 @@ def test_partial_failure_no_flag(tmp_path, monkeypatch):
 
     assert (cognition / ".gitignore").exists()
     assert (cognition / _FLAG_FILENAME).exists()
+
+
+def test_gitattributes_people_rule_added_via_version_refire(tmp_path):
+    """WP-EnvFacts-A (GIT_HYGIENE_VERSION 5 -> 6): a v5-stamped install whose
+    .gitattributes already carries the journal rule gains ONLY the people glob
+    on the next init — the first .gitattributes-touching bump. Fails-before
+    both sides: a pre-bump build never adds the people rule on re-init, and a
+    naive rewrite would duplicate the journal rule."""
+    repo, cognition = _make_git_repo(tmp_path)
+    (repo / ".gitattributes").write_text(
+        f"{_GITATTRIBUTES_MARKER}\n{_GITATTRIBUTES_RULE}\n", encoding="utf-8"
+    )
+    (cognition / _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION - 1), encoding="utf-8")
+
+    _run(repo, cognition)
+
+    ga = (repo / ".gitattributes").read_text(encoding="utf-8")
+    assert ga.count(_GITATTRIBUTES_RULE) == 1  # journal rule NOT duplicated
+    assert ga.count(_GITATTRIBUTES_PEOPLE_RULE) == 1  # new v6 rule added once
+    assert int((cognition / _FLAG_FILENAME).read_text(encoding="utf-8").strip()) == GIT_HYGIENE_VERSION
 
 
 def test_versioned_rerun_on_stale_flag(tmp_path):

@@ -5,7 +5,9 @@ sidecar flag so the pass executes exactly ONCE per working copy (idempotent),
 except when the schema version is bumped for future writers (triggers one re-run).
 
 Two writes (both idempotent, locked, crash-proof):
-  1. repo-root .gitattributes  — .cognition/journal.jsonl merge=union
+  1. repo-root .gitattributes  — .cognition/journal.jsonl merge=union AND
+                                 .cognition/people/*.jsonl merge=union (v6,
+                                 per-person env-fact delta files)
   2. .cognition/.gitignore     — chromadb/, .git-hygiene-managed, *.lock,
                                  .last-rehydrate.json (local loss-alert flag),
                                  onboard-declined (local onboarding decline file),
@@ -51,10 +53,27 @@ logger = logging.getLogger(__name__)
 #     CLI's dry-run scratch artifact (the user edits it, then re-supplies it
 #     via --map-file). A working file, not graph history -- must never ride
 #     into a journal-flush `git add .cognition/` commit.
-GIT_HYGIENE_VERSION = 5
+# v6: .cognition/people/*.jsonl merge=union added to .gitattributes
+#     (WP-EnvFacts-A) -- per-person env-fact delta files are append-only
+#     single-writer JSONL exactly like the journal, so they share its
+#     union-merge posture. FIRST bump to touch the .gitattributes writer
+#     (v2-v5 were gitignore-only): the single-rule check was generalized to
+#     the _GITATTRIBUTES_RULES list for it.
+GIT_HYGIENE_VERSION = 6
 
 _GITATTRIBUTES_MARKER = "# vibe-cognition: append-only journal union-merge (safe to remove)"
 _GITATTRIBUTES_RULE = ".cognition/journal.jsonl merge=union"
+# v6 (WP-EnvFacts-A): per-person env-fact files — same append-only union-merge
+# posture as the journal. Committed files (NOT gitignored); the glob covers
+# every identity's file, present and future.
+_GITATTRIBUTES_PEOPLE_RULE = ".cognition/people/*.jsonl merge=union"
+# Every (path-token, full-rule) pair the writer manages. A rule is "covered"
+# when a non-comment line for its exact path token already carries ANY merge=
+# attribute (user overrides are respected, same as the original journal rule).
+_GITATTRIBUTES_RULES: tuple[tuple[str, str], ...] = (
+    (".cognition/journal.jsonl", _GITATTRIBUTES_RULE),
+    (".cognition/people/*.jsonl", _GITATTRIBUTES_PEOPLE_RULE),
+)
 _GITIGNORE_CHROMADB = "chromadb/"
 _GITIGNORE_FLAG = ".git-hygiene-managed"
 _GITIGNORE_LOCKS = "*.lock"
@@ -126,26 +145,34 @@ def _release_lock(lock_path: Path) -> None:
         lock_path.unlink()
 
 
-def _needs_gitattributes(gitattributes_path: Path) -> bool:
-    """Return True if we need to append our merge=union block.
+def _missing_gitattributes_rules(gitattributes_path: Path) -> list[str]:
+    """The managed rules NOT yet covered in .gitattributes (v6: list-generalized).
 
-    Skip only when an existing non-comment journal-path line ALREADY carries a
-    merge= token.  If a journal-path line exists WITHOUT merge=, still return True
-    (appending a second matching line is legal; git accumulates attributes).
+    A rule is covered only when an existing non-comment line for its exact
+    path token ALREADY carries a merge= token.  A path line WITHOUT merge=
+    does not cover it (appending a second matching line is legal; git
+    accumulates attributes).  Unreadable file -> all rules missing (same
+    conservative posture as before).
     """
     if not gitattributes_path.exists():
-        return True
+        return [rule for _, rule in _GITATTRIBUTES_RULES]
+    covered: set[str] = set()
     try:
         for line in gitattributes_path.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()
             if stripped.startswith("#") or not stripped:
                 continue
             tokens = stripped.split()
-            if tokens and tokens[0] == ".cognition/journal.jsonl" and any(t.startswith("merge=") for t in tokens[1:]):
-                return False
+            if tokens and any(t.startswith("merge=") for t in tokens[1:]):
+                covered.add(tokens[0])
     except OSError:
-        return True
-    return True
+        return [rule for _, rule in _GITATTRIBUTES_RULES]
+    return [rule for token, rule in _GITATTRIBUTES_RULES if token not in covered]
+
+
+def _needs_gitattributes(gitattributes_path: Path) -> bool:
+    """Return True if any managed rule still needs appending."""
+    return bool(_missing_gitattributes_rules(gitattributes_path))
 
 
 def _write_gitattributes(gitattributes_path: Path, cognition_dir: Path) -> bool:
@@ -161,7 +188,8 @@ def _write_gitattributes(gitattributes_path: Path, cognition_dir: Path) -> bool:
     try:
         # Re-check inside the lock: a concurrent startup may have written it
         # between our outer _needs_gitattributes check and lock acquisition.
-        if not _needs_gitattributes(gitattributes_path):
+        missing = _missing_gitattributes_rules(gitattributes_path)
+        if not missing:
             return True
         existing = ""
         if gitattributes_path.exists():
@@ -171,7 +199,7 @@ def _write_gitattributes(gitattributes_path: Path, cognition_dir: Path) -> bool:
                 logger.debug("git-hygiene: cannot read .gitattributes: %s", exc)
                 return False
         prefix = "" if (not existing or existing.endswith("\n")) else "\n"
-        block = f"{prefix}{_GITATTRIBUTES_MARKER}\n{_GITATTRIBUTES_RULE}\n"
+        block = prefix + _GITATTRIBUTES_MARKER + "\n" + "\n".join(missing) + "\n"
         try:
             with gitattributes_path.open("a", encoding="utf-8", newline="\n") as fh:
                 fh.write(block)
