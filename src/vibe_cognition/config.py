@@ -208,6 +208,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    # WP-EnvFacts-A: per-person environment facts (.cognition/people/ files).
+    env_fact_machine_cap: int = Field(
+        default=10,
+        description=(
+            "Maximum distinct machine entries per person in the env-facts "
+            "store. At the cap a write for a NEW machine is rejected with a "
+            "retryable error naming the prune remedy (never silent eviction). "
+            "Set via ENV_FACT_MACHINE_CAP."
+        ),
+    )
+
     # Embedding backend settings
     embedding_backend: Literal["sentence-transformers", "ollama"] = Field(
         default="sentence-transformers",

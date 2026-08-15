@@ -275,6 +275,10 @@ _TOOL_ARGS: dict[str, dict] = {
     "cognition_update_person": {"email_or_id": "nonexistent@example.com", "role": "x"},
     "cognition_get_person": {"email_or_id": "nonexistent@example.com"},
     "cognition_list_people": {},
+    "cognition_set_env_fact": {"key": "k", "value": "v", "machine": "m"},
+    "cognition_delete_env_fact": {"key": "k", "machine": "m"},
+    "cognition_clear_env_facts": {"machine": "m"},
+    "cognition_list_env_facts": {"email_or_id": "nonexistent@example.com"},
     "get_status": {},
     "cognition_dashboard": {},
     "cognition_readme": {},
@@ -303,7 +307,7 @@ def test_tool_dispatch_completes_while_an_unrelated_import_is_blocked_midflight(
     from unittest.mock import patch
 
     register_all_tools(mock_mcp)
-    assert len(mock_mcp.tools) == 33, "tool count drifted -- update _TOOL_ARGS to match"
+    assert len(mock_mcp.tools) == 37, "tool count drifted -- update _TOOL_ARGS to match"
     assert set(_TOOL_ARGS) == set(mock_mcp.tools), (
         f"missing args entries: {set(mock_mcp.tools) - set(_TOOL_ARGS)}"
     )

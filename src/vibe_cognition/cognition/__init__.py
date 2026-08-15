@@ -10,6 +10,7 @@ from .models import (
     generate_node_id,
 )
 from .operations import delete_cognition_node
+from .people_facts import DEFAULT_MACHINE_CAP
 from .queries import (
     conflict_details,
     conflict_flags,
@@ -31,6 +32,8 @@ __all__ = [
     "generate_node_id",
     # Identity
     "resolve_git_identity",
+    # Env facts (WP-EnvFacts-A)
+    "DEFAULT_MACHINE_CAP",
     # Storage
     "CognitionStorage",
     # Operations
