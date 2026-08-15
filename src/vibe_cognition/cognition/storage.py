@@ -22,6 +22,7 @@ from .models import (
     CognitionNodeType,
     generate_node_id,
 )
+from .people_facts import DEFAULT_MACHINE_CAP, PeopleFactsRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,12 @@ class CognitionStorage:
         # practice — same trade as _replayed_node_ids being an unbounded-but-
         # naturally-small handoff set.
         self._removed_node_ids: set[str] = set()
+        # WP-EnvFacts-A: per-person environment facts, folded from
+        # .cognition/people/*.jsonl delta files into a registry OUTSIDE the
+        # graph (same non-graph-replay-state pattern as _reference_index).
+        # Guarded by self._lock like everything else; caught up alongside the
+        # main journal in _synced.
+        self._people_facts = PeopleFactsRegistry(cognition_dir)
 
         self._dir.mkdir(parents=True, exist_ok=True)
 
@@ -131,6 +138,7 @@ class CognitionStorage:
 
         # Initial hydrate is just a catch-up from offset 0.
         self._catch_up()
+        self._people_facts.catch_up()
 
     @property
     def graph(self) -> nx.MultiDiGraph:
@@ -146,6 +154,55 @@ class CognitionStorage:
     def cognition_dir(self) -> Path:
         """The .cognition/ directory backing this store (for sidecar/blob paths)."""
         return self._dir
+
+    # ── Per-person environment facts (WP-EnvFacts-A) ──────────────────
+    # Thin synced facade over PeopleFactsRegistry. Policy (self-only writes,
+    # machine defaulting, disclosure) lives in the TOOLS layer — these methods
+    # take email as data, exactly like the person-node storage paths.
+
+    def set_env_fact(
+        self,
+        email: str,
+        machine: str,
+        key: str,
+        value: Any,
+        by: dict[str, str],
+        from_agent: bool = True,
+        machine_cap: int = DEFAULT_MACHINE_CAP,
+    ) -> dict[str, Any]:
+        """Set one env fact (delta append; no-op on identical value).
+
+        Raises ValueError on a NEW machine at the cap (retryable — the caller
+        surfaces the prune remedy) or blank email/machine/key.
+        """
+        with self._synced():
+            return self._people_facts.set_fact(
+                email, machine, key, value, by, from_agent, machine_cap
+            )
+
+    def delete_env_fact(
+        self, email: str, machine: str, key: str, by: dict[str, str], from_agent: bool = True
+    ) -> dict[str, Any]:
+        """Delete one env fact (delta append; no-op on an absent key)."""
+        with self._synced():
+            return self._people_facts.delete_fact(email, machine, key, by, from_agent)
+
+    def clear_env_facts(
+        self, email: str, machine: str | None, by: dict[str, str], from_agent: bool = True
+    ) -> dict[str, Any]:
+        """Bulk-remove env facts (one machine, or ALL when machine is None)."""
+        with self._synced():
+            return self._people_facts.clear_facts(email, machine, by, from_agent)
+
+    def get_env_facts(self, email: str) -> dict[str, dict[str, Any]]:
+        """One identity's facts, machine -> key -> value (empty dict if none)."""
+        with self._synced():
+            return self._people_facts.facts_for(email)
+
+    def env_fact_emails(self) -> list[str]:
+        """Every email with folded facts — registered person or not."""
+        with self._synced():
+            return self._people_facts.all_emails()
 
     def find_nodes_by_ref(self, ref: str) -> list[str]:
         """Node IDs whose (normalized) references include ``ref`` — O(1) lookup via
@@ -205,6 +262,7 @@ class CognitionStorage:
         with self._lock:
             if self._sync_depth == 0:
                 self._catch_up()
+                self._people_facts.catch_up()
             self._sync_depth += 1
             try:
                 yield
