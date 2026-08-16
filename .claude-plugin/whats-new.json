@@ -1,4 +1,9 @@
 {
+  "0.33.0": [
+    "You can now store durable per-machine environment facts about yourself (project root, OS, tool choices) so teammates' sessions detect setup divergence -- ask Claude to remember an environment fact.",
+    "Facts are self-only to write, open to read, and always disclosed when stored; ask Claude to remove any of them at any time (one call forgets everything).",
+    "Your machines are tracked separately (hostname-keyed, capped at 10) -- facts live in small per-person files under .cognition/people/, committed like the journal."
+  ],
   "0.31.0": [
     "Groundwork for fixing leaked server processes: the server now identifies its real client and logs stale siblings (report-only -- nothing is acted on, exit behavior is unchanged).",
     "get_status now includes a machine-wide stale-server sweep so you can see leaked vibe_cognition processes at a glance."
