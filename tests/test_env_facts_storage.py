@@ -248,15 +248,24 @@ def test_cross_instance_convergence(tmp_path):
 @pytest.mark.parametrize("n_people", [50, 100])
 def test_no_change_pass_does_zero_reads_and_zero_listdirs(tmp_path, monkeypatch, n_people):
     """The peer-review HIGH, as a test, at both brief-mandated team sizes:
-    a no-change catch-up performs NO file reads, NO directory listing, and
-    exactly 1 dir stat + 1 stat per known file (stats scale with file count;
-    reads never do — the honest cost contract)."""
+    a QUIESCENT no-change catch-up performs NO file reads, NO directory
+    listing, and exactly 1 dir stat + 1 stat per known file (stats scale with
+    file count; reads never do — the honest cost contract). Quiescence is
+    forced by aging the dir mtime past the racy window (a freshly-written dir
+    deliberately re-lists every pass — see the racy-dir regression tests)."""
+    import os
+    import time as _time
+
     cog = tmp_path / ".cognition"
     reg = PeopleFactsRegistry(cog)
     for i in range(n_people):
         reg.set_fact(f"user{i}@example.com", "desk", "os", "linux", BY, True)
     reg.catch_up()  # fold everything; steady state
-    reg.catch_up()  # settle mtime bookkeeping so the next pass is truly no-change
+    # Age the dir past the racy window so equality is trusted, then let one
+    # pass re-cache the aged timestamp (and clear the racy flag).
+    old = _time.time() - 60
+    os.utime(cog / "people", (old, old))
+    reg.catch_up()
 
     reads: list[str] = []
     listdirs: list[str] = []
@@ -279,6 +288,58 @@ def test_no_change_pass_does_zero_reads_and_zero_listdirs(tmp_path, monkeypatch,
     assert reads == []
     assert listdirs == []
     assert len(stats) == 1 + n_people  # dir gate + per-file stat gates, nothing more
+
+
+def test_own_append_visible_even_when_dir_mtime_frozen(tmp_path):
+    """Windows CI regression (KeyError: 'desk'): a file WE create must never
+    depend on dir-mtime discovery — _append registers it directly. Simulated
+    by pinning the dir mtime to an old value (non-racy, equality trusted) and
+    freezing it back after the write, so the dir gate alone would never
+    re-list."""
+    import os
+    import time as _time
+
+    cog = tmp_path / ".cognition"
+    reg = PeopleFactsRegistry(cog)
+    reg.set_fact("a@x.com", "desk", "os", "linux", BY, True)
+    old = _time.time() - 60
+    os.utime(cog / "people", (old, old))
+    reg.catch_up()  # caches the aged dir mtime; racy flag clears
+
+    reg.set_fact("b@x.com", "desk", "os", "macos", BY, True)  # creates b's file
+    os.utime(cog / "people", (old, old))  # freeze dir mtime back — gate sees "no change"
+    reg.catch_up()
+    assert reg.facts_for("b@x.com") == {"desk": {"os": "macos"}}
+
+
+def test_racy_dir_window_discovers_same_tick_foreign_file(tmp_path):
+    """Cross-instance half of the Windows CI regression: a file created by
+    ANOTHER process in the same coarse mtime tick as our cached dir stat is
+    numerically invisible to pure equality — the racy window forces a re-list
+    while the dir's mtime is fresh."""
+    import json as _json
+    import os
+
+    cog = tmp_path / ".cognition"
+    reg = PeopleFactsRegistry(cog)
+    reg.set_fact("a@x.com", "desk", "os", "linux", BY, True)
+    reg.catch_up()  # dir mtime is FRESH here -> racy flag set
+
+    # Foreign process creates a new person file, then we pin the dir mtime
+    # back to the exact cached value — pure equality would skip the listdir.
+    cached = reg._dir_mtime_ns
+    foreign = cog / "people" / f"{email_slug('c@x.com')}.jsonl"
+    line = _json.dumps(
+        {"action": "fact_set", "email": "c@x.com", "machine": "desk",
+         "key": "os", "value": "bsd", "old": None, "at": "", "by": BY,
+         "from_agent": True}
+    )
+    foreign.write_text(line + "\n", encoding="utf-8")
+    assert cached is not None
+    os.utime(cog / "people", ns=(cached, cached))
+
+    reg.catch_up()  # racy flag forces the re-list despite equal mtime
+    assert reg.facts_for("c@x.com") == {"desk": {"os": "bsd"}}
 
 
 def test_torn_tail_parks_then_recovers(tmp_path):
