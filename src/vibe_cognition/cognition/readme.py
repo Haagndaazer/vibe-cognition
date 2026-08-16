@@ -34,6 +34,8 @@ per-source histogram alongside it.
 | Tasks | cognition_add_task, cognition_list_tasks, cognition_update_task |
 | People | cognition_register_person, cognition_update_person, cognition_get_person, |
 |        | cognition_list_people |
+| Env facts | cognition_set_env_fact, cognition_delete_env_fact, |
+|           | cognition_clear_env_facts, cognition_list_env_facts |
 | Search | cognition_search |
 | History | cognition_get_history, cognition_get_node, cognition_get_chain, |
 |         | cognition_get_superseded_chain, cognition_get_incident_resolution, |
@@ -87,6 +89,18 @@ People (a HUMAN identity -- name, role, seniority, reports-to; never an agent):
   trail. Omit email to self-register (server-resolved git identity); pass one to
   register someone else. One node per (casefolded) email. List the roster with
   cognition_list_people(); look up one with cognition_get_person(email_or_id).
+
+Environment facts (durable per-machine setup truths -- project root, OS, tool
+choices -- so teammates' sessions detect divergence instead of tripping over it):
+  NOT graph nodes -- they live in committed per-person delta files
+  (.cognition/people/<slug>.jsonl) folded into a registry, joined into
+  cognition_get_person's `environment` field. Writes are SELF-ONLY by
+  construction: cognition_set_env_fact / cognition_delete_env_fact /
+  cognition_clear_env_facts take NO email parameter and always target the
+  server-resolved git identity. Reads are open (cognition_list_env_facts takes
+  any email). Every successful write returns a `disclosure` string you MUST
+  relay to the human -- they can have any fact removed at any time
+  (cognition_clear_env_facts with no args = "forget everything about me").
 
 ## Provenance: from_agent
 

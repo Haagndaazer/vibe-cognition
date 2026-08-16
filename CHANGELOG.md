@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0]
+
+### Added
+- **Per-person environment facts (WP-EnvFacts-A)**: durable, per-machine setup
+  truths (project root, OS, tool choices) stored per identity so teammates'
+  sessions can detect environment divergence instead of tripping over it.
+  - Storage: committed per-person delta files `.cognition/people/<slug>.jsonl`
+    (slug = casefolded email, percent-encoded with pinned lowercase hex, hash
+    fallback for long addresses). One JSON line per change
+    (`fact_set`/`fact_delete`/`fact_clear`) — the file IS the audit trail, so
+    fact churn never bloats the shared journal (no whole-map rewrites). Facts
+    hydrate into a non-graph registry (a person file with no registration node
+    is legal, surfaced as `registered: false`). Catch-up is dir-mtime-gated +
+    per-file stat-gated: a no-change pass does zero reads and zero listdirs.
+  - Tools: `cognition_set_env_fact` / `cognition_delete_env_fact` /
+    `cognition_clear_env_facts` (self-only **by construction** — no email
+    parameter exists; always the server-resolved git identity) and
+    `cognition_list_env_facts` (reads open to any email).
+    `cognition_get_person` now includes an `environment` field.
+  - Disclosure: every successful write returns a `disclosure` string the agent
+    must surface; `cognition_clear_env_facts` with no args is the one-call
+    "forget everything you stored about me" removal path (`cleared_keys`
+    enumerated, never an opaque wipe).
+  - Machine cap: distinct machines per person capped
+    (`ENV_FACT_MACHINE_CAP`, default 10); a NEW machine at the cap is rejected
+    with the prune remedy named — never silent eviction.
+  - Git hygiene v6: `.gitattributes` gains `.cognition/people/*.jsonl
+    merge=union` (first hygiene bump to touch the .gitattributes writer — the
+    single-rule check generalized to a managed-rules list). Shared-checkout
+    flush protocol updated to cover people files (docs/topology-guide.md).
+
 ## [0.32.0]
 
 ### Changed

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import platform
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 from fastmcp import Context
 
 from ..cognition import (
+    DEFAULT_MACHINE_CAP,
     SENIORITY_LEVELS,
     CognitionEdge,
     CognitionEdgeType,
@@ -2327,7 +2329,177 @@ def _get_person(storage: CognitionStorage, email_or_id: str) -> dict[str, Any]:
     person = node.get("metadata", {}).get("person", {})
     result = dict(node)
     result["reports_to_registered"] = _reports_to_registered(storage, person.get("reports_to_email"))
+    # WP-EnvFacts-A: two-source join — graph node + env-facts registry
+    # (.cognition/people/ delta files). Empty dict when the person has no
+    # stored environment facts.
+    result["environment"] = storage.get_env_facts(person.get("email", ""))
     return result
+
+
+# ── WP-EnvFacts-A: per-person environment facts (self-only tool surface) ────
+# Policy lives HERE, not in storage: the target identity is ALWAYS the
+# server-resolved git identity — the write tools take NO email parameter at
+# all (impersonation-resistant by construction, decision 29faeeca5190;
+# mirrors register_person's self path). Reads stay open to any email
+# (divergence detection needs them). Every successful write returns a
+# `disclosure` string the calling agent MUST surface to the human
+# (removal-on-request ruling cb8605c710fb; until WP-B's prime listing ships
+# this is the only disclosure surface, agent-relayed).
+
+
+def _self_identity(storage: CognitionStorage) -> tuple[dict[str, str] | None, str]:
+    """(recorded_by, casefolded email) for the server-resolved git identity,
+    or (None, "") when no email is resolvable — callers return a retryable
+    error rather than ever guessing an identity."""
+    by = resolve_git_identity(storage.cognition_dir.parent)
+    email = _casefold_email(by.get("email", ""))
+    return (by, email) if email else (None, "")
+
+
+def _machine_key(machine: str | None) -> str:
+    """Casefolded machine key: the explicit arg, else this machine's hostname.
+    Empty result (blank arg AND unresolvable hostname) -> "" — callers error."""
+    return (machine if machine is not None else platform.node()).strip().casefold()
+
+
+_NO_IDENTITY_ERROR = (
+    "env facts are self-only and the current git identity has no resolvable "
+    "email — set user.email in git config, then retry"
+)
+_NO_MACHINE_ERROR = (
+    "no machine key: the machine argument was blank, or (when omitted) this "
+    "system's hostname is unresolvable — pass a non-empty machine=, then retry"
+)
+
+
+def _set_env_fact(
+    ctx: Context,
+    key: str,
+    value: Any,
+    machine: str | None = None,
+    from_agent: bool = True,
+) -> dict[str, Any]:
+    """Testable core of cognition_set_env_fact."""
+    lc = get_lifespan(ctx)
+    storage: CognitionStorage = lc["cognition_storage"]
+    by, email = _self_identity(storage)
+    if by is None:
+        return {"error": _NO_IDENTITY_ERROR}
+    machine_key = _machine_key(machine)
+    if not machine_key:
+        return {"error": _NO_MACHINE_ERROR}
+    cap = getattr(lc.get("config"), "env_fact_machine_cap", DEFAULT_MACHINE_CAP)
+    try:
+        r = storage.set_env_fact(
+            email, machine_key, key, value, by, from_agent, machine_cap=cap
+        )
+    except ValueError as e:
+        return {"error": str(e)}
+    result: dict[str, Any] = {
+        "email": email,
+        "machine": machine_key,
+        "key": key.strip(),
+        "value": value,
+        **r,
+    }
+    if r["written"]:
+        result["disclosure"] = (
+            f"Stored to your identity ({email}): {key.strip()}={value!r} "
+            f"(machine {machine_key}). Tell the user this was stored — they can "
+            f"ask for it to be removed at any time."
+        )
+    else:
+        result["disclosure"] = (
+            f"Already stored (no change): {key.strip()} on machine {machine_key}."
+        )
+    return result
+
+
+def _delete_env_fact(
+    ctx: Context, key: str, machine: str | None = None, from_agent: bool = True
+) -> dict[str, Any]:
+    """Testable core of cognition_delete_env_fact."""
+    lc = get_lifespan(ctx)
+    storage: CognitionStorage = lc["cognition_storage"]
+    by, email = _self_identity(storage)
+    if by is None:
+        return {"error": _NO_IDENTITY_ERROR}
+    machine_key = _machine_key(machine)
+    if not machine_key:
+        return {"error": _NO_MACHINE_ERROR}
+    try:
+        r = storage.delete_env_fact(email, machine_key, key, by, from_agent)
+    except ValueError as e:
+        return {"error": str(e)}
+    result: dict[str, Any] = {"email": email, "machine": machine_key, "key": key.strip(), **r}
+    result["disclosure"] = (
+        f"Removed from your identity ({email}): {key.strip()} (machine {machine_key})."
+        if r["written"]
+        else f"Nothing to remove: {key.strip()} is not stored for machine {machine_key}."
+    )
+    return result
+
+
+def _clear_env_facts(
+    ctx: Context, machine: str | None = None, from_agent: bool = True
+) -> dict[str, Any]:
+    """Testable core of cognition_clear_env_facts. machine=None clears ALL —
+    deliberately NOT defaulted to the current hostname, because the no-arg call
+    means "forget everything about me" (removal-on-request), not "forget this
+    machine"."""
+    lc = get_lifespan(ctx)
+    storage: CognitionStorage = lc["cognition_storage"]
+    by, email = _self_identity(storage)
+    if by is None:
+        return {"error": _NO_IDENTITY_ERROR}
+    machine_key: str | None = None
+    if machine is not None:
+        machine_key = _machine_key(machine)
+        if not machine_key:
+            return {"error": _NO_MACHINE_ERROR}
+    try:
+        r = storage.clear_env_facts(email, machine_key, by, from_agent)
+    except ValueError as e:
+        return {"error": str(e)}
+    scope = f"machine {machine_key}" if machine_key else "ALL machines"
+    result: dict[str, Any] = {"email": email, "machine": machine_key, **r}
+    result["disclosure"] = (
+        f"Cleared {len(r['cleared_keys'])} fact(s) from your identity ({email}), "
+        f"{scope}: {', '.join(r['cleared_keys'])}."
+        if r["written"]
+        else f"Nothing stored for {scope} — nothing cleared."
+    )
+    return result
+
+
+def _list_env_facts(ctx: Context, email_or_id: str | None = None) -> dict[str, Any]:
+    """Testable core of cognition_list_env_facts. Reads are OPEN (any email or
+    person id; divergence checks need teammates' facts) — only writes are
+    self-only. Default target: the server-resolved self."""
+    lc = get_lifespan(ctx)
+    storage: CognitionStorage = lc["cognition_storage"]
+    if email_or_id is None:
+        _, email = _self_identity(storage)
+        if not email:
+            return {"error": _NO_IDENTITY_ERROR}
+    else:
+        node = _resolve_person(storage, email_or_id)
+        if node is not None:
+            email = node.get("metadata", {}).get("person", {}).get("email", "")
+        else:
+            email = _casefold_email(email_or_id)
+        if not email:
+            return {"error": f"could not resolve '{email_or_id}' to an email"}
+    environment = storage.get_env_facts(email)
+    return {
+        "email": email,
+        # A person file with no registration node is first-class legal
+        # (facts for a not-yet-registered identity) — flagged, never an error.
+        "registered": _find_person_by_email(storage, email) is not None,
+        "environment": environment,
+        "machine_count": len(environment),
+        "current_machine": _machine_key(None),
+    }
 
 
 def _list_people(storage: CognitionStorage) -> dict[str, Any]:
@@ -2992,7 +3164,9 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             The full person node (id, summary, detail, metadata: {person,
             profile_history, recorded_by, from_agent}, ...) plus
-            `reports_to_registered` (bool), or {"error": ...} if not found.
+            `reports_to_registered` (bool) and `environment` (the person's
+            stored env facts, {machine: {key: value}}, empty dict when none —
+            see cognition_list_env_facts), or {"error": ...} if not found.
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         return _get_person(storage, email_or_id)
@@ -3007,6 +3181,126 @@ def register_cognition_tools(mcp) -> None:
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         return _list_people(storage)
+
+    @dispatch_tool(mcp)
+    def cognition_set_env_fact(
+        ctx: Context,
+        key: str,
+        value: Any,
+        machine: str | None = None,
+        from_agent: bool = True,
+    ) -> dict[str, Any]:
+        """Store one durable environment fact about YOURSELF (self-only).
+
+        The target identity is ALWAYS the server-resolved git identity — there
+        is no email parameter (impersonation-resistant by construction). Facts
+        are per-machine durable environment truths: project root, OS, tool
+        choices ("container_runtime": "podman"), setup gotchas. They live in
+        a committed per-person delta file (.cognition/people/), so teammates'
+        sessions can detect environment divergence — do NOT store secrets,
+        tokens, or anything that must stay out of git history.
+
+        DISCLOSURE CONTRACT: every successful write returns a `disclosure`
+        string. You MUST relay it to the human — they can ask for any stored
+        fact to be removed (cognition_delete_env_fact /
+        cognition_clear_env_facts) at any time.
+
+        Args:
+            key: Fact name (e.g. "project_root", "os", "container_runtime").
+            value: JSON value (string/number/bool/null/list/object).
+            machine: Machine key; DEFAULT: this machine's hostname
+                (casefolded). Pass explicitly to record a fact about one of
+                YOUR other machines.
+            from_agent: Set false ONLY when the human explicitly dictated the
+                fact themselves; default true.
+
+        Returns:
+            {email, machine, key, value, written, noop, old, disclosure} —
+            `written` false + `noop` true when the identical value was already
+            stored (nothing journaled). {"error": ...} (retryable) on: no
+            resolvable git email, blank key/machine, or a NEW machine at the
+            per-person machine cap (the error names the prune remedy).
+        """
+        return _set_env_fact(ctx, key, value, machine, from_agent)
+
+    @dispatch_tool(mcp)
+    def cognition_delete_env_fact(
+        ctx: Context,
+        key: str,
+        machine: str | None = None,
+        from_agent: bool = True,
+    ) -> dict[str, Any]:
+        """Remove one of YOUR OWN stored environment facts (self-only).
+
+        Same identity rule as cognition_set_env_fact: no email parameter, the
+        server-resolved git identity is always the target. Deleting a fact
+        removes it from the live state; the historical delta line remains in
+        git history (same posture as every journal write).
+
+        Args:
+            key: Fact name to remove.
+            machine: Machine key; DEFAULT: this machine's hostname (casefolded).
+            from_agent: Set false ONLY when the human dictated the removal.
+
+        Returns:
+            {email, machine, key, written, noop, old, disclosure} — noop when
+            the key wasn't stored. {"error": ...} (retryable) on no resolvable
+            git email or blank key/machine.
+        """
+        return _delete_env_fact(ctx, key, machine, from_agent)
+
+    @dispatch_tool(mcp)
+    def cognition_clear_env_facts(
+        ctx: Context,
+        machine: str | None = None,
+        from_agent: bool = True,
+    ) -> dict[str, Any]:
+        """Bulk-remove YOUR OWN environment facts (self-only) — the
+        removal-on-request path: "forget everything you stored about me" is
+        ONE call, never an enumerate-and-loop.
+
+        Args:
+            machine: Scope. A machine key clears that ONE machine's facts.
+                OMITTED means ALL machines — deliberately NOT defaulted to the
+                current hostname, because the no-arg call means "forget
+                everything", not "forget this machine". (Also the prune remedy
+                when the machine cap rejects a new machine.)
+            from_agent: Set false ONLY when the human dictated the removal.
+
+        Returns:
+            {email, machine, written, noop, cleared_keys, disclosure} —
+            cleared_keys is uniformly "machine/key" strings; the audit line
+            enumerates exactly what was removed (never an opaque wipe). noop
+            when nothing was stored in scope. {"error": ...} on no resolvable
+            git email.
+        """
+        return _clear_env_facts(ctx, machine, from_agent)
+
+    @dispatch_tool(mcp)
+    def cognition_list_env_facts(
+        ctx: Context, email_or_id: str | None = None
+    ) -> dict[str, Any]:
+        """List stored environment facts — yours by default, or any teammate's.
+
+        Reads are OPEN (writes are self-only): pass a teammate's email or
+        person node id to see their machines' facts, e.g. to check how their
+        environment diverges from yours (different project root, different
+        container runtime) before acting on graph content they authored.
+
+        Args:
+            email_or_id: Omit for YOUR facts (server-resolved identity). Or a
+                person's email (works even if they have no person node yet) or
+                person node id.
+
+        Returns:
+            {email, registered, environment: {machine: {key: value}},
+             machine_count, current_machine} — `registered` false means facts
+            exist for an identity with no person node (first-class legal, not
+            an error); `current_machine` is THIS machine's casefolded hostname
+            so a caller can tell this-machine facts from elsewhere-facts.
+            {"error": ...} when no target identity is resolvable.
+        """
+        return _list_env_facts(ctx, email_or_id)
 
     @dispatch_tool(mcp)
     def cognition_store_document(
@@ -4325,6 +4619,14 @@ def register_cognition_tools(mcp) -> None:
         the children; they keep reporting the deleted id as their `parent_id`
         (this stale-pointer behavior is deliberate, not a bug). Reparent or
         close children first if that matters.
+
+        WARNING — person nodes: deleting a person node does NOT touch their
+        env-fact file (.cognition/people/<slug>.jsonl) — the facts registry is
+        graph-independent, so their stored environment facts persist and keep
+        surfacing via cognition_list_env_facts as `registered: false` until
+        THEY run cognition_clear_env_facts (self-only) or the file is removed
+        from git by hand. Removing a person is the natural moment to prompt
+        that cleanup.
 
         Args:
             node_id: ID of the node to delete.

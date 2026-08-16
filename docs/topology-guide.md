@@ -55,29 +55,42 @@ reach the actual merge base:
 
 **The protocol:**
 
-1. **Nobody commits `.cognition/journal.jsonl` on a work branch.** Only the manager
-   flushes it, and only onto `main` (never a WP/feature branch — see incident #2 above:
-   a flush that never reaches the branch that gets merged doesn't count).
+> **Scope — this protocol covers the whole live `.cognition/` write set, not just one
+> file.** That is `journal.jsonl` AND every per-person env-fact file under
+> `.cognition/people/` (`<slug>.jsonl`, one per identity — the set GROWS at runtime as
+> teammates store facts or new people onboard). A checklist that names only
+> `journal.jsonl` silently clobbers a fact file the same way incident #1 clobbered the
+> journal.
+
+1. **Nobody commits `.cognition/journal.jsonl` or `.cognition/people/*.jsonl` on a
+   work branch.** Only the manager flushes them, and only onto `main` (never a
+   WP/feature branch — see incident #2 above: a flush that never reaches the branch
+   that gets merged doesn't count).
 2. **The manager flushes via a temporary worktree**, not by touching the live tree:
    ```bash
    git worktree add /tmp/flush-wt main
    vibe-cognition-snapshot .cognition/journal.jsonl /tmp/flush-wt/.cognition/journal.jsonl
-   git -C /tmp/flush-wt add .cognition/journal.jsonl
+   # Repeat for EVERY live people file (list .cognition/people/ — the set changes):
+   #   vibe-cognition-snapshot .cognition/people/<slug>.jsonl /tmp/flush-wt/.cognition/people/<slug>.jsonl
+   git -C /tmp/flush-wt add .cognition/journal.jsonl .cognition/people
    git -C /tmp/flush-wt commit -m "journal flush: <what changed>"
    git -C /tmp/flush-wt push origin main   # <- do this every time; see incident #2
    git worktree remove /tmp/flush-wt
    ```
-   `vibe-cognition-snapshot` (installed with the plugin) copies the journal while holding
-   the same append lock a live writer would, so the copy can never land on a torn
-   mid-append line — a plain `cp`/`copy` doesn't have this guarantee. Flush at natural
-   checkpoints (a work package lands, before any risky git operation, before end of
-   session) rather than letting live appends sit unflushed for long stretches.
+   `vibe-cognition-snapshot` (installed with the plugin) copies a journal-format file
+   while holding the same append lock a live writer would, so the copy can never land
+   on a torn mid-append line — a plain `cp`/`copy` doesn't have this guarantee. It
+   works per-file: run it once for the journal and once per live people file (create
+   `/tmp/flush-wt/.cognition/people/` first if the worktree predates the people dir).
+   Flush at natural checkpoints (a work package lands, before any risky git operation,
+   before end of session) rather than letting live appends sit unflushed for long
+   stretches.
 3. **Destructive-op ban near the journal**, for anyone working in the shared tree:
    no `git reset --hard`, `checkout -- .`, `stash`, or `clean` that could touch
-   `.cognition/journal.jsonl` without first confirming the manager has flushed. Regular
-   `git add`/`commit` on your own files is fine — the ban is specifically about
-   operations that rewrite files you didn't stage, since those can silently include the
-   journal.
+   `.cognition/journal.jsonl` or anything under `.cognition/people/` without first
+   confirming the manager has flushed. Regular `git add`/`commit` on your own files is
+   fine — the ban is specifically about operations that rewrite files you didn't
+   stage, since those can silently include the journal or a fact file.
 4. Before ANY branch switch, checkout, or reset in the shared tree: **confirm the
    journal tail is flushed first.** Coordinate this explicitly (e.g. via a message to
    the manager) rather than assuming — this is what incident #1 above skipped.

@@ -14,8 +14,12 @@ description: You MUST use this skill any time you need to retrieve information a
 | `cognition_update_task` | Update a task's status/owner/priority/parent/assignment in place (transition- and assignment-logged) |
 | `cognition_register_person` | Register a HUMAN identity (never an agent) as a first-class person node |
 | `cognition_update_person` | Edit a person's profile fields in place (audit-trailed via profile_history) |
-| `cognition_get_person` | Get a person's full profile, including the profile_history audit trail |
+| `cognition_get_person` | Get a person's full profile, including the profile_history audit trail and their stored environment facts |
 | `cognition_list_people` | List every registered person — the team roster |
+| `cognition_set_env_fact` | Store one durable environment fact about YOURSELF (self-only; per-machine; response carries a disclosure you MUST relay) |
+| `cognition_delete_env_fact` | Remove one of your own stored environment facts (self-only) |
+| `cognition_clear_env_facts` | Bulk-remove your own environment facts — one machine, or ALL with no args (the removal-on-request path) |
+| `cognition_list_env_facts` | List stored environment facts — yours by default, or any teammate's (reads are open; divergence checks need them) |
 | `cognition_search` | Semantic search across all cognition nodes; reports `total_found`/`exhaustive`, optional `exclude_people` filter |
 | `cognition_get_node` | Read a single node's full narrative (incl. `detail`) by id |
 | `cognition_update_node` | Edit a node's narrative (summary/detail/context/severity) in place; re-embeds on text change |
