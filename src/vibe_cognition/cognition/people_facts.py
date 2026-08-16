@@ -31,6 +31,7 @@ resolved (the tools layer).
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -61,6 +62,17 @@ DEFAULT_MACHINE_CAP = 10
 # a first write of value=None as a "noop" (verifier finding, Stage 1 gate) —
 # only a private object no caller can store distinguishes the two.
 _MISSING = object()
+
+# Racy-timestamp window for the dir-mtime gate (git-index discipline). Filesystem
+# timestamps advance in coarse ticks (Windows FILETIME updates at the timer
+# interrupt, ~0.5-15.6ms), so a file CREATED in the same tick we last stat'd the
+# dir leaves the dir mtime numerically unchanged and pure equality would never
+# discover it (caught by Windows CI: a person file created microseconds after a
+# catch-up pass stayed invisible for the whole test). While the dir's mtime is
+# within this window of the current clock, equality is NOT trusted and every
+# pass re-lists; once the dir has been quiet longer than the window, the cheap
+# equality gate resumes.
+_DIR_MTIME_RACY_WINDOW_NS = 2_000_000_000  # 2s
 
 
 def email_slug(email: str) -> str:
@@ -124,6 +136,9 @@ class PeopleFactsRegistry:
         self._facts: dict[str, dict[str, dict[str, Any]]] = {}
         self._files: dict[str, _FileState] = {}
         self._dir_mtime_ns: int | None = None
+        # True while the last-observed dir mtime was too fresh to trust
+        # equality against (see _DIR_MTIME_RACY_WINDOW_NS).
+        self._dir_mtime_racy = False
 
     @property
     def people_dir(self) -> Path:
@@ -268,9 +283,12 @@ class PeopleFactsRegistry:
         """Fold deltas appended since the last pass; return folded line count.
 
         Cost contract (peer-review HIGH): one dir stat gates the listdir; each
-        known file is stat-gated before any read — a no-change pass costs
-        1 + N_known_files stats, ZERO reads, ZERO listdirs (stats scale with
-        file count; reads never do). Truncation/rewrite of ONE file re-folds
+        known file is stat-gated before any read — a QUIESCENT no-change pass
+        (dir mtime older than the racy window) costs 1 + N_known_files stats,
+        ZERO reads, ZERO listdirs (stats scale with file count; reads never
+        do). While the dir was modified within the racy window, every pass
+        re-lists (cheap; active-write periods only) — see
+        _DIR_MTIME_RACY_WINDOW_NS. Truncation/rewrite of ONE file re-folds
         that file only — never a global reset, never touching the graph.
 
         Residual (shared with the main journal's _catch_up, disclosed not
@@ -287,10 +305,19 @@ class PeopleFactsRegistry:
                 self._facts.clear()
                 self._files.clear()
                 self._dir_mtime_ns = None
+                self._dir_mtime_racy = False
             return 0
 
-        if dir_stat.st_mtime_ns != self._dir_mtime_ns:
+        if dir_stat.st_mtime_ns != self._dir_mtime_ns or self._dir_mtime_racy:
             self._dir_mtime_ns = dir_stat.st_mtime_ns
+            # Racy-timestamp guard: trust equality on FUTURE passes only if
+            # this observation is already safely in the past (same-tick
+            # creations after our stat share its timestamp — see the window
+            # constant). abs() so far-future clock skew degrades to the cheap
+            # gate rather than pinning racy forever.
+            self._dir_mtime_racy = (
+                abs(time.time_ns() - dir_stat.st_mtime_ns) < _DIR_MTIME_RACY_WINDOW_NS
+            )
             try:
                 names = {
                     p.name for p in self._people_dir.iterdir()
@@ -386,11 +413,16 @@ class PeopleFactsRegistry:
         # append_journal_line creates the FILE (O_CREAT) but not parents —
         # a fresh project has no people/ dir until the first write.
         self._people_dir.mkdir(parents=True, exist_ok=True)
-        path = self._people_dir / f"{email_slug(email)}.jsonl"
-        append_journal_line(path, json.dumps(entry))
-        # The write lands in folded state via the normal catch-up path (the
-        # per-file stat sees the append) — same C-6 discipline as the main
-        # journal: appends never advance our own offset.
+        name = f"{email_slug(email)}.jsonl"
+        append_journal_line(self._people_dir / name, json.dumps(entry))
+        # Register our OWN file immediately: dir-mtime discovery is
+        # timestamp-racy (a creation in the same coarse tick as a cached dir
+        # stat is numerically invisible — the Windows CI catch), and our own
+        # writes must never depend on it. Content still folds via the normal
+        # per-file stat gate on the next pass — same C-6 discipline as the
+        # main journal: appends never advance our own offset.
+        if name not in self._files:
+            self._files[name] = _FileState()
 
     def _drop_file(self, name: str) -> None:
         fs = self._files.pop(name, None)
