@@ -1209,6 +1209,134 @@ class TestUnregisteredWriters:
         assert body["unregistered_writers"] == []
 
 
+class TestEnvFactsParity:
+    """Task 7acd187fe91c (dashboard env-facts parity): the People surfaces
+    read the per-person env-facts registry — person drilldown gains
+    `environment` + `current_machine`, roster rows gain machine/fact counts,
+    and fact-holders with NO person node surface in the unregistered list
+    (never silently hidden). Strictly read-only."""
+
+    BY = {"name": "T", "email": "t@example.com"}
+
+    def _person(self, node_id, name, email):
+        return CognitionNode(
+            id=node_id, type=CognitionNodeType.PERSON, summary=name, detail="",
+            context=[], references=[], timestamp=datetime.now(UTC).isoformat(), author=name,
+            metadata={"person": {"email": email.casefold(), "name": name, "role": "engineer",
+                                  "seniority": "mid", "reports_to_email": ""}},
+        )
+
+    def _stamped(self, node_id, name, email):
+        return CognitionNode(
+            id=node_id, type=CognitionNodeType.DECISION, summary=f"by {name}", detail="d",
+            context=[], references=[], author=name,
+            timestamp=datetime.now(UTC).isoformat(),
+            metadata={"recorded_by": {"name": name, "email": email}},
+        )
+
+    def test_person_detail_includes_environment_and_current_machine(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._person("penv", "Envy", "envy@example.com"))
+        s.set_env_fact("envy@example.com", "desk", "os", "linux", self.BY)
+        s.set_env_fact("envy@example.com", "laptop", "os", "macos", self.BY)
+
+        body = c.get("/api/node/penv", headers=_hdr()).json()
+        assert body["environment"] == {
+            "desk": {"os": "linux"}, "laptop": {"os": "macos"},
+        }
+        import platform
+        assert body["current_machine"] == platform.node().strip().casefold()
+
+    def test_person_with_no_facts_gets_empty_environment_not_missing(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._person("pbare", "Bare", "bare@example.com"))
+        body = c.get("/api/node/pbare", headers=_hdr()).json()
+        assert body["environment"] == {}  # present, empty — never a missing key
+
+    def test_non_person_node_has_no_environment(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._stamped("ndec", "X", "x@example.com"))
+        body = c.get("/api/node/ndec", headers=_hdr()).json()
+        assert "environment" not in body and "current_machine" not in body
+
+    def test_roster_rows_carry_counts(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._person("pfacts", "Facts", "facts@example.com"))
+        s.add_node(self._person("pnone", "None", "none@example.com"))
+        s.set_env_fact("facts@example.com", "desk", "os", "linux", self.BY)
+        s.set_env_fact("facts@example.com", "desk", "shell", "zsh", self.BY)
+        s.set_env_fact("facts@example.com", "laptop", "os", "macos", self.BY)
+
+        body = c.get("/api/people", headers=_hdr()).json()
+        facts = next(p for p in body["people"] if p["id"] == "pfacts")
+        none = next(p for p in body["people"] if p["id"] == "pnone")
+        assert facts["machine_count"] == 2 and facts["fact_count"] == 3
+        assert none["machine_count"] == 0 and none["fact_count"] == 0
+
+    def test_fact_only_identity_surfaces_in_unregistered(self, client):
+        """The onboarding-teammate case: facts stored, no person node, ZERO
+        stamped graph nodes — must appear, never be silently hidden."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.set_env_fact("newhire@example.com", "their-box", "os", "linux", self.BY)
+
+        body = c.get("/api/people/unregistered", headers=_hdr()).json()
+        row = next(w for w in body["unregistered_writers"] if w["email"] == "newhire@example.com")
+        assert row["node_count"] == 0
+        assert row["names"] == []
+        assert row["first_seen"] is None and row["last_seen"] is None
+        assert row["machine_count"] == 1 and row["fact_count"] == 1
+
+    def test_stamped_writer_with_facts_gets_one_merged_row(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._stamped("nboth", "Both", "both@example.com"))
+        s.set_env_fact("both@example.com", "desk", "os", "bsd", self.BY)
+
+        body = c.get("/api/people/unregistered", headers=_hdr()).json()
+        rows = [w for w in body["unregistered_writers"] if w["email"] == "both@example.com"]
+        assert len(rows) == 1  # merged, not duplicated
+        assert rows[0]["node_count"] == 1 and rows[0]["fact_count"] == 1
+
+    def test_registered_person_with_facts_not_in_unregistered(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._person("preg", "Reg", "reg@example.com"))
+        s.set_env_fact("reg@example.com", "desk", "os", "linux", self.BY)
+
+        body = c.get("/api/people/unregistered", headers=_hdr()).json()
+        assert "reg@example.com" not in {w["email"] for w in body["unregistered_writers"]}
+
+    def test_deterministic_sort_nodes_then_facts_then_email(self, client):
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._stamped("nw1", "Writer", "writer@example.com"))
+        s.set_env_fact("bb@example.com", "m", "k", 1, self.BY)
+        s.set_env_fact("aa@example.com", "m", "k", 1, self.BY)
+
+        body = c.get("/api/people/unregistered", headers=_hdr()).json()
+        emails = [w["email"] for w in body["unregistered_writers"]]
+        assert emails == ["writer@example.com", "aa@example.com", "bb@example.com"]
+
+    def test_api_passes_fact_values_verbatim(self, client):
+        """Escaping is the frontend's job (escapeHTML); the API must pass
+        values through untouched — including markup-shaped strings and
+        non-string JSON values."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._person("pxss", "Xss", "xss@example.com"))
+        s.set_env_fact("xss@example.com", "desk", "note", "<script>alert(1)</script>", self.BY)
+        s.set_env_fact("xss@example.com", "desk", "cfg", {"a": [1, None]}, self.BY)
+
+        body = c.get("/api/node/pxss", headers=_hdr()).json()
+        assert body["environment"]["desk"]["note"] == "<script>alert(1)</script>"
+        assert body["environment"]["desk"]["cfg"] == {"a": [1, None]}
+
+
 class TestPersonActivityDrilldown:
     """WP-DashV3: GET /api/node/{id} gains `person_activity` for PERSON nodes
     only — task 5d4e2bd60d17, the read-only drawer drilldown."""

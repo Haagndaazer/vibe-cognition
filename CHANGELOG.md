@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.0]
+
+### Added
+- **Dashboard env-facts parity** (task 7acd187fe91c): the People view now
+  reads the per-person environment-facts registry introduced in 0.33.0.
+  - Person drawer gains an **Environment** section — one block per machine
+    (facts as key/value rows), with the dashboard host's own machine flagged
+    "this machine" (`current_machine` on the person node-detail response).
+  - Roster cards show a facts chip (`N facts · M machines`); `/api/people`
+    rows carry `machine_count`/`fact_count`.
+  - The unregistered-writers list now also surfaces identities that stored
+    env facts but have **no person node** — even with zero stamped graph
+    nodes (the onboarding-teammate case; `registered: false` is first-class,
+    never silently hidden). Rows sort deterministically: stamped-node count,
+    then fact count, then email. Strictly read-only — the dashboard never
+    writes facts.
+
+### Changed
+- CLAUDE.md's release-procedure section now points at the canonical
+  `cognition_get_workflow("plugin release procedure")` workflow node (v6)
+  instead of inlining a copy that went stale twice; marketplace orientation
+  facts stay inline.
+
 ## [0.33.0]
 
 ### Added

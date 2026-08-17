@@ -10,12 +10,15 @@ The SessionStart hook (`hooks/session-start.sh`) syncs deps and injects context.
 
 ## Plugin Release Procedure
 
-The marketplace lives in a separate repo — `Haagndaazer/colton-claude-plugins` (marketplace name `coltondyck`), maintained by Loki. This repo ships **code only** and does NOT carry its own `marketplace.json` (a second file named `coltondyck` would collide, since Claude Code keys marketplaces by name).
+**The canonical procedure lives in the cognition graph, not here** — fetch it with
+`cognition_get_workflow("plugin release procedure")`, which always resolves to the
+current HEAD version (v6 at the time of writing; versioned by supersession, so this
+file can never go stale the way an inlined copy did twice). Follow that workflow
+step-by-step for every release; do not reconstruct the procedure from memory or from
+this file.
 
-1. Make your code changes.
-2. If the change is user-facing, bump the version in both `pyproject.toml` and `.claude-plugin/plugin.json` (the plugin system reads version from `plugin.json`).
-3. Commit and push to `main` (this is the "code commit").
-4. Ping Loki with the code-commit SHA and the version.
-5. Loki re-pins that SHA in `colton-claude-plugins`'s `marketplace.json` and pushes, so installs/updates pick it up.
-
-The marketplace `sha` always points to the code commit on this repo's `main`.
+Orientation only (not the procedure): the marketplace lives in a separate repo —
+`Haagndaazer/colton-claude-plugins` (marketplace name `coltondyck`), maintained by
+Loki. This repo ships **code only** and does NOT carry its own `marketplace.json`
+(a second file named `coltondyck` would collide, since Claude Code keys marketplaces
+by name). The marketplace `sha` always points to a code commit on this repo's `main`.

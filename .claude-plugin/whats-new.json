@@ -1,4 +1,8 @@
 {
+  "0.34.0": [
+    "The dashboard's People view now shows environment facts: each person's drawer gets an Environment section per machine (your own machine flagged), and roster cards show fact counts.",
+    "Teammates who stored facts but aren't registered yet now appear in the unregistered list instead of being invisible -- handy for spotting who still needs onboarding."
+  ],
   "0.33.0": [
     "You can now store durable per-machine environment facts about yourself (project root, OS, tool choices) so teammates' sessions detect setup divergence -- ask Claude to remember an environment fact.",
     "Facts are self-only to write, open to read, and always disclosed when stored; ask Claude to remove any of them at any time (one call forgets everything).",

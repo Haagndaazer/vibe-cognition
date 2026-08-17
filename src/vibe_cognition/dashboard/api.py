@@ -7,6 +7,7 @@ matches CognitionStorage's RLock-based threading model.
 from __future__ import annotations
 
 import logging
+import platform
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -198,6 +199,12 @@ def get_node(request):
     node counts by type, last-active timestamp, currently-claimed tasks,
     open tasks created. Read-only; wired from the SAME roster-row click that
     already opens this drawer, no new endpoint or click surface.
+
+    It also gains `environment` (task 7acd187fe91c, dashboard env-facts
+    parity) — the person's stored env facts ({machine: {key: value}}, empty
+    dict when none) — plus `current_machine` (THIS host's casefolded
+    hostname, same derivation as cognition_list_env_facts) so the drawer can
+    flag which machine block is the one the dashboard is running on.
     """
     lc = _ctx(request)
     storage = lc["cognition_storage"]
@@ -225,6 +232,8 @@ def get_node(request):
     if node_data.get("type") == CognitionNodeType.PERSON.value:
         email = ((node_data.get("metadata") or {}).get("person") or {}).get("email") or ""
         result["person_activity"] = _person_activity(storage, email)
+        result["environment"] = storage.get_env_facts(email)
+        result["current_machine"] = _current_machine()
     return JSONResponse(result)
 
 
@@ -691,6 +700,20 @@ def _stamped_identity(node: dict[str, Any]) -> tuple[str, str | None]:
     return "", None
 
 
+def _current_machine() -> str:
+    """THIS host's casefolded hostname — the same derivation as the tool
+    layer's machine default (cognition_tools._machine_key(None)), inlined via
+    a plain `import platform` rather than importing that private helper, to
+    keep the dashboard's cross-layer import surface narrow (peer-review nit,
+    task 7acd187fe91c)."""
+    return platform.node().strip().casefold()
+
+
+def _env_fact_counts(environment: dict[str, dict[str, Any]]) -> tuple[int, int]:
+    """(machine_count, fact_count) for one identity's environment map."""
+    return len(environment), sum(len(kv) for kv in environment.values())
+
+
 def _registered_person_emails(storage: CognitionStorage) -> set[str]:
     """Casefolded emails of every registered PERSON node -- shared by get_people
     and get_unregistered_writers so the two views can't disagree on who counts
@@ -709,21 +732,32 @@ def get_unregistered_writers(request):
     graph and needs onboarding" list. One full node scan (same cost class as
     other dashboard endpoints); casefolded-email semantics match
     prime._distinct_stamped_emails via _stamped_identity above.
+
+    Env-facts parity (task 7acd187fe91c): every row also carries
+    machine_count/fact_count, and an identity that stored env facts but has
+    NO person node appears here even with ZERO stamped graph nodes — the
+    registered:false state is first-class in the tool layer and must never be
+    silently hidden in this view (the onboarding-teammate case).
     """
     lc = _ctx(request)
     storage = lc["cognition_storage"]
     registered = _registered_person_emails(storage)
 
     writers: dict[str, dict[str, Any]] = {}
+
+    def _row(email: str) -> dict[str, Any]:
+        return writers.setdefault(email, {
+            "email": email, "names": set(), "node_count": 0,
+            "first_seen": None, "last_seen": None,
+            "machine_count": 0, "fact_count": 0,
+        })
+
     for n in storage.get_all_nodes():
         email, name = _stamped_identity(n)
         if not email or email in registered:
             continue
         ts = n.get("timestamp")
-        w = writers.setdefault(email, {
-            "email": email, "names": set(), "node_count": 0,
-            "first_seen": ts, "last_seen": ts,
-        })
+        w = _row(email)
         w["names"].add(name or email)
         w["node_count"] += 1
         if ts:
@@ -732,8 +766,19 @@ def get_unregistered_writers(request):
             if not w["last_seen"] or ts > w["last_seen"]:
                 w["last_seen"] = ts
 
+    for email in storage.env_fact_emails():
+        if email in registered:
+            continue
+        w = _row(email)  # same constructor as stamped rows — shapes never diverge
+        w["machine_count"], w["fact_count"] = _env_fact_counts(
+            storage.get_env_facts(email)
+        )
+
     out = [{**w, "names": sorted(w["names"])} for w in writers.values()]
-    out.sort(key=lambda w: w["node_count"], reverse=True)
+    # Deterministic ordering (peer-review nit): busiest writers first, then
+    # fact-holders, then email — a fact-only onboarding teammate sorts by the
+    # explicit fact_count key, never by dict-insertion accident.
+    out.sort(key=lambda w: (-w["node_count"], -w["fact_count"], w["email"]))
     return JSONResponse({"unregistered_writers": out, "count": len(out)})
 
 
@@ -821,6 +866,14 @@ def get_people(request):
         meta = n.get("metadata", {}) or {}
         person = meta.get("person", {}) or {}
         reports_to = person.get("reports_to_email") or None
+        # Env-facts parity (task 7acd187fe91c): per-row get_env_facts is one
+        # _synced call each — which re-runs BOTH the main-journal and the
+        # people-dir stat-gated catch-up per row, so an N-person roster costs
+        # N redundant (cheap, quiescent) main-journal passes. Accepted at
+        # roster scale, same N-per-row convention as list_documents'
+        # get_predecessors — a bulk facts getter is unjustified surface today.
+        environment = storage.get_env_facts(person.get("email") or "")
+        machine_count, fact_count = _env_fact_counts(environment)
         rows.append({
             "id": n["id"],
             "name": person.get("name"),
@@ -832,6 +885,8 @@ def get_people(request):
             "recorded_by": meta.get("recorded_by"),
             "from_agent": meta.get("from_agent"),
             "timestamp": n.get("timestamp"),
+            "machine_count": machine_count,
+            "fact_count": fact_count,
         })
     rows.sort(key=lambda r: (r.get("name") or "").casefold())
     return JSONResponse({"people": rows, "count": len(rows)})

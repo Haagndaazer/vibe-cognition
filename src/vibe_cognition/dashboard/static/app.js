@@ -328,6 +328,37 @@ function personActivityHTML(node) {
   </div>`;
 }
 
+// Person-node environment facts (task 7acd187fe91c, dashboard env-facts
+// parity): one sub-block per machine from the per-person fact files, the
+// dashboard host's own machine flagged. Values are arbitrary JSON — render
+// non-strings via JSON.stringify, everything through escapeHTML. Read-only:
+// no set/delete affordance here (writes are self-only via the MCP tools).
+function personEnvironmentHTML(node) {
+  if (node.type !== "person") return "";
+  const env = node.environment || {};
+  const machines = Object.keys(env).sort();
+  const valueText = (v) => (typeof v === "string" ? v : JSON.stringify(v));
+  const body = machines.length
+    ? machines.map(m => {
+        const isHere = m === (node.current_machine || "");
+        const rows = Object.entries(env[m]).map(([k, v]) =>
+          `<li class="row"><span class="meta" style="min-width:120px">${escapeHTML(k)}</span><span class="grow">${escapeHTML(valueText(v))}</span></li>`
+        ).join("");
+        return `<div style="margin-bottom:8px">
+          <div class="row" style="margin-bottom:4px">
+            <span class="chip">${escapeHTML(m)}</span>
+            ${isHere ? '<span class="chip type">this machine</span>' : ""}
+          </div>
+          <ul>${rows}</ul>
+        </div>`;
+      }).join("")
+    : '<div class="meta">no environment facts stored</div>';
+  return `<div class="detail-section">
+    <h3>Environment</h3>
+    ${body}
+  </div>`;
+}
+
 function renderDrawer(node) {
   const type = node.type || "";
   const severity = node.severity;
@@ -344,6 +375,7 @@ function renderDrawer(node) {
     <pre class="detail-body">${escapeHTML(node.detail || "(no detail)")}</pre>
     ${provenanceHTML(node)}
     ${personActivityHTML(node)}
+    ${personEnvironmentHTML(node)}
     ${timelineHTML(node)}
     <div class="detail-section">
       <h3>Related nodes</h3>
@@ -828,7 +860,8 @@ function renderUnregisteredWriters(list) {
       <span class="grow">${escapeHTML(w.email)}</span>
       <span class="meta">${escapeHTML((w.names || []).join(", "))}</span>
       <span class="meta">${w.node_count} node${w.node_count === 1 ? "" : "s"}</span>
-      <span class="meta">${escapeHTML(formatTimestamp(w.first_seen))} – ${escapeHTML(formatTimestamp(w.last_seen))}</span>
+      ${(w.fact_count || 0) > 0 ? `<span class="chip">${w.fact_count} env fact${w.fact_count === 1 ? "" : "s"}</span>` : ""}
+      <span class="meta">${w.first_seen ? `${escapeHTML(formatTimestamp(w.first_seen))} – ${escapeHTML(formatTimestamp(w.last_seen))}` : "no stamped nodes"}</span>
     </li>`).join("");
 }
 
@@ -843,10 +876,14 @@ function personCardHTML(p, byEmail) {
       ? `<span class="chip person node-ref" data-id="${escapeHTML(mgr.id)}">${escapeHTML(mgr.name || mgr.email)}</span>`
       : `<span class="meta">${escapeHTML(p.reports_to_email)}</span> <span class="chip">unregistered</span>`;
   }
+  const envChip = (p.fact_count || 0) > 0
+    ? `<span class="chip">${p.fact_count} fact${p.fact_count === 1 ? "" : "s"} · ${p.machine_count} machine${p.machine_count === 1 ? "" : "s"}</span>`
+    : "";
   return `<div class="card cardgrid-item clickable" data-id="${escapeHTML(p.id)}">
     <div class="row" style="margin-bottom:6px">
       <span class="chip person">${escapeHTML(p.name || p.email || p.id)}</span>
       ${roleSeniority}
+      ${envChip}
     </div>
     <div class="meta" style="margin-bottom:6px">${escapeHTML(p.email || "")}</div>
     <div class="row" style="margin-bottom:8px">
