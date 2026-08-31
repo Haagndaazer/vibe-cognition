@@ -27,3 +27,5 @@
 # NO merge=union: content-addressed + binary, so conflicts are impossible.
 # Greenfield dir → -text lands with its first file, no cut-over needed.
 .cognition/documents/** -text
+# vibe-cognition: append-only journal union-merge (safe to remove)
+.cognition/people/*.jsonl merge=union
