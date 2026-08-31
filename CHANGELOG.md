@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.0]
+
+### Fixed
+- **Curation spawn discipline**: the curate-orchestrator and /vibe-curate docs
+  now hard-prohibit the Agent tool's `name` parameter on every spawn/launch
+  site. On recent Claude Code versions a named spawn registers a persistent
+  teammate-mailbox agent instead of a plain subagent — it can stall in the
+  mailbox queue before starting, its completion notification misroutes to the
+  top-level session instead of the spawning orchestrator (stranding the
+  pipeline mid-run), and its roster entry persists across runs, causing
+  collision-renames. Analyzer spawns are additionally pinned foreground-only
+  (no `run_in_background`) and the orchestrator is forbidden from ending its
+  turn to "wait" for an analyzer — the three rules are causally chained in a
+  new SPAWN DISCIPLINE hard-rule section, with full inline restatements at
+  each spawn site (same pattern as the model-pin rule). Empirically verified:
+  an unnamed analyzer spawn with a descriptive `description` executes
+  immediately and registers no teammate entry.
+
 ## [0.33.0]
 
 ### Added
