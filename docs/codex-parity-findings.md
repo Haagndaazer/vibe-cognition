@@ -330,6 +330,18 @@ See `docs/wp-codex-plugin-plan.md` (rev 2, peer-reviewed). Shipped as v0.35.0:
 branch of the standing practices. Design: B-hook — the plugin ships skills +
 hooks; the session-start hook registers the MCP server with `codex mcp add`.
 
+**Gate C1 passed 2026-09-08** on Colton's Windows machine (codex-cli 0.153.4)
+via the self-test brief `docs/codex-test-brief.md`: clean install from this
+repo's Codex marketplace, first-session registration + venv build with the
+restart notice, second-session project binding, digest at start and after
+`/compact`, instructions with the Codex curation note, skills, node write +
+search round-trip, and two concurrent sessions in different projects running
+two separate server trees from the plugin cache. UI-only checks (`/mcp` view,
+literal `$skill` keystroke) were unverifiable from inside Codex and are
+covered by equivalent live evidence. Known follow-ups: shared skill text still
+says `/vibe-curate` (WP-C1c); Codex's sandbox strips the home dir so
+agent-run `codex.cmd` checks need escalation.
+
 ## 8. Decisions needed from Colton
 
 1. Approve the re-order: Codex is harness #2, Hermes #3, Phase 0 unchanged.

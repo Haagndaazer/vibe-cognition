@@ -38,7 +38,12 @@ failures.
 
 **Always invoke the Codex CLI as `codex.cmd`** (for example
 `codex.cmd mcp list`). Your sandboxed PowerShell blocks the npm `codex.ps1`
-shim ("running scripts is disabled"); the `.cmd` shim is not affected.
+shim ("running scripts is disabled"); the `.cmd` shim is not affected. If a
+`codex.cmd` call fails with "failed to resolve CODEX_HOME / Could not find home
+directory", your sandbox has stripped the home directory: re-run that command
+outside the sandbox (request escalation) or ask the user to run it and paste
+the output. `Get-CimInstance Win32_Process` is also denied in the sandbox —
+ask the user for process inventory rather than retrying.
 
 ## Report file
 
@@ -173,11 +178,14 @@ vibe-cognition test brief from Phase 3`."
 8. Open a **second** Codex session in a **different** project (ask the user to
    do this if you cannot), then from PowerShell:
    ```powershell
-   Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'vibe_cognition\.server' -and $_.CommandLine -match 'plugins\\cache' } | Select-Object ProcessId, CommandLine
+   Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'uv.exe' -and $_.CommandLine -match 'vibe_cognition\.server' -and $_.CommandLine -match '\.codex[\\/]plugins[\\/]cache[\\/]' } | Select-Object ProcessId, ParentProcessId, CommandLine | Format-List
    ```
-   PASS if two processes appear, both launched from the plugin cache path. If
-   `Get-CimInstance` is denied inside your sandbox, write UNVERIFIABLE and ask
-   the user to run it.
+   The plugin root in the command line uses FORWARD slashes
+   (`C:/Users/…/.codex/plugins/cache/…`) and the python children reference the
+   data-dir venv, so filter on the `uv.exe` launchers as above. PASS if two
+   launchers appear, both from the `0.35.0` plugin cache. If `Get-CimInstance`
+   is denied inside your sandbox, write UNVERIFIABLE and ask the user to run it
+   and paste the output.
 
 ## Phase 4 — wrap up
 
