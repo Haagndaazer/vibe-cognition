@@ -29,18 +29,26 @@ you should know it so your checks make sense:
   That is expected, not a bug.
 
 A manual test rig was previously installed by hand and has been fully torn
-down. Part of your job is to confirm nothing from it remains, so the plugin
-install is judged on its own.
+down. Part of your job is to confirm nothing **from vibe-cognition** remains,
+so the plugin install is judged on its own. Other plugins, other MCP servers
+(for example `teammate-comms`, which is being ported to Codex in parallel),
+another project's `~/.codex/hooks.json`, and `[projects.…]` trust entries in
+`config.toml` are NOT leftovers — leave them alone and do not report them as
+failures.
+
+**Always invoke the Codex CLI as `codex.cmd`** (for example
+`codex.cmd mcp list`). Your sandboxed PowerShell blocks the npm `codex.ps1`
+shim ("running scripts is disabled"); the `.cmd` shim is not affected.
 
 ## Report file
 
 Write your findings to `E:\E Drive Projects\vibe-cognition\docs\codex-test-report.md`.
-Create it at the start with the header below and append a section per phase
+Overwrite any previous report; create it at the start with the header below and append a section per phase
 as you go, so a partial run still leaves evidence. Use this header:
 
 ```
 # Codex plugin test report — vibe-cognition 0.35.0
-Date: <today>   Codex version: <output of `codex --version`>   Windows: <version>
+Date: <today>   Codex version: <output of `codex.cmd --version`>   Windows: <version>
 Launch directory for the test: <path>
 ```
 
@@ -53,29 +61,37 @@ short; quote the exact lines that matter.
 Run these and record the raw output:
 
 ```powershell
-codex --version
-codex mcp list
-codex plugin list
-codex plugin marketplace list
-Test-Path "$HOME\.codex\hooks.json"
+codex.cmd --version
+codex.cmd mcp list
+codex.cmd plugin list
+codex.cmd plugin marketplace list
+if (Test-Path "$HOME\.codex\hooks.json") { Select-String -Path "$HOME\.codex\hooks.json" -Pattern "vibe" }
 Test-Path "$HOME\.codex\vibe-hooks"
 Test-Path "$HOME\.codex\vibe-cognition-data"
-Get-ChildItem "$HOME\.agents\skills" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
-Select-String -Path "$HOME\.codex\config.toml" -Pattern "vibe|hooks.state" -SimpleMatch:$false
+Get-ChildItem "$HOME\.agents\skills" -Directory -Filter "vibe-*" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name
+Select-String -Path "$HOME\.codex\config.toml" -Pattern "mcp_servers.vibe-cognition|vibe-hooks|vibe-cognition-data"
+Get-ChildItem "$HOME\.codex\plugins\cache","$HOME\.codex\plugins\data" -Recurse -Depth 2 -Directory -Filter "vibe-cognition*" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty FullName
 ```
 
-Expected: no `vibe-cognition` MCP server, no vibe plugin, no `vibe-cognition-dev`
-marketplace, all `Test-Path` false, no `vibe-*` skills, no `vibe`/`hooks.state`
-lines in `config.toml`. If anything is present, record it as FAIL for Phase 0
-and **stop** — do not install on top of leftovers. Report back.
+A leftover is any of: a `vibe-cognition` row in `codex.cmd mcp list`; a
+`vibe-cognition` plugin or a `vibe-cognition-dev` marketplace already listed;
+a `vibe` match inside `~/.codex/hooks.json`; `~/.codex/vibe-hooks` or
+`~/.codex/vibe-cognition-data` existing; any `vibe-*` skill folder; any
+`config.toml` line matching `mcp_servers.vibe-cognition`, `vibe-hooks`, or
+`vibe-cognition-data`; any `vibe-cognition*` folder under the plugin cache or
+data dirs. NOT leftovers: a `hooks.json` that mentions only other plugins, any
+`[hooks.state…]` table, `[projects.'…']` trust lines (even ones naming
+vibe-cognition), and the `teammate-comms` MCP server. If a real leftover is
+present, record it as FAIL for Phase 0 and **stop** — do not install on top of
+it. Report back.
 
 ## Phase 1 — install
 
 ```powershell
-codex plugin marketplace add Haagndaazer/vibe-cognition
-codex plugin marketplace list
-codex plugin add vibe-cognition@vibe-cognition-dev
-codex plugin list
+codex.cmd plugin marketplace add Haagndaazer/vibe-cognition
+codex.cmd plugin marketplace list
+codex.cmd plugin add vibe-cognition@vibe-cognition-dev
+codex.cmd plugin list
 ```
 
 Record: did the marketplace add succeed and list as `vibe-cognition-dev`? Did
@@ -103,7 +119,7 @@ When resumed in the new session, check and record:
    its first line.
 2. Did it contain the sentence **"vibe-cognition registered its MCP server
    with Codex"** with an instruction to restart? Quote it.
-3. Run `codex mcp list` and quote the `vibe-cognition` row. PASS if the
+3. Run `codex.cmd mcp list` and quote the `vibe-cognition` row. PASS if the
    command column is `uv` and the args contain `--project` and
    `python -m vibe_cognition.server`, and the env column lists
    `UV_PROJECT_ENVIRONMENT`, `VIBE_DATA_DIR`, `VIBE_HARNESS`.
