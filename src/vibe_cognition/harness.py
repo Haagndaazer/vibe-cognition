@@ -31,6 +31,8 @@ class Harness:
     update_cta_template: str
     update_cta_no_market_template: str
     curation_available: bool
+    manifest_path: str
+    marketplace_manifest_path: str
 
     def skill_invoke(self, skill: str) -> str:
         return f"{self.skill_prefix}{skill}"
@@ -65,6 +67,7 @@ class Harness:
             "skill_prefix": self.skill_prefix,
             "spawn_tool": self.spawn_tool,
             "curation_available": self.curation_available,
+            "manifest_path": self.manifest_path,
             "containment": self.containment,
             "models": {
                 tier: {"model": self.model(tier), "source": self.model_source(tier)}
@@ -89,6 +92,8 @@ HARNESSES: dict[str, Harness] = {
         update_cta_template="/plugin update {plugin}{suffix}",
         update_cta_no_market_template="/plugin update {plugin}",
         curation_available=True,
+        manifest_path=".claude-plugin/plugin.json",
+        marketplace_manifest_path=".claude-plugin/marketplace.json",
     ),
     CODEX: Harness(
         name=CODEX,
@@ -102,9 +107,11 @@ HARNESSES: dict[str, Harness] = {
         default_models={"small": None, "mid": None},
         containment="curation-session token only (Codex roles cannot restrict tools)",
         update_source="codex-marketplace",
-        update_cta_template="codex plugin marketplace upgrade {market} && codex plugin add {plugin}{suffix} (then restart Codex)",
-        update_cta_no_market_template="re-add the plugin from your Codex marketplace: codex plugin marketplace upgrade <marketplace> && codex plugin add {plugin}@<marketplace> (then restart Codex)",
+        update_cta_template="codex plugin marketplace upgrade {market} && codex plugin add {plugin}{suffix}",
+        update_cta_no_market_template="re-add the plugin from your Codex marketplace: codex plugin marketplace upgrade <marketplace> && codex plugin add {plugin}@<marketplace>",
         curation_available=False,
+        manifest_path=".codex-plugin/plugin.json",
+        marketplace_manifest_path=".agents/plugins/marketplace.json",
     ),
 }
 

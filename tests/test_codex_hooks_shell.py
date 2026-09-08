@@ -5,6 +5,7 @@ test) and adds a fake `codex` on PATH that logs its argv. Never touches a real
 Codex config or the network.
 """
 
+import json
 import stat
 import subprocess
 from pathlib import Path
@@ -25,6 +26,12 @@ _CODEX_REINJECT = _REPO / "adapters" / "codex" / "hooks" / "reinject.sh"
 
 _FAKE_CODEX = """#!/usr/bin/env bash
 echo "CODEX: $*" >> "${FAKE_CONTROL_DIR}/codex.log"
+case "$*" in
+  "mcp get "*)
+    if [ -f "${FAKE_CONTROL_DIR}/mcp_get_json" ]; then cat "${FAKE_CONTROL_DIR}/mcp_get_json"; exit 0; fi
+    exit 1
+    ;;
+esac
 if [ -f "${FAKE_CONTROL_DIR}/codex_exit" ]; then exit "$(cat "${FAKE_CONTROL_DIR}/codex_exit")"; fi
 exit 0
 """
@@ -53,6 +60,11 @@ def codex_env(tmp_path):
         )
 
     plugin_data = tmp_path / "plugin_data"  # deliberately NOT created: Codex does not create it
+    codex_home = tmp_path / "codex_home"
+    (plugin_root / "adapters" / "codex" / "agents").mkdir(parents=True)
+    (plugin_root / "adapters" / "codex" / "agents" / "vibe-plan.toml").write_text(
+        'name = "vibe-plan"\ndeveloper_instructions = "plan"\n', encoding="utf-8", newline="\n"
+    )
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     control_dir = tmp_path / "control"
@@ -66,6 +78,7 @@ def codex_env(tmp_path):
         plugin_root_ = plugin_root
         plugin_data_ = plugin_data
         control_ = control_dir
+        codex_home_ = codex_home
 
         def run(self, wrapper: str, *, with_codex: bool = True):
             path = plugin_root / "adapters" / "codex" / "hooks" / wrapper
@@ -76,6 +89,8 @@ def codex_env(tmp_path):
                 "CLAUDE_PLUGIN_ROOT": str(plugin_root),
                 "CLAUDE_PLUGIN_DATA": str(plugin_data),
                 "FAKE_CONTROL_DIR": str(control_dir),
+                "CODEX_HOME": str(codex_home),
+                "HOME": str(tmp_path),
             })
             return subprocess.run(
                 [_BASH, _msys_path(path)], capture_output=True, text=True, env=env,
@@ -173,3 +188,72 @@ def test_reinject_wrapper_delegates_to_shared_reinject(codex_env):
     assert result.returncode == 0, result.stderr
     assert "vibe_cognition.instructions" in codex_env.uv_log()
     assert result.stdout.strip() == "{}"
+
+
+def test_re_register_preserves_user_env_keys(codex_env):
+    """A user-added env key on the existing entry (e.g. a model override) must
+    survive re-registration; the three managed keys are always rewritten."""
+    codex_env.plugin_data_.mkdir(parents=True, exist_ok=True)
+    (codex_env.plugin_data_ / ".venv").mkdir()
+    (codex_env.plugin_data_ / "codex-mcp.stamp").write_text("stale", encoding="utf-8")
+    (codex_env.control_ / "mcp_get_json").write_text(json.dumps({
+        "name": "vibe-cognition",
+        "transport": {"type": "stdio", "env": {
+            "UV_PROJECT_ENVIRONMENT": "/old/venv", "VIBE_DATA_DIR": "/old", "VIBE_HARNESS": "codex",
+            "VIBE_MODEL_MID": "gpt-example",
+        }},
+    }, indent=2), encoding="utf-8")
+    result = codex_env.run("session-start.sh")
+    assert result.returncode == 0, result.stderr
+    adds = [ln for ln in codex_env.codex_log().splitlines() if ln.startswith("CODEX: mcp add")]
+    assert len(adds) == 1, codex_env.codex_log()
+    assert "--env VIBE_MODEL_MID=gpt-example" in adds[0]
+    assert adds[0].count("--env UV_PROJECT_ENVIRONMENT=") == 1
+    assert "/old/venv" not in adds[0]
+    assert "preserved_env=2" in result.stderr
+
+
+def test_first_install_without_prior_entry_passes_only_managed_env(codex_env):
+    """The lookup path runs (codex mcp get is called and fails, no prior entry)
+    and contributes nothing: exactly the three managed keys are passed."""
+    result = codex_env.run("session-start.sh")
+    assert result.returncode == 0, result.stderr
+    log = codex_env.codex_log()
+    assert "CODEX: mcp get vibe-cognition --json" in log
+    [add] = [ln for ln in log.splitlines() if ln.startswith("CODEX: mcp add")]
+    assert add.count("--env ") == 3
+    assert "preserved_env=0" in result.stderr
+
+
+def test_compact_empty_env_does_not_leak_sibling_fields(codex_env):
+    """An entry with "env": {} on one line followed by a string-valued sibling
+    must not turn that sibling into a bogus --env argument."""
+    codex_env.plugin_data_.mkdir(parents=True, exist_ok=True)
+    (codex_env.plugin_data_ / "codex-mcp.stamp").write_text("stale", encoding="utf-8")
+    (codex_env.control_ / "mcp_get_json").write_text(
+        '{\n  "name": "vibe-cognition",\n  "transport": {\n    "type": "stdio",\n'
+        '    "env": {},\n    "env_vars": [],\n    "cwd": "/home/user/project"\n  }\n}\n',
+        encoding="utf-8",
+    )
+    result = codex_env.run("session-start.sh")
+    assert result.returncode == 0, result.stderr
+    [add] = [ln for ln in codex_env.codex_log().splitlines() if ln.startswith("CODEX: mcp add")]
+    assert "cwd=" not in add
+    assert add.count("--env ") == 3
+
+
+def test_plan_role_is_installed_and_kept_in_sync(codex_env):
+    result = codex_env.run("session-start.sh")
+    assert result.returncode == 0, result.stderr
+    installed = codex_env.codex_home_ / "agents" / "vibe-plan.toml"
+    assert installed.read_text(encoding="utf-8").startswith('name = "vibe-plan"')
+    assert "role_installed vibe-plan.toml" in result.stderr
+
+    result2 = codex_env.run("session-start.sh")
+    assert "role_unchanged vibe-plan.toml" in result2.stderr
+
+    src = codex_env.plugin_root_ / "adapters" / "codex" / "agents" / "vibe-plan.toml"
+    src.write_text(src.read_text(encoding="utf-8") + "\n# v2\n", encoding="utf-8", newline="\n")
+    result3 = codex_env.run("session-start.sh")
+    assert "role_installed vibe-plan.toml" in result3.stderr
+    assert installed.read_text(encoding="utf-8").endswith("# v2\n")

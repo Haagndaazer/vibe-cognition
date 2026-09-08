@@ -47,14 +47,22 @@ STAMP_FILENAME = "update-check.json"
 REQUEST_TIMEOUT_SECONDS = 3.0
 NETWORK_PHASE_WALL_CLOCK_SECONDS = 8.0
 
-_MARKETPLACE_URL = (
-    "https://raw.githubusercontent.com/Haagndaazer/colton-claude-plugins/"
-    "main/.claude-plugin/marketplace.json"
+_MARKETPLACE_URL_TEMPLATE = (
+    "https://raw.githubusercontent.com/Haagndaazer/colton-claude-plugins/main/{path}"
 )
 _PLUGIN_JSON_URL_TEMPLATE = (
-    "https://raw.githubusercontent.com/Haagndaazer/vibe-cognition/{sha}/"
-    ".claude-plugin/plugin.json"
+    "https://raw.githubusercontent.com/Haagndaazer/vibe-cognition/{sha}/{path}"
 )
+
+
+def _marketplace_url() -> str:
+    return _MARKETPLACE_URL_TEMPLATE.format(path=harness.current().marketplace_manifest_path)
+
+
+def _plugin_json_url(sha: str) -> str:
+    return _PLUGIN_JSON_URL_TEMPLATE.format(sha=sha, path=harness.current().manifest_path)
+
+
 _PLUGIN_NAME = "vibe-cognition"
 
 _NUDGE_OFF_VALUES = frozenset({"off", "0", "false", "no"})
@@ -65,7 +73,7 @@ _NUDGE_OFF_VALUES = frozenset({"off", "0", "false", "no"})
 # sys.stdout.reconfigure() for defense in depth.
 NUDGE_TEMPLATE = (
     "vibe-cognition v{remote} is available (you have v{installed}). To "
-    "update: run {cta}, then restart Claude Code. Updating is always your "
+    "update: run {cta}, then restart {harness}. Updating is always your "
     "call - this notice is informational only. Disable it with "
     "VIBE_UPDATE_NUDGE=off."
 )
@@ -109,7 +117,7 @@ def _find_marketplace_entry(data: object) -> dict | None:
 def _fetch_marketplace_sha(timeout: float) -> str | None:
     """The marketplace's current release pin SHA for vibe-cognition, or None
     on any failure (network, malformed JSON, entry absent, no source.sha)."""
-    data = _http_get_json(_MARKETPLACE_URL, timeout)
+    data = _http_get_json(_marketplace_url(), timeout)
     entry = _find_marketplace_entry(data)
     if entry is None:
         return None
@@ -122,7 +130,7 @@ def _fetch_marketplace_sha(timeout: float) -> str | None:
 
 def _fetch_remote_version(sha: str, timeout: float) -> str | None:
     """The released ``version`` string from plugin.json at the pinned SHA."""
-    data = _http_get_json(_PLUGIN_JSON_URL_TEMPLATE.format(sha=sha), timeout)
+    data = _http_get_json(_plugin_json_url(sha), timeout)
     if not isinstance(data, dict):
         return None
     version = data.get("version")
@@ -130,8 +138,8 @@ def _fetch_remote_version(sha: str, timeout: float) -> str | None:
 
 
 def _read_installed_version(plugin_root: str) -> str | None:
-    """The installed version from ``${plugin_root}/.claude-plugin/plugin.json``."""
-    path = Path(plugin_root) / ".claude-plugin" / "plugin.json"
+    """The installed version from the harness's plugin manifest under ``plugin_root``."""
+    path = Path(plugin_root) / harness.current().manifest_path
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -269,7 +277,8 @@ def check(
     if installed and remote and version_gt(remote, installed):
         marketplace = _derive_marketplace_name(plugin_root)
         return NUDGE_TEMPLATE.format(
-            remote=remote, installed=installed, cta=_format_cta(marketplace)
+            remote=remote, installed=installed, cta=_format_cta(marketplace),
+            harness=harness.current().display_name,
         )
     return ""
 

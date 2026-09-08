@@ -78,6 +78,13 @@ def test_instructions_follow_harness_table(monkeypatch):
         importlib.reload(mod)
 
 
+def test_status_block_names_the_harness_manifest(monkeypatch):
+    monkeypatch.setenv("VIBE_HARNESS", "codex")
+    assert harness.current().status_block()["manifest_path"] == ".codex-plugin/plugin.json"
+    monkeypatch.delenv("VIBE_HARNESS", raising=False)
+    assert harness.current().status_block()["manifest_path"] == ".claude-plugin/plugin.json"
+
+
 def test_codex_update_cta_without_marketplace_is_actionable(monkeypatch):
     monkeypatch.setenv("VIBE_HARNESS", "codex")
     cta = harness.current().update_cta(None)

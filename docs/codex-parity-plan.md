@@ -302,4 +302,4 @@ critical path is P0 → P2 → P4.
 4. **Scope:** backfill on Codex — yes; update nudge on Codex — yes; Plan
    agent as an **installed role file** in `~/.codex/agents/` (not a skill).
 
-Next step: WP-P0 brief on Colton's go.
+Progress: **WP-P0 shipped** (8fc5230) and **WP-P1 shipped** (d80f16e), both 2026-09-08 and sonnet-reviewed (briefs `docs/wp-p0-harness-brief.md`, `docs/wp-p1-containment-brief.md`). **WP-P3 shipped** (same day; brief `docs/wp-p3-update-plan-brief.md`). Next: WP-P2 (brief drafted at `docs/wp-p2-codex-curation-brief.md`; blocked on the Codex model list for defaults).

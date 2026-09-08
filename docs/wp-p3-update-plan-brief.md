@@ -1,6 +1,6 @@
 # WP-P3 — Update nudge on Codex, env-preserving re-registration, Plan role
 
-Status: BRIEF (solo build; sonnet code review before "done")
+Status: SHIPPED (2026-09-08) — sonnet code review APPROVE-WITH-CHANGES; both HIGH findings (duplicated restart clause, compact-empty-env sed capture) and both weak tests fixed before commit
 Parent: `docs/codex-parity-plan.md` rev 3 (rulings: update nudge in scope;
 Plan agent as an installed role file in `~/.codex/agents/`)
 Date: 2026-09-08

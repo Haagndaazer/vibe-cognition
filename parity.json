@@ -490,8 +490,8 @@
         "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
       },
       "codex": {
-        "status": "waived",
-        "note": "ships as an installed Codex role in WP-P3"
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_codex_plan_role_toml_renders"
       }
     },
     "tool:cognition_begin_curation": {

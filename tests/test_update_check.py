@@ -450,3 +450,56 @@ def test_main_stdout_reconfigure_failure_does_not_crash(monkeypatch):
     monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
 
     assert update_check.main(argv=[]) == 0
+
+
+# ── WP-P3: harness-keyed source and CTA ──────────────────────────────────────
+
+
+def test_check_on_codex_uses_codex_manifest_paths_and_cta(tmp_path, monkeypatch):
+    """Under VIBE_HARNESS=codex the check reads the installed version from
+    .codex-plugin/plugin.json, fetches the Codex marketplace file and the
+    .codex-plugin manifest at the pinned sha (the fake urlopen raises on any
+    other URL), and the nudge carries the Codex CTA and restart line."""
+    monkeypatch.setenv("VIBE_HARNESS", "codex")
+    plugin_root = tmp_path / "cache" / "coltondyck" / "vibe-cognition" / "0.35.0"
+    d = plugin_root / ".codex-plugin"
+    d.mkdir(parents=True)
+    (d / "plugin.json").write_text(json.dumps({"version": "0.35.0"}), encoding="utf-8")
+    plugin_data = tmp_path / "plugin_data"
+
+    monkeypatch.setattr(
+        update_check.urllib.request,
+        "urlopen",
+        _fake_urlopen({
+            ".agents/plugins/marketplace.json": (200, MARKETPLACE_OK),
+            "vibe-cognition/deadbeef/.codex-plugin/plugin.json": (200, {"version": "0.36.0"}),
+        }),
+    )
+
+    note = update_check.check(str(plugin_root), str(plugin_data))
+
+    assert note.startswith("vibe-cognition v0.36.0 is available (you have v0.35.0).")
+    assert "codex plugin marketplace upgrade coltondyck && codex plugin add vibe-cognition@coltondyck" in note
+    assert "then restart Codex." in note
+    assert "Claude" not in note
+    assert note.isascii()
+
+
+def test_check_on_codex_reads_the_codex_manifest_not_the_claude_one(tmp_path, monkeypatch):
+    """Both manifests present with different versions: the nudge must report the
+    Codex-installed version. Fails against a harness-blind update_check, which
+    would read .claude-plugin (0.20.0) or fetch the Claude marketplace URL."""
+    monkeypatch.setenv("VIBE_HARNESS", "codex")
+    plugin_root = tmp_path / "cache" / "coltondyck" / "vibe-cognition" / "0.35.0"
+    _write_installed_plugin_json(plugin_root, "0.20.0")
+    d = plugin_root / ".codex-plugin"
+    d.mkdir(parents=True)
+    (d / "plugin.json").write_text(json.dumps({"version": "0.35.0"}), encoding="utf-8")
+    monkeypatch.setattr(
+        update_check.urllib.request, "urlopen",
+        _fake_urlopen({".agents/plugins/marketplace.json": (200, MARKETPLACE_OK),
+                       ".codex-plugin/plugin.json": (200, {"version": "0.36.0"})}),
+    )
+    note = update_check.check(str(plugin_root), str(tmp_path / "plugin_data"))
+    assert "(you have v0.35.0)" in note
+    assert note.count("restart") == 1

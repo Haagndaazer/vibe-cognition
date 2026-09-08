@@ -687,6 +687,8 @@ codex plugin add vibe-cognition@coltondyck
 
 Then start Codex once inside any project and **restart it**. On that first session the plugin's session-start hook registers the MCP server with `codex mcp add` at user level (Codex plugins cannot bind a plugin-declared server to the project you opened, so the hook registers it the way a hand-configured server would be), builds the plugin venv, and tells you to restart. From the next session on you get the same experience as Claude Code: the MCP tools bound to the project Codex was opened in, the project digest at session start, the standing practices re-injected after `/compact`, and the `$vibe-cognition`, `$vibe-document`, `$vibe-workflow`, and `$vibe-dashboard` skills.
 
+Also on Codex: the Plan agent is installed as a custom role (`~/.codex/agents/vibe-plan.toml`, kept in sync by the hook) so `spawn_agent` can use `agent_type: "vibe-plan"`; the daily update check compares your installed version with the `coltondyck` Codex marketplace pin and tells you to run `codex plugin marketplace upgrade coltondyck` then `codex plugin add vibe-cognition@coltondyck` when a newer version exists; and any extra env you add to the `vibe-cognition` MCP entry (for example `VIBE_MODEL_MID`) survives the hook's re-registration on plugin updates.
+
 Not yet on Codex: background curation (`/vibe-curate`) and backfill — they drive Claude Code's Agent tool. Record on Codex, curate from Claude Code.
 
 Uninstall:
@@ -696,6 +698,7 @@ codex mcp remove vibe-cognition
 codex plugin remove vibe-cognition@coltondyck
 codex plugin marketplace remove coltondyck
 rm -rf ~/.codex/plugins/data/vibe-cognition-coltondyck/
+rm ~/.codex/agents/vibe-plan.toml
 ```
 
 Developers can install the current `main` instead via this repo's own dev marketplace: `codex plugin marketplace add Haagndaazer/vibe-cognition` then `codex plugin add vibe-cognition@vibe-cognition-dev` (data dir `~/.codex/plugins/data/vibe-cognition-vibe-cognition-dev/`).

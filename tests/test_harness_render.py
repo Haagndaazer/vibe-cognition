@@ -138,3 +138,16 @@ def test_codex_cognition_skill_does_not_instruct_running_curate():
     text = (_REPO / "adapters" / "codex" / "skills" / "vibe-cognition" / "SKILL.md").read_text(encoding="utf-8")
     assert "run `$vibe-curate`" not in text and "run the `$vibe-curate`" not in text
     assert "not available on Codex yet" in text
+
+
+def test_codex_plan_role_toml_renders():
+    """The Plan agent ships to Codex as an installable custom role."""
+    toml_path = _REPO / "adapters" / "codex" / "agents" / "vibe-plan.toml"
+    text = toml_path.read_text(encoding="utf-8")
+    assert 'name = "vibe-plan"' in text
+    assert "description = " in text and "developer_instructions = " in text
+    assert "{{" not in text and "Claude Code" not in text and "Codex" in text
+    assert text.count("'" * 3) == 2
+    codex = harness.HARNESSES[harness.CODEX]
+    src = (_REPO / "agents-src" / "plan.md").read_text(encoding="utf-8")
+    assert rh.render_role_toml(src, "vibe-plan", codex) == text.replace("\r\n", "\n")
