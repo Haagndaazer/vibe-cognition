@@ -680,8 +680,8 @@ end a process tied to a session you're still using.
 Vibe Cognition also installs into OpenAI Codex CLI as a plugin (Codex 0.15x+; Windows needs Git for Windows so the hooks can run under Git Bash).
 
 ```bash
-codex plugin marketplace add Haagndaazer/vibe-cognition
-codex plugin add vibe-cognition@vibe-cognition-dev
+codex plugin marketplace add Haagndaazer/colton-claude-plugins
+codex plugin add vibe-cognition@coltondyck
 ```
 
 Then start Codex once inside any project and **restart it**. On that first session the plugin's session-start hook registers the MCP server with `codex mcp add` at user level (Codex plugins cannot bind a plugin-declared server to the project you opened, so the hook registers it the way a hand-configured server would be), builds the plugin venv, and tells you to restart. From the next session on you get the same experience as Claude Code: the MCP tools bound to the project Codex was opened in, the project digest at session start, the standing practices re-injected after `/compact`, and the `$vibe-cognition`, `$vibe-document`, `$vibe-workflow`, and `$vibe-dashboard` skills.
@@ -693,9 +693,11 @@ Uninstall:
 ```bash
 codex mcp remove vibe-cognition
 codex plugin remove vibe-cognition
-codex plugin marketplace remove vibe-cognition-dev
-rm -rf ~/.codex/plugins/data/vibe-cognition-vibe-cognition-dev/
+codex plugin marketplace remove coltondyck
+rm -rf ~/.codex/plugins/data/vibe-cognition-coltondyck/
 ```
+
+Developers can install the current `main` instead via this repo's own dev marketplace: `codex plugin marketplace add Haagndaazer/vibe-cognition` then `codex plugin add vibe-cognition@vibe-cognition-dev` (data dir `~/.codex/plugins/data/vibe-cognition-vibe-cognition-dev/`).
 
 ## Uninstall / Cleanup
 

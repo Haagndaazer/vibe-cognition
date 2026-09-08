@@ -1,4 +1,4 @@
-# Codex self-test brief — vibe-cognition plugin install (v0.35.0)
+# Codex self-test brief — vibe-cognition plugin install (v0.35.0, coltondyck marketplace)
 
 You are a Codex CLI agent running on Colton's Windows machine. Your job is to
 verify that the **vibe-cognition** plugin installs and works in Codex, and to
@@ -79,7 +79,7 @@ Get-ChildItem "$HOME\.codex\plugins\cache","$HOME\.codex\plugins\data" -Recurse 
 ```
 
 A leftover is any of: a `vibe-cognition` row in `codex.cmd mcp list`; a
-`vibe-cognition` plugin or a `vibe-cognition-dev` marketplace already listed;
+`vibe-cognition` plugin or a `coltondyck`/`vibe-cognition-dev` marketplace already listed;
 a `vibe` match inside `~/.codex/hooks.json`; `~/.codex/vibe-hooks` or
 `~/.codex/vibe-cognition-data` existing; any `vibe-*` skill folder; any
 `config.toml` line matching `mcp_servers.vibe-cognition`, `vibe-hooks`, or
@@ -93,13 +93,13 @@ it. Report back.
 ## Phase 1 — install
 
 ```powershell
-codex.cmd plugin marketplace add Haagndaazer/vibe-cognition
+codex.cmd plugin marketplace add Haagndaazer/colton-claude-plugins
 codex.cmd plugin marketplace list
-codex.cmd plugin add vibe-cognition@vibe-cognition-dev
+codex.cmd plugin add vibe-cognition@coltondyck
 codex.cmd plugin list
 ```
 
-Record: did the marketplace add succeed and list as `vibe-cognition-dev`? Did
+Record: did the marketplace add succeed and list as `coltondyck`? Did
 the plugin install? Then inspect the cache:
 
 ```powershell
@@ -131,8 +131,8 @@ When resumed in the new session, check and record:
 4. Check the data dir was created and the venv built:
    ```powershell
    Get-ChildItem "$HOME\.codex\plugins\data" -Directory | Select-Object -ExpandProperty Name
-   Get-ChildItem "$HOME\.codex\plugins\data\vibe-cognition-vibe-cognition-dev" -Force | Select-Object -ExpandProperty Name
-   Get-Content "$HOME\.codex\plugins\data\vibe-cognition-vibe-cognition-dev\codex-mcp.stamp"
+   Get-ChildItem "$HOME\.codex\plugins\data\vibe-cognition-coltondyck" -Force | Select-Object -ExpandProperty Name
+   Get-Content "$HOME\.codex\plugins\data\vibe-cognition-coltondyck\codex-mcp.stamp"
    ```
    PASS if `.venv`, `codex-mcp.stamp`, and `.uv-sync-stamp` (inside `.venv`)
    exist. If the venv is missing, the first hook run may have been building it
@@ -141,9 +141,9 @@ When resumed in the new session, check and record:
    no plugin-side log file in this mode; if a hook failed, run the wrapper by
    hand and paste the stderr:
    ```powershell
-   $root = (Get-ChildItem "$HOME\.codex\plugins\cache\vibe-cognition-dev\vibe-cognition" -Directory | Select-Object -First 1).FullName
+   $root = (Get-ChildItem "$HOME\.codex\plugins\cache\coltondyck\vibe-cognition" -Directory | Select-Object -First 1).FullName
    $env:CLAUDE_PLUGIN_ROOT = $root
-   $env:CLAUDE_PLUGIN_DATA = "$HOME\.codex\plugins\data\vibe-cognition-vibe-cognition-dev"
+   $env:CLAUDE_PLUGIN_DATA = "$HOME\.codex\plugins\data\vibe-cognition-coltondyck"
    cmd /c "$root\adapters\codex\hooks\session-start.cmd"
    ```
 
