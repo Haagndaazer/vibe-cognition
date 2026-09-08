@@ -2907,3 +2907,4 @@
 {"action": "add_edge", "data": {"from_id": "46e21bfeb488", "to_id": "bfe0cfadd2bf", "edge_type": "part_of", "timestamp": "2026-09-08T18:07:50.856318+00:00", "source": "deterministic", "reason": null}}
 {"action": "add_edge", "data": {"from_id": "46e21bfeb488", "to_id": "4e588dd707e3", "edge_type": "part_of", "timestamp": "2026-09-08T18:07:50.856717+00:00", "source": "deterministic", "reason": null}}
 {"action": "add_edge", "data": {"from_id": "46e21bfeb488", "to_id": "8c6fba54355f", "edge_type": "part_of", "timestamp": "2026-09-08T18:07:50.856892+00:00", "source": "deterministic", "reason": null}}
+{"action": "update_node", "data": {"id": "46e21bfeb488", "curated_by_skill_at": "2026-09-08T18:11:53.845736+00:00"}}
