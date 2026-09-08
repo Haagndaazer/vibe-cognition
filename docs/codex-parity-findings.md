@@ -287,6 +287,41 @@ weeks vs the Hermes estimate of 2–3, because D2/D3/D4/D7 are near-identical
 rather than adapter-shaped. Critical path: C1a → C1b → (C1c ∥ C1d) → Gate C1;
 C1c additionally needs H0a and H0d, same as H1c did.
 
+## 7a. Live results — manual rig, 2026-09-08 (codex-cli 0.153.4, Windows)
+
+Rulings 1–3 landed the same day (graph decisions `faa1ffbf0ff6`,
+`004232949d8c`; Hermes shelved indefinitely; role files go to
+`~/.codex/agents/` if used). Colton ran the non-plugin rig (workflow
+`13d7fc563103`, option B from §4) from `linglang-teacher` with a second
+session in `vibe-memory`. Confirmed live, upgrading these rows from
+**[doc]/[src]** to **[live]**:
+
+| Duty | Result |
+|------|--------|
+| D1 (project root, option B) | `get_status.repo_path` equals the launch directory once the server is started with `uv run --project` (not `--directory`, which chdirs into the plugin folder — round-1 failure). |
+| D2 | Prime digest present before the first response (onboarding, constraints, tasks, activity, workflows, doc count). |
+| D3 | After `/compact`, "Standing Practices (re-injected after compaction)" plus the digest came back. |
+| D4 | Codex restated all four standing practices from the MCP `instructions`. |
+| D7 | `$vibe-cognition` loaded the full `SKILL.md`. |
+| one server per session | Two Codex sessions → two `vibe_cognition.server` dev processes. |
+| startup | Handshake yield 2.27 s after import start (server breadcrumbs); Codex itself exposes no connect-time figure. Model load finished at 12.5 s in the background, no tool blocked. |
+
+Two rig defects found and fixed in round 1, both adapter lessons: (a) Codex
+runs hook commands through `cmd.exe /C` and mangles inline `set "VAR=..."`
+quoting, so `CLAUDE_PLUGIN_ROOT` was unset and both scripts aborted with exit
+1 under `set -u` — the shipped adapter must use a bare-path wrapper or
+`commandWindows` pointing at one executable, never inline env assignments;
+(b) bare `bash` under `cmd.exe` is the WSL launcher in System32, not Git Bash
+— call Git Bash by full path (discoveries `99dce6330449`, `71dd500a2bd4`).
+
+Still open for the plugin-form spike (needs the Codex manifest added):
+plugin cwd/`PLUGIN_ROOT` behavior, `_meta.threadId` on ordinary tool calls
+(decides A2 vs A1-with-retry), hook↔server ordering on a scripted first turn,
+and the live startup-timeout value. Minor observation to fold into the leak
+task: under Codex the stale-server sweep reported `server_count: 0` despite
+`own_pid` being set — Codex's sandbox denied `Win32_Process` enumeration to
+the agent, and the sweep's cmdline method may be similarly blind there.
+
 ## 8. Decisions needed from Colton
 
 1. Approve the re-order: Codex is harness #2, Hermes #3, Phase 0 unchanged.
