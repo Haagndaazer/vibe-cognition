@@ -1260,3 +1260,39 @@ def test_rejects_unknown_flag(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as exc:
         main(argv=["--bogus"])
     assert exc.value.code == 2
+
+
+def test_main_harness_note_prepended_first(tmp_path, monkeypatch):
+    """main(): VIBE_HARNESS_NOTE (WP-C1b, set by the Codex session-start wrapper
+    after it registers the MCP server) surfaces before every other note and the
+    prime body -- it carries the one-time "restart Codex" instruction.
+
+    Fails-before: prime.py never read VIBE_HARNESS_NOTE, so the text was absent.
+    """
+    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("VIBE_HARNESS_NOTE", "vibe-cognition registered its MCP server with Codex")
+    monkeypatch.setenv("VIBE_MIGRATION_NOTE", "Removed stale MCP entry: vibe-cognition")
+
+    buf = io.StringIO()
+    monkeypatch.setattr("sys.stdout", buf)
+    main(argv=[])
+
+    data = json.loads(buf.getvalue())
+    ctx = data["hookSpecificOutput"]["additionalContext"]
+    harness_pos = ctx.index("registered its MCP server with Codex")
+    migrate_pos = ctx.index("Removed stale MCP entry")
+    onboard_pos = ctx.index(ONBOARDING_BLOCK[:30])
+    assert harness_pos < migrate_pos < onboard_pos
+
+
+def test_main_no_harness_note_when_env_absent(tmp_path, monkeypatch):
+    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.delenv("VIBE_HARNESS_NOTE", raising=False)
+    monkeypatch.delenv("VIBE_MIGRATION_NOTE", raising=False)
+
+    buf = io.StringIO()
+    monkeypatch.setattr("sys.stdout", buf)
+    main(argv=[])
+
+    ctx = json.loads(buf.getvalue())["hookSpecificOutput"]["additionalContext"]
+    assert "registered its MCP server" not in ctx

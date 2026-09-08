@@ -1,0 +1,21 @@
+{
+  "name": "vibe-cognition-dev",
+  "interface": {
+    "displayName": "Vibe Cognition (dev marketplace)"
+  },
+  "plugins": [
+    {
+      "name": "vibe-cognition",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/Haagndaazer/vibe-cognition",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Other"
+    }
+  ]
+}

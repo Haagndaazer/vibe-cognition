@@ -1,0 +1,31 @@
+{
+  "description": "Vibe Cognition — Codex hooks (MCP registration + prime injection at session start, standing-practices reinjection after compaction)",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/adapters/codex/hooks/session-start.sh\"",
+            "commandWindows": "${CLAUDE_PLUGIN_ROOT}\\adapters\\codex\\hooks\\session-start.cmd",
+            "timeout": 600,
+            "additionalContextLimit": 20000
+          }
+        ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/adapters/codex/hooks/reinject.sh\"",
+            "commandWindows": "${CLAUDE_PLUGIN_ROOT}\\adapters\\codex\\hooks\\reinject.cmd",
+            "timeout": 30,
+            "additionalContextLimit": 20000
+          }
+        ]
+      }
+    ]
+  }
+}

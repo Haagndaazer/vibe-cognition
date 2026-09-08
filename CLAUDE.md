@@ -10,12 +10,12 @@ The SessionStart hook (`hooks/session-start.sh`) syncs deps and injects context.
 
 ## Plugin Release Procedure
 
-The marketplace lives in a separate repo — `Haagndaazer/colton-claude-plugins` (marketplace name `coltondyck`), maintained by Loki. This repo ships **code only** and does NOT carry its own `marketplace.json` (a second file named `coltondyck` would collide, since Claude Code keys marketplaces by name).
+The marketplace lives in a separate repo — `Haagndaazer/colton-claude-plugins` (marketplace name `coltondyck`), maintained by Loki. This repo ships **code only** and does NOT carry its own Claude Code `marketplace.json` (a second file named `coltondyck` would collide, since Claude Code keys marketplaces by name). It DOES carry a **Codex** marketplace at `.agents/plugins/marketplace.json` (name `vibe-cognition-dev`, source = this repo on GitHub, `ref: main`) — a different system with a different name, so no collision; it is the install path for Codex until Loki mirrors the entry into `colton-claude-plugins` at `.agents/plugins/marketplace.json` with a sha pin.
 
 1. Make your code changes.
-2. If the change is user-facing, bump the version in both `pyproject.toml` and `.claude-plugin/plugin.json` (the plugin system reads version from `plugin.json`).
+2. If the change is user-facing, bump the version in `pyproject.toml`, `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json` (each plugin system reads version from its own manifest; `tests/test_codex_plugin.py` fails if the three disagree), then `uv lock`.
 3. Commit and push to `main` (this is the "code commit").
 4. Ping Loki with the code-commit SHA and the version.
-5. Loki re-pins that SHA in `colton-claude-plugins`'s `marketplace.json` and pushes, so installs/updates pick it up.
+5. Loki re-pins that SHA in `colton-claude-plugins`'s `marketplace.json` (Claude Code) and, once the Codex entry exists there, in its `.agents/plugins/marketplace.json` (Codex), and pushes, so installs/updates pick it up.
 
 The marketplace `sha` always points to the code commit on this repo's `main`.

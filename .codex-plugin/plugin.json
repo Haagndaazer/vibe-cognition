@@ -1,0 +1,20 @@
+{
+  "name": "vibe-cognition",
+  "version": "0.35.0",
+  "description": "Project knowledge graph — captures decisions, failures, discoveries, patterns, and reasoning chains. Fully local, no API keys.",
+  "keywords": ["knowledge-graph", "cognition", "project-memory", "mcp", "local"],
+  "skills": [
+    "./skills/vibe-cognition",
+    "./skills/vibe-document",
+    "./skills/vibe-workflow",
+    "./skills/vibe-dashboard"
+  ],
+  "hooks": ["./adapters/codex/hooks.json"],
+  "interface": {
+    "displayName": "Vibe Cognition",
+    "shortDescription": "Durable project memory: decisions, failures, discoveries, tasks, workflows.",
+    "longDescription": "Maintains a per-project knowledge graph as an MCP server. On Codex the plugin's session-start hook registers the server with `codex mcp add` (restart Codex once after install), injects a project digest at session start, and re-injects the standing practices after compaction.",
+    "developerName": "Colton Dyck",
+    "category": "Other"
+  }
+}

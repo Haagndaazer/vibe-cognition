@@ -53,6 +53,7 @@ search work immediately, before that.
 - [Working as a Team](#working-as-a-team)
 - [Configuration](#configuration)
 - [Troubleshooting](#troubleshooting)
+- [Codex CLI](#codex-cli)
 - [Uninstall / Cleanup](#uninstall--cleanup)
 - [Development](#development)
 
@@ -673,6 +674,28 @@ processes with no corresponding open Claude Code window, and end them manually. 
 end a process tied to a session you're still using.
 
 **General** — the chromadb vector store (see `chromadb_path` in `get_status`) is always safe to delete. It is fully regenerated on the next server startup. A leftover `.cognition/chromadb/` inside a project is unused since v0.32.0 and equally safe to delete.
+
+## Codex CLI
+
+Vibe Cognition also installs into OpenAI Codex CLI as a plugin (Codex 0.15x+; Windows needs Git for Windows so the hooks can run under Git Bash).
+
+```bash
+codex plugin marketplace add Haagndaazer/vibe-cognition
+codex plugin add vibe-cognition@vibe-cognition-dev
+```
+
+Then start Codex once inside any project and **restart it**. On that first session the plugin's session-start hook registers the MCP server with `codex mcp add` at user level (Codex plugins cannot bind a plugin-declared server to the project you opened, so the hook registers it the way a hand-configured server would be), builds the plugin venv, and tells you to restart. From the next session on you get the same experience as Claude Code: the MCP tools bound to the project Codex was opened in, the project digest at session start, the standing practices re-injected after `/compact`, and the `$vibe-cognition`, `$vibe-document`, `$vibe-workflow`, and `$vibe-dashboard` skills.
+
+Not yet on Codex: background curation (`/vibe-curate`) and backfill — they drive Claude Code's Agent tool. Record on Codex, curate from Claude Code.
+
+Uninstall:
+
+```bash
+codex mcp remove vibe-cognition
+codex plugin remove vibe-cognition
+codex plugin marketplace remove vibe-cognition-dev
+rm -rf ~/.codex/plugins/data/vibe-cognition-vibe-cognition-dev/
+```
 
 ## Uninstall / Cleanup
 

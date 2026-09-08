@@ -196,3 +196,43 @@ def test_main_never_raises_when_prime_generation_fails(tmp_path, monkeypatch):
     data = json.loads(buf.getvalue())
     ctx = data["hookSpecificOutput"]["additionalContext"]
     assert SERVER_INSTRUCTIONS in ctx
+
+
+# ── WP-C1b: Codex harness branch of the standing practices ───────────────────
+
+
+def _reload_instructions():
+    import importlib
+
+    import vibe_cognition.instructions as mod
+
+    return importlib.reload(mod)
+
+
+def test_codex_harness_swaps_curate_cta(monkeypatch):
+    """Under VIBE_HARNESS=codex the curation sentence must stop telling the
+    model to run /vibe-curate (Codex has no Agent tool to launch the
+    orchestrator) and must say curation runs from Claude Code for now; the
+    rest of the four practices is unchanged and still ASCII-only.
+
+    Fails-before: the constant had a single, Claude-only wording."""
+    monkeypatch.setenv("VIBE_HARNESS", "codex")
+    try:
+        mod = _reload_instructions()
+        text = mod.SERVER_INSTRUCTIONS
+        assert "run the /vibe-curate skill" not in text
+        assert "not available on Codex yet" in text
+        assert "$vibe-cognition" in text
+        assert "4. VALIDATE SUGGESTIONS AGAINST HISTORY" in text
+        text.encode("ascii")
+    finally:
+        monkeypatch.delenv("VIBE_HARNESS", raising=False)
+        mod = _reload_instructions()
+        assert "run the /vibe-curate skill" in mod.SERVER_INSTRUCTIONS
+
+
+def test_default_harness_keeps_claude_curate_cta(monkeypatch):
+    monkeypatch.delenv("VIBE_HARNESS", raising=False)
+    mod = _reload_instructions()
+    assert "run the /vibe-curate skill" in mod.SERVER_INSTRUCTIONS
+    assert "not available on Codex" not in mod.SERVER_INSTRUCTIONS

@@ -322,6 +322,14 @@ task: under Codex the stale-server sweep reported `server_count: 0` despite
 `own_pid` being set — Codex's sandbox denied `Win32_Process` enumeration to
 the agent, and the sweep's cmdline method may be similarly blind there.
 
+## 7b. Built: WP-C1b
+
+See `docs/wp-codex-plugin-plan.md` (rev 2, peer-reviewed). Shipped as v0.35.0:
+`.codex-plugin/plugin.json`, `adapters/codex/hooks.json` + wrappers,
+`.agents/plugins/marketplace.json`, `VIBE_HARNESS_NOTE` in prime, a Codex
+branch of the standing practices. Design: B-hook — the plugin ships skills +
+hooks; the session-start hook registers the MCP server with `codex mcp add`.
+
 ## 8. Decisions needed from Colton
 
 1. Approve the re-order: Codex is harness #2, Hermes #3, Phase 0 unchanged.

@@ -1022,6 +1022,7 @@ def main(argv: list[str] | None = None):
     )
     parser.parse_args(argv)  # WP-13 (4aaef22e25ea): --help correctness only, no new flags
 
+    harness_note = os.environ.get("VIBE_HARNESS_NOTE", "").strip()
     note = os.environ.get("VIBE_MIGRATION_NOTE", "").strip()
     update_note = os.environ.get("VIBE_UPDATE_NOTE", "").strip()
     whatsnew_note = os.environ.get("VIBE_WHATSNEW_NOTE", "").strip()
@@ -1029,6 +1030,8 @@ def main(argv: list[str] | None = None):
     cognition_dir = repo_path / ".cognition"
 
     sections: list[str] = []
+    if harness_note:
+        sections.append(harness_note)
     if note:
         sections.append(note)
     if update_note:
