@@ -692,7 +692,7 @@ Uninstall:
 
 ```bash
 codex mcp remove vibe-cognition
-codex plugin remove vibe-cognition
+codex plugin remove vibe-cognition@coltondyck
 codex plugin marketplace remove coltondyck
 rm -rf ~/.codex/plugins/data/vibe-cognition-coltondyck/
 ```
