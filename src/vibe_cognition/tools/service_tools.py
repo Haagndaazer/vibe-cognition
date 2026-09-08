@@ -5,6 +5,7 @@ from typing import Any
 
 from fastmcp import Context
 
+from .. import harness
 from .dispatch import dispatch_tool
 from .project_registry import LoadedProjects
 from .utils import get_lifespan
@@ -252,9 +253,15 @@ def register_service_tools(mcp) -> None:
         if registry is not None:
             result["loaded_foreign_projects"] = registry.foreign_count()
 
-        # Curation runs via a background curate-orchestrator agent: only deterministic
-        # part_of edges are automatic; semantic edges are created by that agent,
-        # launched via the /vibe-curate skill — never by the main instance directly.
-        result["curation"] = "background curate-orchestrator agent, launched via /vibe-curate"
+        hz = harness.current()
+        result["harness"] = hz.status_block()
+        if hz.curation_available:
+            result["curation"] = (
+                f"background curate-orchestrator agent, launched via {hz.skill_invoke('vibe-curate')}"
+            )
+        else:
+            result["curation"] = (
+                f"not available on {hz.display_name} yet; record here, curate from Claude Code"
+            )
 
         return result

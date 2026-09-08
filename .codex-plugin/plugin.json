@@ -4,10 +4,10 @@
   "description": "Project knowledge graph — captures decisions, failures, discoveries, patterns, and reasoning chains. Fully local, no API keys.",
   "keywords": ["knowledge-graph", "cognition", "project-memory", "mcp", "local"],
   "skills": [
-    "./skills/vibe-cognition",
-    "./skills/vibe-document",
-    "./skills/vibe-workflow",
-    "./skills/vibe-dashboard"
+    "./adapters/codex/skills/vibe-cognition",
+    "./adapters/codex/skills/vibe-document",
+    "./adapters/codex/skills/vibe-workflow",
+    "./adapters/codex/skills/vibe-dashboard"
   ],
   "hooks": ["./adapters/codex/hooks.json"],
   "interface": {

@@ -1,0 +1,498 @@
+{
+  "harnesses": [
+    "claude-code",
+    "codex"
+  ],
+  "items": {
+    "tool:cognition_add_edge": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_add_edges_batch": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_add_task": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_clear_env_facts": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_dashboard": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_delete_env_fact": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_get_chain": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_get_document": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_get_edgeless_nodes": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_get_history": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_get_incident_resolution": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_get_neighbors": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_get_node": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_get_person": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_get_superseded_chain": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_get_uncurated_nodes": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_get_workflow": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; the Gate C1 report shows a successful call but the recorded episode does not name it \u2014 re-cite after the next field gate"
+      }
+    },
+    "tool:cognition_list_env_facts": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_list_people": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_list_projects": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_list_tasks": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_load_project": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_mark_curated": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_readme": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_record": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "full",
+        "evidence": "gate:6c3c15e3a0a8"
+      }
+    },
+    "tool:cognition_register_person": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_reload": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_remove_edge": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_remove_node": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_search": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "full",
+        "evidence": "gate:6c3c15e3a0a8"
+      }
+    },
+    "tool:cognition_set_env_fact": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_store_document": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_unload_project": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_update_node": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_update_person": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_update_task": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:get_status": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "full",
+        "evidence": "gate:6c3c15e3a0a8"
+      }
+    },
+    "skill:vibe-backfill": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "waived",
+        "note": "drives the Agent tool; Codex port is WP-P2 (flat orchestrator, adaptive fan-out)"
+      }
+    },
+    "skill:vibe-cognition": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_codex_blocks_change_the_codex_output"
+      }
+    },
+    "skill:vibe-curate": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "waived",
+        "note": "drives the Agent tool; Codex port is WP-P2 (flat orchestrator, adaptive fan-out)"
+      }
+    },
+    "skill:vibe-dashboard": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "rendered and installed; not yet exercised live on Codex"
+      }
+    },
+    "skill:vibe-document": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "rendered and installed; not yet exercised live on Codex"
+      }
+    },
+    "skill:vibe-workflow": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "rendered and installed; not yet exercised live on Codex"
+      }
+    },
+    "hook:SessionStart": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_hooks_shell.py::test_migrate_note_is_passed_through_to_prime_invocation"
+      },
+      "codex": {
+        "status": "full",
+        "evidence": "tests/test_codex_hooks_shell.py::test_first_run_creates_data_dir_registers_server_and_notes_restart"
+      }
+    },
+    "agent:curate-cluster-analyzer": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "waived",
+        "note": "curation pipeline on Codex is WP-P2; containment is the server-side token (WP-P1)"
+      }
+    },
+    "agent:curate-conflict-analyzer": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "waived",
+        "note": "curation pipeline on Codex is WP-P2; containment is the server-side token (WP-P1)"
+      }
+    },
+    "agent:curate-edge-analyzer": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "waived",
+        "note": "curation pipeline on Codex is WP-P2; containment is the server-side token (WP-P1)"
+      }
+    },
+    "agent:curate-orchestrator": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "waived",
+        "note": "curation pipeline on Codex is WP-P2; containment is the server-side token (WP-P1)"
+      }
+    },
+    "agent:plan": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "waived",
+        "note": "ships as an installed Codex role in WP-P3"
+      }
+    }
+  }
+}

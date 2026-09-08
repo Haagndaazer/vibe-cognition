@@ -26,10 +26,12 @@ lives entirely behind the embedding_generator, not the graph/storage layer.
 """
 
 import json
-import os
 import sys
 
+from . import harness
 from .config import Settings, resolve_repo_path_env
+
+_HZ = harness.current()
 
 # Surfaced to the agent every session as "MCP Server Instructions" (server.py passes
 # this to FastMCP) AND re-injected after a compact (see main()). ASCII-only on purpose.
@@ -72,16 +74,16 @@ SERVER_INSTRUCTIONS = (
     "reasons may still hold) from genuine oversights.\n"
     "\n"
     + (
-        "After recording, note that background curation (the /vibe-curate "
-        "skill, which adds semantic edges) is not available on Codex yet -- "
-        "it runs from Claude Code for now; only deterministic part_of edges "
-        "(from shared references) are automatic. Never author semantic edges "
-        "yourself. For full guidance, use the $vibe-cognition skill.\n"
-        if os.environ.get("VIBE_HARNESS", "").strip().lower() == "codex"
-        else "After recording, run the /vibe-curate skill to launch the background "
+        f"After recording, run the {_HZ.skill_invoke('vibe-curate')} skill to launch the background "
         "curator, which adds semantic edges; only deterministic part_of edges "
         "(from shared references) are automatic. Never author semantic edges "
-        "yourself. For full guidance, use the /vibe-cognition skill.\n"
+        f"yourself. For full guidance, use the {_HZ.skill_invoke('vibe-cognition')} skill.\n"
+        if _HZ.curation_available
+        else "After recording, note that background curation (the /vibe-curate "
+        f"skill, which adds semantic edges) is not available on {_HZ.display_name} yet -- "
+        "it runs from Claude Code for now; only deterministic part_of edges "
+        "(from shared references) are automatic. Never author semantic edges "
+        f"yourself. For full guidance, use the {_HZ.skill_invoke('vibe-cognition')} skill.\n"
     )
     + "\n"
     "Every session start, and again after a compaction, this same channel "

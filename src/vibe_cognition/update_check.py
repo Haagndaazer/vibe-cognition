@@ -41,6 +41,8 @@ import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
+from . import harness
+
 STAMP_FILENAME = "update-check.json"
 REQUEST_TIMEOUT_SECONDS = 3.0
 NETWORK_PHASE_WALL_CLOCK_SECONDS = 8.0
@@ -195,9 +197,7 @@ def _derive_marketplace_name(plugin_root: str) -> str:
 
 
 def _format_cta(marketplace: str) -> str:
-    if marketplace:
-        return f"/plugin update {_PLUGIN_NAME}@{marketplace}"
-    return f"/plugin update {_PLUGIN_NAME}"
+    return harness.current().update_cta(marketplace or None)
 
 
 def _write_stamp(plugin_data: str, remote_version: str | None) -> None:

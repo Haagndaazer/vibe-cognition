@@ -9,6 +9,7 @@ can't catch a wrong "How Created" label; that needs manual prose review.
 import asyncio
 from pathlib import Path
 
+import pytest
 from fastmcp import FastMCP
 
 from vibe_cognition.cognition.models import CognitionEdgeType, CognitionNodeType
@@ -16,6 +17,8 @@ from vibe_cognition.tools import register_all_tools
 
 _REPO = Path(__file__).resolve().parent.parent
 _SKILL = _REPO / "skills" / "vibe-cognition" / "SKILL.md"
+_CODEX_SKILL = _REPO / "adapters" / "codex" / "skills" / "vibe-cognition" / "SKILL.md"
+_RENDERED_SKILLS = [_SKILL, _CODEX_SKILL]
 _README = _REPO / "README.md"
 _CURATE_SKILL = _REPO / "skills" / "vibe-curate" / "SKILL.md"
 _EDGE_ANALYZER = _REPO / "agents" / "curate-edge-analyzer.md"
@@ -29,11 +32,13 @@ def _registered_tool_names() -> set[str]:
     return {t.name for t in tools}
 
 
-def test_skill_tool_table_documents_every_registered_tool():
+@pytest.mark.parametrize("skill_path", _RENDERED_SKILLS, ids=["claude-code", "codex"])
+def test_skill_tool_table_documents_every_registered_tool(skill_path):
     """Every registered MCP tool name must appear in the vibe-cognition SKILL.md
-    (anywhere in the file — main table or the service/dashboard row). Fails if a
-    future tool is added without documenting it (exactly the S-3 miss)."""
-    skill_text = _SKILL.read_text(encoding="utf-8")
+    (anywhere in the file — main table or the service/dashboard row) for EVERY
+    harness render. Fails if a future tool is added without documenting it
+    (exactly the S-3 miss) or if a harness block drops a tool from one render."""
+    skill_text = skill_path.read_text(encoding="utf-8")
     registered = _registered_tool_names()
     assert registered, "no tools enumerated — register_all_tools/list_tools changed?"
     missing = sorted(name for name in registered if name not in skill_text)
