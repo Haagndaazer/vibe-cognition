@@ -255,6 +255,11 @@ def register_service_tools(mcp) -> None:
 
         hz = harness.current()
         result["harness"] = hz.status_block()
+        sessions = lc.get("curation_sessions") or {}
+        result["curation_sessions"] = {
+            "started": len(sessions),
+            "writes": sum(int(s.get("writes", 0)) for s in sessions.values()),
+        }
         if hz.curation_available:
             result["curation"] = (
                 f"background curate-orchestrator agent, launched via {hz.skill_invoke('vibe-curate')}"

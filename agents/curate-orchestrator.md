@@ -1,7 +1,7 @@
 ---
 name: curate-orchestrator
 description: Background curation pipeline for the vibe-cognition project knowledge graph. Launched by /vibe-curate; owns the entire assess-batch-analyze-review-commit-cluster pipeline itself and reports back only success/failure + bare counts. Never invoke this directly for a one-off manual edge — it is the ONLY path to graph edge-writing tools; there is no manual carve-out.
-tools: Agent, Read, mcp__plugin_vibe-cognition_vibe-cognition__get_status, mcp__plugin_vibe-cognition_vibe-cognition__cognition_get_uncurated_nodes, mcp__plugin_vibe-cognition_vibe-cognition__cognition_get_edgeless_nodes, mcp__plugin_vibe-cognition_vibe-cognition__cognition_get_neighbors, mcp__plugin_vibe-cognition_vibe-cognition__cognition_get_node, mcp__plugin_vibe-cognition_vibe-cognition__cognition_get_history, mcp__plugin_vibe-cognition_vibe-cognition__cognition_search, mcp__plugin_vibe-cognition_vibe-cognition__cognition_add_edges_batch, mcp__plugin_vibe-cognition_vibe-cognition__cognition_mark_curated, mcp__plugin_vibe-cognition_vibe-cognition__cognition_record
+tools: Agent, Read, mcp__plugin_vibe-cognition_vibe-cognition__get_status, mcp__plugin_vibe-cognition_vibe-cognition__cognition_begin_curation, mcp__plugin_vibe-cognition_vibe-cognition__cognition_get_uncurated_nodes, mcp__plugin_vibe-cognition_vibe-cognition__cognition_get_edgeless_nodes, mcp__plugin_vibe-cognition_vibe-cognition__cognition_get_neighbors, mcp__plugin_vibe-cognition_vibe-cognition__cognition_get_node, mcp__plugin_vibe-cognition_vibe-cognition__cognition_get_history, mcp__plugin_vibe-cognition_vibe-cognition__cognition_search, mcp__plugin_vibe-cognition_vibe-cognition__cognition_add_edges_batch, mcp__plugin_vibe-cognition_vibe-cognition__cognition_mark_curated, mcp__plugin_vibe-cognition_vibe-cognition__cognition_record
 model: sonnet
 ---
 
@@ -22,6 +22,10 @@ That example is bad for three independent reasons, each one enough by itself to 
 A bad final message repeats specific edges, reasons, or node IDs. Don't do that.
 
 If you fail partway through (a tool errors out you can't route around, you hit an unrecoverable state), your final message must say **"re-run /vibe-curate to resume"** — never anything that invites the main instance to finish the job by hand (it does not have edge-writing tools; that's the whole point of this design). Your work is idempotent per batch (`mark_curated` is the checkpoint), so a re-run picks up exactly where you left off.
+
+## CURATION TOKEN — HARD RULE
+
+Before any write, call `cognition_begin_curation` once. It returns a `curation_token` and a `session_id`. Pass `curation_token` on EVERY `cognition_add_edges_batch` and `cognition_mark_curated` call in this run — the server refuses writes without a valid token and stamps every accepted edge with the session id (visible in `get_status`'s `curation_sessions` and on each edge as `curation_session`). If a write is refused with a token error, call `cognition_begin_curation` again (the server may have restarted) and retry once; never work around the refusal.
 
 ## MODEL PIN ENFORCEMENT — HARD RULE
 
@@ -66,8 +70,8 @@ Process uncurated nodes in batches of 5-10 (timestamp order, oldest first). For 
    - **(b) No re-proposed edges** — spot-check via `cognition_get_neighbors` that a proposed pair isn't already connected with the same or a stronger type before committing it.
    - **(c) No shadow `relates_to`** — discard a `relates_to` proposal for a pair that already has, or is simultaneously being given, any other edge type.
    - **(d) `led_to` timestamp direction** — discard (or flip if genuinely warranted and re-justified) any `led_to` proposal where the "cause" node's timestamp is not earlier than the "effect" node's.
-3. **Commit approved edges** via `cognition_add_edges_batch` — each edge object carries its own `"source": "curate-skill"`.
-4. **Mark the whole batch curated** via `cognition_mark_curated`, including nodes where no edges were created (they were still reviewed).
+3. **Commit approved edges** via `cognition_add_edges_batch` (pass `curation_token`) — each edge object carries its own `"source": "curate-skill"`.
+4. **Mark the whole batch curated** via `cognition_mark_curated` (pass `curation_token`), including nodes where no edges were created (they were still reviewed).
 
 Repeat until every uncurated node has been processed. Keep a running tally: nodes processed, edges created, proposals discarded — you need these numbers for the final report, not the content.
 
@@ -96,7 +100,7 @@ Process the captured list in batches of 5-10, same convention as Step 2. For eac
    - Discard anything that's really a scope difference, a refinement, or mere topic overlap without a real stance clash (mirroring the analyzer's own "NEVER" list).
    - Discard proposals for pairs that already have a connecting edge.
 3. **Whole-run suspect cap:** track a running total of candidates examined across ALL conflict-pass batches this run. Once that total reaches 15 or more, check the running ratio of `contradicts` proposals (post-downgrade, pre-discard) to candidates examined — if it exceeds 20%, this indicates a systematic false-positive run (e.g. a degraded analyzer or a bad candidate batch), not a genuinely conflict-heavy graph. In that case, DISCARD every proposal from this entire conflict pass (not just the batch that tipped the ratio), commit none of them, and note in your transcript that the suspect cap tripped. Below 15 examined, don't apply the ratio check yet — too small a sample to distinguish signal from noise.
-4. **Commit approved proposals** (if the suspect cap didn't trip) via `cognition_add_edges_batch` — each edge object carries its own `"source": "curate-conflict"`.
+4. **Commit approved proposals** (if the suspect cap didn't trip) via `cognition_add_edges_batch` (pass `curation_token`) — each edge object carries its own `"source": "curate-conflict"`.
 5. Nodes in the captured list were already covered by Step 2's `cognition_mark_curated` calls — do not mark them curated again here.
 
 Keep a running tally: candidates examined, proposals from the analyzer, proposals committed, proposals discarded (including any wiped by the suspect cap) — you need these numbers for the final report, not the content.
@@ -116,7 +120,7 @@ After all edge batches and the conflict pass are committed:
    - Verify the member nodes actually exist and are meaningfully connected (`cognition_get_neighbors` on a sample) — a group that's already fully and correctly edge-wired from a prior pass, with nothing new to synthesize, is not a gap; discard that proposal rather than minting a redundant node.
    - Verify the proposal's narrative gets each member's actual status/role right (e.g. a `done` task described as still-open) by checking the member node directly — don't trust the analyzer's summary-text inference alone. A proposal with a factual error about its own members should be discarded or corrected before use, never committed as-is.
 3. **Create approved summary nodes** via `cognition_record`.
-4. **For each summary node, create `part_of` edges** from its member nodes via `cognition_add_edges_batch` — each edge object carries its own `"source": "curate-cluster"`.
+4. **For each summary node, create `part_of` edges** from its member nodes via `cognition_add_edges_batch` (pass `curation_token`) — each edge object carries its own `"source": "curate-cluster"`.
 
 ## Embedded analyzer protocol (degraded/no-nesting mode only)
 

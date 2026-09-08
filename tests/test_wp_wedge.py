@@ -242,6 +242,7 @@ class _BlockingFinder:
 
 _TOOL_ARGS: dict[str, dict] = {
     "cognition_record": {"node_type": "decision", "summary": "s", "detail": "d", "context": "c", "author": "a"},
+    "cognition_begin_curation": {},
     "cognition_store_document": {
         "title": "t", "document_text": "dt", "context": "c", "author": "a", "content_text": "x",
     },
@@ -307,7 +308,7 @@ def test_tool_dispatch_completes_while_an_unrelated_import_is_blocked_midflight(
     from unittest.mock import patch
 
     register_all_tools(mock_mcp)
-    assert len(mock_mcp.tools) == 37, "tool count drifted -- update _TOOL_ARGS to match"
+    assert len(mock_mcp.tools) == 38, "tool count drifted -- update _TOOL_ARGS to match"
     assert set(_TOOL_ARGS) == set(mock_mcp.tools), (
         f"missing args entries: {set(mock_mcp.tools) - set(_TOOL_ARGS)}"
     )

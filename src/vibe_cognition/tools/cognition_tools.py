@@ -3,12 +3,14 @@
 import json
 import logging
 import platform
+import secrets
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from fastmcp import Context
 
+from .. import harness
 from ..cognition import (
     DEFAULT_MACHINE_CAP,
     SENIORITY_LEVELS,
@@ -415,6 +417,38 @@ def _validate_supersedes_shape(
     return None
 
 
+_CURATION_TOKEN_KEY = "curation_sessions"
+
+
+def _curation_refusal() -> dict[str, Any]:
+    hz = harness.current()
+    if hz.curation_available:
+        how = (
+            f"run {hz.skill_invoke('vibe-curate')}, which launches the curate-orchestrator; "
+            "it calls cognition_begin_curation and passes curation_token on every write"
+        )
+    else:
+        how = (
+            f"background curation is not available on {hz.display_name} yet -- record only; "
+            "the curator runs from Claude Code"
+        )
+    return {
+        "error": (
+            "curation token required: edge writes and curation marks belong to the "
+            f"curate-orchestrator. To get edges created, {how}."
+        )
+    }
+
+
+def _require_curation(
+    lc: dict[str, Any], token: str | None
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    sessions = lc.setdefault(_CURATION_TOKEN_KEY, {})
+    if not token or token not in sessions:
+        return None, _curation_refusal()
+    return sessions[token], None
+
+
 def _add_edge_core(
     storage: CognitionStorage,
     from_id: str,
@@ -422,6 +456,7 @@ def _add_edge_core(
     edge_type: str,
     reason: str | None = None,
     source: str = "manual",
+    curation_session: str | None = None,
 ) -> dict[str, Any]:
     """Validate + create one edge (testable core of cognition_add_edge)."""
     try:
@@ -445,7 +480,7 @@ def _add_edge_core(
     timestamp = datetime.now(UTC).isoformat()
     edge = CognitionEdge(
         from_id=from_id, to_id=to_id, edge_type=et, timestamp=timestamp,
-        source=source, reason=reason,
+        source=source, reason=reason, curation_session=curation_session,
     )
     # C-5: add_edge returns False if a node vanished between the has_node check and
     # the write (cross-process delete race) — surface it, don't report created:True.
@@ -462,7 +497,9 @@ def _add_edge_core(
     }
 
 
-def _add_edges_batch_core(storage: CognitionStorage, edges: str) -> dict[str, Any]:
+def _add_edges_batch_core(
+    storage: CognitionStorage, edges: str, curation_session: str | None = None
+) -> dict[str, Any]:
     """Validate + create a batch of edges (testable core of cognition_add_edges_batch).
     Every malformed input is skip-and-reported — no element can crash the batch after
     earlier edges were already committed (T-3)."""
@@ -530,7 +567,7 @@ def _add_edges_batch_core(storage: CognitionStorage, edges: str) -> dict[str, An
         timestamp = datetime.now(UTC).isoformat()
         edge = CognitionEdge(
             from_id=fid, to_id=tid, edge_type=et, timestamp=timestamp, source=src,
-            reason=e.get("reason"),
+            reason=e.get("reason"), curation_session=curation_session,
         )
         if not storage.add_edge(edge):  # C-5: surface a failed add, don't count it created
             errors.append(f"[{i}] Not created: a node is missing ({fid} or {tid})")
@@ -4131,6 +4168,35 @@ def register_cognition_tools(mcp) -> None:
         }
 
     @dispatch_tool(mcp)
+    def cognition_begin_curation(ctx: Context) -> dict[str, Any]:
+        """Start a curation session and mint the token the edge-writing tools require.
+
+        Called ONLY by the curate-orchestrator at the start of a run. Returns
+        {"curation_token", "session_id", "uncurated"}. Pass curation_token on every
+        cognition_add_edge / cognition_add_edges_batch / cognition_mark_curated call;
+        each accepted edge is stamped with session_id (visible in
+        cognition_get_neighbors as ``curation_session`` and counted in get_status's
+        ``curation_sessions``). Tokens live for this server process only -- after a
+        server restart, begin a new session. This is friction plus audit, not an
+        access control: the server cannot see who is calling.
+        """
+        lc = get_lifespan(ctx)
+        storage: CognitionStorage = lc["cognition_storage"]
+        sessions = lc.setdefault(_CURATION_TOKEN_KEY, {})
+        token = secrets.token_urlsafe(18)
+        session_id = f"cur-{secrets.token_hex(6)}"
+        sessions[token] = {
+            "session_id": session_id,
+            "started_at": datetime.now(UTC).isoformat(),
+            "writes": 0,
+        }
+        return {
+            "curation_token": token,
+            "session_id": session_id,
+            "uncurated": storage.count_uncurated_nodes(),
+        }
+
+    @dispatch_tool(mcp)
     def cognition_add_edge(
         ctx: Context,
         from_id: str,
@@ -4138,17 +4204,18 @@ def register_cognition_tools(mcp) -> None:
         edge_type: str,
         reason: str | None = None,
         source: str = "manual",
+        curation_token: str | None = None,
     ) -> dict[str, Any]:
         """Create a directed edge between two existing cognition nodes.
 
         ONLY the curate-orchestrator agent (launched via /vibe-curate) may use this
         tool. If you are any other agent — including the main instance — do NOT
         call it; to get edges created, run /vibe-curate. No manual carve-out.
-        This restriction is a documented CONVENTION enforced by agent discipline,
-        not a server-side ACL — this tool has no caller-identity check, so it
-        cannot itself reject an out-of-convention caller. get_status's
-        edges_outside_curation count (backed by the edge_sources histogram) is
-        how a violation would be detected after the fact, not prevented up front.
+        Requires ``curation_token`` from cognition_begin_curation; without a valid
+        token the write is refused. This is friction plus audit, not an ACL (the
+        server cannot see who is calling): every accepted edge is stamped with the
+        curation session id, and get_status's edges_outside_curation count (backed by
+        the edge_sources histogram) still tracks legacy/manual sources.
 
         EDGE SEMANTICS — when to use each type (this table's audience is the
         curate-orchestrator, including its degraded no-nesting inline mode — not a
@@ -4216,24 +4283,36 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             {"created": true, ...} or {"error": "..."}
         """
-        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
-        return _add_edge_core(storage, from_id, to_id, edge_type, reason, source)
+        lc = get_lifespan(ctx)
+        session, refusal = _require_curation(lc, curation_token)
+        if refusal:
+            return refusal
+        assert session is not None
+        storage: CognitionStorage = lc["cognition_storage"]
+        result = _add_edge_core(
+            storage, from_id, to_id, edge_type, reason, source,
+            curation_session=session["session_id"],
+        )
+        if result.get("created"):
+            session["writes"] += 1
+        return result
 
     @dispatch_tool(mcp)
     def cognition_add_edges_batch(
         ctx: Context,
         edges: str,
+        curation_token: str | None = None,
     ) -> dict[str, Any]:
         """Create multiple edges in one call.
 
         ONLY the curate-orchestrator agent (launched via /vibe-curate) may use this
         tool. If you are any other agent — including the main instance — do NOT
         call it; to get edges created, run /vibe-curate. No manual carve-out.
-        This restriction is a documented CONVENTION enforced by agent discipline,
-        not a server-side ACL — this tool has no caller-identity check, so it
-        cannot itself reject an out-of-convention caller. get_status's
-        edges_outside_curation count (backed by the edge_sources histogram) is
-        how a violation would be detected after the fact, not prevented up front.
+        Requires ``curation_token`` from cognition_begin_curation; without a valid
+        token the write is refused. This is friction plus audit, not an ACL (the
+        server cannot see who is calling): every accepted edge is stamped with the
+        curation session id, and get_status's edges_outside_curation count (backed by
+        the edge_sources histogram) still tracks legacy/manual sources.
 
         Each edge in the JSON array needs from_id, to_id, and edge_type.
         Edges are validated individually — invalid ones are skipped and reported.
@@ -4293,8 +4372,15 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             {"created": N, "skipped": N, "errors": [...]}
         """
-        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
-        return _add_edges_batch_core(storage, edges)
+        lc = get_lifespan(ctx)
+        session, refusal = _require_curation(lc, curation_token)
+        if refusal:
+            return refusal
+        assert session is not None
+        storage: CognitionStorage = lc["cognition_storage"]
+        result = _add_edges_batch_core(storage, edges, curation_session=session["session_id"])
+        session["writes"] += int(result.get("created", 0) or 0)
+        return result
 
     @dispatch_tool(mcp)
     def cognition_get_edgeless_nodes(
@@ -4434,15 +4520,15 @@ def register_cognition_tools(mcp) -> None:
     def cognition_mark_curated(
         ctx: Context,
         node_ids: str,
+        curation_token: str | None = None,
     ) -> dict[str, Any]:
         """Mark nodes as reviewed by the curate skill.
 
         Called ONLY by the curate-orchestrator agent (launched via /vibe-curate)
         after reviewing a batch, even if no edges were created — marking nodes
         curated without analysis permanently skips them. If you are any other
-        agent — including the main instance — do NOT call it. This restriction
-        is a documented CONVENTION enforced by agent discipline, not a
-        server-side ACL — this tool has no caller-identity check.
+        agent — including the main instance — do NOT call it. Requires
+        ``curation_token`` from cognition_begin_curation; refused without it.
 
         Args:
             node_ids: Comma-separated node IDs to mark as curated
@@ -4450,7 +4536,12 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             {"marked": N, "not_found": [...]}
         """
-        storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
+        lc = get_lifespan(ctx)
+        session, refusal = _require_curation(lc, curation_token)
+        if refusal:
+            return refusal
+        assert session is not None
+        storage: CognitionStorage = lc["cognition_storage"]
         ids = [nid.strip() for nid in node_ids.split(",") if nid.strip()]
 
         marked = 0
@@ -4461,6 +4552,7 @@ def register_cognition_tools(mcp) -> None:
             else:
                 not_found.append(nid)
 
+        session["writes"] += marked
         return {"marked": marked, "not_found": not_found}
 
     @dispatch_tool(mcp)
@@ -4542,6 +4634,7 @@ def register_cognition_tools(mcp) -> None:
                     "id": tid,
                     "edge_type": edata.get("type"),
                     "reason": edata.get("reason"),
+                    "curation_session": edata.get("curation_session"),
                     "type": node_data.get("type") if node_data else None,
                     "summary": node_data.get("summary") if node_data else None,
                 })
@@ -4555,6 +4648,7 @@ def register_cognition_tools(mcp) -> None:
                     "id": sid,
                     "edge_type": edata.get("type"),
                     "reason": edata.get("reason"),
+                    "curation_session": edata.get("curation_session"),
                     "type": node_data.get("type") if node_data else None,
                     "summary": node_data.get("summary") if node_data else None,
                 })

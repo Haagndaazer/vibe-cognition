@@ -163,6 +163,7 @@ The nudge above tells you a new version exists; this is the other half — after
 | `cognition_get_workflow` | Find a workflow procedure by name/topic; resolves to the current HEAD version |
 | `cognition_get_incident_resolution` | Get an incident + its resolutions, follow-ons, and contradictions |
 | `cognition_get_history` | Browse nodes by context area, type, or recency |
+| `cognition_begin_curation` | Mint the curation-session token required by the edge-writing tools (curator only) |
 | `cognition_add_edge` | Create a single edge between two nodes |
 | `cognition_add_edges_batch` | Create multiple edges in one call (max 500) |
 | `cognition_get_edgeless_nodes` | Find nodes with no edges (need curation) |
@@ -303,7 +304,7 @@ The cognition graph captures project knowledge — decisions made, approaches th
 
 1. **Record nodes** during conversations via `cognition_record`
 2. **Deterministic matching** instantly creates `part_of` edges (and `relates_to` for document→episode) when nodes share references (commit hashes, issue/PR numbers, `doc:` keys) — the only automatic edges
-3. **Semantic edges** (led_to, resolved_by, supersedes) are the agent's job: after recording, run the `/vibe-curate` skill, the ONLY path that writes them — `cognition_add_edge`/`cognition_add_edges_batch` are never called directly outside curation (a documented convention, checked via `get_status`'s `edges_outside_curation`)
+3. **Semantic edges** (led_to, resolved_by, supersedes) are the agent's job: after recording, run the `/vibe-curate` skill, the ONLY path that writes them — `cognition_add_edge`/`cognition_add_edges_batch` require a curation-session token minted by `cognition_begin_curation`, so writes outside a curation run are refused and every accepted edge is stamped with its session (`get_status`'s `edges_outside_curation` still tracks legacy/manual sources)
 4. **Query** with `cognition_search` (semantic) or `cognition_get_history` (by context/type)
 
 ### Node Types

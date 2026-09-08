@@ -27,6 +27,10 @@ from vibe_cognition.tools.cognition_tools import (
     register_cognition_tools,
 )
 
+
+def _tok(mock_mcp, ctx):
+    return mock_mcp.tools["cognition_begin_curation"](ctx)["curation_token"]
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -234,7 +238,7 @@ def test_supersession_chain_shape(build_lc, make_ctx, mock_mcp, tmp_path):
     )
     # v2 supersedes v1
     mock_mcp.tools["cognition_add_edge"](
-        ctx, from_id=r2["id"], to_id=r1["id"], edge_type="supersedes",
+        ctx, curation_token=_tok(mock_mcp, ctx), from_id=r2["id"], to_id=r1["id"], edge_type="supersedes",
     )
 
     chain_result = mock_mcp.tools["cognition_get_superseded_chain"](ctx, node_id=r2["id"])
@@ -268,7 +272,7 @@ def test_cognition_get_workflow_returns_head(build_lc, make_ctx, mock_mcp, tmp_p
         context="onboarding", author="tester",
     )
     mock_mcp.tools["cognition_add_edge"](
-        ctx, from_id=r2["id"], to_id=r1["id"], edge_type="supersedes",
+        ctx, curation_token=_tok(mock_mcp, ctx), from_id=r2["id"], to_id=r1["id"], edge_type="supersedes",
     )
 
     result = mock_mcp.tools["cognition_get_workflow"](ctx, name_or_topic="alpha onboarding")

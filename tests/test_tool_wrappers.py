@@ -23,6 +23,11 @@ from vibe_cognition.tools.dashboard_tool import register_dashboard_tool
 from vibe_cognition.tools.readme_tool import register_readme_tool
 from vibe_cognition.tools.service_tools import register_service_tools
 
+
+def _tok(mock_mcp, ctx):
+    return mock_mcp.tools["cognition_begin_curation"](ctx)["curation_token"]
+
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -938,7 +943,7 @@ def test_cognition_add_edge_returns_dict(tmp_path, mock_mcp, build_lc, make_ctx)
     n2 = _add_node(lc, "n2", summary="beta pattern")
 
     result = mock_mcp.tools["cognition_add_edge"](  # type: ignore[arg-type]
-        ctx, from_id=n1, to_id=n2, edge_type="led_to"
+        ctx, curation_token=_tok(mock_mcp, ctx), from_id=n1, to_id=n2, edge_type="led_to"
     )
     assert isinstance(result, dict)
     assert result.get("created") is True
@@ -954,7 +959,7 @@ def test_cognition_add_edges_batch_returns_dict(tmp_path, mock_mcp, build_lc, ma
     n2 = _add_node(lc, "n2", summary="beta pattern")
 
     edges = json.dumps([{"from_id": n1, "to_id": n2, "edge_type": "relates_to"}])
-    result = mock_mcp.tools["cognition_add_edges_batch"](ctx, edges=edges)  # type: ignore[arg-type]
+    result = mock_mcp.tools["cognition_add_edges_batch"](ctx, curation_token=_tok(mock_mcp, ctx), edges=edges)  # type: ignore[arg-type]
     assert isinstance(result, dict)
     assert "created" in result
     assert "skipped" in result
@@ -973,7 +978,7 @@ def test_supersedes_same_type_allowed(tmp_path, mock_mcp, build_lc, make_ctx):
     older = _add_node(lc, "d2", ntype=CognitionNodeType.DECISION, summary="older decision")
 
     result = mock_mcp.tools["cognition_add_edge"](  # type: ignore[arg-type]
-        ctx, from_id=newer, to_id=older, edge_type="supersedes"
+        ctx, curation_token=_tok(mock_mcp, ctx), from_id=newer, to_id=older, edge_type="supersedes"
     )
     assert result.get("created") is True, result
 
@@ -992,7 +997,7 @@ def test_supersedes_fail_retracting_discovery_allowed(tmp_path, mock_mcp, build_
     wrong_claim = _add_node(lc, "disc1", ntype=CognitionNodeType.DISCOVERY, summary="wrong claim")
 
     result = mock_mcp.tools["cognition_add_edge"](  # type: ignore[arg-type]
-        ctx, from_id=retraction, to_id=wrong_claim, edge_type="supersedes"
+        ctx, curation_token=_tok(mock_mcp, ctx), from_id=retraction, to_id=wrong_claim, edge_type="supersedes"
     )
     assert result.get("created") is True, result
 
@@ -1006,7 +1011,7 @@ def test_supersedes_incident_retracting_decision_allowed(tmp_path, mock_mcp, bui
     wrong_decision = _add_node(lc, "d1", ntype=CognitionNodeType.DECISION, summary="wrong decision")
 
     result = mock_mcp.tools["cognition_add_edge"](  # type: ignore[arg-type]
-        ctx, from_id=retraction, to_id=wrong_decision, edge_type="supersedes"
+        ctx, curation_token=_tok(mock_mcp, ctx), from_id=retraction, to_id=wrong_decision, edge_type="supersedes"
     )
     assert result.get("created") is True, result
 
@@ -1021,7 +1026,7 @@ def test_supersedes_cross_type_non_retraction_rejected(tmp_path, mock_mcp, build
     wf = _add_node(lc, "wf1", ntype=CognitionNodeType.WORKFLOW, summary="a workflow")
 
     result = mock_mcp.tools["cognition_add_edge"](  # type: ignore[arg-type]
-        ctx, from_id=ep, to_id=wf, edge_type="supersedes"
+        ctx, curation_token=_tok(mock_mcp, ctx), from_id=ep, to_id=wf, edge_type="supersedes"
     )
     assert "error" in result
     assert "rejected" in result["error"]
@@ -1038,7 +1043,7 @@ def test_supersedes_fail_retracting_workflow_rejected(tmp_path, mock_mcp, build_
     wf = _add_node(lc, "wf1", ntype=CognitionNodeType.WORKFLOW, summary="a wrong runbook")
 
     result = mock_mcp.tools["cognition_add_edge"](  # type: ignore[arg-type]
-        ctx, from_id=retraction, to_id=wf, edge_type="supersedes"
+        ctx, curation_token=_tok(mock_mcp, ctx), from_id=retraction, to_id=wf, edge_type="supersedes"
     )
     assert "error" in result
     assert "rejected" in result["error"]
@@ -1053,13 +1058,13 @@ def test_supersedes_cycle_rejected(tmp_path, mock_mcp, build_lc, make_ctx):
     b = _add_node(lc, "b1", ntype=CognitionNodeType.DECISION, summary="b")
     c = _add_node(lc, "c1", ntype=CognitionNodeType.DECISION, summary="c")
 
-    r1 = mock_mcp.tools["cognition_add_edge"](ctx, from_id=a, to_id=b, edge_type="supersedes")  # type: ignore[arg-type]
+    r1 = mock_mcp.tools["cognition_add_edge"](ctx, curation_token=_tok(mock_mcp, ctx), from_id=a, to_id=b, edge_type="supersedes")  # type: ignore[arg-type]
     assert r1.get("created") is True, r1
-    r2 = mock_mcp.tools["cognition_add_edge"](ctx, from_id=b, to_id=c, edge_type="supersedes")  # type: ignore[arg-type]
+    r2 = mock_mcp.tools["cognition_add_edge"](ctx, curation_token=_tok(mock_mcp, ctx), from_id=b, to_id=c, edge_type="supersedes")  # type: ignore[arg-type]
     assert r2.get("created") is True, r2
 
     result = mock_mcp.tools["cognition_add_edge"](  # type: ignore[arg-type]
-        ctx, from_id=c, to_id=a, edge_type="supersedes"
+        ctx, curation_token=_tok(mock_mcp, ctx), from_id=c, to_id=a, edge_type="supersedes"
     )
     assert "error" in result
     assert "cycle" in result["error"]
@@ -1075,7 +1080,7 @@ def test_supersedes_workflow_versioning_still_works(tmp_path, mock_mcp, build_lc
     old_wf = _add_node(lc, "wf1", ntype=CognitionNodeType.WORKFLOW, summary="old procedure")
 
     result = mock_mcp.tools["cognition_add_edge"](  # type: ignore[arg-type]
-        ctx, from_id=new_wf, to_id=old_wf, edge_type="supersedes"
+        ctx, curation_token=_tok(mock_mcp, ctx), from_id=new_wf, to_id=old_wf, edge_type="supersedes"
     )
     assert result.get("created") is True, result
 
@@ -1090,7 +1095,7 @@ def test_supersedes_episode_duplicate_reconciliation_still_works(tmp_path, mock_
     ep_b = _add_node(lc, "ep2", ntype=CognitionNodeType.EPISODE, summary="episode B (duplicate)")
 
     result = mock_mcp.tools["cognition_add_edge"](  # type: ignore[arg-type]
-        ctx, from_id=ep_a, to_id=ep_b, edge_type="supersedes"
+        ctx, curation_token=_tok(mock_mcp, ctx), from_id=ep_a, to_id=ep_b, edge_type="supersedes"
     )
     assert result.get("created") is True, result
 
@@ -1105,7 +1110,7 @@ def test_supersedes_batch_rejects_cross_type_and_reports_error(tmp_path, mock_mc
     wf = _add_node(lc, "wf1", ntype=CognitionNodeType.WORKFLOW, summary="a workflow")
 
     edges = json.dumps([{"from_id": ep, "to_id": wf, "edge_type": "supersedes"}])
-    result = mock_mcp.tools["cognition_add_edges_batch"](ctx, edges=edges)  # type: ignore[arg-type]
+    result = mock_mcp.tools["cognition_add_edges_batch"](ctx, curation_token=_tok(mock_mcp, ctx), edges=edges)  # type: ignore[arg-type]
     assert result["created"] == 0
     assert result["skipped"] == 1
     assert any("rejected" in err for err in result["errors"])
@@ -1143,7 +1148,7 @@ def test_cognition_mark_curated_returns_dict(tmp_path, mock_mcp, build_lc, make_
     ctx = make_ctx(lc)
     nid = _add_node(lc, "n1")
 
-    result = mock_mcp.tools["cognition_mark_curated"](ctx, node_ids=nid)  # type: ignore[arg-type]
+    result = mock_mcp.tools["cognition_mark_curated"](ctx, curation_token=_tok(mock_mcp, ctx), node_ids=nid)  # type: ignore[arg-type]
     assert isinstance(result, dict)
     assert result["marked"] == 1
     assert result["not_found"] == []
@@ -1263,7 +1268,7 @@ def test_cognition_unload_project_returns_error_on_home(tmp_path, mock_mcp, buil
 # ── full register_all_tools: all 29 names captured ───────────────────────────
 
 
-def test_all_37_tools_registered(mock_mcp):
+def test_all_38_tools_registered(mock_mcp):
     """register_all_tools captures every expected closure by name.
 
     Fails-before: if a new tool was added to a registrar but not captured (name drift),
@@ -1272,8 +1277,9 @@ def test_all_37_tools_registered(mock_mcp):
     register_all_tools(mock_mcp)
 
     expected = {
-        # cognition_tools.py (26)
+        # cognition_tools.py (27)
         "cognition_record", "cognition_store_document", "cognition_get_document",
+        "cognition_begin_curation",
         "cognition_get_node", "cognition_update_node", "cognition_search",
         "cognition_get_chain", "cognition_get_superseded_chain", "cognition_get_workflow",
         "cognition_get_incident_resolution", "cognition_get_history",
@@ -1300,6 +1306,6 @@ def test_all_37_tools_registered(mock_mcp):
 
     missing = expected - set(mock_mcp.tools.keys())
     assert not missing, f"Tools not registered: {missing}"
-    assert len(mock_mcp.tools) == 37, (
-        f"Expected 37 tools, got {len(mock_mcp.tools)}: {set(mock_mcp.tools.keys())}"
+    assert len(mock_mcp.tools) == 38, (
+        f"Expected 38 tools, got {len(mock_mcp.tools)}: {set(mock_mcp.tools.keys())}"
     )

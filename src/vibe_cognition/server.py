@@ -623,6 +623,7 @@ async def lifespan(server: FastMCP):
     # Build context for tools
     context: dict[str, Any] = {
         "config": config,
+        "curation_sessions": {},
         "cognition_storage": cognition_storage,
         "cognition_embedding_storage": cognition_embedding_storage,
         "loaded_projects": loaded_projects,

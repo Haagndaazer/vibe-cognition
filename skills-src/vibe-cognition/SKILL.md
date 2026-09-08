@@ -28,6 +28,7 @@ description: You MUST use this skill any time you need to retrieve information a
 | `cognition_get_workflow` | Find a workflow procedure by name/topic and return the current HEAD version + chain |
 | `cognition_get_incident_resolution` | Get an incident + its resolutions, follow-ons, and contradictions |
 | `cognition_get_history` | Browse nodes by context area, type, or recency |
+| `cognition_begin_curation` | Mint the curation-session token the edge-writing tools require — called ONLY by the curate-orchestrator at the start of a run |
 | `cognition_add_edge` | Create an edge between two nodes — ONLY the curate-orchestrator agent {{harness:claude-code}}(launched via `{{invoke:vibe-curate}}`){{/harness}}{{harness:codex}}(the curator runs from Claude Code; not available on {{harness_name}} yet){{/harness}} may use this; never call it yourself |
 | `cognition_add_edges_batch` | Create multiple edges in one call (max 500) — same ONLY-the-curate-orchestrator restriction |
 | `cognition_get_edgeless_nodes` | Find nodes with no edges (need curation) |

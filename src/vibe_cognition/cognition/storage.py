@@ -353,6 +353,7 @@ class CognitionStorage:
                 timestamp=edge.timestamp,
                 source=edge.source,
                 reason=edge.reason,
+                curation_session=edge.curation_session,
             )
             return True
 
@@ -1310,6 +1311,7 @@ class CognitionStorage:
                 # Graceful for pre-WP-Cap journals (no reason field) — like the
                 # D1a metadata round-trip: absent -> None, never a KeyError.
                 reason=data.get("reason"),
+                curation_session=data.get("curation_session"),
             )
             return "applied"
         elif action == "remove_edge":
