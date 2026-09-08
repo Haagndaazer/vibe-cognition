@@ -1,12 +1,12 @@
 # Codex Full-Parity Plan — everything after WP-C1b, built for maintainability
 
-Status: PLAN rev 2 — sonnet adversarial review 2026-09-08 APPROVE-WITH-CHANGES;
+Status: PLAN rev 3 — RULED by Colton 2026-09-08 (see § Rulings); rev 2 was the
+sonnet adversarial review 2026-09-08 APPROVE-WITH-CHANGES;
 all findings applied (spawn depth default = 1 → flat curation shape on Codex
 with adaptive fan-out; orchestrator model pin may never be omitted; Codex
 plugin update requires a re-add and the install metadata carries no sha;
 `spawn_agent` rejects unknown model names; doc-drift and completeness tests
 extended to the Codex render with semantic assertions; backfill cost risk).
-Awaiting Colton's rulings (§ Decisions).
 Author: Colton Dyck (solo session)
 Date: 2026-09-08
 Baseline: v0.35.0 shipped and field-verified (Gate C1, episode `6c3c15e3a0a8`);
@@ -97,8 +97,8 @@ A small table, one entry per harness, keyed by `VIBE_HARNESS`
 | `plugin_root_var` | `CLAUDE_PLUGIN_ROOT` | `PLUGIN_ROOT` (Codex also sets `CLAUDE_*`) |
 | `update_cta(market)` | `/plugin update vibe-cognition@{market}` | `codex plugin marketplace upgrade {market}` then `codex plugin add vibe-cognition@{market}`, then restart |
 | `update_source` | Claude marketplace.json pin | `.agents/plugins/marketplace.json` sha → that commit's `plugin.json` version |
-| `model_tier(small)` | `haiku` | `VIBE_MODEL_SMALL` if set, else **omit** (inherit) |
-| `model_tier(mid)` | `sonnet` | `VIBE_MODEL_MID` if set, else **refuse** (see below) |
+| `model_tier(small)` | `haiku` | `VIBE_MODEL_SMALL` if set, else the Codex default small model from `harness.py` |
+| `model_tier(mid)` | `sonnet` | `VIBE_MODEL_MID` if set, else the Codex default mid model from `harness.py` |
 | `containment` | tool whitelist + token | token only (stated in PARITY.md) |
 
 Consumers: `prime.py`, `instructions.py`, `update_check.py`, `whats_new.py`,
@@ -108,14 +108,18 @@ and agents goes away on Claude too.
 
 **Model-pin rule, unchanged by harness.** The orchestrator's own spawn must
 carry an explicit `model` on every harness (fail `f09e770da046`: an omitted
-pin inherits the launching session's model). On Codex the mid tier therefore
-has no "inherit" fallback: with `VIBE_MODEL_MID` unset, `$vibe-curate` and
-`$vibe-backfill` refuse to launch and tell the user exactly which variable to
-set (or to set it to the literal `inherit` to accept the main model's price
-knowingly). Analyzer/worker spawns (small tier) may inherit when unset,
-because that is the orchestrator's model, not the main session's. An unknown
-model name surfaces Codex's own "Unknown model … Available models" error;
-the skill instructs the agent to relay it verbatim, not retry.
+pin inherits the launching session's model). **Ruling (Colton):** first-time
+install must be low-friction, so `harness.py` ships **default model names for
+both Codex tiers**, exactly as it does for Claude Code (`haiku`/`sonnet`);
+`VIBE_MODEL_SMALL`/`VIBE_MODEL_MID` are per-user/per-project **overrides
+only**. The defaults are chosen at the WP-P2 spike from the live available
+model list (Codex's own "Available models: …" error enumerates it) and kept
+current in one place; they are a maintained fact like any other harness
+literal. If a default is not available on a user's plan, `spawn_agent` fails
+with Codex's "Unknown model … Available models" error; the skill instructs
+the agent to relay that verbatim and name the override variable, never to
+retry or silently inherit. `VIBE_MODEL_*=inherit` is accepted as an explicit
+opt-in to the main session's model.
 
 ## Templates and rendering
 
@@ -134,8 +138,10 @@ the skill instructs the agent to relay it verbatim, not retry.
     `adapters/codex/skills/vibe-backfill/references/*.md` (orchestrator,
     analyzer, and worker bodies as skill references — a Codex plugin cannot
     ship agent roles),
-  - `adapters/codex/agents/*.toml` (optional role file for the Plan agent,
-    per Colton's ruling that roles live in `~/.codex/agents/`).
+  - `adapters/codex/agents/plan.toml` (the Plan agent as a Codex custom role,
+    rendered from `agents-src/plan.md`; the session-start hook installs and
+    version-stamps it into `~/.codex/agents/` per Colton's rulings — role
+    files live there, and Plan ships as a role, not a skill).
 - Tests, each with a semantic assertion so a no-op renderer cannot pass:
   - `test_harness_render.py`: renders into a temp dir and diffs against the
     committed outputs; **and** asserts that for every `{{harness:codex}}`
@@ -229,9 +235,12 @@ installed manifest (the existing policy; the install metadata has no sha to
 read), and emit the Codex CTA (marketplace upgrade + re-add + restart). The
 hook's re-registration reads the current entry with `codex mcp get --json`
 and merges user-added env keys before `codex mcp add`, so `VIBE_MODEL_*`
-survive a plugin update. Plan agent ships as a Codex skill (`$vibe-plan`)
-rendered from `agents-src/plan.md`; a role file is optional. Needs P0 only.
-≈ 2 days.
+survive a plugin update. Plan agent ships as an installed Codex role:
+`adapters/codex/agents/plan.toml` rendered from `agents-src/plan.md`
+(`developer_instructions` = body, `model` = mid tier), copied by the
+session-start hook into `~/.codex/agents/vibe-plan.toml` when missing or
+stale (version stamp in a comment line), so `spawn_agent(agent_type=
+"vibe-plan")` works. Needs P0 only. ≈ 2–3 days.
 
 **WP-P4 — Institutionalize.** Release workflow node superseded: version bump
 in three manifests (enforced), `render --check`, parity gate green, both
@@ -249,12 +258,13 @@ critical path is P0 → P2 → P4.
   per-agent tool scoping; recorded in PARITY.md, not hidden.
 - Curation on Codex runs flat (no analyzer fan-out) unless the user raises
   `agents.max_depth`; tiering is *partial* there by design, not an oversight.
-- `$vibe-curate`/`$vibe-backfill` refuse to launch on Codex until
-  `VIBE_MODEL_MID` is set (or set to `inherit`); we never silently inherit
+- The orchestrator is always spawned with an explicit model; on Codex that
+  is the `harness.py` default unless overridden — we never silently inherit
   the main session's model for the orchestrator.
 - Generated files are committed; hand-editing a rendered file without its
   source is a CI failure by design.
-- We do not hardcode OpenAI model names anywhere.
+- Default OpenAI model names live in exactly one place (`harness.py`) and are
+  a maintained fact; env vars override them per user/project.
 - One restart after install/update on Codex stays (B-hook design).
 - Hermes remains shelved; the same renderer gains a third column when wanted.
 
@@ -279,18 +289,17 @@ critical path is P0 → P2 → P4.
    (render differs per harness at every block; tokens consumed; `full` rows
    cite a test); reviewers check new tests against ledger 12.
 
-## Decisions needed from Colton
+## Rulings (Colton, 2026-09-08)
 
-1. Approve the template-and-render approach with generated files committed
-   (versus maintaining per-harness copies by hand).
-2. Model tiers on Codex: mid tier **required** (`VIBE_MODEL_MID`, or the
-   literal `inherit` to opt in knowingly), small tier optional with inherit
-   fallback — agreed? And do you want a documented recommended value for
-   `VIBE_MODEL_MID` in the README, or leave it to the user?
-3. Curation shape on Codex: flat by default with adaptive fan-out when the
-   user raises `agents.max_depth` — agreed, versus requiring the config
-   change up front?
-4. Plan agent on Codex as a skill (`$vibe-plan`) rather than an installed role
-   file — agreed?
-5. Backfill in scope for Codex parity (rides P2, small extra cost) — yes or
-   defer?
+1. **Approach approved:** source templates rendered to committed per-harness
+   files, one harness policy module, parity registry with the CI completeness
+   gate.
+2. **Model tiers:** explicit pin always; Codex ships **default model names**
+   for both tiers so first install is low-friction; `VIBE_MODEL_*` are
+   overrides only.
+3. **Curation shape:** flat by default with adaptive fan-out when the user
+   has raised `agents.max_depth`.
+4. **Scope:** backfill on Codex — yes; update nudge on Codex — yes; Plan
+   agent as an **installed role file** in `~/.codex/agents/` (not a skill).
+
+Next step: WP-P0 brief on Colton's go.
