@@ -19,5 +19,14 @@
   "0.30.0": [
     "After an update, session-start shows a one-time summary of what's new since your last session (disable with VIBE_WHATS_NEW=off).",
     "The summary is curated and short -- full details always live in CHANGELOG.md."
+  ],
+  "0.36.0": [
+    "Codex parity: curation ($vibe-curate) and backfill ($vibe-backfill) now run on Codex, the Plan agent is installed as a Codex role, and the daily update check works against the Codex marketplace.",
+    "Edge writes now require a curation-session token minted by cognition_begin_curation, so only the curate-orchestrator can link nodes; every accepted edge records its session.",
+    "Skills and agents are rendered per harness from one set of sources (skills-src/, agents-src/) -- edit those, run tools/render_harness.py, and CI keeps both renders in step (see PARITY.md)."
+  ],
+  "0.35.0": [
+    "vibe-cognition now installs into OpenAI Codex CLI as a plugin: codex plugin marketplace add Haagndaazer/colton-claude-plugins, then codex plugin add vibe-cognition@coltondyck; restart Codex once.",
+    "On Codex the session-start hook registers the MCP server bound to whatever project you open, injects the project digest, and re-injects the standing practices after /compact."
   ]
 }

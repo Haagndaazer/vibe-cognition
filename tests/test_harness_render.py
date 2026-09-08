@@ -63,8 +63,8 @@ def test_token_substitution_differs_between_harnesses():
     text = src.read_text(encoding="utf-8")
     assert "{{invoke:" in text
     a, b = rh.render_text(text, claude), rh.render_text(text, codex)
-    assert a != b and "/vibe-curate" in a and "$vibe-document" in b
-    assert "$vibe-curate" not in b
+    assert a != b and "/vibe-curate" in a and "$vibe-curate" in b
+    assert "/vibe-" not in b
 
 
 def test_sources_have_no_harness_literals_outside_blocks():
@@ -132,12 +132,32 @@ def test_title_case_model_token():
     assert rh.render_text("{{Model:small}} vs {{model:small}}", claude) == "Haiku vs haiku"
 
 
-def test_codex_cognition_skill_does_not_instruct_running_curate():
-    """The Codex render must not tell the agent to run a skill that is not
-    shipped on Codex; it must say curation runs from Claude Code for now."""
+def test_codex_cognition_skill_instructs_codex_curation():
     text = (_REPO / "adapters" / "codex" / "skills" / "vibe-cognition" / "SKILL.md").read_text(encoding="utf-8")
-    assert "run `$vibe-curate`" not in text and "run the `$vibe-curate`" not in text
-    assert "not available on Codex yet" in text
+    assert "$vibe-curate" in text and "/vibe-curate" not in text
+    assert "not available on Codex" not in text
+
+
+def test_codex_curate_and_backfill_renders_use_v2_spawn_syntax():
+    for name in ("vibe-curate", "vibe-backfill"):
+        text = (_REPO / "adapters" / "codex" / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
+        assert "spawn_agent" in text and "fork_turns" in text and "task_name" in text, name
+        assert "subagent_type" not in text and "run_in_background" not in text and "Agent tool" not in text, name
+        assert "gpt-5.6-" in text, name
+
+
+def test_codex_curation_references_render_from_agent_sources():
+    ref_dir = _REPO / "adapters" / "codex" / "skills" / "vibe-curate" / "references"
+    codex = harness.HARNESSES[harness.CODEX]
+    for stem in rh.CODEX_REFERENCES["vibe-curate"]:
+        text = (ref_dir / f"{stem}.md").read_text(encoding="utf-8")
+        assert not text.startswith("---"), stem
+        assert "{{" not in text and "subagent_type" not in text and "run_in_background" not in text, stem
+        src = (_REPO / "agents-src" / f"{stem}.md").read_text(encoding="utf-8")
+        assert rh.render_reference(src, codex) == text.replace("\r\n", "\n"), stem
+    orchestrator = (ref_dir / "curate-orchestrator.md").read_text(encoding="utf-8")
+    assert "wait_agent" in orchestrator and "Agent depth limit reached" in orchestrator
+    assert "fan_out: unavailable" in orchestrator and "cognition_begin_curation" in orchestrator
 
 
 def test_codex_plan_role_toml_renders():

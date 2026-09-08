@@ -1,5 +1,5 @@
 ---
-description: You MUST use this skill any time you need to retrieve information about the project or write project history to persistent memory, retrieving project information without using this skill will affect the clarity of the research. You must also use this skill when storing memories about the project. Background curation is not available on Codex yet — record here and let the curator run from Claude Code; never author semantic edges yourself.
+description: You MUST use this skill any time you need to retrieve information about the project or write project history to persistent memory, retrieving project information without using this skill will affect the clarity of the research. You must also use this skill when storing memories about the project. Curation is YOUR job to TRIGGER — after recording any nodes you MUST run the $vibe-curate skill (launches the background curator); never author semantic edges yourself.
 ---
 
 # Vibe Cognition — Project Knowledge Graph
@@ -29,14 +29,14 @@ description: You MUST use this skill any time you need to retrieve information a
 | `cognition_get_incident_resolution` | Get an incident + its resolutions, follow-ons, and contradictions |
 | `cognition_get_history` | Browse nodes by context area, type, or recency |
 | `cognition_begin_curation` | Mint the curation-session token the edge-writing tools require — called ONLY by the curate-orchestrator at the start of a run |
-| `cognition_add_edge` | Create an edge between two nodes — ONLY the curate-orchestrator agent (the curator runs from Claude Code; not available on Codex yet) may use this; never call it yourself |
+| `cognition_add_edge` | Create an edge between two nodes — ONLY the curate-orchestrator agent (launched via `$vibe-curate`) may use this; never call it yourself |
 | `cognition_add_edges_batch` | Create multiple edges in one call (max 500) — same ONLY-the-curate-orchestrator restriction |
 | `cognition_get_edgeless_nodes` | Find nodes with no edges (need curation) |
 | `cognition_get_neighbors` | Get all connections to a node (all edge types) |
 | `cognition_remove_edge` | Remove a specific edge between two nodes |
 | `cognition_remove_node` | Delete a node and all its attached edges (destructive — for junk/test/duplicate nodes) |
-| `cognition_get_uncurated_nodes` | List nodes not yet processed by the curator |
-| `cognition_mark_curated` | Mark nodes as curated (used by the curator) |
+| `cognition_get_uncurated_nodes` | List nodes not yet processed by `$vibe-curate` |
+| `cognition_mark_curated` | Mark nodes as curated (used by `$vibe-curate`) |
 | `cognition_reload` | Force a full re-hydrate of the graph from the journal |
 | `cognition_store_document` | Store a document as a first-class node (see `$vibe-document`) |
 | `cognition_get_document` | Retrieve a stored document: metadata + text + freshness |
@@ -60,8 +60,8 @@ THEIR `references` so they auto-link, then curate).
 Deterministic edges are created automatically on record when nodes share references:
 `part_of` (entity↔episode on any shared ref; entity→document on a shared `doc:` ref) and
 `relates_to` (document→episode on a shared `doc:` ref). For the semantic edges
-(`led_to`, `resolved_by`, `supersedes`, `contradicts`, `relates_to`), leave them to
-the curator (it runs from Claude Code — not available on Codex yet); never create them manually. Note `relates_to`
+(`led_to`, `resolved_by`, `supersedes`, `contradicts`, `relates_to`), use the
+`$vibe-curate` skill or create them manually with `cognition_add_edge`. Note `relates_to`
 has three provenances — deterministic (document→episode), curator-proposed, and manual —
 so it is NOT "semantic only." `supersedes` is THE reconciliation edge for duplicates (e.g.
 two clones each recording an episode for the same commit) — `cognition_add_edge` enforces
@@ -132,7 +132,7 @@ are injected at session start and listed via `cognition_list_tasks`, so the grap
   unstamped ones. No marker yet → a capped lookback window, never a full-history
   dump. Stamped only by the real SessionStart hook — `generate_prime()` itself
   stays pure read-only.
-- **Curate tasks** like any node: the curator links a task `relates_to` the
+- **Curate tasks** like any node: `$vibe-curate` links a task `relates_to` the
   decision/pattern it implements, or a done task `resolved_by`/`led_to` the closing episode.
 - **Filter out an author with `exclude_people`** (comma-separated emails, on
   `cognition_list_tasks`) — matched on `created_by`, user-invoked only (see Querying).
@@ -284,19 +284,35 @@ too, so it can change which workflow a lookup resolves to.
 - **During debugging:** Record `fail` nodes
 - **During incidents:** Record `incident` nodes
 - **When work is complete:** Record an `episode` summarizing the full lifecycle
-- **Always include** `references` (issue/PR numbers) so nodes link to their episode and the curator can relate them
-- **After recording:** nothing to launch on Codex — the curator is not available here yet; new nodes keep their deterministic edges until it runs from Claude Code (see Final Step)
+- **Always include** `references` (issue/PR numbers) so nodes link to their episode and `$vibe-curate` can relate them
+- **After recording:** run `$vibe-curate` to link the new nodes — don't wait to be asked (see Final Step)
 
-## Final Step: Curation on Codex
+## Final Step: Trigger Curation — MANDATORY, do it yourself
 
-Background curation — the curate-orchestrator that adds the semantic edges
-(`led_to`, `resolved_by`, `supersedes`, `contradicts`, `relates_to`) — is **not available on
-Codex yet**. It runs from Claude Code. On Codex:
+**Triggering curation is your responsibility — never author semantic edges yourself.**
+`$vibe-curate` launches a background curate-orchestrator agent that does the actual
+linking; you do not create `led_to`/`resolved_by`/`supersedes`/`contradicts`/`relates_to`
+edges by hand. If you recorded **any** nodes during this turn / unit of work, you **MUST**
+run the `$vibe-curate` skill before you finish responding — **without being asked**. This
+is the step users most often have to remind you about; own it yourself, every time.
 
-- Record normally. Deterministic `part_of` edges are created automatically on record.
-- Do **not** author semantic edges yourself and do **not** call `cognition_add_edge`,
-  `cognition_add_edges_batch`, or `cognition_mark_curated` — those belong to the curator.
-- `get_status` reports the `uncurated` backlog; the next curator run from Claude Code links it.
+- This is a hard rule, not a suggestion: recording without curating leaves the new
+  nodes semantically disconnected (only their deterministic `part_of` edges exist).
+- `$vibe-curate` only processes **uncurated** nodes, so it just links what you added — cheap to run after recording.
+- **Always** curate after creating an `episode`.
+- Skip it **only** if you recorded nothing this turn, or `get_status` shows 0 uncurated nodes.
+- This is for **recording** sessions only — if you only queried/retrieved (no new nodes), there is nothing to curate.
+
+Deterministic edges (`part_of`, and `relates_to` for document→episode) are the *only*
+edges created automatically (on record). This step adds the **semantic** relationships
+(`led_to`, `resolved_by`, `supersedes`, `contradicts`, `relates_to`) that make the graph
+navigable — only the `$vibe-curate` background curate-orchestrator creates these, never
+the main instance directly. This exclusivity is a documented convention, not an
+enforced lock — `get_status`'s `cognition_graph.edges_outside_curation` counts
+semantic-edge writes whose `source` isn't one of the curator's own values, so hand-
+authoring an edge yourself (the exact misuse this rule exists to prevent) surfaces
+there instead of silently degrading edge provenance.
+
 ## Examples
 
 ### Concise entity during a task

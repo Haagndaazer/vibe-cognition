@@ -689,7 +689,7 @@ Then start Codex once inside any project and **restart it**. On that first sessi
 
 Also on Codex: the Plan agent is installed as a custom role (`~/.codex/agents/vibe-plan.toml`, kept in sync by the hook) so `spawn_agent` can use `agent_type: "vibe-plan"`; the daily update check compares your installed version with the `coltondyck` Codex marketplace pin and tells you to run `codex plugin marketplace upgrade coltondyck` then `codex plugin add vibe-cognition@coltondyck` when a newer version exists; and any extra env you add to the `vibe-cognition` MCP entry (for example `VIBE_MODEL_MID`) survives the hook's re-registration on plugin updates.
 
-Not yet on Codex: background curation (`/vibe-curate`) and backfill — they drive Claude Code's Agent tool. Record on Codex, curate from Claude Code.
+Curation and backfill run on Codex too: `$vibe-curate` spawns the curate-orchestrator (`gpt-5.6-sol` by default) which fans out to `gpt-5.6-luna` analyzers, exactly as on Claude Code; if your Codex install refuses nested spawns it finishes the pass inline and reports `fan_out: unavailable`. Override the models with `VIBE_MODEL_MID` / `VIBE_MODEL_SMALL` on the `vibe-cognition` MCP entry. Edge writes on every harness require the curation-session token, so only the orchestrator can link nodes.
 
 Uninstall:
 

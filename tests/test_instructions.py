@@ -209,7 +209,7 @@ def _reload_instructions():
     return importlib.reload(mod)
 
 
-def test_codex_harness_swaps_curate_cta(monkeypatch):
+def test_codex_harness_uses_codex_invocation(monkeypatch):
     """Under VIBE_HARNESS=codex the curation sentence must stop telling the
     model to run /vibe-curate (Codex has no Agent tool to launch the
     orchestrator) and must say curation runs from Claude Code for now; the
@@ -221,7 +221,7 @@ def test_codex_harness_swaps_curate_cta(monkeypatch):
         mod = _reload_instructions()
         text = mod.SERVER_INSTRUCTIONS
         assert "run the /vibe-curate skill" not in text
-        assert "not available on Codex yet" in text
+        assert "run the $vibe-curate skill" in text
         assert "$vibe-cognition" in text
         assert "4. VALIDATE SUGGESTIONS AGAINST HISTORY" in text
         text.encode("ascii")
@@ -235,4 +235,4 @@ def test_default_harness_keeps_claude_curate_cta(monkeypatch):
     monkeypatch.delenv("VIBE_HARNESS", raising=False)
     mod = _reload_instructions()
     assert "run the /vibe-curate skill" in mod.SERVER_INSTRUCTIONS
-    assert "not available on Codex" not in mod.SERVER_INSTRUCTIONS
+    assert "$vibe-" not in mod.SERVER_INSTRUCTIONS

@@ -109,7 +109,7 @@ HARNESSES: dict[str, Harness] = {
         update_source="codex-marketplace",
         update_cta_template="codex plugin marketplace upgrade {market} && codex plugin add {plugin}{suffix}",
         update_cta_no_market_template="re-add the plugin from your Codex marketplace: codex plugin marketplace upgrade <marketplace> && codex plugin add {plugin}@<marketplace>",
-        curation_available=False,
+        curation_available=True,
         manifest_path=".codex-plugin/plugin.json",
         marketplace_manifest_path=".agents/plugins/marketplace.json",
     ),

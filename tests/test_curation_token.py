@@ -100,9 +100,9 @@ def test_batch_with_token_stamps_every_edge(tmp_path, mock_mcp, build_lc, make_c
         assert data["curation_session"], (u, v)
 
 
-def test_codex_refusal_names_the_codex_situation(tmp_path, mock_mcp, build_lc, make_ctx, monkeypatch):
+def test_codex_refusal_names_the_codex_invocation(tmp_path, mock_mcp, build_lc, make_ctx, monkeypatch):
     monkeypatch.setenv("VIBE_HARNESS", "codex")
     lc, storage, ctx = _setup(tmp_path, mock_mcp, build_lc, make_ctx)
     result = mock_mcp.tools["cognition_add_edge"](ctx, from_id="a", to_id="b", edge_type="led_to")
     assert "curation token" in result["error"]
-    assert "not available on Codex" in result["error"]
+    assert "$vibe-curate" in result["error"] and "/vibe-curate" not in result["error"]

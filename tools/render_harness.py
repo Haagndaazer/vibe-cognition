@@ -19,7 +19,8 @@ from vibe_cognition import harness  # noqa: E402
 
 SKILLS_SRC = REPO / "skills-src"
 AGENTS_SRC = REPO / "agents-src"
-CODEX_SKILLS = ("vibe-cognition", "vibe-document", "vibe-workflow", "vibe-dashboard")
+CODEX_SKILLS = ("vibe-cognition", "vibe-document", "vibe-workflow", "vibe-dashboard", "vibe-curate", "vibe-backfill")
+CODEX_REFERENCES = {"vibe-curate": ("curate-orchestrator", "curate-edge-analyzer", "curate-conflict-analyzer", "curate-cluster-analyzer")}
 CODEX_ROLES = {"plan": "vibe-plan"}
 _FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 
@@ -111,6 +112,22 @@ def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8", newline="").replace("\r\n", "\n")
 
 
+def render_reference(text: str, hz: harness.Harness) -> str:
+    rendered = render_text(text, hz)
+    m = _FRONTMATTER.match(rendered)
+    body = rendered[m.end():] if m else rendered
+    return body.lstrip("\n")
+
+
+def reference_targets() -> list[tuple[Path, Path, harness.Harness]]:
+    codex = harness.HARNESSES[harness.CODEX]
+    items: list[tuple[Path, Path, harness.Harness]] = []
+    for skill, agents in CODEX_REFERENCES.items():
+        for stem in agents:
+            items.append((AGENTS_SRC / f"{stem}.md", REPO / "adapters" / "codex" / "skills" / skill / "references" / f"{stem}.md", codex))
+    return items
+
+
 def role_targets() -> list[tuple[Path, Path, str, harness.Harness]]:
     codex = harness.HARNESSES[harness.CODEX]
     return [
@@ -127,6 +144,15 @@ def render_all(check: bool) -> list[str]:
             current = _read(dst) if dst.exists() else None
             if current != rendered:
                 problems.append(f"drift: {dst.relative_to(REPO)} (role {role} from {src.relative_to(REPO)})")
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(rendered, encoding="utf-8", newline="\n")
+    for src, dst, hz in reference_targets():
+        rendered = render_reference(_read(src), hz)
+        if check:
+            current = _read(dst) if dst.exists() else None
+            if current != rendered:
+                problems.append(f"drift: {dst.relative_to(REPO)} (reference from {src.relative_to(REPO)})")
         else:
             dst.parent.mkdir(parents=True, exist_ok=True)
             dst.write_text(rendered, encoding="utf-8", newline="\n")
@@ -148,7 +174,7 @@ def main(argv: list[str]) -> int:
     for p in problems:
         print(p)
     if not check:
-        print(f"rendered {len(targets()) + len(role_targets())} files")
+        print(f"rendered {len(targets()) + len(role_targets()) + len(reference_targets())} files")
     return 1 if problems else 0
 
 

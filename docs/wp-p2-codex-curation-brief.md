@@ -1,11 +1,27 @@
 # WP-P2 — Curation and backfill on Codex (flat by default, adaptive fan-out)
 
-Status: BRIEF (draft; spike first, then solo build; sonnet code review before "done")
+Status: BRIEF rev 2 — spike DONE 2026-09-08 (`docs/codex-spike-report-p2.md`): nested spawning WORKS on Colton's Codex (V2 surface), completion is PUSHED as FINAL_ANSWER, model override needs `fork_turns: "none"`; Codex tier defaults set (luna/sol). BUILT 2026-09-08 — sonnet code review APPROVE-WITH-CHANGES, all five items applied; shipped in v0.36.0 pending the live Phase 4 (curation) gate
 Parent: `docs/codex-parity-plan.md` rev 3 (rulings: flat/adaptive shape;
 default model names shipped in `harness.py`; backfill in scope)
 Depends on: WP-P0 (templates), WP-P1 (curation token), WP-P3 (env-preserving
 re-register so `VIBE_MODEL_*` overrides survive)
 Date: 2026-09-08
+
+## Spike results (2026-09-08) and what they change
+
+- Nested spawn succeeded (`/root/depth_probe/say_hi`): the Claude fan-out
+  shape transfers to Codex as-is. The inline "embedded analyzer protocol"
+  stays as the fallback for a V1 install that returns the depth error.
+- Subagent completion is pushed to the parent as a `FINAL_ANSWER` message
+  between tool calls; no `wait_agent`/`list_agents` was needed. The Codex
+  orchestrator collects analyzer output by `wait_agent(task_name)` when
+  available, else by making a cheap call (`get_status`) and reading the
+  pushed message — it never assumes the JSON is in the spawn's own result.
+- Every Codex spawn passes `task_name`, `fork_turns: "none"` (required with a
+  model override), `model`, and `message`. No `subagent_type`,
+  `run_in_background`, or `name`.
+- Warm read-only tool calls cost 2.3–3.5 s each on Codex; a 10-node batch
+  inline would be minutes, another reason fan-out is preferred when allowed.
 
 ## What already exists that P2 reuses
 
@@ -22,10 +38,8 @@ Date: 2026-09-08
 
 ## Scope
 
-1. **Model defaults.** Fill `harness.py` Codex `default_models` (small, mid)
-   from the live available-model list of Colton's Codex session (spike step
-   1). The renderer refuses `{{model:*}}` for Codex until then, which is the
-   gate that keeps P2 from shipping with pending defaults.
+1. **Model defaults.** DONE (5b66103): small `gpt-5.6-luna`, mid
+   `gpt-5.6-sol`, from the live list.
 2. **Codex render of `vibe-curate`.** Harness blocks replace the Claude launch
    step: call `get_status`, read `harness.models.mid`, `spawn_agent` with
    `message` = the orchestrator reference (see 4) + the uncurated count,

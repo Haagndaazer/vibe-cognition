@@ -187,6 +187,29 @@ vibe-cognition test brief from Phase 3`."
    is denied inside your sandbox, write UNVERIFIABLE and ask the user to run it
    and paste the output.
 
+## Phase 5 — curation on Codex (v0.36.0+)
+
+1. Confirm `$vibe-curate` and `$vibe-backfill` appear in the skill list.
+2. Record three test nodes with `cognition_record` (types decision, discovery,
+   pattern; summaries starting `Codex curation test:`; context `codex-test`;
+   author `Colton Dyck`). Call `get_status` and record `cognition_graph.uncurated`
+   and `curation_sessions`.
+3. Run `$vibe-curate`. Record verbatim the `spawn_agent` call it made (task
+   name, model, fork_turns) and the message you eventually received from the
+   orchestrator. If the spawn fails with an "Unknown model" error, quote it
+   and stop this phase.
+4. Poll `get_status` every ~60 s until `uncurated` stops changing (max 15
+   minutes). Record: final `uncurated`, `curation_sessions.writes`,
+   `edge_sources` (expect a `curate-skill` count increase), and
+   `edges_outside_curation` (must not increase).
+5. Call `cognition_get_neighbors` on one of your three test nodes and quote
+   any edge that carries a `curation_session`.
+6. Note whether the orchestrator's final message mentioned `fan_out:
+   unavailable` (inline mode) or not (analyzers were spawned).
+7. Optional if the repo has untracked commits: run `$vibe-backfill` on a
+   small range and record the commit count announced, the model named, and
+   how many nodes it created.
+
 ## Phase 4 — wrap up
 
 Append a **Summary** section: a table of every check with PASS/FAIL/

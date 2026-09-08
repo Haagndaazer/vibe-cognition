@@ -26,7 +26,7 @@ def test_codex_harness_facts(monkeypatch):
     assert hz.skill_invoke("vibe-cognition") == "$vibe-cognition"
     assert hz.model("small") == "gpt-5.6-luna" and hz.model_source("small") == "default"
     assert hz.model("mid") == "gpt-5.6-sol" and hz.model_source("mid") == "default"
-    assert hz.curation_available is False
+    assert hz.curation_available is True
     cta = hz.update_cta("coltondyck")
     assert "codex plugin marketplace upgrade coltondyck" in cta
     assert "codex plugin add vibe-cognition@coltondyck" in cta
@@ -72,7 +72,7 @@ def test_instructions_follow_harness_table(monkeypatch):
 
     try:
         text = importlib.reload(mod).SERVER_INSTRUCTIONS
-        assert "not available on Codex yet" in text
+        assert "$vibe-curate" in text and "/vibe-curate" not in text
         assert "$vibe-cognition" in text
     finally:
         monkeypatch.delenv("VIBE_HARNESS", raising=False)

@@ -59,13 +59,11 @@ def test_codex_manifest_paths_start_with_dot_slash_and_exist():
         assert (_REPO / rel[2:]).exists(), rel
 
 
-def test_codex_skills_exclude_agent_tool_driven_skills():
-    """curate/backfill drive the Claude Agent tool, which Codex lacks."""
+def test_codex_ships_all_six_skills():
+    """WP-P2: curate/backfill render with the Codex spawn syntax and ship too."""
     codex = _load(_CODEX_MANIFEST)
     names = {pathlib.PurePosixPath(p).name for p in codex["skills"]}
-    assert {"vibe-cognition", "vibe-document", "vibe-workflow", "vibe-dashboard"} <= names
-    assert "vibe-curate" not in names
-    assert "vibe-backfill" not in names
+    assert names == {"vibe-cognition", "vibe-document", "vibe-workflow", "vibe-dashboard", "vibe-curate", "vibe-backfill"}
 
 
 def test_codex_manifest_points_at_codex_hooks_not_claude_hooks():

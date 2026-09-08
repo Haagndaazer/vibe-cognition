@@ -23,7 +23,7 @@ would still be found by this skill.
 - **Maximum 5 subagents running at a time.** Each subagent handles a chunk of ~5-10 commits.
 - When a subagent completes, you may launch the next one (rolling pool of 5).
 - Do NOT spawn more than 5 subagents simultaneously.
-- **ALWAYS spawn these subagents with the {{Model:small}} model** (`model: "{{model:small}}"` on every {{harness:claude-code}}Agent call{{/harness}}{{harness:codex}}`spawn_agent` call, with `fork_turns: "none"`{{/harness}}). Do NOT let them inherit the main instance's model — backfill is mechanical per-commit extraction and running it on Opus/{{Model:mid}} is extremely wasteful.
+- **ALWAYS spawn these subagents with the Gpt-5.6-Luna model** (`model: "gpt-5.6-luna"` on every `spawn_agent` call, with `fork_turns: "none"`). Do NOT let them inherit the main instance's model — backfill is mechanical per-commit extraction and running it on Opus/Gpt-5.6-Sol is extremely wasteful.
 
 ## Steps
 
@@ -58,9 +58,9 @@ Split the untracked commits into chunks of ~5-10 commits each.
 
 ### Step 3: Launch subagents (max 5 concurrent)
 
-Spawn up to 5 subagents in parallel, each given one chunk — **each spawned with `model: "{{model:small}}"`** (never inheriting the main instance's model). When a subagent finishes, launch the next one until all chunks are processed.{{harness:codex}}
+Spawn up to 5 subagents in parallel, each given one chunk — **each spawned with `model: "gpt-5.6-luna"`** (never inheriting the main instance's model). When a subagent finishes, launch the next one until all chunks are processed.
 
-On Codex each worker is `spawn_agent` with `task_name` (e.g. `backfill_chunk_2`), `fork_turns: "none"`, `model: "{{model:small}}"`, and `message` = the Step 4 workflow text below plus the chunk's commit hashes. Results arrive as FINAL_ANSWER messages; collect them with `wait_agent` before launching past the 5-worker cap. Before the first spawn, tell the user the commit count and the model the workers will run on (`{{model:small}}` unless `VIBE_MODEL_SMALL` is set on the MCP entry).{{/harness}}
+On Codex each worker is `spawn_agent` with `task_name` (e.g. `backfill_chunk_2`), `fork_turns: "none"`, `model: "gpt-5.6-luna"`, and `message` = the Step 4 workflow text below plus the chunk's commit hashes. Results arrive as FINAL_ANSWER messages; collect them with `wait_agent` before launching past the 5-worker cap. Before the first spawn, tell the user the commit count and the model the workers will run on (`gpt-5.6-luna` unless `VIBE_MODEL_SMALL` is set on the MCP entry).
 
 ### Step 4: Per-commit workflow (inside each subagent)
 
@@ -133,4 +133,4 @@ After all subagents finish, report:
 - Look at the diff content and commit message to determine what entities to extract
 - Keep entity summaries under 250 chars — concise, scannable facts
 - Binary assets should still be mentioned in episode details even though their diffs are skipped
-- After backfill completes, you MUST run `{{invoke:vibe-curate}}` to launch the background curator, which creates semantic edges between the new nodes — never author them yourself. Backfill creates many episodes carrying only their deterministic `part_of` edges, and high-volume new nodes is the curate skill's first-named trigger. Do not skip it.
+- After backfill completes, you MUST run `$vibe-curate` to launch the background curator, which creates semantic edges between the new nodes — never author them yourself. Backfill creates many episodes carrying only their deterministic `part_of` edges, and high-volume new nodes is the curate skill's first-named trigger. Do not skip it.

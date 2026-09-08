@@ -380,8 +380,8 @@
         "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
       },
       "codex": {
-        "status": "waived",
-        "note": "drives the Agent tool; Codex port is WP-P2 (flat orchestrator, adaptive fan-out)"
+        "status": "partial",
+        "note": "rendered for Codex (V2 spawn syntax, fan-out with inline fallback); live Phase 5 gate pending"
       }
     },
     "skill:vibe-cognition": {
@@ -400,8 +400,8 @@
         "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
       },
       "codex": {
-        "status": "waived",
-        "note": "drives the Agent tool; Codex port is WP-P2 (flat orchestrator, adaptive fan-out)"
+        "status": "partial",
+        "note": "rendered for Codex (V2 spawn syntax, fan-out with inline fallback); live Phase 5 gate pending"
       }
     },
     "skill:vibe-dashboard": {
@@ -450,8 +450,8 @@
         "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
       },
       "codex": {
-        "status": "waived",
-        "note": "curation pipeline on Codex is WP-P2; containment is the server-side token (WP-P1)"
+        "status": "partial",
+        "note": "rendered for Codex (V2 spawn syntax, fan-out with inline fallback); live Phase 5 gate pending"
       }
     },
     "agent:curate-conflict-analyzer": {
@@ -460,8 +460,8 @@
         "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
       },
       "codex": {
-        "status": "waived",
-        "note": "curation pipeline on Codex is WP-P2; containment is the server-side token (WP-P1)"
+        "status": "partial",
+        "note": "rendered for Codex (V2 spawn syntax, fan-out with inline fallback); live Phase 5 gate pending"
       }
     },
     "agent:curate-edge-analyzer": {
@@ -470,8 +470,8 @@
         "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
       },
       "codex": {
-        "status": "waived",
-        "note": "curation pipeline on Codex is WP-P2; containment is the server-side token (WP-P1)"
+        "status": "partial",
+        "note": "rendered for Codex (V2 spawn syntax, fan-out with inline fallback); live Phase 5 gate pending"
       }
     },
     "agent:curate-orchestrator": {
@@ -480,8 +480,8 @@
         "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
       },
       "codex": {
-        "status": "waived",
-        "note": "curation pipeline on Codex is WP-P2; containment is the server-side token (WP-P1)"
+        "status": "partial",
+        "note": "rendered for Codex (V2 spawn syntax, fan-out with inline fallback); live Phase 5 gate pending"
       }
     },
     "agent:plan": {

@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.0]
+
+### Added
+- **Codex full parity (WP-P0..P3, WP-P2)**: curation (`$vibe-curate`) and
+  backfill (`$vibe-backfill`) run on Codex via the V2 `spawn_agent` surface
+  (explicit model per spawn, `fork_turns: "none"`, results collected as
+  FINAL_ANSWER messages) with the inline analyzer protocol as fallback when a
+  nested spawn is refused; the Plan agent ships as an installed Codex role
+  (`~/.codex/agents/vibe-plan.toml`); the daily update check reads the Codex
+  marketplace pin and manifest and emits a Codex call to action; the Codex
+  hook preserves user-added MCP env keys across re-registration.
+- **Curation containment token**: `cognition_begin_curation` mints a session;
+  `cognition_add_edge`, `cognition_add_edges_batch`, and
+  `cognition_mark_curated` require `curation_token` and refuse without it;
+  accepted edges carry `curation_session`; `get_status` reports
+  `curation_sessions` and a `harness` block.
+- **Harness policy module + templates**: `src/vibe_cognition/harness.py` holds
+  every harness-specific fact (invocation prefix, spawn wording, model tiers
+  with `VIBE_MODEL_SMALL`/`VIBE_MODEL_MID` overrides, update CTA, manifest
+  paths); `skills-src/` and `agents-src/` are the hand-edited sources rendered
+  by `tools/render_harness.py` into `skills/`, `agents/`,
+  `adapters/codex/skills/` (with curation reference files) and
+  `adapters/codex/agents/`; `parity.json` -> `PARITY.md` registry with a CI
+  completeness gate; `docs/HARNESSES.md` add-a-harness checklist.
+- Codex default model tiers: small `gpt-5.6-luna`, mid `gpt-5.6-sol`.
+
+### Changed
+- Claude Code renders of skills and agents are byte-identical to 0.35.0 apart
+  from the curation-token instructions in the orchestrator and the new
+  `cognition_begin_curation` tool row.
+
+## [0.35.0]
+
+### Added
+- **Codex CLI plugin**: `.codex-plugin/plugin.json`, Codex hooks with
+  Git-Bash-safe Windows wrappers, hook-managed `codex mcp add` registration
+  (stamp + lock), `VIBE_HARNESS_NOTE` in prime, a Codex branch of the standing
+  practices, and a dev marketplace at `.agents/plugins/marketplace.json`.
+  Install via the `coltondyck` Codex marketplace; restart Codex once.
+
 ## [0.34.0]
 
 ### Fixed

@@ -39,12 +39,15 @@ cheap and keeps harness #3 cheaper still.
 
 ## Verified Codex constraints that shape the design (source, 2026-09-08)
 
-- **Spawn depth defaults to 1.** `DEFAULT_AGENT_MAX_DEPTH = 1`; a root
-  session may spawn subagents, but a subagent's own spawn is refused with
-  "Agent depth limit reached. Solve the task yourself." unless the user
-  raises `agents.max_depth` in their own `config.toml` (outside plugin
-  control). The V2 multi-agent path has no depth check but is gated to
-  non-code mode by default, so V1 governs ordinary sessions.
+- **Spawn depth: V1 defaults to 1, V2 has no limit — and Colton's Codex runs
+  V2.** Source: `DEFAULT_AGENT_MAX_DEPTH = 1` on the V1 path refuses a
+  subagent's own spawn ("Agent depth limit reached. Solve the task
+  yourself."). **Live spike 2026-09-08 (`docs/codex-spike-report-p2.md`):**
+  the session exposed the V2 `collaboration.spawn_agent` surface
+  (`task_name`, `fork_turns`, `model`), a nested spawn SUCCEEDED, and
+  finished subagents PUSHED `FINAL_ANSWER` messages to the parent without
+  polling. Model overrides require `fork_turns: "none"`. The design keeps the
+  inline fallback only as a safety net for V1 installs.
 - **`spawn_agent` `model` must name an available model.** Unknown names
   hard-error ("Unknown model … Available models: …"); there is no degrade.
 - **Installed plugins do not auto-update.** `codex plugin marketplace
@@ -54,9 +57,10 @@ cheap and keeps harness #3 cheaper still.
 - **`codex mcp add` replaces the whole entry** (env included);
   `codex mcp get <name> --json` returns the current entry with its env, so
   a hook can read-merge-write.
-- **Completion of a spawned agent is observed by polling** (`wait_agent`,
-  `list_agents`); no push notification to the parent was found — do not
-  design around one.
+- **Completion of a spawned agent:** on the V2 surface a `FINAL_ANSWER`
+  message is pushed to the parent at its next tool boundary (spike-verified);
+  `wait_agent` remains the deterministic way to block for a specific child.
+  Design for both: prefer `wait_agent`, accept the pushed message.
 - Skills may carry `references/`; the legacy manifest's `skills` accepts a
   list of directories (so Codex can point at `adapters/codex/skills/*`).
 
@@ -302,4 +306,4 @@ critical path is P0 → P2 → P4.
 4. **Scope:** backfill on Codex — yes; update nudge on Codex — yes; Plan
    agent as an **installed role file** in `~/.codex/agents/` (not a skill).
 
-Progress: **WP-P0 shipped** (8fc5230) and **WP-P1 shipped** (d80f16e), both 2026-09-08 and sonnet-reviewed (briefs `docs/wp-p0-harness-brief.md`, `docs/wp-p1-containment-brief.md`). **WP-P3 shipped** (same day; brief `docs/wp-p3-update-plan-brief.md`). Next: WP-P2 (brief drafted at `docs/wp-p2-codex-curation-brief.md`; blocked on the Codex model list for defaults).
+Progress: **WP-P0 shipped** (8fc5230) and **WP-P1 shipped** (d80f16e), both 2026-09-08 and sonnet-reviewed (briefs `docs/wp-p0-harness-brief.md`, `docs/wp-p1-containment-brief.md`). **WP-P3 shipped** (same day; brief `docs/wp-p3-update-plan-brief.md`). **WP-P2 built** (v0.36.0; live Phase 4 (curation) gate pending on Colton's machine). Remaining: WP-P4 institutionalization.
