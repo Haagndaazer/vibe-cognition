@@ -24,7 +24,8 @@ def test_codex_harness_facts(monkeypatch):
     hz = harness.current()
     assert hz.name == harness.CODEX
     assert hz.skill_invoke("vibe-cognition") == "$vibe-cognition"
-    assert hz.model_source("mid") == "default_pending" and hz.model("mid") is None
+    assert hz.model("small") == "gpt-5.6-luna" and hz.model_source("small") == "default"
+    assert hz.model("mid") == "gpt-5.6-sol" and hz.model_source("mid") == "default"
     assert hz.curation_available is False
     cta = hz.update_cta("coltondyck")
     assert "codex plugin marketplace upgrade coltondyck" in cta
