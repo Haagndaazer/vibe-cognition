@@ -1,6 +1,6 @@
 # WP-P0 — Harness module, templates, parity registry (pure refactor)
 
-Status: BRIEF (solo build; sonnet code review before "done")
+Status: SHIPPED 8fc5230 (2026-09-08) — sonnet code review REJECT → all findings fixed → APPROVE; AC1–AC8 met (AC8 modulo the two pre-existing lifecycle failures)
 Parent: `docs/codex-parity-plan.md` rev 3 (Colton's rulings 2026-09-08)
 Date: 2026-09-08
 
