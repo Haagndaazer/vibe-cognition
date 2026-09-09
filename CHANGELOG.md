@@ -37,6 +37,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Claude Code renders of skills and agents are byte-identical to 0.35.0 apart
   from the curation-token instructions in the orchestrator and the new
   `cognition_begin_curation` tool row.
+- README documents the Codex install (start Codex, send one message so the
+  session-start hook runs, then restart), the new `VIBE_*` environment
+  variables, the template workflow, and the token-enforced curation model.
+
+### Notes
+- Gate P2 (2026-09-09, codex-cli 0.153.4): curation ran natively on Codex with
+  analyzer fan-out; 4 uncurated nodes -> 0, 3 session-stamped edges,
+  `edges_outside_curation` unchanged.
+- On Codex each spawned agent runs its own MCP server process, so a
+  launcher's `get_status.curation_sessions` counters stay 0 while the
+  orchestrator's process holds the session; `uncurated`, `edge_sources`, and
+  the edge's `curation_session` are the cross-process evidence.
+- Codex fires SessionStart hooks on the first turn, not at launch: after
+  installing or updating the plugin, send one message before restarting.
 
 ## [0.35.0]
 

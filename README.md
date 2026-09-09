@@ -5,7 +5,7 @@
 ![MCP](https://img.shields.io/badge/MCP-Server-purple?style=flat)
 # Vibe Cognition
 
-A fully local [MCP](https://modelcontextprotocol.io/) server for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) that captures project knowledge — decisions, failures, discoveries, patterns, and more — so future sessions have context on *why* the code is the way it is. After a one-time model download, all processing and storage happens on your machine — no API keys needed. (A small, optional, read-only version check reaches GitHub once a day by default; see [Update Notifications](#update-notifications).)
+A fully local [MCP](https://modelcontextprotocol.io/) server for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [OpenAI Codex CLI](#codex-cli) that captures project knowledge — decisions, failures, discoveries, patterns, and more — so future sessions have context on *why* the code is the way it is. After a one-time model download, all processing and storage happens on your machine — no API keys needed. (A small, optional, read-only version check reaches GitHub once a day by default; see [Update Notifications](#update-notifications).)
 
 ## Quick Start
 
@@ -66,7 +66,7 @@ search work immediately, before that.
 - **Manual & Batch Edge Creation**: Create edges individually or in bulk via MCP tools, with provenance tracking
 - **Curation Skill**: `/vibe-curate` skill with edge-analyzer, conflict-analyzer, and cluster-analyzer subagents for semantic edge creation, deliberate contradiction/supersession hunting, and cluster identification
 - **Local Dashboard**: Interactive graph viewer with semantic search and node-detail sidebar — launch in your browser from Claude or the CLI
-- **Session Context Injection**: Start every Claude Code session with recent project context via hooks
+- **Session Context Injection**: Start every session (Claude Code or Codex) with recent project context via hooks, and get the standing practices back after a compaction
 - **Local-First**: All processing and storage happens on your machine — no API keys needed (see [Update Notifications](#update-notifications) for the one narrow, optional exception)
 - **Git-Committed Knowledge**: The cognition journal is designed to be committed to Git and shared with your team
 
@@ -90,12 +90,13 @@ The plugin bundles everything needed — no manual configuration required:
 
 | Component | What It Does |
 |-----------|-------------|
-| **MCP Server** | 29 tools for recording, searching, querying, and visualizing the knowledge graph |
+| **MCP Server** | 38 tools for recording, searching, querying, and visualizing the knowledge graph |
 | `/vibe-cognition` skill | Teaches Claude when and how to capture decisions, failures, discoveries, patterns |
 | `/vibe-curate` skill | Curates semantic edges and identifies clusters using edge-analyzer and cluster-analyzer subagents |
 | `/vibe-backfill` skill | Backfills the cognition graph from git commit history (watermark-based — finds everything untracked since the last backfilled commit, however old) |
 | `/vibe-dashboard` skill | Launches the local graph dashboard via the `cognition_dashboard` MCP tool |
 | **SessionStart hook** | Injects recent project context (constraints, patterns, decisions, incidents) at session start |
+| **Codex adapter** | `.codex-plugin` manifest, Codex hooks with Windows wrappers, per-harness skill renders, curation reference files, and the Plan agent as a Codex role — see [Codex CLI](#codex-cli) |
 
 ## Prerequisites
 
@@ -124,6 +125,8 @@ Claude Code doesn't auto-update third-party marketplace plugins, so there's norm
 - **Throttling**: at most once per 24 hours, tracked by a local timestamp file in the plugin's data directory (never committed, never synced). The network phase has a hard ~8 second wall-clock ceiling — a slow or stalled connection is treated as "couldn't check" and never blocks your session start beyond that.
 - **How to disable**: set `VIBE_UPDATE_NUDGE=off` (also accepts `0`/`false`/`no`) in your environment. This skips the check entirely — no network request, no nudge.
 - **Contributing to this repo**: a dev session on this repo makes the same daily check like any other project, unless you set `VIBE_UPDATE_NUDGE=off`.
+
+On Codex the same check reads the `coltondyck` Codex marketplace pin and the `.codex-plugin` manifest, and the reminder names the `codex plugin marketplace upgrade` / `codex plugin add` commands instead.
 
 ## What's New
 
@@ -341,7 +344,7 @@ The graph uses a **MultiDiGraph** — multiple edge types between the same pair 
 Edges are created through two mechanisms:
 
 1. **Deterministic matching** (always on): `part_of` and (for document→episode) `relates_to` edges are created automatically when nodes share references. No setup needed. This is the *only* automatic edge creation.
-2. **`/vibe-curate` skill** (launches a background curator): Triggering curation is the agent's responsibility — after recording any nodes, the agent runs the `/vibe-curate` skill to launch a background curate-orchestrator agent, which creates semantic edges (led_to, resolved_by, supersedes) and identifies clusters via Haiku subagents. The main agent never authors these edges itself. This is a documented convention, not an enforced lock — `get_status`'s `cognition_graph.edges_outside_curation` (WP-TC15) is a smoke detector, not a gate: it counts semantic-edge writes whose `source` isn't one of the curator's own values (a `cognition_add_edge`/`cognition_add_edges_batch` call outside a curation run), so accidental misuse of the exclusive-write convention surfaces instead of silently degrading edge provenance. `edge_sources` alongside it is the full per-source histogram.
+2. **`/vibe-curate` skill** (launches a background curator): Triggering curation is the agent's responsibility — after recording any nodes, the agent runs the `/vibe-curate` skill to launch a background curate-orchestrator agent, which creates semantic edges (led_to, resolved_by, supersedes) and identifies clusters via Haiku subagents. The main agent never authors these edges itself. Since 0.36.0 this is enforced server-side: the edge-writing tools require a curation-session token from `cognition_begin_curation`, so a write outside a curation run is refused and every accepted edge records its `curation_session`. `get_status`'s `cognition_graph.edges_outside_curation` (WP-TC15) remains the smoke detector for legacy sources: it counts semantic-edge writes whose `source` isn't one of the curator's own values (a `cognition_add_edge`/`cognition_add_edges_batch` call outside a curation run), so accidental misuse of the exclusive-write convention surfaces instead of silently degrading edge provenance. `edge_sources` alongside it is the full per-source histogram.
 
 **Conflict pass**: a dedicated `curate-conflict-analyzer` subagent runs between edge curation and clustering, hunting deliberately for `contradicts`/`supersedes` on stance-bearing nodes (decisions, constraints, patterns, assumptions) — the general edge-analyzer treats `contradicts` as genuinely rare and never actively looks for it. Every proposal carries verbatim quoted stances from both nodes; a whole-run cap discards the entire pass if more than 20% of examined candidates (once at least 15 have been examined) come back `contradicts`, guarding against a systematic false-positive run.
 
@@ -617,6 +620,11 @@ All configuration is optional. Vibe Cognition works out of the box with sensible
 | `OLLAMA_MODEL` | `nomic-embed-text` | Ollama embedding model |
 | `ENV_FACT_MACHINE_CAP` | `10` | Max distinct machine entries per person in the env-facts store (see [Environment Facts](#environment-facts)) |
 | `LOG_LEVEL` | `INFO` | Logging level |
+| `VIBE_HARNESS` | `claude-code` | Which harness the server and hooks are running under (`claude-code` or `codex`); set automatically by each adapter — selects invocation syntax, model tiers, and update instructions |
+| `VIBE_MODEL_SMALL` | `haiku` (Claude Code) / `gpt-5.6-luna` (Codex) | Model for analyzer and backfill-worker subagents; `inherit` opts into the parent's model |
+| `VIBE_MODEL_MID` | `sonnet` (Claude Code) / `gpt-5.6-sol` (Codex) | Model for the curate/backfill orchestrator; `inherit` opts into the parent's model |
+| `VIBE_UPDATE_NUDGE` | on | `off` disables the daily update check (see [Update Notifications](#update-notifications)) |
+| `VIBE_WHATS_NEW` | on | `off` disables the post-update summary (see [What's New](#whats-new)) |
 
 ### Using Ollama for Embeddings (Optional)
 
@@ -755,6 +763,11 @@ uv run pytest
 
 # Run linting
 uv run ruff check .
+
+# Skills and agents are generated: edit skills-src/ and agents-src/, then re-render
+# (CI fails on drift; see docs/HARNESSES.md and PARITY.md)
+uv run python tools/render_harness.py
+uv run python tools/render_parity.py
 
 # Run type checking
 uv run pyright
