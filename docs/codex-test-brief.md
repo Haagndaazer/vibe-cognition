@@ -114,8 +114,10 @@ PASS if the cached manifest shows `"version": "0.35.0"`, four skills, and
 
 **This needs a fresh Codex process.** Stop here, write the Phase 0–1 results,
 and tell the user: "Please fully quit Codex, start it again inside a project
-directory (for example `E:\E Drive Projects\linglang-teacher`), and give me
-the prompt `continue the vibe-cognition test brief from Phase 2`."
+directory (for example `E:\E Drive Projects\linglang-teacher`), accept the
+hooks-trust prompt if one appears, and give me the prompt `continue the
+vibe-cognition test brief from Phase 2`." (Codex runs session-start hooks on
+the first turn, so that prompt is what triggers the registration.)
 
 When resumed in the new session, check and record:
 
