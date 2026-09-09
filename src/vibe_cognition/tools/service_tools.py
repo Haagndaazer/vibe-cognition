@@ -78,6 +78,24 @@ def register_service_tools(mcp) -> None:
                                recently) isn't visible here at all; re-run
                                /vibe-curate periodically regardless of this
                                count,
+              harness: {name: "claude-code" | "codex", display_name, skill_prefix
+                        ("/" or "$"), spawn_tool, curation_available, manifest_path,
+                        containment, models: {small: {model, source}, mid: {model,
+                        source}}} -- the harness policy resolved from VIBE_HARNESS;
+                        ``source`` is "default", "env" (a VIBE_MODEL_* override),
+                        or "env:inherit". Agents read ``models`` here to pin
+                        subagent models instead of hardcoding names,
+              curation_sessions: {started: int, writes: int} -- curation sessions
+                                 minted by cognition_begin_curation IN THIS SERVER
+                                 PROCESS (lifetime counts, not live) and the edges
+                                 plus curated marks they wrote. Process-local: a
+                                 launcher whose orchestrator runs against another
+                                 server process (Codex spawns one per agent
+                                 thread) sees 0/0 here while the graph gains
+                                 session-stamped edges -- use
+                                 cognition_graph.uncurated, edge_sources, and the
+                                 edge's ``curation_session`` as the cross-process
+                                 evidence,
               rehydrate_events: null when no journal rehydrate-reset has occurred
                                 in this server process; otherwise
                                 {count: int, last: {at, nodes_before, nodes_after,

@@ -19,3 +19,15 @@ The marketplace lives in a separate repo — `Haagndaazer/colton-claude-plugins`
 5. Loki re-pins that SHA in `colton-claude-plugins`'s `marketplace.json` (Claude Code) and, once the Codex entry exists there, in its `.agents/plugins/marketplace.json` (Codex), and pushes, so installs/updates pick it up.
 
 The marketplace `sha` always points to the code commit on this repo's `main`.
+
+## HARD RULE — tool-surface audit before every release
+
+If a release adds or changes ANY MCP tool (new tool, new/renamed parameter, changed return shape, changed error semantics), the release is NOT ready to pin until the recurring tool-surface self-sufficiency audit (cognition workflow `67751ebc39bd`) has been run and its findings fixed in the same release:
+
+1. Each affected tool's docstring, read in isolation, documents every parameter in its `Args:` block (including any new gating parameter such as `curation_token`), the full `Returns:` shape (every key an agent will read), and the error semantics.
+2. `get_status`'s documented return shape lists every key the tool actually returns.
+3. `skills-src/vibe-cognition/SKILL.md`'s tool table and `README.md`'s MCP tools table carry a row for every registered tool (`tests/test_doc_drift.py` enforces the skill table; check the README by hand).
+4. `parity.json` has a row for the tool on every harness (`tools/render_parity.py --check`).
+5. The `cognition_readme` tool's guide text still describes the current record → curate loop.
+
+Say in the pin request to Loki that the audit was run. This rule exists because v0.36.0 shipped `curation_token` on three tools with the parameter missing from their `Args:` blocks and `get_status` returning two undocumented keys; the audit caught it only because Colton asked.

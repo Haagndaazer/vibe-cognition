@@ -19,12 +19,15 @@ initialize handshake and re-injected after a compact, so it is already in your
 context. In brief: record with cognition_record as you work, then run /vibe-curate to
 launch the background curate-orchestrator agent, which adds semantic edges (led_to,
 resolved_by, supersedes, contradicts, relates_to) -- never author them yourself.
-Deterministic part_of edges are created automatically. This exclusivity is a
-documented convention, not an enforced lock -- get_status's cognition_graph.
-edges_outside_curation (WP-TC15) counts semantic-edge writes whose source isn't
-one of the curator's own values, surfacing accidental misuse of cognition_add_edge/
-cognition_add_edges_batch outside a curation run; edge_sources is the full
-per-source histogram alongside it.
+Deterministic part_of edges are created automatically. This exclusivity is
+enforced server-side: cognition_add_edge, cognition_add_edges_batch, and
+cognition_mark_curated require a curation_token minted by cognition_begin_curation
+(the curate-orchestrator calls it at the start of a run) and refuse without one;
+every accepted edge records its curation_session. get_status's cognition_graph.
+edges_outside_curation (WP-TC15) still counts semantic-edge writes whose source
+isn't one of the curator's own values (legacy or hand-tagged sources); edge_sources
+is the full per-source histogram alongside it. On Codex the same loop runs with
+$vibe-curate; get_status.harness tells you which harness you are on.
 
 ## Tool groups
 
@@ -40,9 +43,9 @@ per-source histogram alongside it.
 | History | cognition_get_history, cognition_get_node, cognition_get_chain, |
 |         | cognition_get_superseded_chain, cognition_get_incident_resolution, |
 |         | cognition_get_neighbors |
-| Curate | cognition_add_edge, cognition_add_edges_batch, cognition_remove_edge, |
-|        | cognition_get_edgeless_nodes, cognition_get_uncurated_nodes, |
-|        | cognition_mark_curated |
+| Curate | cognition_begin_curation, cognition_add_edge, cognition_add_edges_batch, |
+|        | cognition_remove_edge, cognition_get_edgeless_nodes, |
+|        | cognition_get_uncurated_nodes, cognition_mark_curated |
 | Document | cognition_store_document, cognition_get_document |
 | Workflow | cognition_get_workflow (find by topic; resolves to current HEAD) |
 | Cross-project | cognition_load_project, cognition_unload_project, |

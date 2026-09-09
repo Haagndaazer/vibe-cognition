@@ -4178,7 +4178,16 @@ def register_cognition_tools(mcp) -> None:
         cognition_get_neighbors as ``curation_session`` and counted in get_status's
         ``curation_sessions``). Tokens live for this server process only -- after a
         server restart, begin a new session. This is friction plus audit, not an
-        access control: the server cannot see who is calling.
+        access control: the server cannot see who is calling. A subagent may be
+        talking to a different server process than its launcher (Codex spawns
+        one per agent thread); mint the token in the process that will write.
+
+        Args:
+            (none)
+
+        Returns:
+            {"curation_token": str, "session_id": str ("cur-<hex>"),
+             "uncurated": int (the full uncurated backlog, uncapped)}
         """
         lc = get_lifespan(ctx)
         storage: CognitionStorage = lc["cognition_storage"]
@@ -4279,9 +4288,15 @@ def register_cognition_tools(mcp) -> None:
                        valid value; supersedes is the reconciliation edge.)
             reason: Optional brief explanation of why this edge exists
             source: Provenance tag (default: "manual")
+            curation_token: Token from cognition_begin_curation for this server
+                            process. Required -- absent or unknown tokens are
+                            refused with {"error": "curation token required: ..."}
+                            and nothing is written.
 
         Returns:
-            {"created": true, ...} or {"error": "..."}
+            {"created": true, "from_id", "to_id", "edge_type", "timestamp"} on
+            success; the accepted edge carries ``curation_session`` (the session
+            id from cognition_begin_curation). {"error": "..."} otherwise.
         """
         lc = get_lifespan(ctx)
         session, refusal = _require_curation(lc, curation_token)
@@ -4368,9 +4383,14 @@ def register_cognition_tools(mcp) -> None:
                    7b9db5a8d675 — and is simply not a valid value; supersedes
                    is the reconciliation edge.) Example:
                    '[{"from_id":"abc","to_id":"def","edge_type":"led_to"}]'
+            curation_token: Token from cognition_begin_curation for this server
+                            process. Required -- absent or unknown tokens are
+                            refused with {"error": "curation token required: ..."}
+                            and no edge in the batch is written.
 
         Returns:
-            {"created": N, "skipped": N, "errors": [...]}
+            {"created": N, "skipped": N, "errors": [...]}; every created edge
+            carries ``curation_session``.
         """
         lc = get_lifespan(ctx)
         session, refusal = _require_curation(lc, curation_token)
@@ -4532,9 +4552,13 @@ def register_cognition_tools(mcp) -> None:
 
         Args:
             node_ids: Comma-separated node IDs to mark as curated
+            curation_token: Token from cognition_begin_curation for this server
+                            process. Required -- absent or unknown tokens are
+                            refused with {"error": "curation token required: ..."}
+                            and nothing is marked.
 
         Returns:
-            {"marked": N, "not_found": [...]}
+            {"marked": N, "not_found": [...]} or {"error": "..."}
         """
         lc = get_lifespan(ctx)
         session, refusal = _require_curation(lc, curation_token)
