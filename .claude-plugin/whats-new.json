@@ -1,4 +1,8 @@
 {
+  "0.36.2": [
+    "Lifecycle diagnostics now retain client and sidecar supervisor identity details in startup logs for Claude Code and Codex, including when sidecar stderr is discarded.",
+    "Logging only: no new shutdown watches or process-exit changes. These diagnostics support investigation; this release does not fix orphaned processes."
+  ],
   "0.33.0": [
     "You can now store durable per-machine environment facts about yourself (project root, OS, tool choices) so teammates' sessions detect setup divergence -- ask Claude to remember an environment fact.",
     "Facts are self-only to write, open to read, and always disclosed when stored; ask Claude to remove any of them at any time (one call forgets everything).",

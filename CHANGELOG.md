@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.2]
+
+### Fixed
+- Preserve lifecycle identity verdicts, process IDs, executable paths, harness
+  tags and observation timestamps in the existing startup logs. Sidecars now
+  flush their identity evidence before model loading instead of losing those
+  details to discarded stderr. This is diagnostic logging only: no new shutdown
+  watches are armed and process exit behavior is unchanged.
+
 ## [0.36.1]
 
 ### Added

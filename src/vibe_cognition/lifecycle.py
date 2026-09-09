@@ -33,6 +33,7 @@ a platform we don't ship to.
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import sys
 import threading
@@ -342,6 +343,21 @@ def _log_identity(kind: str, result: dict) -> None:
         sys.stderr.flush()
     except Exception:
         pass
+    # Keep the evidence in memory for the existing startup-log flush, too.
+    # Server stderr depends on harness retention; sidecar stderr is DEVNULL.
+    # No disk I/O here: server identification runs before handshake yield.
+    try:
+        evidence = {
+            "kind": kind,
+            "pid": os.getpid(),
+            "harness": os.environ.get("VIBE_HARNESS", "unspecified"),
+            "executable": sys.executable,
+            "observed_at_unix": time.time(),
+            **result,
+        }
+        _startup_timing.stamp("lifecycle_identity " + json.dumps(evidence, sort_keys=True))
+    except Exception:
+        pass  # Diagnostics must never change startup or shutdown behavior.
 
 
 def resolve_stdin_pipe_peer() -> dict:

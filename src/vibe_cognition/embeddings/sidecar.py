@@ -147,6 +147,9 @@ def main() -> None:
     # pid the server handed us resolves to. Arms nothing; see module
     # docstring for why the depth-1 watch above is not sufficient alone.
     lifecycle.log_supervisor_identity()
+    # This process has no MCP handshake. Persist identity before a load can
+    # wedge; stderr is discarded by the supervisor. No new watch is armed.
+    _startup_timing.flush_to_disk()
 
     backend: EmbeddingBackend | None = None
 
