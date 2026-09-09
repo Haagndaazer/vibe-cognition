@@ -306,4 +306,4 @@ critical path is P0 → P2 → P4.
 4. **Scope:** backfill on Codex — yes; update nudge on Codex — yes; Plan
    agent as an **installed role file** in `~/.codex/agents/` (not a skill).
 
-Progress: **WP-P0 shipped** (8fc5230) and **WP-P1 shipped** (d80f16e), both 2026-09-08 and sonnet-reviewed (briefs `docs/wp-p0-harness-brief.md`, `docs/wp-p1-containment-brief.md`). **WP-P3 shipped** (same day; brief `docs/wp-p3-update-plan-brief.md`). **WP-P2 built** (v0.36.0; live Phase 4 (curation) gate pending on Colton's machine). Remaining: WP-P4 institutionalization.
+Progress: **WP-P0 shipped** (8fc5230) and **WP-P1 shipped** (d80f16e), both 2026-09-08 and sonnet-reviewed (briefs `docs/wp-p0-harness-brief.md`, `docs/wp-p1-containment-brief.md`). **WP-P3 shipped** (same day; brief `docs/wp-p3-update-plan-brief.md`). **WP-P2 shipped and gated** (v0.36.0; Gate P2 passed 2026-09-09, episode 97d97da257c3 — curation with analyzer fan-out ran natively on Codex). Remaining: WP-P4 institutionalization.

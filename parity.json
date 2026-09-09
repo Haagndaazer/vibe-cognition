@@ -381,7 +381,7 @@
       },
       "codex": {
         "status": "partial",
-        "note": "rendered for Codex (V2 spawn syntax, fan-out with inline fallback); live Phase 5 gate pending"
+        "note": "rendered for Codex (V2 spawn syntax) and visible in the skill catalog (gate 97d97da257c3); a backfill run itself has not been exercised live on Codex"
       }
     },
     "skill:vibe-cognition": {
@@ -400,8 +400,8 @@
         "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
       },
       "codex": {
-        "status": "partial",
-        "note": "rendered for Codex (V2 spawn syntax, fan-out with inline fallback); live Phase 5 gate pending"
+        "status": "full",
+        "evidence": "gate:97d97da257c3"
       }
     },
     "skill:vibe-dashboard": {
@@ -450,8 +450,8 @@
         "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
       },
       "codex": {
-        "status": "partial",
-        "note": "rendered for Codex (V2 spawn syntax, fan-out with inline fallback); live Phase 5 gate pending"
+        "status": "full",
+        "evidence": "gate:97d97da257c3"
       }
     },
     "agent:curate-conflict-analyzer": {
@@ -460,8 +460,8 @@
         "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
       },
       "codex": {
-        "status": "partial",
-        "note": "rendered for Codex (V2 spawn syntax, fan-out with inline fallback); live Phase 5 gate pending"
+        "status": "full",
+        "evidence": "gate:97d97da257c3"
       }
     },
     "agent:curate-edge-analyzer": {
@@ -470,8 +470,8 @@
         "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
       },
       "codex": {
-        "status": "partial",
-        "note": "rendered for Codex (V2 spawn syntax, fan-out with inline fallback); live Phase 5 gate pending"
+        "status": "full",
+        "evidence": "gate:97d97da257c3"
       }
     },
     "agent:curate-orchestrator": {
@@ -480,8 +480,8 @@
         "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
       },
       "codex": {
-        "status": "partial",
-        "note": "rendered for Codex (V2 spawn syntax, fan-out with inline fallback); live Phase 5 gate pending"
+        "status": "full",
+        "evidence": "gate:97d97da257c3"
       }
     },
     "agent:plan": {

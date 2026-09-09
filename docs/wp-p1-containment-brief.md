@@ -50,7 +50,11 @@ Date: 2026-09-08
 - Tokens live in process memory; a server restart invalidates them and the
   orchestrator simply begins a new session. `get_status.curation_sessions.
   started` is a lifetime count for this server process (no end-of-session
-  call exists), not a live in-flight count.
+  call exists), not a live in-flight count. On Codex each spawned agent
+  thread runs its own MCP server process, so a launcher's counters stay 0
+  while the orchestrator's process holds the session (Gate P2, episode
+  97d97da257c3); `uncurated`, `edge_sources`, and the edge's
+  `curation_session` are the cross-process evidence.
 - `cognition_remove_edge` / `cognition_remove_node` stay ungated: they are
   repair tools for humans and the curator alike, and gating deletes would
   block legitimate cleanup; `edge_sources` and journal provenance still record
