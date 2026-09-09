@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.1]
+
+### Added
+- README and the `cognition_readme` guide document how to share Claude Code
+  skills with Codex without duplicating them (junction or symlink
+  `.agents/skills` to `.claude/skills`, or per-skill links under
+  `~/.agents/skills`), Codex's actual skill discovery roots, the git caveat for
+  junctions on Windows, and what does not carry over (`.claude/commands`,
+  `.claude/agents`, Claude-only wording inside skills).
+
 ## [0.36.0]
 
 ### Added

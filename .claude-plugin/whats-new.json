@@ -28,5 +28,8 @@
   "0.35.0": [
     "vibe-cognition now installs into OpenAI Codex CLI as a plugin: codex plugin marketplace add Haagndaazer/colton-claude-plugins, then codex plugin add vibe-cognition@coltondyck; restart Codex once.",
     "On Codex the session-start hook registers the MCP server bound to whatever project you open, injects the project digest, and re-injects the standing practices after /compact."
+  ],
+  "0.36.1": [
+    "Docs: how to share your Claude Code skills with Codex without duplicating them -- link .agents/skills to .claude/skills (README, Codex CLI section, and the cognition_readme guide)."
   ]
 }

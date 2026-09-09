@@ -699,6 +699,21 @@ Also on Codex: the Plan agent is installed as a custom role (`~/.codex/agents/vi
 
 Curation and backfill run on Codex too: `$vibe-curate` spawns the curate-orchestrator (`gpt-5.6-sol` by default) which fans out to `gpt-5.6-luna` analyzers, exactly as on Claude Code; if your Codex install refuses nested spawns it finishes the pass inline and reports `fan_out: unavailable`. Override the models with `VIBE_MODEL_MID` / `VIBE_MODEL_SMALL` on the `vibe-cognition` MCP entry. Edge writes on every harness require the curation-session token, so only the orchestrator can link nodes.
 
+### Sharing your Claude Code skills with Codex
+
+Codex never reads `.claude` folders. It discovers skills in `~/.agents/skills` (user-level), `.agents/skills` inside a repo (checked from the project root down to your current directory), the deprecated `~/.codex/skills`, and installed plugins. The `SKILL.md` format is the same on both harnesses, so you can share one copy with a directory junction instead of duplicating files:
+
+```powershell
+# a repo that has .claude/skills but no .agents yet
+New-Item -ItemType Directory -Force "<repo>\.agents"
+cmd /c mklink /J "<repo>\.agents\skills" "<repo>\.claude\skills"
+
+# or one personal skill at a time (~/.agents/skills already exists once any Codex plugin is installed)
+cmd /c mklink /J "$HOME\.agents\skills\<skill-name>" "$HOME\.claude\skills\<skill-name>"
+```
+
+On macOS/Linux use `ln -s` the same way. Codex then invokes each skill as `$skill-name` where Claude Code uses `/skill-name`, and new skills you add under `.claude/skills` appear automatically. Three caveats: git on Windows walks into a junction as a normal directory, so either add `.agents/` to `.gitignore` (local-only sharing) or commit `.agents/skills` as the real files and junction `.claude/skills` to it; a skill whose text names Claude-only mechanics (`/skill` invocations, the Agent tool, `subagent_type`, model names) will read wrong on Codex until its wording is harness-neutral; and `.claude/commands` and `.claude/agents` have no Codex equivalent (Codex custom prompts live in `~/.codex/prompts`, and agent definitions need a Codex role file, which is what this plugin generates for its own Plan agent).
+
 Uninstall:
 
 ```bash

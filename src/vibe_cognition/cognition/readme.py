@@ -29,6 +29,21 @@ isn't one of the curator's own values (legacy or hand-tagged sources); edge_sour
 is the full per-source histogram alongside it. On Codex the same loop runs with
 $vibe-curate; get_status.harness tells you which harness you are on.
 
+## Codex CLI
+
+This plugin also runs under OpenAI Codex CLI (get_status.harness tells you which
+harness you are on; skills are invoked as $name there instead of /name). Codex never
+reads .claude folders: it discovers skills in ~/.agents/skills, in .agents/skills
+inside the repo (project root down to the current directory), the deprecated
+~/.codex/skills, and installed plugins. To share a project's Claude Code skills with
+Codex without duplicating them, junction (Windows: cmd /c mklink /J) or symlink the
+repo's .agents/skills to its .claude/skills, or link individual skill folders under
+~/.agents/skills. Git on Windows walks into junctions, so either ignore .agents/ or
+commit .agents/skills as the real copy and link .claude/skills to it. Skills whose
+text names Claude-only mechanics (/skill invocations, the Agent tool, subagent_type,
+model names) read wrong on Codex until their wording is harness-neutral; .claude/
+commands and .claude/agents have no Codex equivalent.
+
 ## Tool groups
 
 | Group | Tools |
