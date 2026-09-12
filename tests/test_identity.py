@@ -57,8 +57,8 @@ def _write_svn_credential(config_dir: Path, username: str, realm: str = "<https:
 
 
 def test_parse_hash_dump_extracts_username_and_realm():
-    text = "K 8\nusername\nV 5\ncolto\nK 15\nsvn:realmstring\nV 3\nfoo\nEND\n"
-    assert _parse_hash_dump(text) == {"username": "colto", "svn:realmstring": "foo"}
+    text = "K 8\nusername\nV 6\njsmith\nK 15\nsvn:realmstring\nV 3\nfoo\nEND\n"
+    assert _parse_hash_dump(text) == {"username": "jsmith", "svn:realmstring": "foo"}
 
 
 def test_parse_hash_dump_tolerates_garbage():
@@ -67,8 +67,8 @@ def test_parse_hash_dump_tolerates_garbage():
 
 
 def test_parse_hash_dump_stops_at_end_marker():
-    text = "K 8\nusername\nV 5\ncolto\nEND\nK 8\nusername\nV 6\nlater!\n"
-    assert _parse_hash_dump(text)["username"] == "colto"
+    text = "K 8\nusername\nV 6\njsmith\nEND\nK 8\nusername\nV 6\nlater!\n"
+    assert _parse_hash_dump(text)["username"] == "jsmith"
 
 
 @pytest.mark.parametrize(
@@ -76,7 +76,7 @@ def test_parse_hash_dump_stops_at_end_marker():
     [
         ("a@b.com", True),
         ("first.last@sub.example.co.uk", True),
-        ("colto", False),
+        ("jsmith", False),
         ("a@b", False),
         ("a b@c.com", False),
         ("a@@b.com", False),
@@ -95,21 +95,21 @@ def test_svn_candidates_empty_when_no_config(repo):
 
 def test_svn_candidates_reads_cached_username(repo, monkeypatch, tmp_path):
     cfg = tmp_path / "svnconf"
-    _write_svn_credential(cfg, "colton@example.com")
+    _write_svn_credential(cfg, "jsmith@example.com")
     monkeypatch.setenv("SVN_CONFIG_DIR", str(cfg))
     got = svn_username_candidates()
-    assert [c["username"] for c in got] == ["colton@example.com"]
+    assert [c["username"] for c in got] == ["jsmith@example.com"]
 
 
 def test_resolve_svn_identity_requires_a_working_copy(repo, monkeypatch, tmp_path):
     root, _ = repo
     cfg = tmp_path / "svnconf"
-    _write_svn_credential(cfg, "colton@example.com")
+    _write_svn_credential(cfg, "jsmith@example.com")
     monkeypatch.setenv("SVN_CONFIG_DIR", str(cfg))
     # Credential exists, but this dir is not an SVN working copy.
     assert resolve_svn_identity(root) == {"name": "", "email": ""}
     (root / ".svn").mkdir()
-    assert resolve_svn_identity(root)["email"] == "colton@example.com"
+    assert resolve_svn_identity(root)["email"] == "jsmith@example.com"
 
 
 def test_resolve_svn_identity_bare_login_yields_no_email(repo, monkeypatch, tmp_path):
@@ -117,9 +117,9 @@ def test_resolve_svn_identity_bare_login_yields_no_email(repo, monkeypatch, tmp_
     root, _ = repo
     (root / ".svn").mkdir()
     cfg = tmp_path / "svnconf"
-    _write_svn_credential(cfg, "colto")
+    _write_svn_credential(cfg, "jsmith")
     monkeypatch.setenv("SVN_CONFIG_DIR", str(cfg))
-    assert resolve_svn_identity(root) == {"name": "colto", "email": ""}
+    assert resolve_svn_identity(root) == {"name": "jsmith", "email": ""}
 
 
 def test_is_svn_working_copy(repo):
@@ -251,13 +251,13 @@ def test_gate_error_offers_svn_candidate_without_assuming_it(repo, monkeypatch, 
     root, cognition = repo
     (root / ".svn").mkdir()
     cfg = tmp_path / "svnconf"
-    _write_svn_credential(cfg, "colto")  # bare login: not a usable email
+    _write_svn_credential(cfg, "jsmith")  # bare login: not a usable email
     monkeypatch.setenv("SVN_CONFIG_DIR", str(cfg))
 
     err = require_identity(root, cognition)
     assert err is not None, "a bare SVN login is not an email and must still block"
     assert any(s["source"] == SOURCE_SVN for s in err["suggestions"])
-    assert "colto" in err["error"]
+    assert "jsmith" in err["error"]
 
 
 def test_suggestions_are_deduped_and_sourced(repo, monkeypatch, tmp_path):
@@ -388,10 +388,9 @@ def test_every_write_tool_refuses_without_identity(
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "nope"))
     monkeypatch.setenv("SVN_CONFIG_DIR", str(tmp_path / "nope-svn"))
     monkeypatch.setattr("vibe_cognition.cognition.git_identity.getpass.getuser", lambda: "x")
-    monkeypatch.setattr(
-        "vibe_cognition.cognition.git_identity.resolve_git_identity",
-        lambda repo: {"name": "unknown", "email": ""},
-    )
+    # NB: patching git_identity.resolve_git_identity would be dead code here --
+    # identity.py did `from .git_identity import resolve_git_identity`, binding its
+    # own name at import. The env redirection above is what makes the email empty.
 
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path, embeddings_ready=True)

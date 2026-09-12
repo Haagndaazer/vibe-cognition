@@ -82,6 +82,33 @@ class _MockMcp:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_identity_resolution(monkeypatch, tmp_path):
+    """Keep graph-identity resolution off the real machine, and make it resolvable.
+
+    Two problems this solves. First, without it every test inherited whatever
+    identity happened to be in the developer's ~/.gitconfig, so attribution
+    assertions were machine-dependent. Second and sharper: since v0.37.0 writes
+    are GATED on a resolvable email, so on a fresh CI runner with no global git
+    identity the gate refuses and ~94 write-path tests fail -- green locally,
+    red everywhere else.
+
+    A deterministic config is written per test, so the gate always passes and the
+    stamped identity is the same everywhere. Tests that need the UNRESOLVED case
+    (tests/test_identity.py's `repo` fixture, the refusal tests) point these env
+    vars at nonexistent paths themselves, which runs after this and wins.
+    """
+    gitconfig = tmp_path / "_identity_gitconfig"
+    gitconfig.write_text(
+        "[user]\n\tname = Test User\n\temail = test-user@example.invalid\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(gitconfig))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(tmp_path / "_no_system_gitconfig"))
+    # SVN is suggestion-only and must never be read off the real machine.
+    monkeypatch.setenv("SVN_CONFIG_DIR", str(tmp_path / "_no_svn_config"))
+
+
+@pytest.fixture(autouse=True)
 def _isolate_chroma_resolution(monkeypatch, tmp_path):
     """WP-Chroma-Home: keep chromadb path resolution off the real machine.
 

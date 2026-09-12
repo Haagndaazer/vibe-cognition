@@ -13,6 +13,12 @@ only a human-confirmed value is ever written.
 DRY RUN BY DEFAULT. Without `--apply` it reports what would change and writes
 nothing.
 
+STOP LIVE SESSIONS BEFORE --apply. Each node is rewritten read-modify-write, and
+storage's lock is in-process only: a concurrent MCP session appending a real
+change to the same node between the read and the write has that change silently
+overwritten by the stale copy. The window is small but the loss is not limited to
+identity fields -- any unrelated metadata change on that node goes with it.
+
 KNOWN GAP: environment facts in .cognition/people/<slug>.jsonl are keyed by email
 and are NOT remapped -- the old address's file is left in place. Re-record those
 facts under the new identity if you rely on them.

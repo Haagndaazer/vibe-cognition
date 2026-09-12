@@ -129,6 +129,9 @@ def main() -> None:
             # new edge_sources histogram value; "nodes" itself is always int,
             # narrowed explicitly here since pyright doesn't infer that from the
             # union return type alone.
+            identity_note = _identity_notice(storage.cognition_dir.parent, storage.cognition_dir)
+            if identity_note:
+                sections.append(identity_note)
             node_count = storage.get_statistics()["nodes"]
             if isinstance(node_count, int) and node_count > 0:
                 try:
@@ -145,11 +148,6 @@ def main() -> None:
                     )
                 except Exception:  # noqa: BLE001
                     config = PrimeConfig()
-                # The identity banner must survive a compaction: this is exactly
-                # when an agent has forgotten that writes are gated.
-                identity_note = _identity_notice(storage.cognition_dir.parent, storage.cognition_dir)
-                if identity_note:
-                    sections.append(identity_note)
                 sections.append(generate_prime(storage, config))
     except Exception:  # noqa: BLE001
         pass

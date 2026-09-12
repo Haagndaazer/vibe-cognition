@@ -13,8 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Graph identity is now resolved, confirmable, and enforced.** A new
   `identity.py` resolves who is driving a checkout in order: a confirmed
-  `.cognition/identity.json`, then git config, then cached SVN credentials, then
-  the OS user. When no email resolves from any source, **every graph write is
+  `.cognition/identity.json`, then git config, then the OS user. SVN credentials
+  are read but are SUGGESTION-ONLY and never attribute a write: the auth cache is
+  machine-wide and realm-keyed, so trusting it could attribute this repo's history
+  via another project's credential. When no email resolves from any source, **every graph write is
   refused** with `identity_required: true` and a payload of candidates found on
   the machine; reads are unaffected. Previously a working copy with no git
   identity attributed every memory to an empty address, making all such users

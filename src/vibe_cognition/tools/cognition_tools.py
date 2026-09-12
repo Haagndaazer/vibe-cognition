@@ -213,9 +213,21 @@ def _node_from_dict(node_id: str, data: dict[str, Any]) -> CognitionNode:
 
 
 def _acting_identity(cognition_dir: Path) -> dict[str, str]:
-    """Identity stamped on writes: confirmed file, else git, else SVN, else OS user."""
+    """Identity stamped on writes: confirmed file, else git config, else unresolved.
+
+    Carries `source`/`confirmed` onto the stamp so a later audit can tell a
+    human-confirmed identity from whatever happened to be in a shared machine's
+    git config — the shared-build-account case that otherwise reproduces, one
+    layer down, the anonymous-attribution bug this gate exists to close.
+    Consumers reading only name/email are unaffected.
+    """
     ident = resolve_identity(cognition_dir.parent, cognition_dir)
-    return {"name": ident["name"], "email": ident["email"]}
+    return {
+        "name": ident["name"],
+        "email": ident["email"],
+        "source": ident["source"],
+        "confirmed": ident["confirmed"],
+    }
 
 
 def _identity_gate(cognition_dir: Path) -> dict[str, Any] | None:
@@ -2417,9 +2429,9 @@ def _get_person(storage: CognitionStorage, email_or_id: str) -> dict[str, Any]:
 
 
 def _self_identity(storage: CognitionStorage) -> tuple[dict[str, str] | None, str]:
-    """(recorded_by, casefolded email) for the server-resolved git identity,
-    or (None, "") when no email is resolvable — callers return a retryable
-    error rather than ever guessing an identity."""
+    """(recorded_by, casefolded email) for the server-resolved identity (confirmed
+    file, else git config), or (None, "") when no email is resolvable — callers
+    return a retryable error rather than ever guessing an identity."""
     by = _acting_identity(storage.cognition_dir)
     email = _casefold_email(by.get("email", ""))
     return (by, email) if email else (None, "")
@@ -2432,8 +2444,8 @@ def _machine_key(machine: str | None) -> str:
 
 
 _NO_IDENTITY_ERROR = (
-    "env facts are self-only and the current git identity has no resolvable "
-    "email — set user.email in git config, then retry"
+    "env facts are self-only and no email resolves for you — ASK THE HUMAN for "
+    "their name and work email, then call cognition_set_identity(name=..., email=...)"
 )
 _NO_MACHINE_ERROR = (
     "no machine key: the machine argument was blank, or (when omitted) this "
@@ -2453,7 +2465,7 @@ def _set_env_fact(
     storage: CognitionStorage = lc["cognition_storage"]
     by, email = _self_identity(storage)
     if by is None:
-        return {"error": _NO_IDENTITY_ERROR}
+        return _identity_gate(storage.cognition_dir) or {"error": _NO_IDENTITY_ERROR}
     machine_key = _machine_key(machine)
     if not machine_key:
         return {"error": _NO_MACHINE_ERROR}
@@ -2492,7 +2504,7 @@ def _delete_env_fact(
     storage: CognitionStorage = lc["cognition_storage"]
     by, email = _self_identity(storage)
     if by is None:
-        return {"error": _NO_IDENTITY_ERROR}
+        return _identity_gate(storage.cognition_dir) or {"error": _NO_IDENTITY_ERROR}
     machine_key = _machine_key(machine)
     if not machine_key:
         return {"error": _NO_MACHINE_ERROR}
@@ -2520,7 +2532,7 @@ def _clear_env_facts(
     storage: CognitionStorage = lc["cognition_storage"]
     by, email = _self_identity(storage)
     if by is None:
-        return {"error": _NO_IDENTITY_ERROR}
+        return _identity_gate(storage.cognition_dir) or {"error": _NO_IDENTITY_ERROR}
     machine_key: str | None = None
     if machine is not None:
         machine_key = _machine_key(machine)
@@ -2550,7 +2562,7 @@ def _list_env_facts(ctx: Context, email_or_id: str | None = None) -> dict[str, A
     if email_or_id is None:
         _, email = _self_identity(storage)
         if not email:
-            return {"error": _NO_IDENTITY_ERROR}
+            return _identity_gate(storage.cognition_dir) or {"error": _NO_IDENTITY_ERROR}
     else:
         node = _resolve_person(storage, email_or_id)
         if node is not None:
@@ -3317,7 +3329,7 @@ def register_cognition_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Store one durable environment fact about YOURSELF (self-only).
 
-        The target identity is ALWAYS the server-resolved git identity — there
+        The target identity is ALWAYS the server-resolved identity (your confirmed identity if set, else git config) — there
         is no email parameter (impersonation-resistant by construction). Facts
         are per-machine durable environment truths: project root, OS, tool
         choices ("container_runtime": "podman"), setup gotchas. They live in

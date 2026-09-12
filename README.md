@@ -309,7 +309,7 @@ Both writes are **idempotent** (existing files are appended, never clobbered) an
 - **Resolve by keeping BOTH sides.** The journal is append-only and replay order does not matter, so there is no case where one side should win. Concatenate `journal.jsonl.mine` and the highest-numbered `journal.jsonl.rNNN`, drop duplicate lines by node `id`, then `svn resolve --accept working`. Reload the graph afterwards.
 - **`svn update` before a session, commit the journal after one.** Most conflicts come from long uncommitted stretches rather than genuine simultaneous work.
 - **Never set `svn:eol-style` under `.cognition/`.** The journal is replayed by byte offset and the document store is content-addressed, so any line-ending rewrite is damaging. SVN does not translate unless the property is set — the safe state is the default. Watch for a repo-root `svn:auto-props` rule (e.g. `*.md = svn:eol-style=native`): it cannot be neutralized from `.cognition/`, because properties from different ancestors combine rather than override and no value means "do not translate". Exclude `.cognition/` at the root instead.
-- **Mirror the ignore list into SVN.** SVN does not read `.gitignore`, so set `svn:global-ignores` on `.cognition/` with the same globs. Write the value file **without a UTF-8 BOM** — `svn propset -F` mis-decodes a BOM and silently kills the first rule while `svn propget` still displays it correctly. Set the property *before* adding the directory's contents, or machine-local files are swept in by the same `svn add`.
+- **Mirror the ignore list into SVN.** SVN does not read `.gitignore`, so set `svn:global-ignores` on `.cognition/` with the same globs — **copy them from `.cognition/.gitignore` itself, not from documentation**, since that file gains entries across releases (`identity.json*` arrived in 0.37.0) and a transcribed list silently stops covering new machine-local files. Write the value file **without a UTF-8 BOM** — `svn propset -F` mis-decodes a BOM and silently kills the first rule while `svn propget` still displays it correctly. Set the property *before* adding the directory's contents, or machine-local files are swept in by the same `svn add`.
 
 Run `cognition_readme` for the full "Team setup (svn)" section.
 
@@ -376,8 +376,13 @@ it writes. Resolution order, first hit wins:
 
 1. **Confirmed** — `.cognition/identity.json`, written by `cognition_set_identity`
 2. **git config** — `[user] email` from the config files (never a subprocess)
-3. **SVN credentials** — the cached username, when it is an email address
-4. **OS user** — a name only, never an address
+3. **OS user** — a name only, never an address, so writes stay gated
+
+**SVN credentials are read but never used to attribute a write.** SVN's auth cache
+is machine-wide and realm-keyed, and no realm-to-working-copy correlation is
+attempted, so trusting it could attribute this repo's history via another
+project's credential. Cached SVN usernames are offered as *candidates* in the
+refusal payload; an SVN user confirms once and is authoritative from then on.
 
 If none of those yields an email, **recording is refused** and the session-start
 digest says so. Reads keep working. Ask Claude to set your identity and it calls

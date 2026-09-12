@@ -228,8 +228,10 @@ cognition_get_edgeless_nodes, and cognition_get_uncurated_nodes. Single-node too
 
 Every memory is attributed to a person. The server resolves who is driving, first
 hit wins: the confirmed `.cognition/identity.json`, then git config `[user] email`,
-then a cached SVN credential when its username is an email, then the OS user (name
-only, no address).
+then the OS user (name only, no address). SVN credentials are read but NEVER
+attribute a write -- the auth cache is machine-wide and realm-keyed, so trusting it
+could attribute this repo via another project's credential; SVN usernames appear
+only as `suggestions` in the refusal payload.
 
 **If no email resolves, every write is REFUSED** with `identity_required: true`.
 Reads still work. The fix: ASK THE HUMAN for their name and work email, then call
@@ -317,15 +319,17 @@ neutralized from `.cognition/` -- properties from different ancestors combine ra
 than override, and there is no property value meaning "do not translate". If your
 repo has such a rule, exclude `.cognition/` from it at the root.
 
-**Machine-local files must stay unversioned.** `last-seen.json`, `onboard-declined`,
-`.last-rehydrate.json`, `*.lock` and `chromadb/` are per-user or per-machine and must
-never be committed -- a versioned `last-seen.json` conflicts on every teammate's
-session. The server writes `.cognition/.gitignore`, which SVN does not read, so set
-the SVN equivalent once:
+**Machine-local files must stay unversioned.** A versioned `last-seen.json`
+conflicts on every teammate's session, and a versioned `identity.json` publishes
+whoever happens to drive that checkout. The server writes `.cognition/.gitignore`
+with the full list; SVN does not read it, so mirror it once:
 
     svn propset svn:global-ignores -F <file> .cognition
 
-with one glob per line, matching `.cognition/.gitignore`. Write that file WITHOUT a
+COPY THE GLOBS FROM `.cognition/.gitignore` RATHER THAN FROM THIS PAGE -- that file
+is generated and gains entries across releases (`identity.json*` was added in
+0.37.0), so any list transcribed into prose goes stale and silently stops covering
+a new machine-local file. Write that file WITHOUT a
 UTF-8 BOM: `svn propset -F` mis-decodes a BOM and silently kills the FIRST rule in
 the list, while `svn propget` still displays it as though it were fine. If such a
 file is already committed, `svn rm --keep-local <path>` removes it from version

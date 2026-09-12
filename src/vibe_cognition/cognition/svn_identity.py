@@ -115,7 +115,7 @@ def resolve_svn_identity(repo_path: Path | str) -> dict[str, str]:
 
     Returns ``{"name": str, "email": str}`` with either possibly empty. An SVN
     username is only treated as an email when it actually looks like one; a bare
-    login (``colto``) yields a name with no email, which the caller must treat as
+    login (``jsmith``) yields a name with no email, which the caller must treat as
     insufficient rather than inventing an address.
 
     Scans ALL cached credentials for one that looks like an email rather than
