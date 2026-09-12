@@ -31,13 +31,12 @@ resolved (the tools layer).
 import hashlib
 import json
 import logging
-import time
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from .journal_io import append_journal_line
+from .jsonl_dir_registry import FileState, JsonlDirRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -104,25 +103,7 @@ def email_slug(email: str) -> str:
     return encoded
 
 
-@dataclass
-class _FileState:
-    """Per-file replay state — the main journal's offset/hasher/mtime trio."""
-
-    offset: int = 0
-    hasher: "hashlib._Hash" = field(default_factory=hashlib.sha256)
-    mtime_ns: int | None = None
-    # Emails whose folded facts came from this file (normally exactly one, but
-    # folding trusts the LINES, not the filename — defensive against a
-    # hand-edited or mis-slugged file).
-    emails: set[str] = field(default_factory=set)
-
-    def reset(self) -> None:
-        self.offset = 0
-        self.hasher = hashlib.sha256()
-        self.emails = set()
-
-
-class PeopleFactsRegistry:
+class PeopleFactsRegistry(JsonlDirRegistry):
     """Environment facts folded from ``.cognition/people/*.jsonl`` delta files.
 
     NOT thread-safe on its own — every method is called under
@@ -131,18 +112,13 @@ class PeopleFactsRegistry:
     """
 
     def __init__(self, cognition_dir: Path):
-        self._people_dir = cognition_dir / PEOPLE_DIRNAME
+        super().__init__(cognition_dir / PEOPLE_DIRNAME)
         # email -> machine_key -> fact_key -> value
         self._facts: dict[str, dict[str, dict[str, Any]]] = {}
-        self._files: dict[str, _FileState] = {}
-        self._dir_mtime_ns: int | None = None
-        # True while the last-observed dir mtime was too fresh to trust
-        # equality against (see _DIR_MTIME_RACY_WINDOW_NS).
-        self._dir_mtime_racy = False
 
     @property
     def people_dir(self) -> Path:
-        return self._people_dir
+        return self._dir
 
     # ── Read surface ────────────────────────────────────────────────────
 
@@ -279,118 +255,14 @@ class PeopleFactsRegistry:
 
     # ── Catch-up ────────────────────────────────────────────────────────
 
-    def catch_up(self) -> int:
-        """Fold deltas appended since the last pass; return folded line count.
-
-        Cost contract (peer-review HIGH): one dir stat gates the listdir; each
-        known file is stat-gated before any read — a QUIESCENT no-change pass
-        (dir mtime older than the racy window) costs 1 + N_known_files stats,
-        ZERO reads, ZERO listdirs (stats scale with file count; reads never
-        do). While the dir was modified within the racy window, every pass
-        re-lists (cheap; active-write periods only) — see
-        _DIR_MTIME_RACY_WINDOW_NS. Truncation/rewrite of ONE file re-folds
-        that file only — never a global reset, never touching the graph.
-
-        Residual (shared with the main journal's _catch_up, disclosed not
-        fixed): a rewrite that coincidentally matches BOTH a file's size and
-        its st_mtime_ns evades that file's cheap path (vanishing at ns
-        granularity) until its next real change.
-        """
-        try:
-            dir_stat = self._people_dir.stat()
-        except OSError:
-            # Missing/unreadable dir: drop anything we had (dir deleted under
-            # us) and go quiet — a fresh project simply has no people/ yet.
-            if self._files:
-                self._facts.clear()
-                self._files.clear()
-                self._dir_mtime_ns = None
-                self._dir_mtime_racy = False
-            return 0
-
-        if dir_stat.st_mtime_ns != self._dir_mtime_ns or self._dir_mtime_racy:
-            self._dir_mtime_ns = dir_stat.st_mtime_ns
-            # Racy-timestamp guard: trust equality on FUTURE passes only if
-            # this observation is already safely in the past (same-tick
-            # creations after our stat share its timestamp — see the window
-            # constant). abs() so far-future clock skew degrades to the cheap
-            # gate rather than pinning racy forever.
-            self._dir_mtime_racy = (
-                abs(time.time_ns() - dir_stat.st_mtime_ns) < _DIR_MTIME_RACY_WINDOW_NS
-            )
-            try:
-                names = {
-                    p.name for p in self._people_dir.iterdir()
-                    if p.name.endswith(".jsonl")
-                }
-            except OSError:
-                return 0
-            for gone in set(self._files) - names:
-                self._drop_file(gone)
-            for new in names - set(self._files):
-                self._files[new] = _FileState()
-
-        folded = 0
-        for name in list(self._files):
-            folded += self._catch_up_file(name)
-        return folded
-
-    def _catch_up_file(self, name: str) -> int:
-        fs = self._files[name]
-        path = self._people_dir / name
-        try:
-            st = path.stat()
-        except OSError:
-            self._drop_file(name)
-            return 0
-
-        if st.st_size == fs.offset and st.st_mtime_ns == fs.mtime_ns:
-            return 0
-        fs.mtime_ns = st.st_mtime_ns
-
-        try:
-            data = path.read_bytes()
-        except OSError:
-            return 0
-
-        if st.st_size < fs.offset or (
-            fs.offset > 0
-            and hashlib.sha256(data[: fs.offset]).digest() != fs.hasher.digest()
-        ):
-            # Truncated or divergently rewritten (e.g. a merge) — re-fold THIS
-            # file only, from the top.
-            self._drop_contribution(fs)
-            fs.reset()
-
-        raw = data[fs.offset:]
-        last_nl = raw.rfind(b"\n")
-        if last_nl == -1:
-            return 0  # torn tail — park before it, re-read once complete
-        complete = raw[: last_nl + 1]
-        fs.offset += len(complete)
-        fs.hasher.update(complete)
-
-        count = 0
-        for line in complete.decode("utf-8", errors="replace").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-                self._fold(fs, entry)
-                count += 1
-            except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
-                logger.warning("Skipping malformed people-file line (%s): %s", name, e)
-        return count
-
     # ── Internals ───────────────────────────────────────────────────────
 
-    def _fold(self, fs: _FileState, entry: dict[str, Any]) -> None:
+    def _fold_entry(self, fs: FileState, entry: dict[str, Any]) -> None:
         action = entry.get("action")
         email = str(entry.get("email") or "").casefold()
         if not email or action not in ("fact_set", "fact_delete", "fact_clear"):
             return
-        fs.emails.add(email)
+        fs.keys.add(email)
         machines = self._facts.setdefault(email, {})
         if action == "fact_set":
             machine = str(entry["machine"])
@@ -412,33 +284,30 @@ class PeopleFactsRegistry:
     def _append(self, email: str, entry: dict[str, Any]) -> None:
         # append_journal_line creates the FILE (O_CREAT) but not parents —
         # a fresh project has no people/ dir until the first write.
-        self._people_dir.mkdir(parents=True, exist_ok=True)
+        self._dir.mkdir(parents=True, exist_ok=True)
         name = f"{email_slug(email)}.jsonl"
-        append_journal_line(self._people_dir / name, json.dumps(entry))
+        append_journal_line(self._dir / name, json.dumps(entry))
         # Register our OWN file immediately: dir-mtime discovery is
         # timestamp-racy (a creation in the same coarse tick as a cached dir
         # stat is numerically invisible — the Windows CI catch), and our own
         # writes must never depend on it. Content still folds via the normal
         # per-file stat gate on the next pass — same C-6 discipline as the
         # main journal: appends never advance our own offset.
-        if name not in self._files:
-            self._files[name] = _FileState()
+        self.register_own_write(name)
 
-    def _drop_file(self, name: str) -> None:
-        fs = self._files.pop(name, None)
-        if fs is not None:
-            self._drop_contribution(fs)
+    def _clear_all(self) -> None:
+        self._facts.clear()
 
-    def _drop_contribution(self, fs: _FileState) -> None:
+    def _drop_contribution(self, fs: FileState) -> None:
         """Remove every email this file contributed, then re-fold the OTHER
         files that also touched those emails (defensive: normally one file ==
         one email, but folding trusts lines, not filenames)."""
-        affected = set(fs.emails)
+        affected = set(fs.keys)
         for email in affected:
             self._facts.pop(email, None)
-        fs.emails = set()
+        fs.keys = set()
         for other in self._files.values():
-            if other is fs or not (other.emails & affected):
+            if other is fs or not (other.keys & affected):
                 continue
             # Cheap full re-fold of the overlapping file on the rare
             # hand-edited-overlap path: reset and let the next catch_up pass
