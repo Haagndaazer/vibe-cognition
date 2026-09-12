@@ -109,7 +109,10 @@ def targets() -> list[tuple[Path, Path, harness.Harness]]:
 
 
 def _read(path: Path) -> str:
-    return path.read_text(encoding="utf-8", newline="").replace("\r\n", "\n")
+    # open(), not Path.read_text(newline=...): that keyword is 3.13+ and this
+    # project supports 3.11, where it is a TypeError at runtime.
+    with open(path, encoding="utf-8", newline="") as fh:
+        return fh.read().replace("\r\n", "\n")
 
 
 def render_reference(text: str, hz: harness.Harness) -> str:

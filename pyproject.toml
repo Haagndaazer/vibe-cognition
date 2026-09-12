@@ -91,6 +91,9 @@ pythonVersion = "3.11"
 # dev machine checks the same thing.
 pythonPlatform = "Windows"
 typeCheckingMode = "standard"
+# tests/test_harness_render.py and tests/test_parity_registry.py import the
+# renderers after a runtime sys.path.insert, which pyright cannot follow.
+extraPaths = ["tools"]
 
 # This is a CPU-inference tool (nomic-embed runs fine on CPU); the default
 # torch resolution drags in the multi-GB CUDA stack on Linux as dead weight

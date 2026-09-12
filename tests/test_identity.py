@@ -306,14 +306,17 @@ def test_remap_apply_rewrites_and_preserves_original(repo):
 
     _, cognition = repo
     st = _storage(cognition)
-    node = st.add_node(CognitionNode(
-        id="n1", author="t", detail="", timestamp="2026-01-01T00:00:00Z", type=CognitionNodeType.DECISION, summary="d",
+    nid = "n1"
+    st.add_node(CognitionNode(
+        id=nid, author="t", detail="", timestamp="2026-01-01T00:00:00Z",
+        type=CognitionNodeType.DECISION, summary="d",
         metadata={"recorded_by": {"name": "Old", "email": "old@example.com"}},
     ))
-    nid = node["id"] if isinstance(node, dict) else node
 
     assert apply_remap(st, "old@example.com", "new@example.com", "New Name") == 1
-    rb = st.get_node(nid)["metadata"]["recorded_by"]
+    stored = st.get_node(nid)
+    assert stored is not None
+    rb = stored["metadata"]["recorded_by"]
     assert rb["email"] == "new@example.com"
     assert rb["name"] == "New Name"
     assert rb["remapped_from"] == "old@example.com"
