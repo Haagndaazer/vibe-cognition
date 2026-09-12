@@ -39,6 +39,7 @@ probe). Mapping:
 
 from __future__ import annotations
 
+import ctypes
 import os
 import sys
 import threading
@@ -341,6 +342,47 @@ def test_protocol_version_skew_degrades_bounded_and_never_self_heals_via_respawn
 # ── WPS-AC4: cross-process mutex serialization + abandonment ────────────────
 
 
+_TH32CS_SNAPPROCESS = 0x00000002
+_INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+
+class _PROCESSENTRY32(ctypes.Structure):
+    _fields_ = [
+        ("dwSize", ctypes.c_ulong),
+        ("cntUsage", ctypes.c_ulong),
+        ("th32ProcessID", ctypes.c_ulong),
+        ("th32DefaultHeapID", ctypes.c_size_t),
+        ("th32ModuleID", ctypes.c_ulong),
+        ("cntThreads", ctypes.c_ulong),
+        ("th32ParentProcessID", ctypes.c_ulong),
+        ("pcPriClassBase", ctypes.c_long),
+        ("dwFlags", ctypes.c_ulong),
+        ("szExeFile", ctypes.c_char * 260),
+    ]
+
+
+def _child_pids(parent_pid: int) -> list[int]:
+    """PIDs whose parent is parent_pid, via Toolhelp32. Windows only, never hangs."""
+    k32 = ctypes.windll.kernel32
+    snap = k32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
+    if snap == _INVALID_HANDLE_VALUE:
+        return []
+    try:
+        entry = _PROCESSENTRY32()
+        entry.dwSize = ctypes.sizeof(_PROCESSENTRY32)
+        if not k32.Process32First(snap, ctypes.byref(entry)):
+            return []
+        found = []
+        while True:
+            if entry.th32ParentProcessID == parent_pid:
+                found.append(int(entry.th32ProcessID))
+            if not k32.Process32Next(snap, ctypes.byref(entry)):
+                break
+        return found
+    finally:
+        k32.CloseHandle(snap)
+
+
 def _spawn_stub(load_delay: float = 0.0) -> _SidecarProcess:
     env = dict(os.environ)
     env["WP_SIDECAR_STUB_MODE"] = "normal"
@@ -545,21 +587,15 @@ def test_sidecar_dies_within_bound_when_its_server_dies(tmp_path):
         # Give the sidecar a moment to actually arm its ancestor watch.
         time.sleep(1.0)
 
-        # Find the sidecar's pid via the ancestor's own child enumeration --
-        # simplest robust approach on Windows: WMI query for children of
-        # the ancestor's pid.
+        # Find the sidecar's pid by enumerating the ancestor's children.
+        # Toolhelp32 via ctypes, NOT a PowerShell Get-CimInstance query: that WMI
+        # call stalled past a 10s timeout on a hosted Windows runner and failed
+        # CI. This is in-process, has no service dependency, and cannot hang.
         import ctypes
 
-        result = subprocess.run(
-            [
-                "powershell", "-Command",
-                f"(Get-CimInstance Win32_Process -Filter \"ParentProcessId={ancestor.pid}\").ProcessId",
-            ],
-            capture_output=True, text=True, timeout=10,
-        )
-        child_pid_str = result.stdout.strip()
-        assert child_pid_str, f"could not find sidecar child pid: {result.stdout!r} {result.stderr!r}"
-        sidecar_pid = int(child_pid_str.splitlines()[0])
+        children = _child_pids(ancestor.pid)
+        assert children, f"could not find sidecar child pid of {ancestor.pid}"
+        sidecar_pid = children[0]
 
         def _is_alive(pid: int) -> bool:
             handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
