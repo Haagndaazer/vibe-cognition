@@ -258,3 +258,52 @@ def test_upsert_document_text_round_trips_to_search(tmp_path):
     by_id = {h["_id"]: h for h in hits}
     assert by_id["d1#chunk-0"]["matched_text"] == "the extracted chunk body", "chunk text not returned"
     assert "matched_text" not in by_id["n1"], "text-less node vector wrongly got matched_text"
+
+
+def test_retry_absorbs_rust_bindings_attribute_race():
+    """Task 7ec1e5929309: the RustBindingsAPI open race is not an InternalError.
+
+    chromadb's get_tenant raises AttributeError("'RustBindingsAPI' object has no
+    attribute 'bindings'") under concurrent PersistentClient opens; before this
+    was retried, it escaped and failed CI's Windows leg.
+    """
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise AttributeError("'RustBindingsAPI' object has no attribute 'bindings'")
+        return "ok"
+
+    assert _retry_chromadb_open(flaky) == "ok"
+    assert len(calls) == 2
+
+
+def test_retry_absorbs_tenant_connect_wrapper():
+    """The same race as PersistentClient wraps it: a ValueError about the tenant."""
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise ValueError("Could not connect to tenant default_tenant. Are you sure it exists?")
+        return "ok"
+
+    assert _retry_chromadb_open(flaky) == "ok"
+    assert len(calls) == 2
+
+
+def test_retry_does_not_swallow_unrelated_value_or_attribute_errors():
+    """Widening the predicate must not turn real bugs into 3 silent retries."""
+    import pytest
+
+    for exc in (ValueError("collection dimension mismatch"), AttributeError("no attribute 'foo'")):
+        calls = []
+
+        def boom(e=exc, c=calls):
+            c.append(1)
+            raise e
+
+        with pytest.raises(type(exc)):
+            _retry_chromadb_open(boom)
+        assert len(calls) == 1, f"{exc!r} must propagate on the FIRST attempt, unretried"

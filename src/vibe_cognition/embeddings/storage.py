@@ -26,21 +26,41 @@ _CHROMA_RETRY_ATTEMPTS = 3
 _CHROMA_RETRY_BASE_DELAY = 0.05  # seconds
 
 
-def _retry_chromadb_open(fn: Callable[[], _T]) -> _T:
-    """Bounded retry absorbing a transient chromadb rust-backend InternalError
-    (open flake e09d4f4a9a23 — more likely under concurrent opens against the
-    same persist_directory, WP-A decision 9022f7de94e9).
+# The RustBindingsAPI open race (task 7ec1e5929309) surfaces in two shapes, and
+# neither is an InternalError: chromadb's get_tenant hits `AttributeError:
+# 'RustBindingsAPI' object has no attribute 'bindings'`, which PersistentClient
+# construction then wraps as `ValueError: Could not connect to tenant
+# default_tenant`. Matched on message, not type, so a genuine NotFoundError or a
+# real misconfigured-tenant error still propagates unretried.
+_CHROMA_RACE_MARKERS = ("has no attribute 'bindings'", "could not connect to tenant")
 
-    Retries ONLY ``chromadb.errors.InternalError``. Every other exception
-    (e.g. a genuine ``NotFoundError`` when a collection doesn't exist yet)
-    propagates immediately, unretried — that is expected control flow for
-    the is_new-collection probe below, not a flake, and must not be delayed.
+
+def _is_chromadb_open_race(exc: BaseException) -> bool:
+    if isinstance(exc, InternalError):
+        return True
+    if isinstance(exc, AttributeError | ValueError):
+        return any(m in str(exc).casefold() for m in _CHROMA_RACE_MARKERS)
+    return False
+
+
+def _retry_chromadb_open(fn: Callable[[], _T]) -> _T:
+    """Bounded retry absorbing the transient chromadb rust-backend open races
+    (InternalError flake e09d4f4a9a23; RustBindingsAPI bindings race 7ec1e5929309
+    — both more likely under concurrent opens against the same persist_directory,
+    WP-A decision 9022f7de94e9).
+
+    Retries ONLY those shapes. Every other exception (e.g. a genuine
+    ``NotFoundError`` when a collection doesn't exist yet) propagates
+    immediately, unretried — that is expected control flow for the
+    is_new-collection probe below, not a flake, and must not be delayed.
     """
-    last_exc: InternalError | None = None
+    last_exc: BaseException | None = None
     for attempt in range(_CHROMA_RETRY_ATTEMPTS):
         try:
             return fn()
-        except InternalError as e:
+        except (InternalError, AttributeError, ValueError) as e:
+            if not _is_chromadb_open_race(e):
+                raise
             last_exc = e
             if attempt < _CHROMA_RETRY_ATTEMPTS - 1:
                 time.sleep(_CHROMA_RETRY_BASE_DELAY * (2**attempt))
@@ -49,8 +69,8 @@ def _retry_chromadb_open(fn: Callable[[], _T]) -> _T:
     # as an unexplained crash; this names the attempt count so a production
     # failure is diagnosable exhaustion, not a mystery.
     logger.warning(
-        f"chromadb open failed after {_CHROMA_RETRY_ATTEMPTS} InternalError "
-        f"retries: {last_exc}"
+        f"chromadb open failed after {_CHROMA_RETRY_ATTEMPTS} open-race "
+        f"retries ({type(last_exc).__name__}): {last_exc}"
     )
     raise last_exc
 
