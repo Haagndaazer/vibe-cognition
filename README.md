@@ -309,7 +309,8 @@ Both writes are **idempotent** (existing files are appended, never clobbered) an
 - **Resolve by keeping BOTH sides.** The journal is append-only and replay order does not matter, so there is no case where one side should win. Concatenate `journal.jsonl.mine` and the highest-numbered `journal.jsonl.rNNN`, drop duplicate lines by node `id`, then `svn resolve --accept working`. Reload the graph afterwards.
 - **`svn update` before a session, commit the journal after one.** Most conflicts come from long uncommitted stretches rather than genuine simultaneous work.
 - **Never set `svn:eol-style` under `.cognition/`.** The journal is replayed by byte offset and the document store is content-addressed, so any line-ending rewrite is damaging. SVN does not translate unless the property is set — the safe state is the default. Watch for a repo-root `svn:auto-props` rule (e.g. `*.md = svn:eol-style=native`): it cannot be neutralized from `.cognition/`, because properties from different ancestors combine rather than override and no value means "do not translate". Exclude `.cognition/` at the root instead.
-- **Mirror the ignore list into SVN.** SVN does not read `.gitignore`, so set `svn:global-ignores` on `.cognition/` with the same globs — **copy them from `.cognition/.gitignore` itself, not from documentation**, since that file gains entries across releases (`identity.json*` arrived in 0.37.0) and a transcribed list silently stops covering new machine-local files. Write the value file **without a UTF-8 BOM** — `svn propset -F` mis-decodes a BOM and silently kills the first rule while `svn propget` still displays it correctly. Set the property *before* adding the directory's contents, or machine-local files are swept in by the same `svn add`.
+- **Mirror the ignore list into SVN.** SVN does not read `.gitignore`, so set `svn:global-ignores` on `.cognition/` with the same globs — **take them from `.cognition/.gitignore` itself, not from documentation**, since that file gains entries across releases (`identity.json*` arrived in 0.37.0) and a transcribed list silently stops covering new machine-local files. **One edit while copying: strip the trailing slash from `chromadb/`** — SVN ignore globs have no directory-only meaning, so `chromadb/` matches nothing while bare `chromadb` works (verified in the lab; it fails silently).
+- **On a `.cognition/` not yet in SVN, propset alone fails** (`E155010`). The order is `svn add --depth empty .cognition`, then the propset, then `svn add --force .cognition` — `--force` because plain `add` refuses an already-versioned directory, and the final add is filtered by the property set in step 2. Write the value file **without a UTF-8 BOM** — `svn propset -F` mis-decodes a BOM and silently kills the first rule while `svn propget` still displays it correctly. Set the property *before* adding the directory's contents, or machine-local files are swept in by the same `svn add`.
 
 Run `cognition_readme` for the full "Team setup (svn)" section.
 
@@ -432,9 +433,10 @@ fully searchable yet:
 
 Provenance is verified for **tasks and deletions**, not for other node authorship:
 
-- **Task creator** (`cognition_add_task`'s `created_by`) is resolved server-side from
-  your git config — a client can't override it. This is unspoofable: the tool doesn't
-  even accept a caller-supplied creator.
+- **Task creator** (`cognition_add_task`'s `created_by`) is resolved server-side via
+  the identity chain (your confirmed identity, else git config), behind the write
+  gate — a client can't override it. This is unspoofable: the tool doesn't even
+  accept a caller-supplied creator.
 - **Who deleted a node** (`cognition_remove_node`) is likewise resolved server-side and
   stamped as `removed_by` on the journal tombstone — verified the same way task creation is.
 - **Entity author** (the `author` argument on `cognition_record` — decisions, fails,

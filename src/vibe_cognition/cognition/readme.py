@@ -322,14 +322,27 @@ repo has such a rule, exclude `.cognition/` from it at the root.
 **Machine-local files must stay unversioned.** A versioned `last-seen.json`
 conflicts on every teammate's session, and a versioned `identity.json` publishes
 whoever happens to drive that checkout. The server writes `.cognition/.gitignore`
-with the full list; SVN does not read it, so mirror it once:
+with the full list; SVN does not read it, so mirror it once.
 
+TAKE THE GLOBS FROM `.cognition/.gitignore`, NOT FROM THIS PAGE -- that file is
+generated and gains entries across releases (`identity.json*` arrived in 0.37.0),
+so any list transcribed into prose goes stale and silently stops covering a new
+machine-local file. ONE EDIT IS REQUIRED WHILE COPYING: strip the trailing slash
+from `chromadb/`. SVN ignore globs are fnmatch patterns with no directory-only
+meaning, so `chromadb/` matches NOTHING while bare `chromadb` works -- verified in
+the validation lab, and it fails silently, which is why it is called out here.
+
+If `.cognition` is not yet under version control, propset alone FAILS with
+`E155010: not under version control`. The full sequence, in this order:
+
+    svn add --depth empty .cognition
     svn propset svn:global-ignores -F <file> .cognition
+    svn add --force .cognition
 
-COPY THE GLOBS FROM `.cognition/.gitignore` RATHER THAN FROM THIS PAGE -- that file
-is generated and gains entries across releases (`identity.json*` was added in
-0.37.0), so any list transcribed into prose goes stale and silently stops covering
-a new machine-local file. Write that file WITHOUT a
+Step 1 registers the directory so a property can be set on it. Step 2 installs the
+ignores. Step 3 needs `--force` because plain `svn add` refuses an already-versioned
+directory (`E200009`), and it is filtered by step 2's property -- which is why the
+order matters: reverse it and the machine-local files are swept in. Write that file WITHOUT a
 UTF-8 BOM: `svn propset -F` mis-decodes a BOM and silently kills the FIRST rule in
 the list, while `svn propget` still displays it as though it were fine. If such a
 file is already committed, `svn rm --keep-local <path>` removes it from version

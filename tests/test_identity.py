@@ -399,3 +399,48 @@ def test_every_write_tool_refuses_without_identity(
     result = mock_mcp.tools[tool_name](ctx, **kwargs)
     assert result.get("identity_required") is True, (tool_name, result)
     assert lc["cognition_storage"].get_all_nodes() == [], tool_name
+
+
+# ── round-3 regressions ───────────────────────────────────────────────────────
+
+
+def test_confirm_rejects_malformed_address_a_suggestion_could_carry(repo):
+    """Suggestion and confirmation must share one validator.
+
+    An SVN username like "a b@c.com" once passed confirmation's loose "@" check,
+    producing a permanently-confirmed garbage identity that stamped every write.
+    """
+    _, cognition = repo
+    for bad in ("a b@c.com", "a@b", "a@@b.com", "a@.com", "no-at-sign"):
+        assert "error" in write_confirmed_identity(cognition, "N", bad), bad
+    assert read_confirmed_identity(cognition) is None
+
+
+def test_suggestions_reject_malformed_svn_username(repo, monkeypatch, tmp_path):
+    """A malformed SVN username is offered as a name, never as an email."""
+    root, cognition = repo
+    (root / ".svn").mkdir()
+    cfg = tmp_path / "svnconf"
+    _write_svn_credential(cfg, "a b@c.com")
+    monkeypatch.setenv("SVN_CONFIG_DIR", str(cfg))
+
+    got = identity_suggestions(root, cognition)
+    assert [s["email"] for s in got] == [""], got
+
+
+def test_confirmed_identity_survives_a_utf8_bom(repo):
+    """A BOM must not silently defeat confirmation (some Windows editors add one)."""
+    _, cognition = repo
+    write_confirmed_identity(cognition, "Ada", "ada@example.com")
+    path = cognition / IDENTITY_FILENAME
+    path.write_text("\ufeff" + path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    assert read_confirmed_identity(cognition) == {"name": "Ada", "email": "ada@example.com"}
+
+
+def test_write_confirmed_identity_returns_what_landed_on_disk(repo):
+    """The return value must be ground truth, not the intended payload."""
+    _, cognition = repo
+    got = write_confirmed_identity(cognition, "  Ada  ", "ADA@Example.com")
+    assert got == read_confirmed_identity(cognition)
+    assert not list(cognition.glob("identity.json.*.tmp")), "temp file left behind"

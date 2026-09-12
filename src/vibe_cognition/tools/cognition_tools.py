@@ -231,8 +231,32 @@ def _acting_identity(cognition_dir: Path) -> dict[str, str]:
 
 
 def _identity_gate(cognition_dir: Path) -> dict[str, Any] | None:
-    """None when writing is allowed, else the refusal dict to return to the caller."""
+    """None when writing is allowed, else the refusal dict to return to the caller.
+
+    Callers pair this with _acting_identity, which resolves independently. The two
+    reads can disagree if identity.json changes in between (a concurrent
+    cognition_set_identity, a remap run, a second server process), letting a write
+    pass the gate and then stamp a DIFFERENT -- possibly empty -- identity, which
+    is the anonymous-attribution bug this gate exists to close. _gated_identity
+    resolves once and serves both; prefer it in new write paths.
+    """
     return require_identity(cognition_dir.parent, cognition_dir)
+
+
+def _gated_identity(cognition_dir: Path) -> tuple[dict[str, Any] | None, dict[str, str]]:
+    """(refusal_or_None, identity_to_stamp) from ONE resolution. See _identity_gate.
+
+    Deliberately routed through _acting_identity rather than calling
+    resolve_identity directly: that keeps a single seam for both the stamp and
+    the gate decision, so they cannot disagree and tests have one place to
+    control identity.
+    """
+    stamp = _acting_identity(cognition_dir)
+    if stamp.get("email"):
+        return None, stamp
+    # Refusal path only: the stamp is discarded, so re-resolving here is harmless
+    # and buys the richer payload (candidate suggestions) for the error.
+    return require_identity(cognition_dir.parent, cognition_dir), stamp
 
 
 def _record_node(
@@ -297,10 +321,9 @@ def _record_node(
     # this", distinct from `author` (who dictated the record, caller-provided free
     # text). Same resolve_git_identity used by _add_task's created_by (file-read
     # only, never subprocess — v0.12.1 P0).
-    gate = _identity_gate(storage.cognition_dir)
+    gate, recorded_by = _gated_identity(storage.cognition_dir)
     if gate is not None:
         return gate
-    recorded_by = _acting_identity(storage.cognition_dir)
     node = CognitionNode(
         id=node_id,
         type=node_type,
@@ -1243,10 +1266,9 @@ def _store_document(
     # NOT touch the dedup ("already_stored") branch above, which returns an existing node
     # as-is — backfilling legacy documents is legacy-identity-backfill's job (962ab7b442d5),
     # scoped OUT of that WP until this ships (v2 there, not here).
-    gate = _identity_gate(cognition_dir)
+    gate, recorded_by = _gated_identity(cognition_dir)
     if gate is not None:
         return gate
-    recorded_by = _acting_identity(cognition_dir)
     metadata: dict[str, Any] = {
         "filename": filename,
         "mime": mime or "",
@@ -1554,10 +1576,9 @@ def _add_task(
     # Server-resolved identity from the repo backing THIS storage (home project).
     # Assumes the standard layout where the repo root is the .cognition dir's parent
     # (true for every real install; config.py resolves the same root from REPO_PATH).
-    gate = _identity_gate(storage.cognition_dir)
+    gate, created_by = _gated_identity(storage.cognition_dir)
     if gate is not None:
         return gate
-    created_by = _acting_identity(storage.cognition_dir)
 
     metadata: dict[str, Any] = {
         "status": "open",
@@ -1879,10 +1900,9 @@ def _update_task(
     # WP-TC4 (2-MECH #1): resolve the caller identity ONCE, early -- was previously
     # resolved inside the transition body below; that call is now dropped in favor of
     # this hoisted result, which also feeds takeover detection.
-    gate = _identity_gate(storage.cognition_dir)
+    gate, caller = _gated_identity(storage.cognition_dir)
     if gate is not None:
         return gate
-    caller = _acting_identity(storage.cognition_dir)
     caller_email = _casefold_email(caller.get("email", ""))
 
     # Snapshot the PRIOR claim before any mutation (rev-2 finding #8: metadata mutates
@@ -2053,8 +2073,7 @@ def _update_task(
         new_assigned_to = _casefold_email(assigned_to_email)
         current_assigned_to = metadata.get("assigned_to") or ""
         if new_assigned_to != current_assigned_to:
-            by = _acting_identity(storage.cognition_dir)
-            entry = {"to": new_assigned_to, "at": datetime.now(UTC).isoformat(), "by": by}
+            entry = {"to": new_assigned_to, "at": datetime.now(UTC).isoformat(), "by": caller}
             metadata["assignments"] = [*metadata.get("assignments", []), entry]
             if new_assigned_to:
                 metadata["assigned_to"] = new_assigned_to
@@ -2220,11 +2239,10 @@ def _register_person(
     # Gated like every other write path: registering someone ELSE (explicit email)
     # still stamps recorded_by with the CALLER's identity, so an unresolved caller
     # would land a person node attributed to nobody.
-    gate = _identity_gate(storage.cognition_dir)
+    gate, recorded_by = _gated_identity(storage.cognition_dir)
     if gate is not None:
         return gate
 
-    recorded_by = _acting_identity(storage.cognition_dir)
     if email:
         resolved_email = _casefold_email(email)
         if not resolved_email:
@@ -2369,10 +2387,9 @@ def _update_person(
             )
         }
 
-    gate = _identity_gate(storage.cognition_dir)
+    gate, by = _gated_identity(storage.cognition_dir)
     if gate is not None:
         return gate
-    by = _acting_identity(storage.cognition_dir)
     entry = {"changed": changed, "at": datetime.now(UTC).isoformat(), "by": by}
 
     metadata = dict(node.get("metadata", {}))
@@ -3230,8 +3247,10 @@ def register_cognition_tools(mcp) -> None:
             true` (dedup) branch returns the existing node as-is and omits it;
             use `cognition_get_person` if you need that flag for an existing
             person. Returns {"error": ...} for an invalid seniority,
-            self-reporting, a reports_to cycle, a blank explicit email, or an
-            unresolvable self-email with no explicit email.
+            self-reporting, a reports_to cycle, or a blank explicit email; and
+            `{"identity_required": true, ...}` when no email resolves for YOU,
+            the caller -- registering someone else still stamps recorded_by with
+            your identity, so call `cognition_set_identity` first.
         """
         return _register_person(
             ctx, name, role, seniority,
@@ -4865,10 +4884,9 @@ def register_cognition_tools(mcp) -> None:
 
         # Delete provenance (WP-1): server-resolved identity, same source as
         # cognition_add_task's creator (pure file reads, never raises).
-        gate = _identity_gate(storage.cognition_dir)
+        gate, removed_by = _gated_identity(storage.cognition_dir)
         if gate is not None:
             return gate
-        removed_by = _acting_identity(storage.cognition_dir)
 
         result = delete_cognition_node(storage, embed_storage, node_id, removed_by=removed_by)
         if result is None:

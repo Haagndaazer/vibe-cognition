@@ -23,13 +23,15 @@ Only VCS sources may be *suggested* to the user; nothing here ever stamps an
 inferred identity on its own (decision 833e9f67de4d).
 """
 
+import contextlib
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
 from .git_identity import resolve_git_identity
-from .svn_identity import is_svn_working_copy, svn_username_candidates
+from .svn_identity import _looks_like_email, is_svn_working_copy, svn_username_candidates
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,16 @@ def _casefold_email(value: str) -> str:
     return (value or "").strip().casefold()
 
 
+def is_valid_email(value: str) -> bool:
+    """One shared definition of a usable address.
+
+    Suggestions and confirmation must agree: a looser check on one side lets a
+    malformed SVN username (``"a b@c.com"``) be offered and then permanently
+    confirmed, after which it stamps every future write.
+    """
+    return _looks_like_email((value or "").strip())
+
+
 def identity_path(cognition_dir: Path) -> Path:
     return Path(cognition_dir) / IDENTITY_FILENAME
 
@@ -56,7 +68,7 @@ def read_confirmed_identity(cognition_dir: Path) -> dict[str, str] | None:
     except (OSError, ValueError):
         return None
     try:
-        data = json.loads(raw)
+        data = json.loads(raw.lstrip("﻿"))
     except (json.JSONDecodeError, ValueError):
         logger.debug("identity: %s is not valid JSON; ignoring", IDENTITY_FILENAME)
         return None
@@ -75,18 +87,24 @@ def write_confirmed_identity(cognition_dir: Path, name: str, email: str) -> dict
     email = _casefold_email(email)
     if not name:
         return {"error": "name must not be blank"}
-    if "@" not in email or email.startswith("@") or email.endswith("@"):
+    if not is_valid_email(email):
         return {"error": f"email must be a valid address, got {email!r}"}
     path = identity_path(cognition_dir)
     payload = {"name": name, "email": email}
+    # Per-process temp name: a fixed one lets two concurrent callers clobber each
+    # other's staged file, after which one reports success while the other's
+    # content is what actually landed. Covered by the identity.json* ignore glob.
+    tmp = path.with_name(f"{IDENTITY_FILENAME}.{os.getpid()}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         tmp.replace(path)
     except OSError as exc:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
         return {"error": f"could not write {IDENTITY_FILENAME}: {exc}"}
-    return payload
+    # Report what is actually on disk, not what we meant to write.
+    return read_confirmed_identity(cognition_dir) or payload
 
 
 def resolve_identity(repo_path: Path | str, cognition_dir: Path | str) -> dict[str, Any]:
@@ -146,7 +164,7 @@ def identity_suggestions(repo_path: Path | str, cognition_dir: Path | str) -> li
     if is_svn_working_copy(repo_path):
         for cand in svn_username_candidates():
             username = cand["username"]
-            if "@" in username:
+            if _looks_like_email(username):
                 _add(username.split("@", 1)[0], username, SOURCE_SVN)
             else:
                 _add(username, "", SOURCE_SVN)
