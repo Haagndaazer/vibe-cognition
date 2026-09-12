@@ -17,6 +17,8 @@ from vibe_cognition.cognition.git_hygiene import (
     ensure_git_hygiene,
     format_hygiene_announce,
 )
+from vibe_cognition.cognition.local_paths import read_path as local_read_path
+from vibe_cognition.cognition.local_paths import write_path as local_write_path
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -63,7 +65,7 @@ def test_gitattributes_created_when_absent(tmp_path):
     assert _GITATTRIBUTES_MARKER in ga
     assert _GITATTRIBUTES_RULE in ga
     assert "-text" not in ga
-    assert (cognition / _FLAG_FILENAME).exists()
+    assert local_read_path(cognition, _FLAG_FILENAME).exists()
 
 
 def test_gitattributes_appended_without_clobbering(tmp_path):
@@ -186,7 +188,7 @@ def test_gitignore_written_when_not_git_repo(tmp_path):
     gitignore = cognition / ".gitignore"
     assert gitignore.exists()
     body = gitignore.read_text(encoding="utf-8")
-    for entry in ("chromadb/", "last-seen.json*", ".last-rehydrate.json", "onboard-declined"):
+    for entry in ("local/", "*.lock", "chromadb/"):
         assert entry in body
     assert not (tmp_path / ".gitattributes").exists()
 
@@ -198,7 +200,7 @@ def test_flag_written_when_not_git_repo(tmp_path):
 
     _run(tmp_path, cognition)
 
-    assert int((cognition / _FLAG_FILENAME).read_text(encoding="utf-8").strip()) == GIT_HYGIENE_VERSION
+    assert int(local_read_path(cognition, _FLAG_FILENAME).read_text(encoding="utf-8").strip()) == GIT_HYGIENE_VERSION
 
 
 def test_gitignore_backfilled_on_version_bump_when_not_git_repo(tmp_path):
@@ -208,21 +210,11 @@ def test_gitignore_backfilled_on_version_bump_when_not_git_repo(tmp_path):
     """
     cognition = tmp_path / ".cognition"
     cognition.mkdir()
-    (cognition / _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION - 1), encoding="utf-8")
+    local_write_path(cognition, _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION - 1), encoding="utf-8")
 
     _run(tmp_path, cognition)
 
-    assert "last-seen.json*" in (cognition / ".gitignore").read_text(encoding="utf-8")
-
-
-def test_gitignore_covers_machine_local_identity(tmp_path):
-    """v8: identity.json is machine-local (who is driving THIS checkout) and must
-    never be committed -- the glob also covers the .tmp sibling of its atomic write."""
-    repo, cognition = _make_git_repo(tmp_path)
-
-    _run(repo, cognition)
-
-    assert "identity.json*" in (cognition / ".gitignore").read_text(encoding="utf-8")
+    assert "local/" in (cognition / ".gitignore").read_text(encoding="utf-8")
 
 
 def test_no_write_when_cognition_dir_absent(tmp_path):
@@ -281,158 +273,6 @@ def test_gitignore_no_dup_bare_chromadb(tmp_path):
     assert gi.count("chromadb") == 1
 
 
-def test_gitignore_flag_is_listed(tmp_path):
-    """Flag file .git-hygiene-managed is listed in .cognition/.gitignore."""
-    repo, cognition = _make_git_repo(tmp_path)
-    _run(repo, cognition)
-
-    gi = (cognition / ".gitignore").read_text(encoding="utf-8")
-    assert _FLAG_FILENAME in gi
-
-
-def test_gitignore_onboard_declined_is_listed(tmp_path):
-    """WP-TC7: onboard-declined (the per-machine onboarding decline file,
-    prime.ONBOARD_DECLINE_FILENAME) is listed in .cognition/.gitignore after a
-    fresh run — it must never sync via git any more than the rehydrate flag does."""
-    repo, cognition = _make_git_repo(tmp_path)
-    _run(repo, cognition)
-
-    gi = (cognition / ".gitignore").read_text(encoding="utf-8")
-    assert "onboard-declined" in gi
-
-
-def test_gitignore_onboard_declined_added_via_version_refire(tmp_path):
-    """WP-TC7 (GIT_HYGIENE_VERSION 2 -> 3): a flag stamped at the OLD version on an
-    existing install (pre-TC7 .gitignore already has chromadb/, the old flag, *.lock,
-    and the rehydrate entry but NOT onboard-declined) triggers exactly one re-run
-    that appends only the new entry — mirrors test_versioned_rerun_on_stale_flag but
-    pins the SPECIFIC new rule this bump exists to add."""
-    repo, cognition = _make_git_repo(tmp_path)
-    (cognition / ".gitignore").write_text(
-        "# vibe-cognition managed - do not remove\n"
-        "chromadb/\n"
-        f"{_FLAG_FILENAME}\n"
-        "*.lock\n"
-        ".last-rehydrate.json\n",
-        encoding="utf-8",
-    )
-    (cognition / _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION - 1), encoding="utf-8")
-
-    _run(repo, cognition)
-
-    gi = (cognition / ".gitignore").read_text(encoding="utf-8")
-    assert gi.count("onboard-declined") == 1
-    assert int((cognition / _FLAG_FILENAME).read_text(encoding="utf-8").strip()) == GIT_HYGIENE_VERSION
-
-
-def test_gitignore_last_seen_is_listed(tmp_path):
-    """WP-TC14: last-seen.json (the per-machine "Since You Were Gone" marker,
-    prime.LAST_SEEN_FILENAME) is listed in .cognition/.gitignore after a fresh
-    run — it must never sync via git any more than the rehydrate flag or the
-    onboard-declined file do."""
-    repo, cognition = _make_git_repo(tmp_path)
-    _run(repo, cognition)
-
-    gi = (cognition / ".gitignore").read_text(encoding="utf-8")
-    assert "last-seen.json" in gi
-
-
-def test_gitignore_last_seen_added_via_version_refire(tmp_path):
-    """WP-TC14 (GIT_HYGIENE_VERSION 3 -> 4): a flag stamped at the OLD version
-    on an existing install (v3 .gitignore already has chromadb/, the flag,
-    *.lock, the rehydrate entry, and onboard-declined but NOT last-seen.json)
-    triggers exactly one re-run that appends only the new entry — mirrors
-    test_gitignore_onboard_declined_added_via_version_refire but pins the
-    SPECIFIC new rule this bump exists to add. Fails-before: a pre-bump
-    build's .gitignore would never gain last-seen.json on re-init."""
-    repo, cognition = _make_git_repo(tmp_path)
-    (cognition / ".gitignore").write_text(
-        "# vibe-cognition managed - do not remove\n"
-        "chromadb/\n"
-        f"{_FLAG_FILENAME}\n"
-        "*.lock\n"
-        ".last-rehydrate.json\n"
-        "onboard-declined\n",
-        encoding="utf-8",
-    )
-    (cognition / _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION - 1), encoding="utf-8")
-
-    _run(repo, cognition)
-
-    gi = (cognition / ".gitignore").read_text(encoding="utf-8")
-    assert gi.count("last-seen.json") == 1
-    assert int((cognition / _FLAG_FILENAME).read_text(encoding="utf-8").strip()) == GIT_HYGIENE_VERSION
-
-
-def test_gitignore_last_seen_tmp_sibling_ignored_by_git(tmp_path):
-    """WP-TC14 gate F1: last-seen.json.tmp -- the atomic-write sibling
-    _stamp_last_seen briefly creates before os.replace -- must be covered by
-    .cognition/.gitignore, not just the bare last-seen.json filename. A
-    process killed between write_text and os.replace would otherwise leave
-    the .tmp unignored, and the established journal-flush `git add
-    .cognition/` procedure would commit it: machine-local state syncing via
-    git, the exact property this file exists to prevent.
-
-    Fails-before: with _GITIGNORE_LAST_SEEN as the bare "last-seen.json"
-    string (pre-F1), `git check-ignore` on the .tmp sibling exits non-zero
-    (not ignored) since git does not glob-match a bare filename pattern
-    against a differently-named file."""
-    repo, cognition = _make_real_git_repo(tmp_path)
-    _run(repo, cognition)
-
-    tmp_file = cognition / "last-seen.json.tmp"
-    tmp_file.write_text("{}", encoding="utf-8")
-
-    result = subprocess.run(
-        ["git", "check-ignore", str(tmp_file)],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, (
-        f"last-seen.json.tmp is not git-ignored: stdout={result.stdout!r} stderr={result.stderr!r}"
-    )
-
-
-def test_gitignore_backfill_skeleton_is_listed(tmp_path):
-    """Task 962ab7b442d5 (Train C review finding a): the legacy-identity-
-    backfill CLI's dry-run skeleton map file is listed in
-    .cognition/.gitignore after a fresh run -- a working file the user edits
-    and re-supplies via --map-file, not graph history, so it must never ride
-    into a journal-flush `git add .cognition/` commit."""
-    repo, cognition = _make_git_repo(tmp_path)
-    _run(repo, cognition)
-
-    gi = (cognition / ".gitignore").read_text(encoding="utf-8")
-    assert "backfill-identity-map.skeleton.json" in gi
-
-
-def test_gitignore_backfill_skeleton_added_via_version_refire(tmp_path):
-    """GIT_HYGIENE_VERSION 4 -> 5: a flag stamped at the OLD version on an
-    existing install (v4 .gitignore already has every earlier entry but NOT
-    the backfill skeleton) triggers exactly one re-run that appends only the
-    new entry -- mirrors test_gitignore_last_seen_added_via_version_refire but
-    pins the specific new rule this bump exists to add."""
-    repo, cognition = _make_git_repo(tmp_path)
-    (cognition / ".gitignore").write_text(
-        "# vibe-cognition managed - do not remove\n"
-        "chromadb/\n"
-        f"{_FLAG_FILENAME}\n"
-        "*.lock\n"
-        ".last-rehydrate.json\n"
-        "onboard-declined\n"
-        "last-seen.json*\n",
-        encoding="utf-8",
-    )
-    (cognition / _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION - 1), encoding="utf-8")
-
-    _run(repo, cognition)
-
-    gi = (cognition / ".gitignore").read_text(encoding="utf-8")
-    assert gi.count("backfill-identity-map.skeleton.json") == 1
-    assert int((cognition / _FLAG_FILENAME).read_text(encoding="utf-8").strip()) == GIT_HYGIENE_VERSION
-
-
 # ---------------------------------------------------------------------------
 # Flag / opt-out / idempotency / announce tests
 # ---------------------------------------------------------------------------
@@ -461,14 +301,14 @@ def test_existing_project_no_flag_runs_pass(tmp_path):
 
     assert (repo / ".gitattributes").exists()
     assert (cognition / ".gitignore").exists()
-    assert (cognition / _FLAG_FILENAME).exists()
+    assert local_read_path(cognition, _FLAG_FILENAME).exists()
 
 
 def test_revocation_respected(tmp_path):
     """B1: flag present, both rules deleted → pass does NOT re-add either."""
     repo, cognition = _make_git_repo(tmp_path)
     # Write flag at current version
-    (cognition / _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION), encoding="utf-8")
+    local_write_path(cognition, _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION), encoding="utf-8")
 
     _run(repo, cognition)
 
@@ -484,7 +324,7 @@ def test_opt_out_skips_all(tmp_path):
 
     assert not (repo / ".gitattributes").exists()
     assert not (cognition / ".gitignore").exists()
-    assert not (cognition / _FLAG_FILENAME).exists()
+    assert not local_read_path(cognition, _FLAG_FILENAME).exists()
 
 
 def test_opt_out_true_suppresses(tmp_path):
@@ -532,7 +372,7 @@ def test_no_dup_on_concurrent_double_call(tmp_path):
     assert ga.count(_GITATTRIBUTES_PEOPLE_RULE) == 1
 
     # Now remove flag + re-run: re-check inside lock must detect existing merge= line
-    (cognition / _FLAG_FILENAME).unlink()
+    local_read_path(cognition, _FLAG_FILENAME).unlink()
     _run(repo, cognition)
 
     ga2 = (repo / ".gitattributes").read_text(encoding="utf-8")
@@ -599,14 +439,14 @@ def test_partial_failure_no_flag(tmp_path, monkeypatch):
     with contextlib.suppress(Exception):
         ensure_git_hygiene(repo, cognition)
 
-    assert not (cognition / _FLAG_FILENAME).exists()
+    assert not local_read_path(cognition, _FLAG_FILENAME).exists()
 
     # Restore and retry
     monkeypatch.setattr(gh_mod, "_write_gitignore", original_write_gitignore)
     ensure_git_hygiene(repo, cognition)
 
     assert (cognition / ".gitignore").exists()
-    assert (cognition / _FLAG_FILENAME).exists()
+    assert local_read_path(cognition, _FLAG_FILENAME).exists()
 
 
 def test_gitattributes_people_rule_added_via_version_refire(tmp_path):
@@ -619,31 +459,31 @@ def test_gitattributes_people_rule_added_via_version_refire(tmp_path):
     (repo / ".gitattributes").write_text(
         f"{_GITATTRIBUTES_MARKER}\n{_GITATTRIBUTES_RULE}\n", encoding="utf-8"
     )
-    (cognition / _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION - 1), encoding="utf-8")
+    local_write_path(cognition, _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION - 1), encoding="utf-8")
 
     _run(repo, cognition)
 
     ga = (repo / ".gitattributes").read_text(encoding="utf-8")
     assert ga.count(_GITATTRIBUTES_RULE) == 1  # journal rule NOT duplicated
     assert ga.count(_GITATTRIBUTES_PEOPLE_RULE) == 1  # new v6 rule added once
-    assert int((cognition / _FLAG_FILENAME).read_text(encoding="utf-8").strip()) == GIT_HYGIENE_VERSION
+    assert int(local_read_path(cognition, _FLAG_FILENAME).read_text(encoding="utf-8").strip()) == GIT_HYGIENE_VERSION
 
 
 def test_versioned_rerun_on_stale_flag(tmp_path):
     """Q3: flag present but content < current version → pass re-runs, stamps current version."""
     repo, cognition = _make_git_repo(tmp_path)
-    (cognition / _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION - 1), encoding="utf-8")
+    local_write_path(cognition, _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION - 1), encoding="utf-8")
 
     _run(repo, cognition)
 
     assert (repo / ".gitattributes").exists()
-    assert int((cognition / _FLAG_FILENAME).read_text(encoding="utf-8").strip()) == GIT_HYGIENE_VERSION
+    assert int(local_read_path(cognition, _FLAG_FILENAME).read_text(encoding="utf-8").strip()) == GIT_HYGIENE_VERSION
 
 
 def test_versioned_no_rerun_on_current_flag(tmp_path):
     """Q3: flag content >= current version → pass does nothing."""
     repo, cognition = _make_git_repo(tmp_path)
-    (cognition / _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION), encoding="utf-8")
+    local_write_path(cognition, _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION), encoding="utf-8")
 
     _run(repo, cognition)
 
@@ -707,3 +547,62 @@ def test_announce_performs_no_writes(tmp_path):
     check_hygiene_state(repo, cognition)
     after = list(repo.rglob("*"))
     assert before == after
+
+
+# ---------------------------------------------------------------------------
+# v9: ONE entry covers every machine-local file, including ones nobody listed.
+# Replaces the eight per-name enumeration tests this supersedes.
+# ---------------------------------------------------------------------------
+
+
+def test_local_dir_ignores_every_machine_local_file_including_unlisted(tmp_path):
+    """The whole point of v9: a file nobody enumerated is still ignored.
+
+    Uses a REAL git repo, because the claim is about git's own ignore matching,
+    not about our string being present in a file. Before v9 each name needed its
+    own entry, so anything unlisted was committable.
+    """
+    repo, cognition = _make_real_git_repo(tmp_path)
+
+    _run(repo, cognition)
+
+    local = cognition / "local"
+    local.mkdir(exist_ok=True)
+    for name in ("identity.json", "identity.json.tmp", "last-seen.json",
+                 "onboard-declined", ".last-rehydrate.json",
+                 "a-machine-local-file-nobody-enumerated"):
+        (local / name).write_text("x", encoding="utf-8")
+
+    out = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=repo, capture_output=True, text=True, check=True,
+    ).stdout
+    assert "local/" not in out, f"machine-local files are not ignored:\n{out}"
+
+
+def test_relocation_moves_legacy_files_and_preserves_content(tmp_path):
+    """An existing install's machine-local state survives the move to local/."""
+    repo, cognition = _make_git_repo(tmp_path)
+    (cognition / "identity.json").write_text('{"name":"Ada"}', encoding="utf-8")
+    (cognition / "last-seen.json").write_text('{"a@b.com":"t"}', encoding="utf-8")
+    local_write_path(cognition, _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION - 1), encoding="utf-8")
+
+    _run(repo, cognition)
+
+    assert not (cognition / "identity.json").exists(), "legacy file left behind"
+    assert (cognition / "local" / "identity.json").read_text(encoding="utf-8") == '{"name":"Ada"}'
+    assert (cognition / "local" / "last-seen.json").exists()
+
+
+def test_relocation_never_clobbers_a_newer_destination(tmp_path):
+    """A faster process's newer copy wins; the stale legacy source is dropped."""
+    repo, cognition = _make_git_repo(tmp_path)
+    (cognition / "identity.json").write_text("STALE", encoding="utf-8")
+    (cognition / "local").mkdir()
+    (cognition / "local" / "identity.json").write_text("NEWER", encoding="utf-8")
+    local_write_path(cognition, _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION - 1), encoding="utf-8")
+
+    _run(repo, cognition)
+
+    assert (cognition / "local" / "identity.json").read_text(encoding="utf-8") == "NEWER"
+    assert not (cognition / "identity.json").exists()

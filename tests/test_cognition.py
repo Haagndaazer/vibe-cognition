@@ -18,6 +18,7 @@ from vibe_cognition.cognition import (
     get_reasoning_chain,
     get_superseded_chain,
 )
+from vibe_cognition.cognition.local_paths import read_path as local_read_path
 from vibe_cognition.cognition.storage import REHYDRATE_FLAG_FILENAME
 
 
@@ -483,7 +484,7 @@ class TestJournalCatchUp:
         assert store.last_rehydrate["nodes_after"] == 0
         assert store.last_rehydrate["nodes_lost"] == 2
         assert set(store.last_rehydrate["sample_missing_ids"]) == {"n1", "n2"}
-        assert (cog_dir / REHYDRATE_FLAG_FILENAME).exists()
+        assert local_read_path(cog_dir, REHYDRATE_FLAG_FILENAME).exists()
 
     def test_replacement_with_more_nodes_still_warns_on_missing_one(self, tmp_path, caplog):
         """WP-1 redirect: loss must be detected by NODE IDENTITY, not count. A
@@ -527,7 +528,7 @@ class TestJournalCatchUp:
         assert store.last_rehydrate is not None
         assert store.last_rehydrate["nodes_lost"] == 1
         assert store.last_rehydrate["sample_missing_ids"] == ["n2"]
-        assert (cog_dir / REHYDRATE_FLAG_FILENAME).exists(), "flag must be written on identity loss"
+        assert local_read_path(cog_dir, REHYDRATE_FLAG_FILENAME).exists(), "flag must be written on identity loss"
 
     def test_own_first_writes_do_not_count_as_rehydrate(self, tmp_path, caplog):
         """WP-1 regression: catch-up reading back THIS process's own first

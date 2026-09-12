@@ -13,6 +13,8 @@ from pathlib import Path
 from ..config import Settings, resolve_repo_path_env
 from .git_hygiene import _acquire_lock, _release_lock, check_hygiene_state, format_hygiene_announce
 from .identity import identity_suggestions, resolve_identity
+from .local_paths import read_path as local_read_path
+from .local_paths import write_path as local_write_path
 from .models import CognitionEdgeType, CognitionNodeType
 from .readme import ONBOARDING_BLOCK
 from .storage import REHYDRATE_FLAG_FILENAME, CognitionStorage
@@ -444,7 +446,7 @@ def _format_incidents(
 def _onboard_declined_emails(cognition_dir: Path) -> set[str]:
     """Casefolded emails that declined/snoozed onboarding on THIS machine. Missing
     file == empty set; blank/malformed lines are ignored. Never raises."""
-    path = cognition_dir / ONBOARD_DECLINE_FILENAME
+    path = local_read_path(cognition_dir, ONBOARD_DECLINE_FILENAME)
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError:
@@ -673,7 +675,7 @@ def _last_seen_for(cognition_dir: Path, email: str) -> str | None:
     email = (email or "").casefold()
     if not email:
         return None
-    path = cognition_dir / LAST_SEEN_FILENAME
+    path = local_read_path(cognition_dir, LAST_SEEN_FILENAME)
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError:
@@ -725,8 +727,8 @@ def _stamp_last_seen(cognition_dir: Path, email: str) -> None:
         return
     try:
         with contextlib.suppress(OSError):
-            path = cognition_dir / LAST_SEEN_FILENAME
-            tmp_path = cognition_dir / f"{LAST_SEEN_FILENAME}.tmp"
+            path = local_write_path(cognition_dir, LAST_SEEN_FILENAME)
+            tmp_path = path.with_name(f"{LAST_SEEN_FILENAME}.tmp")
             # Clean up a stray .tmp left by a process killed between write_text
             # and os.replace on a prior stamp -- gate F1: unlink is a no-op if
             # nothing is there, so this never affects the happy path. Must run
@@ -996,7 +998,7 @@ def _consume_rehydrate_flag(cognition_dir: Path) -> str:
     keeps reporting the event for its process lifetime). Never raises; an
     unreadable flag is consumed silently so it cannot wedge every future prime.
     """
-    flag = cognition_dir / REHYDRATE_FLAG_FILENAME
+    flag = local_read_path(cognition_dir, REHYDRATE_FLAG_FILENAME)
     try:
         raw = flag.read_text(encoding="utf-8")
     except OSError:

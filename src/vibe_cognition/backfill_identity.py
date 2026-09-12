@@ -35,6 +35,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from .cognition.local_paths import write_path as local_write_path
 from .cognition.models import CognitionNodeType
 from .cognition.storage import CognitionStorage
 
@@ -603,7 +604,7 @@ def main(argv: list[str] | None = None) -> int:
     unconfirmed = plan.unconfirmed_names()
     if unconfirmed:
         skeleton_path = Path(args.skeleton_out) if args.skeleton_out else (
-            cognition_dir / "backfill-identity-map.skeleton.json"
+            local_write_path(cognition_dir, "backfill-identity-map.skeleton.json")
         )
         skeleton_path.write_text(
             json.dumps(plan.skeleton(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8",

@@ -514,7 +514,7 @@ def test_cli_dry_run_writes_skeleton_and_no_journal_change(tmp_path, capsys):
     assert "Vince" in out
     assert "Skeleton map file written" in out
 
-    skeleton_path = cognition / "backfill-identity-map.skeleton.json"
+    skeleton_path = cognition / "local" / "backfill-identity-map.skeleton.json"
     assert skeleton_path.exists()
     skeleton = json.loads(skeleton_path.read_text(encoding="utf-8"))
     assert skeleton[0]["aliases"] == ["Vince"]

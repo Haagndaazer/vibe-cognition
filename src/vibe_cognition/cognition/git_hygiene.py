@@ -8,14 +8,11 @@ Two writes (both idempotent, locked, crash-proof):
   1. repo-root .gitattributes  — .cognition/journal.jsonl merge=union AND
                                  .cognition/people/*.jsonl merge=union (v6,
                                  per-person env-fact delta files)
-  2. .cognition/.gitignore     — chromadb/, .git-hygiene-managed, *.lock,
-                                 .last-rehydrate.json (local loss-alert flag),
-                                 onboard-declined (local onboarding decline file),
-                                 last-seen.json* (local "Since You Were Gone" marker
-                                 + its .tmp sibling from the atomic write), and
-                                 backfill-identity-map.skeleton.json (legacy-identity-
-                                 backfill's dry-run scratch artifact), and
-                                 identity.json* (machine-local confirmed graph identity)
+  2. .cognition/.gitignore     — local/ (every machine-local file), *.lock, and
+                                 chromadb/ (pre-0.32.0 teammates)
+
+Machine-local state lives in .cognition/local/ so ONE ignore entry covers it
+forever; see local_paths.py. The v9 pass relocates the legacy files there.
 
 The .gitattributes write is git-gated; the .cognition/.gitignore write runs under
 ANY VCS (v7) -- a Subversion working copy needs the local-only files kept out of
@@ -41,6 +38,8 @@ import logging
 import os
 import time
 from pathlib import Path
+
+from .local_paths import RELOCATED_FILENAMES, local_dir, read_path, write_path
 
 logger = logging.getLogger(__name__)
 
@@ -69,11 +68,19 @@ logger = logging.getLogger(__name__)
 #     VCS. Field defect (Survival2, doc:920a7237029f): SVN working copies got no
 #     ignore file at all, so machine-local last-seen.json was committed to SVN and
 #     conflicted for every teammate.
+# v9: machine-local files RELOCATED into .cognition/local/, and the ignore list
+#     collapsed from eight enumerated names to three entries (local/, *.lock,
+#     chromadb/). Each file used to need its own line, so the list only covered
+#     names someone remembered: an SVN lab run showed `svn add --force` sweeping
+#     identity.json and an unlisted file in while the enumerated ones were
+#     skipped. A future machine-local file now needs no ignore change at all.
+#     Paths resolve through local_paths (read local, fall back to legacy, write
+#     local), so an existing working copy keeps its state across the upgrade.
 # v8: identity.json* added to .cognition/.gitignore -- the machine-local
 #     confirmed graph identity (identity.IDENTITY_FILENAME). Says who is
 #     driving THIS checkout, never shared; the .tmp sibling of its atomic
 #     write is covered by the same glob.
-GIT_HYGIENE_VERSION = 8
+GIT_HYGIENE_VERSION = 9
 
 _GITATTRIBUTES_MARKER = "# vibe-cognition: append-only journal union-merge (safe to remove)"
 _GITATTRIBUTES_RULE = ".cognition/journal.jsonl merge=union"
@@ -88,32 +95,16 @@ _GITATTRIBUTES_RULES: tuple[tuple[str, str], ...] = (
     (".cognition/journal.jsonl", _GITATTRIBUTES_RULE),
     (".cognition/people/*.jsonl", _GITATTRIBUTES_PEOPLE_RULE),
 )
-_GITIGNORE_CHROMADB = "chromadb/"
-_GITIGNORE_FLAG = ".git-hygiene-managed"
-_GITIGNORE_LOCKS = "*.lock"
-# Local-only rehydrate loss-alert flag (storage.REHYDRATE_FLAG_FILENAME) — string
-# duplicated here rather than imported to keep this module stdlib-only/standalone.
-_GITIGNORE_REHYDRATE = ".last-rehydrate.json"
-# Local-only onboarding decline file (prime.ONBOARD_DECLINE_FILENAME) — string
-# duplicated here for the same reason as _GITIGNORE_REHYDRATE above.
-_GITIGNORE_ONBOARD_DECLINED = "onboard-declined"
-# Local-only "Since You Were Gone" last-seen marker (prime.LAST_SEEN_FILENAME) —
-# string duplicated here for the same reason as _GITIGNORE_REHYDRATE above. Glob
-# (not a bare filename) so it also covers the last-seen.json.tmp sibling that
-# _stamp_last_seen's atomic write briefly creates -- a process killed between
-# write_text and os.replace would otherwise leave an unignored .tmp file that
-# the journal-flush `git add .cognition/` procedure would commit (WP-TC14 gate
-# F1: machine-local state syncing via git, the exact property this file exists
-# to prevent).
-_GITIGNORE_LAST_SEEN = "last-seen.json*"
-# Legacy-identity-backfill's dry-run skeleton map file (backfill_identity's own
-# default --skeleton-out path) -- string duplicated here for the same reason
-# as _GITIGNORE_REHYDRATE above.
-_GITIGNORE_BACKFILL_SKELETON = "backfill-identity-map.skeleton.json"
-# Machine-local confirmed graph identity (identity.IDENTITY_FILENAME) -- string
-# duplicated here for the same reason as _GITIGNORE_REHYDRATE above. Glob covers
-# the .tmp sibling of the atomic write.
-_GITIGNORE_IDENTITY = "identity.json*"
+# v9: ONE entry covers every machine-local file, present and future. Each used to
+# need its own line, so the list only ever covered names someone remembered -- an
+# SVN lab run showed `svn add --force` sweeping identity.json and an unlisted
+# file straight in while the enumerated ones were skipped.
+# `*.lock` stays separate: locks live beside what they lock, and moving them
+# mid-upgrade would leave two plugin versions locking different paths, so the
+# lock would silently stop being mutually exclusive.
+# `chromadb/` stays for teammates on pre-0.32.0 versions that still write it
+# into the repo.
+_GITIGNORE_ENTRIES: tuple[str, ...] = ("local/", "*.lock", "chromadb/")
 _FLAG_FILENAME = ".git-hygiene-managed"
 
 # A lock older than this is assumed stale (leftover from a hard-killed process).
@@ -121,8 +112,13 @@ _LOCK_STALE_SECONDS = 60
 
 
 def _read_flag(cognition_dir: Path) -> int | None:
-    """Return the numeric version in the flag file, or None if absent/unreadable."""
-    flag_path = cognition_dir / _FLAG_FILENAME
+    """Return the numeric version in the flag file, or None if absent/unreadable.
+
+    Goes through the local-path accessor FIRST: this flag decides whether the
+    versioned pass has run AND is one of the files that pass relocates, so a
+    non-local-aware read would re-decide "not migrated" on every single start.
+    """
+    flag_path = read_path(cognition_dir, _FLAG_FILENAME)
     try:
         return int(flag_path.read_text(encoding="utf-8").strip())
     except (FileNotFoundError, ValueError, OSError):
@@ -130,7 +126,7 @@ def _read_flag(cognition_dir: Path) -> int | None:
 
 
 def _write_flag(cognition_dir: Path) -> None:
-    flag_path = cognition_dir / _FLAG_FILENAME
+    flag_path = write_path(cognition_dir, _FLAG_FILENAME)
     flag_path.write_text(str(GIT_HYGIENE_VERSION), encoding="utf-8")
 
 
@@ -256,51 +252,19 @@ def _write_gitignore(cognition_dir: Path) -> bool:
     if not _acquire_lock(lock):
         return False
     try:
-        need_chromadb = _needs_gitignore_entry(gitignore_path, _GITIGNORE_CHROMADB, "chromadb")
-        need_flag = _needs_gitignore_entry(gitignore_path, _GITIGNORE_FLAG, _GITIGNORE_FLAG)
-        need_locks = _needs_gitignore_entry(gitignore_path, _GITIGNORE_LOCKS, _GITIGNORE_LOCKS)
-        need_rehydrate = _needs_gitignore_entry(
-            gitignore_path, _GITIGNORE_REHYDRATE, _GITIGNORE_REHYDRATE
-        )
-        need_onboard_declined = _needs_gitignore_entry(
-            gitignore_path, _GITIGNORE_ONBOARD_DECLINED, _GITIGNORE_ONBOARD_DECLINED
-        )
-        need_last_seen = _needs_gitignore_entry(
-            gitignore_path, _GITIGNORE_LAST_SEEN, _GITIGNORE_LAST_SEEN
-        )
-        need_backfill_skeleton = _needs_gitignore_entry(
-            gitignore_path, _GITIGNORE_BACKFILL_SKELETON, _GITIGNORE_BACKFILL_SKELETON
-        )
-        need_identity = _needs_gitignore_entry(
-            gitignore_path, _GITIGNORE_IDENTITY, _GITIGNORE_IDENTITY
-        )
-        if not any((
-            need_chromadb, need_flag, need_locks, need_rehydrate,
-            need_onboard_declined, need_last_seen, need_backfill_skeleton,
-            need_identity,
-        )):
+        missing = [
+            e for e in _GITIGNORE_ENTRIES
+            if _needs_gitignore_entry(gitignore_path, e, e.rstrip("/"))
+        ]
+        if not missing:
             return True
 
         if not gitignore_path.exists():
-            lines_to_add = ["# vibe-cognition managed - do not remove"]
-            if need_chromadb:
-                lines_to_add.append(_GITIGNORE_CHROMADB)
-            if need_flag:
-                lines_to_add.append(_GITIGNORE_FLAG)
-            if need_locks:
-                lines_to_add.append(_GITIGNORE_LOCKS)
-            if need_rehydrate:
-                lines_to_add.append(_GITIGNORE_REHYDRATE)
-            if need_onboard_declined:
-                lines_to_add.append(_GITIGNORE_ONBOARD_DECLINED)
-            if need_last_seen:
-                lines_to_add.append(_GITIGNORE_LAST_SEEN)
-            if need_backfill_skeleton:
-                lines_to_add.append(_GITIGNORE_BACKFILL_SKELETON)
-            if need_identity:
-                lines_to_add.append(_GITIGNORE_IDENTITY)
             try:
-                gitignore_path.write_text("\n".join(lines_to_add) + "\n", encoding="utf-8")
+                gitignore_path.write_text(
+                    "\n".join(["# vibe-cognition managed - do not remove", *missing]) + "\n",
+                    encoding="utf-8",
+                )
             except OSError as exc:
                 logger.debug("git-hygiene: cannot write .cognition/.gitignore: %s", exc)
                 return False
@@ -312,23 +276,7 @@ def _write_gitignore(cognition_dir: Path) -> bool:
             logger.debug("git-hygiene: cannot read .cognition/.gitignore: %s", exc)
             return False
 
-        lines_to_add = []
-        if need_chromadb:
-            lines_to_add.append(_GITIGNORE_CHROMADB)
-        if need_flag:
-            lines_to_add.append(_GITIGNORE_FLAG)
-        if need_locks:
-            lines_to_add.append(_GITIGNORE_LOCKS)
-        if need_rehydrate:
-            lines_to_add.append(_GITIGNORE_REHYDRATE)
-        if need_onboard_declined:
-            lines_to_add.append(_GITIGNORE_ONBOARD_DECLINED)
-        if need_last_seen:
-            lines_to_add.append(_GITIGNORE_LAST_SEEN)
-        if need_backfill_skeleton:
-            lines_to_add.append(_GITIGNORE_BACKFILL_SKELETON)
-        if need_identity:
-            lines_to_add.append(_GITIGNORE_IDENTITY)
+        lines_to_add = missing
 
         prefix = "" if (not existing or existing.endswith("\n")) else "\n"
         addition = prefix + "\n".join(lines_to_add) + "\n"
@@ -353,6 +301,44 @@ def _opt_out() -> bool:
     return val in ("1", "true", "yes", "on")
 
 
+def _relocate_local_files(cognition_dir: Path) -> None:
+    """Move machine-local files into .cognition/local/ (v9). Never raises.
+
+    Under one lock so two servers starting together cannot both move; atomic
+    rename so an interruption cannot leave a half-written destination; skip when
+    the destination already holds content so a faster process's newer copy is
+    never clobbered; and defer on PermissionError (Windows file-in-use) so a
+    write in flight is never truncated -- the next pass retries.
+    """
+    lock = cognition_dir / ".relocate.lock"
+    if not _acquire_lock(lock):
+        return
+    try:
+        target_dir = local_dir(cognition_dir)
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.debug("git-hygiene: cannot create local/: %s", exc)
+            return
+        for name in RELOCATED_FILENAMES:
+            for candidate in (name, f"{name}.tmp"):
+                src = cognition_dir / candidate
+                dst = target_dir / candidate
+                try:
+                    if not src.is_file():
+                        continue
+                    if dst.exists() and dst.stat().st_size > 0:
+                        src.unlink()  # a newer copy already landed; drop the stale source
+                        continue
+                    src.replace(dst)
+                except PermissionError:
+                    logger.debug("git-hygiene: %s in use, deferring relocation", candidate)
+                except OSError as exc:
+                    logger.debug("git-hygiene: relocating %s failed: %s", candidate, exc)
+    finally:
+        _release_lock(lock)
+
+
 def ensure_git_hygiene(repo_path: Path, cognition_dir: Path) -> None:
     """Run the one-time git hygiene pass.  Never raises — all failures are logged + swallowed.
 
@@ -369,6 +355,10 @@ def ensure_git_hygiene(repo_path: Path, cognition_dir: Path) -> None:
     flag_version = _read_flag(cognition_dir)
     if flag_version is not None and flag_version >= GIT_HYGIENE_VERSION:
         return
+
+    # v9: relocate BEFORE writing the ignore list, so the trimmed list never
+    # exists while the files it no longer names are still at the legacy path.
+    _relocate_local_files(cognition_dir)
 
     is_git = (repo_path / ".git").exists()
 
@@ -419,7 +409,7 @@ def check_hygiene_state(repo_path: Path, cognition_dir: Path) -> dict:
         if gitignore_path.exists():
             for line in gitignore_path.read_text(encoding="utf-8").splitlines():
                 stripped = line.strip()
-                if stripped in (_GITIGNORE_CHROMADB, "chromadb"):
+                if stripped in _GITIGNORE_ENTRIES:
                     result["gitignore_configured"] = True
                     break
     except OSError:

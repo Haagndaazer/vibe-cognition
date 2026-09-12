@@ -15,6 +15,7 @@ import networkx as nx
 from .documents import doc_ref
 from .git_hygiene import ensure_git_hygiene
 from .journal_io import append_journal_line
+from .local_paths import write_path as local_write_path
 from .models import (
     CognitionEdge,
     CognitionEdgeType,
@@ -1043,7 +1044,7 @@ class CognitionStorage:
         }
         if missing:
             try:
-                (self._dir / REHYDRATE_FLAG_FILENAME).write_text(
+                (local_write_path(self._dir, REHYDRATE_FLAG_FILENAME)).write_text(
                     json.dumps(self.last_rehydrate), encoding="utf-8"
                 )
             except OSError as exc:

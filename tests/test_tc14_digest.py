@@ -15,6 +15,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 
 from vibe_cognition.cognition import CognitionStorage
+from vibe_cognition.cognition.local_paths import write_path as local_write_path
 from vibe_cognition.cognition.models import (
     CognitionEdge,
     CognitionEdgeType,
@@ -49,7 +50,9 @@ def _add(
 
 
 def _marker_path(cognition_dir):
-    return cognition_dir / LAST_SEEN_FILENAME
+    # write_path, not read_path: tests both read AND seed the marker, and only
+    # the write accessor creates local/ when it does not exist yet.
+    return local_write_path(cognition_dir, LAST_SEEN_FILENAME)
 
 
 def _section(result: str, header: str) -> str:
@@ -188,7 +191,7 @@ def test_stamp_last_seen_cleans_up_stray_tmp_from_prior_crash(tmp_path):
     itself, since a successful write makes the explicit unlink redundant."""
     cognition_dir = tmp_path / ".cognition"
     cognition_dir.mkdir()
-    stray = cognition_dir / f"{LAST_SEEN_FILENAME}.tmp"
+    stray = local_write_path(cognition_dir, f"{LAST_SEEN_FILENAME}.tmp")
     stray.write_text("torn-from-a-crash", encoding="utf-8")
 
     _stamp_last_seen(cognition_dir, ME["email"])
@@ -208,7 +211,7 @@ def test_stamp_last_seen_cleans_up_stray_tmp_even_if_this_stamp_also_fails(tmp_p
     bytes are left untouched on disk."""
     cognition_dir = tmp_path / ".cognition"
     cognition_dir.mkdir()
-    stray = cognition_dir / f"{LAST_SEEN_FILENAME}.tmp"
+    stray = local_write_path(cognition_dir, f"{LAST_SEEN_FILENAME}.tmp")
     stray.write_text("torn-from-a-crash", encoding="utf-8")
 
     import vibe_cognition.cognition.prime as prime_module
@@ -627,7 +630,7 @@ def test_main_stamps_marker_after_output_fails_before(tmp_path, monkeypatch):
     monkeypatch.setattr("sys.stdout", buf)
     main(argv=[])
 
-    data = json.loads((tmp_path / ".cognition" / LAST_SEEN_FILENAME).read_text(encoding="utf-8"))
+    data = json.loads(_marker_path(tmp_path / ".cognition").read_text(encoding="utf-8"))
     assert ME["email"] in data
 
 

@@ -17,6 +17,8 @@ from vibe_cognition.cognition.identity import (
     resolve_identity,
     write_confirmed_identity,
 )
+from vibe_cognition.cognition.local_paths import read_path as local_read_path
+from vibe_cognition.cognition.local_paths import write_path as local_write_path
 from vibe_cognition.cognition.svn_identity import (
     _looks_like_email,
     _parse_hash_dump,
@@ -198,26 +200,26 @@ def test_write_confirmed_identity_rejects_bad_input(repo):
     _, cognition = repo
     assert "error" in write_confirmed_identity(cognition, "", "a@b.com")
     assert "error" in write_confirmed_identity(cognition, "Name", "not-an-email")
-    assert not (cognition / IDENTITY_FILENAME).exists()
+    assert not local_read_path(cognition, IDENTITY_FILENAME).exists()
 
 
 def test_write_confirmed_identity_casefolds_and_persists(repo):
     _, cognition = repo
     write_confirmed_identity(cognition, "  Ada  ", "  ADA@Example.com ")
-    data = json.loads((cognition / IDENTITY_FILENAME).read_text(encoding="utf-8"))
+    data = json.loads(local_read_path(cognition, IDENTITY_FILENAME).read_text(encoding="utf-8"))
     assert data == {"name": "Ada", "email": "ada@example.com"}
     assert read_confirmed_identity(cognition) == data
 
 
 def test_corrupt_identity_file_is_ignored_not_fatal(repo):
     _, cognition = repo
-    (cognition / IDENTITY_FILENAME).write_text("{not json", encoding="utf-8")
+    local_write_path(cognition, IDENTITY_FILENAME).write_text("{not json", encoding="utf-8")
     assert read_confirmed_identity(cognition) is None
 
 
 def test_identity_file_missing_fields_is_ignored(repo):
     _, cognition = repo
-    (cognition / IDENTITY_FILENAME).write_text('{"name": "x"}', encoding="utf-8")
+    local_write_path(cognition, IDENTITY_FILENAME).write_text('{"name": "x"}', encoding="utf-8")
     assert read_confirmed_identity(cognition) is None
 
 
@@ -435,7 +437,7 @@ def test_confirmed_identity_survives_a_utf8_bom(repo):
     """A BOM must not silently defeat confirmation (some Windows editors add one)."""
     _, cognition = repo
     write_confirmed_identity(cognition, "Ada", "ada@example.com")
-    path = cognition / IDENTITY_FILENAME
+    path = local_read_path(cognition, IDENTITY_FILENAME)
     path.write_text("\ufeff" + path.read_text(encoding="utf-8"), encoding="utf-8")
 
     assert read_confirmed_identity(cognition) == {"name": "Ada", "email": "ada@example.com"}
@@ -446,4 +448,4 @@ def test_write_confirmed_identity_returns_what_landed_on_disk(repo):
     _, cognition = repo
     got = write_confirmed_identity(cognition, "  Ada  ", "ADA@Example.com")
     assert got == read_confirmed_identity(cognition)
-    assert not list(cognition.glob("identity.json.*.tmp")), "temp file left behind"
+    assert not list(local_write_path(cognition, "x").parent.glob("identity.json.*.tmp")), "temp file left behind"

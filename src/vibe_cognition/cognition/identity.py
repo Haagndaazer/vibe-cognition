@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from .git_identity import resolve_git_identity
+from .local_paths import read_path, write_path
 from .svn_identity import _looks_like_email, is_svn_working_copy, svn_username_candidates
 
 logger = logging.getLogger(__name__)
@@ -58,7 +59,13 @@ def is_valid_email(value: str) -> bool:
 
 
 def identity_path(cognition_dir: Path) -> Path:
-    return Path(cognition_dir) / IDENTITY_FILENAME
+    """Where to READ the confirmed identity (local/, else legacy)."""
+    return read_path(cognition_dir, IDENTITY_FILENAME)
+
+
+def identity_write_path(cognition_dir: Path) -> Path:
+    """Where to WRITE it. Always local/, which one ignore entry covers."""
+    return write_path(cognition_dir, IDENTITY_FILENAME)
 
 
 def read_confirmed_identity(cognition_dir: Path) -> dict[str, str] | None:
@@ -89,7 +96,7 @@ def write_confirmed_identity(cognition_dir: Path, name: str, email: str) -> dict
         return {"error": "name must not be blank"}
     if not is_valid_email(email):
         return {"error": f"email must be a valid address, got {email!r}"}
-    path = identity_path(cognition_dir)
+    path = identity_write_path(cognition_dir)
     payload = {"name": name, "email": email}
     # Per-process temp name: a fixed one lets two concurrent callers clobber each
     # other's staged file, after which one reports success while the other's
