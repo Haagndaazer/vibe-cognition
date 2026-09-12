@@ -254,7 +254,7 @@ def test_add_task_seeds_lifecycle_and_server_identity(build_lc, make_ctx, mock_m
     Fails-before: if the tool didn't seed metadata or trusted a client identity.
     """
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Server Resolved", "email": "srv@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -403,7 +403,7 @@ def test_update_task_claim_stamps_claimed_by(build_lc, make_ctx, mock_mcp, tmp_p
     Fails-before: if claiming didn't stamp claimed_by, or stamped the wrong identity.
     """
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Claimer", "email": "claimer@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -425,7 +425,7 @@ def test_update_task_reclaim_restamps_claimed_by(build_lc, make_ctx, mock_mcp, t
     """
     calls = {"name": "First Claimer", "email": "first@x.com"}
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: calls,
     )
     register_cognition_tools(mock_mcp)
@@ -438,7 +438,7 @@ def test_update_task_reclaim_restamps_claimed_by(build_lc, make_ctx, mock_mcp, t
 
     calls = {"name": "Second Claimer", "email": "second@x.com"}
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: calls,
     )
     up = mock_mcp.tools["cognition_update_task"](
@@ -459,7 +459,7 @@ def test_update_task_reclaim_without_note_rejects(
     """
     calls = {"name": "First Claimer", "email": "first@x.com"}
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: calls,
     )
     register_cognition_tools(mock_mcp)
@@ -473,7 +473,7 @@ def test_update_task_reclaim_without_note_rejects(
 
     calls = {"name": "Second Claimer", "email": "second@x.com"}
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: calls,
     )
     result = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
@@ -497,7 +497,7 @@ def test_update_task_non_claim_transitions_leave_claimed_by_untouched(
     the claim transition, or cleared on a non-claim transition.
     """
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Claimer", "email": "claimer@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -507,7 +507,7 @@ def test_update_task_non_claim_transitions_leave_claimed_by_untouched(
     mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
 
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Someone Else", "email": "else@x.com"},
     )
     done = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="done")
@@ -537,7 +537,7 @@ def test_update_task_same_status_combo_does_not_restamp_claimed_by(
     silently hand the task to the combo caller without a real transition.
     """
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Original Claimer", "email": "orig@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -547,7 +547,7 @@ def test_update_task_same_status_combo_does_not_restamp_claimed_by(
     mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
 
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Combo Caller", "email": "combo@x.com"},
     )
     up = mock_mcp.tools["cognition_update_task"](
@@ -568,7 +568,7 @@ def test_update_task_same_status_bare_poke_foreign_returns_warning_unmutated(
     already claimed by someone else succeeds with a claim_warning instead of hitting
     the "No updatable fields" error -- the node is otherwise unmutated."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "First Claimer", "email": "first@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -579,7 +579,7 @@ def test_update_task_same_status_bare_poke_foreign_returns_warning_unmutated(
     before = mock_mcp.tools["cognition_get_node"](ctx, node_id=t["id"])
 
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Second Claimer", "email": "second@x.com"},
     )
     up = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
@@ -599,7 +599,7 @@ def test_update_task_same_status_bare_poke_same_identity_still_errors(
     """A bare status='in_progress' poke from the SAME claimant is byte-identical to
     today: not a takeover shape (not foreign), so it still hits "No updatable fields"."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Claimer", "email": "claimer@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -619,7 +619,7 @@ def test_update_task_same_status_combo_carries_takeover_note_required_warning(
     test_update_task_same_status_combo_does_not_restamp_claimed_by) also carries the
     takeover_note_required warning -- checked here rather than in the pinned test."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Original Claimer", "email": "orig@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -629,7 +629,7 @@ def test_update_task_same_status_combo_carries_takeover_note_required_warning(
     mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
 
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Combo Caller", "email": "combo@x.com"},
     )
     up = mock_mcp.tools["cognition_update_task"](
@@ -648,7 +648,7 @@ def test_update_task_same_status_takeover_with_note_seizes(
     appends a new transitions entry carrying the note, and warns (kind claim_collision,
     claimant = the PRIOR claimant -- snapshot-before-mutate)."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "First Claimer", "email": "first@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -660,7 +660,7 @@ def test_update_task_same_status_takeover_with_note_seizes(
     assert len(before["metadata"]["transitions"]) == 2  # seed open + claim in_progress
 
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Second Claimer", "email": "second@x.com"},
     )
     up = mock_mcp.tools["cognition_update_task"](
@@ -683,7 +683,7 @@ def test_update_task_note_same_status_same_identity_still_rejects(
     """The carved note guard still rejects note+same-status for a NON-takeover shape:
     same identity, same status -- no takeover, so today's error stands verbatim."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Claimer", "email": "claimer@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -705,7 +705,7 @@ def test_update_task_note_same_status_no_prior_claim_still_rejects(
     hand-built: in_progress but never claimed via the tool) is not a takeover shape
     (no claimant to take over from) -- the guard still rejects verbatim."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Someone", "email": "someone@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -726,7 +726,7 @@ def test_update_task_reclaim_blocked_unverifiable_claimant_bypasses_note_require
     """WP-TC4: an unverifiable PRIOR claimant (blank email) disengages the 2a note
     requirement entirely -- byte-identical to today, silent restamp, no warning."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "First Claimer", "email": ""},
     )
     register_cognition_tools(mock_mcp)
@@ -737,7 +737,7 @@ def test_update_task_reclaim_blocked_unverifiable_claimant_bypasses_note_require
     mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="blocked")
 
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Second Claimer", "email": "second@x.com"},
     )
     up = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
@@ -752,7 +752,7 @@ def test_update_task_reclaim_blocked_unverifiable_caller_bypasses_note_requireme
     """WP-TC4: an unverifiable CALLER (blank email) disengages the 2a note requirement
     entirely, even over a verified prior claimant."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "First Claimer", "email": "first@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -763,7 +763,7 @@ def test_update_task_reclaim_blocked_unverifiable_caller_bypasses_note_requireme
     mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="blocked")
 
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Second Claimer", "email": ""},
     )
     up = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
@@ -778,7 +778,7 @@ def test_update_task_self_reclaim_after_self_block_no_warning(
     """Self-re-claiming your own blocked task never warns and never requires a note
     -- same person, not a collision."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Claimer", "email": "claimer@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -800,7 +800,7 @@ def test_update_task_open_to_in_progress_over_released_foreign_claim_no_warning(
     over a foreign prior claimant restamps silently (today's flow), no warning, no
     note needed, even though the prior claimant is foreign and verified."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "First Claimer", "email": "first@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -811,7 +811,7 @@ def test_update_task_open_to_in_progress_over_released_foreign_claim_no_warning(
     mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="open")
 
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Second Claimer", "email": "second@x.com"},
     )
     up = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
@@ -827,7 +827,7 @@ def test_update_task_reopen_foreign_done_returns_warning(
     verified identity -- warns (kind reopen, claimant = closer, claimed_at = closed-at).
     No note required (the ruling scopes the note requirement to takeover)."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Closer", "email": "closer@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -838,7 +838,7 @@ def test_update_task_reopen_foreign_done_returns_warning(
     closed_at = done["metadata"]["transitions"][-1]["at"]
 
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Reopener", "email": "reopener@x.com"},
     )
     reopened = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="open")
@@ -853,7 +853,7 @@ def test_update_task_reopen_foreign_cancelled_returns_warning(
 ):
     """Same as the done case, but cancelled -> open."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Closer", "email": "closer@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -863,7 +863,7 @@ def test_update_task_reopen_foreign_cancelled_returns_warning(
     mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="cancelled")
 
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Reopener", "email": "reopener@x.com"},
     )
     reopened = mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="open")
@@ -877,7 +877,7 @@ def test_update_task_reopen_own_task_no_warning(
 ):
     """Reopening your OWN closed task never warns."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Closer", "email": "closer@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -898,7 +898,7 @@ def test_update_task_reopen_suppressed_without_closing_transitions_entry(
     hand-built journal, mirrors the claim-side null case) reopens with NO warning --
     unattributable, same doctrine as the identity carve-out."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Reopener", "email": "reopener@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -924,7 +924,7 @@ def test_update_task_takeover_claimed_at_is_last_wins_over_consecutive_entries(
     """After a 2b takeover, two CONSECUTIVE in_progress transitions entries exist --
     _task_claimed_at must report the LATEST one (last-wins), not the first claim."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "First Claimer", "email": "first@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -934,7 +934,7 @@ def test_update_task_takeover_claimed_at_is_last_wins_over_consecutive_entries(
     mock_mcp.tools["cognition_update_task"](ctx, node_id=t["id"], status="in_progress")
 
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Second Claimer", "email": "second@x.com"},
     )
     up = mock_mcp.tools["cognition_update_task"](
@@ -1070,7 +1070,7 @@ def test_add_task_seeds_assignment_and_first_audit_entry(build_lc, make_ctx, moc
     metadata.assigned_to AND the first metadata.assignments audit entry in one shot,
     stamped by the server-resolved creator (not a client-supplied identity)."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Creator", "email": "creator@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -1124,7 +1124,7 @@ def test_update_task_assigns_appends_one_entry(build_lc, make_ctx, mock_mcp, tmp
     exactly one metadata.assignments entry, stamped by (server-resolved), not the
     client-supplied target email."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Assigner", "email": "assigner@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -1254,7 +1254,7 @@ def test_list_tasks_carries_claimed_by_and_claimed_at(build_lc, make_ctx, mock_m
     who holds a claim before attempting cognition_update_task (Gate B-final, task
     8c7bab562c37). Both are None on a never-claimed task."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Claimer", "email": "claimer@x.com"},
     )
     register_cognition_tools(mock_mcp)

@@ -118,7 +118,7 @@ def main() -> None:
     sections = [f"{_REINJECT_HEADER}\n\n{SERVER_INSTRUCTIONS}"]
 
     try:
-        from .cognition.prime import PrimeConfig, generate_prime
+        from .cognition.prime import PrimeConfig, _identity_notice, generate_prime
         from .cognition.storage import CognitionStorage
 
         repo_path = resolve_repo_path_env()
@@ -145,6 +145,11 @@ def main() -> None:
                     )
                 except Exception:  # noqa: BLE001
                     config = PrimeConfig()
+                # The identity banner must survive a compaction: this is exactly
+                # when an agent has forgotten that writes are gated.
+                identity_note = _identity_notice(storage.cognition_dir.parent, storage.cognition_dir)
+                if identity_note:
+                    sections.append(identity_note)
                 sections.append(generate_prime(storage, config))
     except Exception:  # noqa: BLE001
         pass

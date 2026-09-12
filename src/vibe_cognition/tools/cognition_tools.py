@@ -28,7 +28,6 @@ from ..cognition import (
     get_reasoning_chain,
     get_superseded_chain,
     get_workflow_head,
-    resolve_git_identity,
 )
 from ..cognition.chunking import chunk_text
 from ..cognition.documents import (
@@ -48,6 +47,11 @@ from ..cognition.documents import (
     sha256_file,
     write_blob,
     write_text_sidecar,
+)
+from ..cognition.identity import (
+    require_identity,
+    resolve_identity,
+    write_confirmed_identity,
 )
 from ..cognition.prime import SEVERITY_ORDER, _node_email
 
@@ -208,6 +212,17 @@ def _node_from_dict(node_id: str, data: dict[str, Any]) -> CognitionNode:
     )
 
 
+def _acting_identity(cognition_dir: Path) -> dict[str, str]:
+    """Identity stamped on writes: confirmed file, else git, else SVN, else OS user."""
+    ident = resolve_identity(cognition_dir.parent, cognition_dir)
+    return {"name": ident["name"], "email": ident["email"]}
+
+
+def _identity_gate(cognition_dir: Path) -> dict[str, Any] | None:
+    """None when writing is allowed, else the refusal dict to return to the caller."""
+    return require_identity(cognition_dir.parent, cognition_dir)
+
+
 def _record_node(
     ctx: Context,
     node_type: CognitionNodeType,
@@ -270,7 +285,10 @@ def _record_node(
     # this", distinct from `author` (who dictated the record, caller-provided free
     # text). Same resolve_git_identity used by _add_task's created_by (file-read
     # only, never subprocess — v0.12.1 P0).
-    recorded_by = resolve_git_identity(storage.cognition_dir.parent)
+    gate = _identity_gate(storage.cognition_dir)
+    if gate is not None:
+        return gate
+    recorded_by = _acting_identity(storage.cognition_dir)
     node = CognitionNode(
         id=node_id,
         type=node_type,
@@ -1213,7 +1231,10 @@ def _store_document(
     # NOT touch the dedup ("already_stored") branch above, which returns an existing node
     # as-is — backfilling legacy documents is legacy-identity-backfill's job (962ab7b442d5),
     # scoped OUT of that WP until this ships (v2 there, not here).
-    recorded_by = resolve_git_identity(cognition_dir.parent)
+    gate = _identity_gate(cognition_dir)
+    if gate is not None:
+        return gate
+    recorded_by = _acting_identity(cognition_dir)
     metadata: dict[str, Any] = {
         "filename": filename,
         "mime": mime or "",
@@ -1521,7 +1542,10 @@ def _add_task(
     # Server-resolved identity from the repo backing THIS storage (home project).
     # Assumes the standard layout where the repo root is the .cognition dir's parent
     # (true for every real install; config.py resolves the same root from REPO_PATH).
-    created_by = resolve_git_identity(storage.cognition_dir.parent)
+    gate = _identity_gate(storage.cognition_dir)
+    if gate is not None:
+        return gate
+    created_by = _acting_identity(storage.cognition_dir)
 
     metadata: dict[str, Any] = {
         "status": "open",
@@ -1843,7 +1867,10 @@ def _update_task(
     # WP-TC4 (2-MECH #1): resolve the caller identity ONCE, early -- was previously
     # resolved inside the transition body below; that call is now dropped in favor of
     # this hoisted result, which also feeds takeover detection.
-    caller = resolve_git_identity(storage.cognition_dir.parent)
+    gate = _identity_gate(storage.cognition_dir)
+    if gate is not None:
+        return gate
+    caller = _acting_identity(storage.cognition_dir)
     caller_email = _casefold_email(caller.get("email", ""))
 
     # Snapshot the PRIOR claim before any mutation (rev-2 finding #8: metadata mutates
@@ -2014,7 +2041,7 @@ def _update_task(
         new_assigned_to = _casefold_email(assigned_to_email)
         current_assigned_to = metadata.get("assigned_to") or ""
         if new_assigned_to != current_assigned_to:
-            by = resolve_git_identity(storage.cognition_dir.parent)
+            by = _acting_identity(storage.cognition_dir)
             entry = {"to": new_assigned_to, "at": datetime.now(UTC).isoformat(), "by": by}
             metadata["assignments"] = [*metadata.get("assignments", []), entry]
             if new_assigned_to:
@@ -2178,7 +2205,14 @@ def _register_person(
     if seniority_norm not in _SENIORITY_SET:
         return {"error": f"Invalid seniority '{seniority}'. Valid: {list(SENIORITY_LEVELS)}"}
 
-    recorded_by = resolve_git_identity(storage.cognition_dir.parent)
+    # Gated like every other write path: registering someone ELSE (explicit email)
+    # still stamps recorded_by with the CALLER's identity, so an unresolved caller
+    # would land a person node attributed to nobody.
+    gate = _identity_gate(storage.cognition_dir)
+    if gate is not None:
+        return gate
+
+    recorded_by = _acting_identity(storage.cognition_dir)
     if email:
         resolved_email = _casefold_email(email)
         if not resolved_email:
@@ -2186,12 +2220,7 @@ def _register_person(
     else:
         resolved_email = _casefold_email(recorded_by.get("email", ""))
         if not resolved_email:
-            return {
-                "error": (
-                    "no email provided and the current git identity has no resolvable "
-                    "email — pass email explicitly, or set user.email in git config"
-                )
-            }
+            return {"error": "could not resolve your email to self-register; pass email explicitly"}
 
     existing = _find_person_by_email(storage, resolved_email)
     if existing is not None:
@@ -2328,7 +2357,10 @@ def _update_person(
             )
         }
 
-    by = resolve_git_identity(storage.cognition_dir.parent)
+    gate = _identity_gate(storage.cognition_dir)
+    if gate is not None:
+        return gate
+    by = _acting_identity(storage.cognition_dir)
     entry = {"changed": changed, "at": datetime.now(UTC).isoformat(), "by": by}
 
     metadata = dict(node.get("metadata", {}))
@@ -2388,7 +2420,7 @@ def _self_identity(storage: CognitionStorage) -> tuple[dict[str, str] | None, st
     """(recorded_by, casefolded email) for the server-resolved git identity,
     or (None, "") when no email is resolvable — callers return a retryable
     error rather than ever guessing an identity."""
-    by = resolve_git_identity(storage.cognition_dir.parent)
+    by = _acting_identity(storage.cognition_dir)
     email = _casefold_email(by.get("email", ""))
     return (by, email) if email else (None, "")
 
@@ -3066,6 +3098,62 @@ def register_cognition_tools(mcp) -> None:
             note=note,
             assigned_to_email=assigned_to_email,
         )
+
+    @dispatch_tool(mcp)
+    def cognition_set_identity(
+        ctx: Context,
+        name: str,
+        email: str,
+    ) -> dict[str, Any]:
+        """Confirm WHO IS DRIVING this checkout, so memories are attributable.
+
+        Call this when a write was refused with `identity_required: true`, or when
+        the human says the attributed identity is wrong. The values MUST come from
+        the human — ASK THEM. Never guess, never invent an address, and never pass
+        an agent's own name: memories are always attributed to the person.
+
+        Writes `.cognition/identity.json`, which is MACHINE-LOCAL and ignored by
+        version control: it records who is driving THIS working copy, not who
+        exists on the project. The shared roster is person nodes
+        (`cognition_register_person`), which is a separate step you should still do.
+
+        This overrides git config and SVN credentials for all future writes, so it
+        is also the fix when git reports a personal address and the human wants
+        their work address used instead. It does NOT change attribution already
+        recorded — for that, see the `vibe-cognition-remap-identity` CLI.
+
+        Args:
+            name: The human's display name, e.g. "Ada Lovelace". Must not be blank.
+            email: Their email address, lowercased on write. Must contain "@".
+
+        Returns:
+            On success: `{"name": str, "email": str, "source": "confirmed",
+            "path": str, "previous": dict | None, "registered_person": bool}` --
+            `previous` is the identity that was in effect before this call (with
+            its own `source`), and `registered_person` reports whether a person
+            node already exists for this email.
+            On failure: `{"error": str}` for a blank name or an address with no "@".
+
+        Suggestions for what to offer the human are in the refusal payload of any
+        gated write (`suggestions`), drawn from git config and cached SVN
+        credentials. Treat them as candidates to confirm, never as answers.
+        """
+        lc = get_lifespan(ctx)
+        storage: CognitionStorage = lc["cognition_storage"]
+        cognition_dir = storage.cognition_dir
+
+        previous = resolve_identity(cognition_dir.parent, cognition_dir)
+        written = write_confirmed_identity(cognition_dir, name, email)
+        if "error" in written:
+            return written
+
+        return {
+            **written,
+            "source": "confirmed",
+            "path": str(cognition_dir / "identity.json"),
+            "previous": previous,
+            "registered_person": _find_person_by_email(storage, written["email"]) is not None,
+        }
 
     @dispatch_tool(mcp)
     def cognition_register_person(
@@ -4765,7 +4853,10 @@ def register_cognition_tools(mcp) -> None:
 
         # Delete provenance (WP-1): server-resolved identity, same source as
         # cognition_add_task's creator (pure file reads, never raises).
-        removed_by = resolve_git_identity(storage.cognition_dir.parent)
+        gate = _identity_gate(storage.cognition_dir)
+        if gate is not None:
+            return gate
+        removed_by = _acting_identity(storage.cognition_dir)
 
         result = delete_cognition_node(storage, embed_storage, node_id, removed_by=removed_by)
         if result is None:

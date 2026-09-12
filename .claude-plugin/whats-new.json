@@ -1,4 +1,9 @@
 {
+  "0.37.0": [
+    "Vibe Cognition now refuses to record memories when it cannot tell who you are, instead of silently attributing them to nobody. Ask Claude to set your identity and it will offer the addresses it found.",
+    "Subversion users get identity too: cached SVN credentials are read as a suggestion, so a project with no git setup is no longer anonymous.",
+    "Recorded under the wrong address? The new vibe-cognition-remap-identity command corrects past attribution, dry-run by default."
+  ],
   "0.36.3": [
     "Fixed: non-git projects (for example Subversion) now get .cognition/.gitignore, so machine-local files like last-seen.json stop being committed by accident. Upgrading repairs an affected checkout.",
     "New Subversion guidance: SVN cannot union-merge the journal, so concurrent appends conflict. Ask Claude for the 'Team setup (svn)' section for the keep-both-sides rule and ignore setup."

@@ -525,7 +525,7 @@ def test_cognition_record_stamps_recorded_by(tmp_path, mock_mcp, build_lc, make_
     the caller-supplied author.
     """
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Server Resolved", "email": "srv@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -545,12 +545,19 @@ def test_cognition_record_stamps_recorded_by(tmp_path, mock_mcp, build_lc, make_
 def test_cognition_record_recorded_by_survives_identity_failure(
     tmp_path, mock_mcp, build_lc, make_ctx, monkeypatch
 ):
-    """A total git-identity failure (no config file, getpass raising) must never raise
-    or block cognition_record — recorded_by degrades to the same {name: "unknown",
-    email: ""} fallback resolve_git_identity itself guarantees (v0.12.1 P0 contract),
-    exercised end-to-end through the real write path rather than mocked away.
+    """v0.37.0 CONTRACT CHANGE: a total identity failure now REFUSES the write.
+
+    This previously asserted the opposite — that the write succeeded with
+    recorded_by degraded to {name: "unknown", email: ""}. That silent degradation
+    is the defect the identity gate exists to close: on a working copy with no
+    resolvable identity (the normal case for an SVN team with no git config),
+    every user recorded as the same empty address and was indistinguishable.
+
+    The half of the v0.12.1 P0 contract that still holds is asserted here too:
+    identity failure must never RAISE or hang. It returns an error dict.
     """
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "does-not-exist"))
+    monkeypatch.setenv("SVN_CONFIG_DIR", str(tmp_path / "no-svn-either"))
 
     def _boom():
         raise OSError("no user env")
@@ -563,10 +570,10 @@ def test_cognition_record_recorded_by_survives_identity_failure(
     result = mock_mcp.tools["cognition_record"](  # type: ignore[arg-type]
         ctx, node_type="decision", summary="s", detail="d", context="", author="t",
     )
-    assert "error" not in result, result
-    node = lc["cognition_storage"].get_node(result["id"])
-    assert node is not None
-    assert node["metadata"]["recorded_by"] == {"name": "unknown", "email": ""}
+    assert result.get("identity_required") is True, result
+    assert "cognition_set_identity" in result["error"]
+    # Refused BEFORE any write: nothing landed in the graph.
+    assert lc["cognition_storage"].get_all_nodes() == []
 
 
 def test_old_journal_node_without_recorded_by_loads_unchanged(tmp_path):
@@ -759,7 +766,7 @@ def test_cognition_store_document_stamps_recorded_by(
     node would carry only the free-text `author` with no verifiable identity.
     """
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Server Resolved", "email": "srv@x.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -1268,7 +1275,7 @@ def test_cognition_unload_project_returns_error_on_home(tmp_path, mock_mcp, buil
 # ── full register_all_tools: all 29 names captured ───────────────────────────
 
 
-def test_all_38_tools_registered(mock_mcp):
+def test_all_39_tools_registered(mock_mcp):
     """register_all_tools captures every expected closure by name.
 
     Fails-before: if a new tool was added to a registrar but not captured (name drift),
@@ -1277,8 +1284,8 @@ def test_all_38_tools_registered(mock_mcp):
     register_all_tools(mock_mcp)
 
     expected = {
-        # cognition_tools.py (27)
-        "cognition_record", "cognition_store_document", "cognition_get_document",
+        # cognition_tools.py (28)
+        "cognition_record", "cognition_set_identity", "cognition_store_document", "cognition_get_document",
         "cognition_begin_curation",
         "cognition_get_node", "cognition_update_node", "cognition_search",
         "cognition_get_chain", "cognition_get_superseded_chain", "cognition_get_workflow",
@@ -1306,6 +1313,6 @@ def test_all_38_tools_registered(mock_mcp):
 
     missing = expected - set(mock_mcp.tools.keys())
     assert not missing, f"Tools not registered: {missing}"
-    assert len(mock_mcp.tools) == 38, (
-        f"Expected 38 tools, got {len(mock_mcp.tools)}: {set(mock_mcp.tools.keys())}"
+    assert len(mock_mcp.tools) == 39, (
+        f"Expected 39 tools, got {len(mock_mcp.tools)}: {set(mock_mcp.tools.keys())}"
     )

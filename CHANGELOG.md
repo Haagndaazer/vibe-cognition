@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.0]
+
+### Added
+
+- **Graph identity is now resolved, confirmable, and enforced.** A new
+  `identity.py` resolves who is driving a checkout in order: a confirmed
+  `.cognition/identity.json`, then git config, then cached SVN credentials, then
+  the OS user. When no email resolves from any source, **every graph write is
+  refused** with `identity_required: true` and a payload of candidates found on
+  the machine; reads are unaffected. Previously a working copy with no git
+  identity attributed every memory to an empty address, making all such users
+  indistinguishable -- the normal case for a Subversion team.
+- **`cognition_set_identity(name, email)`** confirms the acting identity, writing
+  the machine-local `.cognition/identity.json` (ignored by version control, since
+  it records who drives THIS checkout, not who exists on the project). It
+  overrides git and SVN for future writes, so it is also the fix when git reports
+  a personal address and the human wants their work address used.
+- **SVN identity resolution** (`svn_identity.py`) reads cached credentials from
+  SVN's own auth store, file-only -- never a subprocess, matching git_identity's
+  hard rule. An SVN username is treated as an email only when it actually looks
+  like one; a bare login yields a name and no address rather than an invented one.
+- **`vibe-cognition-remap-identity` CLI** corrects attribution already recorded
+  under another address. Dry run by default, infers nothing, and writes each
+  change as an ordinary journal append so the original stays visible as
+  `remapped_from`.
+- Session-start now carries an ACTION REQUIRED banner when writes are gated on
+  identity, listing candidate addresses to confirm.
+
+### Changed
+
+- `GIT_HYGIENE_VERSION` 7 -> 8: `identity.json*` joins the managed ignore list.
+
 ## [0.36.3]
 
 ### Fixed

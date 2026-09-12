@@ -215,6 +215,16 @@ def test_gitignore_backfilled_on_version_bump_when_not_git_repo(tmp_path):
     assert "last-seen.json*" in (cognition / ".gitignore").read_text(encoding="utf-8")
 
 
+def test_gitignore_covers_machine_local_identity(tmp_path):
+    """v8: identity.json is machine-local (who is driving THIS checkout) and must
+    never be committed -- the glob also covers the .tmp sibling of its atomic write."""
+    repo, cognition = _make_git_repo(tmp_path)
+
+    _run(repo, cognition)
+
+    assert "identity.json*" in (cognition / ".gitignore").read_text(encoding="utf-8")
+
+
 def test_no_write_when_cognition_dir_absent(tmp_path):
     """No .cognition/ dir → nothing is created anywhere."""
     _run(tmp_path, tmp_path / ".cognition")

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from ..config import Settings, resolve_repo_path_env
 from .git_hygiene import _acquire_lock, _release_lock, check_hygiene_state, format_hygiene_announce
-from .git_identity import resolve_git_identity
+from .identity import identity_suggestions, resolve_identity
 from .models import CognitionEdgeType, CognitionNodeType
 from .readme import ONBOARDING_BLOCK
 from .storage import REHYDRATE_FLAG_FILENAME, CognitionStorage
@@ -821,6 +821,40 @@ def _format_since_you_were_gone(
     return "## Since You Were Gone\n" + "\n".join(lines)
 
 
+IDENTITY_REQUIRED_NOTICE = (
+    "## ACTION REQUIRED -- graph identity not set\n"
+    "No email address resolves from git config or SVN credentials on this machine, "
+    "so **recording to the graph is currently REFUSED**. Reads still work.\n"
+    "- ASK THE HUMAN for their name and work email, then call "
+    "cognition_set_identity(name=..., email=...).\n"
+    "- Do NOT guess an address, and never use an agent name -- memories are "
+    "attributed to the person, not the agent."
+)
+
+
+def _identity_notice(repo_path: Path, cognition_dir: Path) -> str:
+    """The blocked-identity banner, or "" when an email resolves. Never raises.
+
+    Fires ONLY when writes are actually gated -- an unconfirmed but resolvable
+    git/SVN identity is a working state, and nagging it every session would train
+    people to ignore the banner that matters.
+    """
+    try:
+        if resolve_identity(repo_path, cognition_dir).get("email"):
+            return ""
+        note = IDENTITY_REQUIRED_NOTICE
+        suggestions = identity_suggestions(repo_path, cognition_dir)
+        if suggestions:
+            listed = ", ".join(
+                f"{s['name']}{' <' + s['email'] + '>' if s['email'] else ''} (from {s['source']})"
+                for s in suggestions
+            )
+            note += f"\n- Candidates found on this machine (confirm, do not assume): {listed}"
+        return note
+    except Exception:  # noqa: BLE001 - prime must never fail on a notice
+        return ""
+
+
 def _onboarding_notice(storage: CognitionStorage, config: PrimeConfig, current_email: str) -> str:
     """The new-user onboarding notice (WP-TC7), or "" when it should not fire.
 
@@ -1039,6 +1073,10 @@ def main(argv: list[str] | None = None):
     if whatsnew_note:
         sections.append(whatsnew_note)
 
+    identity_note = _identity_notice(repo_path, cognition_dir)
+    if identity_note:
+        sections.append(identity_note)
+
     try:
         hygiene_state = check_hygiene_state(repo_path, cognition_dir)
         hygiene_line = format_hygiene_announce(hygiene_state)
@@ -1088,9 +1126,9 @@ def main(argv: list[str] | None = None):
             )
         except Exception:  # noqa: BLE001
             config = PrimeConfig()
-        # resolve_git_identity is file-read-only and never raises (v0.12.1 P0
+        # resolve_identity is file-read-only and never raises (v0.12.1 P0
         # contract) -- no try/except needed around it, unlike Settings() above.
-        current_email = resolve_git_identity(repo_path).get("email") or None
+        current_email = resolve_identity(repo_path, cognition_dir).get("email") or None
         sections.append(generate_prime(storage, config, current_email))  # type: ignore[arg-type]
         # WP-TC14: stamp AFTER output is produced, only on this (main()'s own)
         # CLI/hook path -- generate_prime itself stays pure read-only, and

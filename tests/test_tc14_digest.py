@@ -620,7 +620,7 @@ def test_main_stamps_marker_after_output_fails_before(tmp_path, monkeypatch):
 
     monkeypatch.setenv("REPO_PATH", str(tmp_path))
     monkeypatch.delenv("VIBE_MIGRATION_NOTE", raising=False)
-    monkeypatch.setattr("vibe_cognition.cognition.prime.resolve_git_identity", lambda repo: ME)
+    monkeypatch.setattr("vibe_cognition.cognition.prime.resolve_identity", lambda repo, cog: ME)
 
     import io
     buf = io.StringIO()
@@ -637,7 +637,7 @@ def test_main_empty_graph_does_not_stamp(tmp_path, monkeypatch):
     fallback window on the first real session."""
     monkeypatch.setenv("REPO_PATH", str(tmp_path))
     monkeypatch.delenv("VIBE_MIGRATION_NOTE", raising=False)
-    monkeypatch.setattr("vibe_cognition.cognition.prime.resolve_git_identity", lambda repo: ME)
+    monkeypatch.setattr("vibe_cognition.cognition.prime.resolve_identity", lambda repo, cog: ME)
 
     import io
     buf = io.StringIO()
@@ -654,8 +654,8 @@ def test_main_unresolvable_identity_does_not_stamp(tmp_path, monkeypatch):
     monkeypatch.setenv("REPO_PATH", str(tmp_path))
     monkeypatch.delenv("VIBE_MIGRATION_NOTE", raising=False)
     monkeypatch.setattr(
-        "vibe_cognition.cognition.prime.resolve_git_identity",
-        lambda repo: {"name": "unknown", "email": ""},
+        "vibe_cognition.cognition.prime.resolve_identity",
+        lambda repo, cog: {"name": "unknown", "email": ""},
     )
 
     import io

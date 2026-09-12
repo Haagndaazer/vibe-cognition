@@ -50,6 +50,7 @@ commands and .claude/agents have no Codex equivalent.
 |-------|-------|
 | Record | cognition_record, cognition_update_node, cognition_remove_node |
 | Tasks | cognition_add_task, cognition_list_tasks, cognition_update_task |
+| Identity | cognition_set_identity (confirm who is driving; unblocks refused writes) |
 | People | cognition_register_person, cognition_update_person, cognition_get_person, |
 |        | cognition_list_people |
 | Env facts | cognition_set_env_fact, cognition_delete_env_fact, |
@@ -222,6 +223,26 @@ Load a foreign project with cognition_load_project, then pass project="<tag>" (o
 project="*" for fan-and-merge on aggregates) to cognition_search, cognition_get_history,
 cognition_get_edgeless_nodes, and cognition_get_uncurated_nodes. Single-node tools
 (get_node, get_chain, etc.) reject "*" -- node ids are not project-namespaced.
+
+## Graph identity (required before you can record)
+
+Every memory is attributed to a person. The server resolves who is driving, first
+hit wins: the confirmed `.cognition/identity.json`, then git config `[user] email`,
+then a cached SVN credential when its username is an email, then the OS user (name
+only, no address).
+
+**If no email resolves, every write is REFUSED** with `identity_required: true`.
+Reads still work. The fix: ASK THE HUMAN for their name and work email, then call
+`cognition_set_identity(name=..., email=...)`. The refusal payload carries
+`suggestions` drawn from git config and cached SVN credentials -- offer them for
+confirmation, never assume one, and NEVER use your own agent name.
+
+`identity.json` is machine-local and never committed: it says who drives THIS
+checkout. Registering a person node is a separate, shared step -- still do it.
+
+`cognition_set_identity` only affects future writes. To correct attribution already
+recorded (a personal address used before a work one), the graph owner runs the
+`vibe-cognition-remap-identity` CLI, which is dry-run by default and infers nothing.
 
 ## Team setup (git)
 

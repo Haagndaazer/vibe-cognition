@@ -4,6 +4,126 @@
     "codex"
   ],
   "items": {
+    "agent:curate-cluster-analyzer": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "full",
+        "evidence": "gate:97d97da257c3"
+      }
+    },
+    "agent:curate-conflict-analyzer": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "full",
+        "evidence": "gate:97d97da257c3"
+      }
+    },
+    "agent:curate-edge-analyzer": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "full",
+        "evidence": "gate:97d97da257c3"
+      }
+    },
+    "agent:curate-orchestrator": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "full",
+        "evidence": "gate:97d97da257c3"
+      }
+    },
+    "agent:plan": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_codex_plan_role_toml_renders"
+      }
+    },
+    "hook:SessionStart": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_hooks_shell.py::test_migrate_note_is_passed_through_to_prime_invocation"
+      },
+      "codex": {
+        "status": "full",
+        "evidence": "tests/test_codex_hooks_shell.py::test_first_run_creates_data_dir_registers_server_and_notes_restart"
+      }
+    },
+    "skill:vibe-backfill": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "rendered for Codex (V2 spawn syntax) and visible in the skill catalog (gate 97d97da257c3); a backfill run itself has not been exercised live on Codex"
+      }
+    },
+    "skill:vibe-cognition": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_codex_blocks_change_the_codex_output"
+      }
+    },
+    "skill:vibe-curate": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "full",
+        "evidence": "gate:97d97da257c3"
+      }
+    },
+    "skill:vibe-dashboard": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "rendered and installed; not yet exercised live on Codex"
+      }
+    },
+    "skill:vibe-document": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "rendered and installed; not yet exercised live on Codex"
+      }
+    },
+    "skill:vibe-workflow": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "rendered and installed; not yet exercised live on Codex"
+      }
+    },
     "tool:cognition_add_edge": {
       "claude-code": {
         "status": "full",
@@ -32,6 +152,16 @@
       "codex": {
         "status": "partial",
         "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_begin_curation": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_curation_token.py::test_valid_token_writes_and_stamps_session"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; curation on Codex is WP-P2"
       }
     },
     "tool:cognition_clear_env_facts": {
@@ -314,6 +444,16 @@
         "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
       }
     },
+    "tool:cognition_set_identity": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
     "tool:cognition_store_document": {
       "claude-code": {
         "status": "full",
@@ -372,136 +512,6 @@
       "codex": {
         "status": "full",
         "evidence": "gate:6c3c15e3a0a8"
-      }
-    },
-    "skill:vibe-backfill": {
-      "claude-code": {
-        "status": "full",
-        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
-      },
-      "codex": {
-        "status": "partial",
-        "note": "rendered for Codex (V2 spawn syntax) and visible in the skill catalog (gate 97d97da257c3); a backfill run itself has not been exercised live on Codex"
-      }
-    },
-    "skill:vibe-cognition": {
-      "claude-code": {
-        "status": "full",
-        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
-      },
-      "codex": {
-        "status": "full",
-        "evidence": "tests/test_harness_render.py::test_codex_blocks_change_the_codex_output"
-      }
-    },
-    "skill:vibe-curate": {
-      "claude-code": {
-        "status": "full",
-        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
-      },
-      "codex": {
-        "status": "full",
-        "evidence": "gate:97d97da257c3"
-      }
-    },
-    "skill:vibe-dashboard": {
-      "claude-code": {
-        "status": "full",
-        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
-      },
-      "codex": {
-        "status": "partial",
-        "note": "rendered and installed; not yet exercised live on Codex"
-      }
-    },
-    "skill:vibe-document": {
-      "claude-code": {
-        "status": "full",
-        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
-      },
-      "codex": {
-        "status": "partial",
-        "note": "rendered and installed; not yet exercised live on Codex"
-      }
-    },
-    "skill:vibe-workflow": {
-      "claude-code": {
-        "status": "full",
-        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
-      },
-      "codex": {
-        "status": "partial",
-        "note": "rendered and installed; not yet exercised live on Codex"
-      }
-    },
-    "hook:SessionStart": {
-      "claude-code": {
-        "status": "full",
-        "evidence": "tests/test_hooks_shell.py::test_migrate_note_is_passed_through_to_prime_invocation"
-      },
-      "codex": {
-        "status": "full",
-        "evidence": "tests/test_codex_hooks_shell.py::test_first_run_creates_data_dir_registers_server_and_notes_restart"
-      }
-    },
-    "agent:curate-cluster-analyzer": {
-      "claude-code": {
-        "status": "full",
-        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
-      },
-      "codex": {
-        "status": "full",
-        "evidence": "gate:97d97da257c3"
-      }
-    },
-    "agent:curate-conflict-analyzer": {
-      "claude-code": {
-        "status": "full",
-        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
-      },
-      "codex": {
-        "status": "full",
-        "evidence": "gate:97d97da257c3"
-      }
-    },
-    "agent:curate-edge-analyzer": {
-      "claude-code": {
-        "status": "full",
-        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
-      },
-      "codex": {
-        "status": "full",
-        "evidence": "gate:97d97da257c3"
-      }
-    },
-    "agent:curate-orchestrator": {
-      "claude-code": {
-        "status": "full",
-        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
-      },
-      "codex": {
-        "status": "full",
-        "evidence": "gate:97d97da257c3"
-      }
-    },
-    "agent:plan": {
-      "claude-code": {
-        "status": "full",
-        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
-      },
-      "codex": {
-        "status": "full",
-        "evidence": "tests/test_harness_render.py::test_codex_plan_role_toml_renders"
-      }
-    },
-    "tool:cognition_begin_curation": {
-      "claude-code": {
-        "status": "full",
-        "evidence": "tests/test_curation_token.py::test_valid_token_writes_and_stamps_session"
-      },
-      "codex": {
-        "status": "partial",
-        "note": "same server on both harnesses; curation on Codex is WP-P2"
       }
     }
   }

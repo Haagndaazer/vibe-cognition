@@ -90,7 +90,7 @@ The plugin bundles everything needed — no manual configuration required:
 
 | Component | What It Does |
 |-----------|-------------|
-| **MCP Server** | 38 tools for recording, searching, querying, and visualizing the knowledge graph |
+| **MCP Server** | 39 tools for recording, searching, querying, and visualizing the knowledge graph |
 | `/vibe-cognition` skill | Teaches Claude when and how to capture decisions, failures, discoveries, patterns |
 | `/vibe-curate` skill | Curates semantic edges and identifies clusters using edge-analyzer and cluster-analyzer subagents |
 | `/vibe-backfill` skill | Backfills the cognition graph from git commit history (watermark-based — finds everything untracked since the last backfilled commit, however old) |
@@ -147,6 +147,7 @@ The nudge above tells you a new version exists; this is the other half — after
 | `cognition_add_task` | File a trackable task, server-attributed to the git user (open work + lifecycle) |
 | `cognition_list_tasks` | List the backlog: open tasks, priority-sorted, grouped by parent |
 | `cognition_update_task` | Update a task's status/owner/priority/parent/assignment in place (status-transition and assignment logged) |
+| `cognition_set_identity` | Confirm who is driving this checkout (machine-local) so writes are attributable; unblocks a refused write |
 | `cognition_register_person` | Register a HUMAN identity (never an agent) as a first-class person node |
 | `cognition_update_person` | Edit a person's profile fields in place (audit-trailed via `profile_history`) |
 | `cognition_get_person` | Get a person's full profile, including the `profile_history` audit trail and stored environment facts |
@@ -367,6 +368,41 @@ The journal is designed to be shared — see the [topology guide](docs/topology-
 for choosing between **shared checkout** (multiple agents in one working directory,
 needs a specific flush protocol) and **separate clones** (each teammate's own clone,
 mostly automatic via `merge=union`), and the full protocol for whichever fits your setup.
+
+### Graph Identity
+
+Every memory is attributed to a person, so the server resolves who you are before
+it writes. Resolution order, first hit wins:
+
+1. **Confirmed** — `.cognition/identity.json`, written by `cognition_set_identity`
+2. **git config** — `[user] email` from the config files (never a subprocess)
+3. **SVN credentials** — the cached username, when it is an email address
+4. **OS user** — a name only, never an address
+
+If none of those yields an email, **recording is refused** and the session-start
+digest says so. Reads keep working. Ask Claude to set your identity and it calls
+`cognition_set_identity(name=..., email=...)` — the values must come from you, and
+it will offer candidates it found rather than guess.
+
+`identity.json` is **machine-local and never committed**: it records who is driving
+this working copy, not who exists on the project. Registering a person node
+(`cognition_register_person`) is the separate, shared step.
+
+**Why this exists:** a Subversion working copy on a machine with no git identity
+used to resolve to an empty address, so every such teammate attributed to nobody
+and was indistinguishable from every other one.
+
+**Already recorded under the wrong address?** Confirming a new identity only affects
+future writes. To correct history — a personal address used before a work one was
+configured, say — use the remap CLI. It is dry-run by default and infers nothing:
+
+```bash
+uv run vibe-cognition-remap-identity . --from old@example.com --to new@example.com
+uv run vibe-cognition-remap-identity . --from old@example.com --to new@example.com --apply
+```
+
+Each change is an ordinary append to the journal, so the original attribution stays
+visible in history as `remapped_from`.
 
 ### Joining an Existing Graph
 

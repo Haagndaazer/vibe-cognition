@@ -812,7 +812,7 @@ def test_onboarding_notice_absent_in_empty_graph_path(tmp_path, monkeypatch):
     by construction (empty graph has no person nodes to register against yet)."""
     monkeypatch.setenv("REPO_PATH", str(tmp_path))
     monkeypatch.delenv("VIBE_MIGRATION_NOTE", raising=False)
-    monkeypatch.setattr("vibe_cognition.cognition.prime.resolve_git_identity", lambda repo: ME)
+    monkeypatch.setattr("vibe_cognition.cognition.prime.resolve_identity", lambda repo, cog: ME)
 
     buf = io.StringIO()
     monkeypatch.setattr("sys.stdout", buf)
@@ -1181,7 +1181,7 @@ def test_main_personalizes_when_identity_resolves_and_graph_is_multiuser(tmp_pat
 
     monkeypatch.setenv("REPO_PATH", str(tmp_path))
     monkeypatch.delenv("VIBE_MIGRATION_NOTE", raising=False)
-    monkeypatch.setattr("vibe_cognition.cognition.prime.resolve_git_identity", lambda repo: ME)
+    monkeypatch.setattr("vibe_cognition.cognition.prime.resolve_identity", lambda repo, cog: ME)
 
     buf = io.StringIO()
     monkeypatch.setattr("sys.stdout", buf)
@@ -1203,8 +1203,8 @@ def test_main_unconfigured_identity_falls_back_to_global_no_crash(tmp_path, monk
     monkeypatch.setenv("REPO_PATH", str(tmp_path))
     monkeypatch.delenv("VIBE_MIGRATION_NOTE", raising=False)
     monkeypatch.setattr(
-        "vibe_cognition.cognition.prime.resolve_git_identity",
-        lambda repo: {"name": "unknown", "email": ""},
+        "vibe_cognition.cognition.prime.resolve_identity",
+        lambda repo, cog: {"name": "unknown", "email": ""},
     )
 
     buf = io.StringIO()
@@ -1227,7 +1227,7 @@ def test_main_end_to_end_emits_valid_json_with_onboarding_notice(tmp_path, monke
 
     monkeypatch.setenv("REPO_PATH", str(tmp_path))
     monkeypatch.delenv("VIBE_MIGRATION_NOTE", raising=False)
-    monkeypatch.setattr("vibe_cognition.cognition.prime.resolve_git_identity", lambda repo: ME)
+    monkeypatch.setattr("vibe_cognition.cognition.prime.resolve_identity", lambda repo, cog: ME)
 
     buf = io.StringIO()
     monkeypatch.setattr("sys.stdout", buf)

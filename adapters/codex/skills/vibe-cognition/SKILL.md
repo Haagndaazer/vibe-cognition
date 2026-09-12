@@ -12,6 +12,7 @@ description: You MUST use this skill any time you need to retrieve information a
 | `cognition_add_task` | File a trackable task (server-attributed to the git user) |
 | `cognition_list_tasks` | List the backlog — open tasks, priority-sorted, grouped by parent; optional `exclude_people` filter |
 | `cognition_update_task` | Update a task's status/owner/priority/parent/assignment in place (transition- and assignment-logged) |
+| `cognition_set_identity` | Confirm who is driving this checkout (machine-local) so writes are attributable; unblocks a refused write |
 | `cognition_register_person` | Register a HUMAN identity (never an agent) as a first-class person node |
 | `cognition_update_person` | Edit a person's profile fields in place (audit-trailed via profile_history) |
 | `cognition_get_person` | Get a person's full profile, including the profile_history audit trail and their stored environment facts |

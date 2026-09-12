@@ -14,7 +14,12 @@ Two writes (both idempotent, locked, crash-proof):
                                  last-seen.json* (local "Since You Were Gone" marker
                                  + its .tmp sibling from the atomic write), and
                                  backfill-identity-map.skeleton.json (legacy-identity-
-                                 backfill's dry-run scratch artifact)
+                                 backfill's dry-run scratch artifact), and
+                                 identity.json* (machine-local confirmed graph identity)
+
+The .gitattributes write is git-gated; the .cognition/.gitignore write runs under
+ANY VCS (v7) -- a Subversion working copy needs the local-only files kept out of
+version control just as much, and it has no .git to gate on.
 
 `merge=union` is a MERGE-DRIVER attribute — it only changes 3-way merge resolution
 and never participates in checkout/checkin filtering, so adding it does NOT
@@ -64,7 +69,11 @@ logger = logging.getLogger(__name__)
 #     VCS. Field defect (Survival2, doc:920a7237029f): SVN working copies got no
 #     ignore file at all, so machine-local last-seen.json was committed to SVN and
 #     conflicted for every teammate.
-GIT_HYGIENE_VERSION = 7
+# v8: identity.json* added to .cognition/.gitignore -- the machine-local
+#     confirmed graph identity (identity.IDENTITY_FILENAME). Says who is
+#     driving THIS checkout, never shared; the .tmp sibling of its atomic
+#     write is covered by the same glob.
+GIT_HYGIENE_VERSION = 8
 
 _GITATTRIBUTES_MARKER = "# vibe-cognition: append-only journal union-merge (safe to remove)"
 _GITATTRIBUTES_RULE = ".cognition/journal.jsonl merge=union"
@@ -101,6 +110,10 @@ _GITIGNORE_LAST_SEEN = "last-seen.json*"
 # default --skeleton-out path) -- string duplicated here for the same reason
 # as _GITIGNORE_REHYDRATE above.
 _GITIGNORE_BACKFILL_SKELETON = "backfill-identity-map.skeleton.json"
+# Machine-local confirmed graph identity (identity.IDENTITY_FILENAME) -- string
+# duplicated here for the same reason as _GITIGNORE_REHYDRATE above. Glob covers
+# the .tmp sibling of the atomic write.
+_GITIGNORE_IDENTITY = "identity.json*"
 _FLAG_FILENAME = ".git-hygiene-managed"
 
 # A lock older than this is assumed stale (leftover from a hard-killed process).
@@ -258,9 +271,13 @@ def _write_gitignore(cognition_dir: Path) -> bool:
         need_backfill_skeleton = _needs_gitignore_entry(
             gitignore_path, _GITIGNORE_BACKFILL_SKELETON, _GITIGNORE_BACKFILL_SKELETON
         )
+        need_identity = _needs_gitignore_entry(
+            gitignore_path, _GITIGNORE_IDENTITY, _GITIGNORE_IDENTITY
+        )
         if not any((
             need_chromadb, need_flag, need_locks, need_rehydrate,
             need_onboard_declined, need_last_seen, need_backfill_skeleton,
+            need_identity,
         )):
             return True
 
@@ -280,6 +297,8 @@ def _write_gitignore(cognition_dir: Path) -> bool:
                 lines_to_add.append(_GITIGNORE_LAST_SEEN)
             if need_backfill_skeleton:
                 lines_to_add.append(_GITIGNORE_BACKFILL_SKELETON)
+            if need_identity:
+                lines_to_add.append(_GITIGNORE_IDENTITY)
             try:
                 gitignore_path.write_text("\n".join(lines_to_add) + "\n", encoding="utf-8")
             except OSError as exc:
@@ -308,6 +327,8 @@ def _write_gitignore(cognition_dir: Path) -> bool:
             lines_to_add.append(_GITIGNORE_LAST_SEEN)
         if need_backfill_skeleton:
             lines_to_add.append(_GITIGNORE_BACKFILL_SKELETON)
+        if need_identity:
+            lines_to_add.append(_GITIGNORE_IDENTITY)
 
         prefix = "" if (not existing or existing.endswith("\n")) else "\n"
         addition = prefix + "\n".join(lines_to_add) + "\n"

@@ -31,7 +31,7 @@ SELF_FOLDED = "colton@example.com"
 
 def _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch, hostname="DESKTOP-Abc"):
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: dict(SELF),
     )
     monkeypatch.setattr(
@@ -82,7 +82,7 @@ def test_unresolvable_identity_is_retryable_error_nothing_written(
     build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
 ):
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Ghost", "email": ""},
     )
     register_cognition_tools(mock_mcp)

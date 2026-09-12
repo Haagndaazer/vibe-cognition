@@ -28,7 +28,7 @@ def test_register_person_self_uses_server_resolved_email(build_lc, make_ctx, moc
     """Omitting `email` self-registers using the server-resolved git identity's
     email (impersonation-resistant) -- not any client-supplied value."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Vorpid", "email": "Vorpid@Example.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -57,7 +57,7 @@ def test_register_person_explicit_email_registers_someone_else(build_lc, make_ct
     """An explicit `email` registers a THIRD PARTY -- allowed, trust-based; who did
     it is recorded via recorded_by, not enforced against the explicit email."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Vince", "email": "vince@example.com"},
     )
     register_cognition_tools(mock_mcp)
@@ -89,7 +89,7 @@ def test_register_person_no_resolvable_email_errors(build_lc, make_ctx, mock_mcp
     """No explicit email AND an unresolvable git identity -> clean error (WP-P13n
     empty-email edge case), never a person node with a blank identity key."""
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "unknown", "email": ""},
     )
     register_cognition_tools(mock_mcp)
@@ -245,7 +245,7 @@ def test_cognition_record_rejects_person(build_lc, make_ctx, mock_mcp, tmp_path)
 
 def test_update_person_appends_exact_profile_history_entry(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools.resolve_git_identity",
+        "vibe_cognition.tools.cognition_tools._acting_identity",
         lambda repo: {"name": "Vince", "email": "vince@example.com"},
     )
     register_cognition_tools(mock_mcp)
