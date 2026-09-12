@@ -169,6 +169,61 @@ def test_gitattributes_not_created_when_git_missing_subdir(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# v7: non-git working copies still get .cognition/.gitignore
+# Field defect (Survival2, doc:920a7237029f): the pass returned early without
+# .git, so SVN working copies got no ignore file and machine-local
+# last-seen.json was committed to SVN.
+# ---------------------------------------------------------------------------
+
+
+def test_gitignore_written_when_not_git_repo(tmp_path):
+    """An SVN (or any non-git) working copy still gets .cognition/.gitignore."""
+    cognition = tmp_path / ".cognition"
+    cognition.mkdir()
+
+    _run(tmp_path, cognition)
+
+    gitignore = cognition / ".gitignore"
+    assert gitignore.exists()
+    body = gitignore.read_text(encoding="utf-8")
+    for entry in ("chromadb/", "last-seen.json*", ".last-rehydrate.json", "onboard-declined"):
+        assert entry in body
+    assert not (tmp_path / ".gitattributes").exists()
+
+
+def test_flag_written_when_not_git_repo(tmp_path):
+    """The pass completes (flag stamped) without .git, so it runs exactly once."""
+    cognition = tmp_path / ".cognition"
+    cognition.mkdir()
+
+    _run(tmp_path, cognition)
+
+    assert int((cognition / _FLAG_FILENAME).read_text(encoding="utf-8").strip()) == GIT_HYGIENE_VERSION
+
+
+def test_gitignore_backfilled_on_version_bump_when_not_git_repo(tmp_path):
+    """A non-git working copy stamped at an OLD version re-runs once and self-heals.
+
+    This is the upgrade path for working copies already damaged by the v6 defect.
+    """
+    cognition = tmp_path / ".cognition"
+    cognition.mkdir()
+    (cognition / _FLAG_FILENAME).write_text(str(GIT_HYGIENE_VERSION - 1), encoding="utf-8")
+
+    _run(tmp_path, cognition)
+
+    assert "last-seen.json*" in (cognition / ".gitignore").read_text(encoding="utf-8")
+
+
+def test_no_write_when_cognition_dir_absent(tmp_path):
+    """No .cognition/ dir → nothing is created anywhere."""
+    _run(tmp_path, tmp_path / ".cognition")
+
+    assert not (tmp_path / ".cognition").exists()
+    assert not (tmp_path / ".gitattributes").exists()
+
+
+# ---------------------------------------------------------------------------
 # .cognition/.gitignore tests
 # ---------------------------------------------------------------------------
 
@@ -601,7 +656,31 @@ def test_announce_configured(tmp_path):
 
     line = format_hygiene_announce(state)
     assert "union-merge" in line
-    assert "chromadb" in line
+    assert ".cognition/.gitignore" in line
+    assert state["is_git"]
+    assert not state["is_svn"]
+    # A git repo with union-merge in place must NOT carry the no-union warning.
+    assert "CONFLICT" not in line
+
+
+def test_announce_warns_no_union_merge_on_svn(tmp_path):
+    """v7: an SVN working copy is told plainly that appends conflict and how to resolve."""
+    cognition = tmp_path / ".cognition"
+    cognition.mkdir()
+    (tmp_path / ".svn").mkdir()
+
+    _run(tmp_path, cognition)
+
+    state = check_hygiene_state(tmp_path, cognition)
+    assert state["is_svn"]
+    assert not state["is_git"]
+    assert state["gitignore_configured"]
+    assert not state["gitattr_configured"]
+
+    line = format_hygiene_announce(state)
+    assert "SVN has no union-merge equivalent" in line
+    assert "CONFLICT" in line
+    assert "BOTH" in line
 
 
 def test_announce_nothing_configured(tmp_path):

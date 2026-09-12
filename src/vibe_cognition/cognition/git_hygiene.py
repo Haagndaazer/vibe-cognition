@@ -59,7 +59,12 @@ logger = logging.getLogger(__name__)
 #     union-merge posture. FIRST bump to touch the .gitattributes writer
 #     (v2-v5 were gitignore-only): the single-rule check was generalized to
 #     the _GITATTRIBUTES_RULES list for it.
-GIT_HYGIENE_VERSION = 6
+# v7: the pass no longer returns early when there is no .git. The .gitattributes
+#     writer stays git-gated; the .cognition/.gitignore writer now runs for any
+#     VCS. Field defect (Survival2, doc:920a7237029f): SVN working copies got no
+#     ignore file at all, so machine-local last-seen.json was committed to SVN and
+#     conflicted for every teammate.
+GIT_HYGIENE_VERSION = 7
 
 _GITATTRIBUTES_MARKER = "# vibe-cognition: append-only journal union-merge (safe to remove)"
 _GITATTRIBUTES_RULE = ".cognition/journal.jsonl merge=union"
@@ -331,27 +336,27 @@ def ensure_git_hygiene(repo_path: Path, cognition_dir: Path) -> None:
     """Run the one-time git hygiene pass.  Never raises — all failures are logged + swallowed.
 
     Args:
-        repo_path: Repository root (must contain .git to be acted on).
+        repo_path: Repository root; .gitattributes is written only when it holds .git.
         cognition_dir: .cognition/ directory (flag lives here).
     """
     if _opt_out():
         return
 
-    git_root = repo_path / ".git"
-    if not git_root.exists():
+    if not cognition_dir.is_dir():
         return
 
     flag_version = _read_flag(cognition_dir)
     if flag_version is not None and flag_version >= GIT_HYGIENE_VERSION:
         return
 
+    is_git = (repo_path / ".git").exists()
+
     gitattributes_path = repo_path / ".gitattributes"
     ga_ok = True
-    gi_ok = True
 
-    if _needs_gitattributes(gitattributes_path):
+    if is_git and _needs_gitattributes(gitattributes_path):
         ga_ok = _write_gitattributes(gitattributes_path, cognition_dir)
-    # else already present — counts as resolved
+    # else already present, or not a git repo — counts as resolved
 
     gi_ok = _write_gitignore(cognition_dir)
 
@@ -365,12 +370,22 @@ def ensure_git_hygiene(repo_path: Path, cognition_dir: Path) -> None:
 def check_hygiene_state(repo_path: Path, cognition_dir: Path) -> dict:
     """Read-only check of what git-hygiene rules are in place.  For prime.py announce.
 
-    Returns a dict with boolean keys:
+    Returns a dict with keys:
       - gitattr_configured: our marker is present in .gitattributes
       - gitignore_configured: chromadb/ is present in .cognition/.gitignore
+      - is_git / is_svn: which VCS the working copy is under, if any
     Never raises.
     """
-    result = {"gitattr_configured": False, "gitignore_configured": False}
+    result = {
+        "gitattr_configured": False,
+        "gitignore_configured": False,
+        "is_git": False,
+        "is_svn": False,
+    }
+    with contextlib.suppress(OSError):
+        result["is_git"] = (repo_path / ".git").exists()
+    with contextlib.suppress(OSError):
+        result["is_svn"] = (repo_path / ".svn").exists()
     try:
         gitattributes_path = repo_path / ".gitattributes"
         if gitattributes_path.exists():
@@ -392,12 +407,25 @@ def check_hygiene_state(repo_path: Path, cognition_dir: Path) -> dict:
 
 
 def format_hygiene_announce(state: dict) -> str:
-    """Format a one-line announce string from check_hygiene_state output, or empty string."""
+    """Format a one-line announce string from check_hygiene_state output, or empty string.
+
+    On a non-git working copy the line also warns that the journal has no
+    union-merge equivalent, since a reader who knows the git behaviour would
+    otherwise assume parity.
+    """
     parts = []
     if state.get("gitattr_configured"):
         parts.append("journal union-merge (.gitattributes)")
     if state.get("gitignore_configured"):
-        parts.append("chromadb ignore (.cognition/.gitignore)")
+        parts.append("local-only files ignored (.cognition/.gitignore)")
     if not parts:
         return ""
-    return "vibe-cognition configured: " + ", ".join(parts) + "."
+    line = "vibe-cognition configured: " + ", ".join(parts) + "."
+    if not state.get("gitattr_configured"):
+        vcs = "SVN" if state.get("is_svn") else "This VCS"
+        line += (
+            f" {vcs} has no union-merge equivalent, so concurrent journal appends"
+            " CONFLICT -- resolve by keeping BOTH sides (the journal is append-only"
+            " and order does not matter). See 'Team setup (svn)' via cognition_readme."
+        )
+    return line

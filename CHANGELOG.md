@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.3]
+
+### Fixed
+
+- **Non-git working copies now get `.cognition/.gitignore`.** The hygiene pass
+  returned early when the project had no `.git` directory, which skipped *both*
+  writers -- but only the `.gitattributes` writer is git-specific. Subversion
+  working copies therefore got no ignore file at all, and machine-local per-user
+  files (notably `last-seen.json`) could be committed to the repository, where
+  they conflict on every teammate's session. The `.gitattributes` write stays
+  git-gated; the `.gitignore` write now runs under any VCS.
+  `GIT_HYGIENE_VERSION` 6 -> 7, so existing working copies re-run the pass once
+  and self-heal. Reported from the field on an SVN project.
+
+### Added
+
+- **"Team setup (svn)" guidance** in `cognition_readme` and the README: SVN has
+  no `merge=union` equivalent and cannot be given one, so concurrent journal
+  appends conflict on `svn update`. Documents the keep-both-sides resolution
+  rule, the sync rhythm that shortens the conflict window, why `svn:eol-style`
+  must never be set under `.cognition/` (and why an inherited repo-root
+  auto-props rule cannot be neutralized locally), and how to mirror the ignore
+  list via `svn:global-ignores` -- including the UTF-8 BOM trap that silently
+  kills the first rule.
+- The session-start hygiene notice now warns on a non-git working copy that
+  journal appends conflict, instead of implying git-equivalent protection.
+
 ## [0.36.2]
 
 ### Fixed

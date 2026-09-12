@@ -262,6 +262,57 @@ shared-checkout journal without a planned cut-over: the first commit after addin
 `-text` re-normalizes the file bytes once, which live sessions see as a replaced
 journal. The server auto-writes only `merge=union`, never `-text` -- adding `-text` is
 a deliberate, manual team decision.
+
+## Team setup (svn)
+
+**Subversion has no equivalent of `merge=union`, and cannot be given one.** There is
+no per-path merge configuration in SVN at any version. Two people appending to
+`.cognition/journal.jsonl` between syncs WILL conflict on `svn update`. This is
+verified behaviour, not a caution.
+
+**The conflict rule: keep BOTH sides.** The journal is append-only and replay order
+does not matter, so "keep both" is always the correct resolution -- there is no case
+where one side should win. `svn update` leaves `journal.jsonl.mine` and
+`journal.jsonl.rNNN` beside the conflicted file (the number is the incoming
+revision, so find the highest one rather than assuming a name). Concatenate both
+sides, drop duplicate lines by their node `id`, write the result back, then:
+
+    svn resolve --accept working .cognition/journal.jsonl
+
+Reload the graph afterwards: union resolves the TEXT, not the replay order.
+
+**Sync discipline keeps the conflict window short.** `svn update` before starting a
+session and commit the journal at the end of one. Most conflicts come from long
+uncommitted stretches, not from genuine simultaneous work.
+
+**Never set `svn:eol-style` on anything under `.cognition/`.** The server replays the
+journal by byte offset, so any line-ending rewrite forces a full re-read, and the
+document store under `.cognition/documents/` is content-addressed -- rewriting those
+bytes breaks the sha-named-content invariant. SVN performs no EOL translation unless
+the property is set, so the safe state is the default state: leave it unset. Beware a
+repository-root `svn:auto-props` rule (e.g. `*.md = svn:eol-style=native`), which
+stamps the property on new files automatically. An inherited rule like that CANNOT be
+neutralized from `.cognition/` -- properties from different ancestors combine rather
+than override, and there is no property value meaning "do not translate". If your
+repo has such a rule, exclude `.cognition/` from it at the root.
+
+**Machine-local files must stay unversioned.** `last-seen.json`, `onboard-declined`,
+`.last-rehydrate.json`, `*.lock` and `chromadb/` are per-user or per-machine and must
+never be committed -- a versioned `last-seen.json` conflicts on every teammate's
+session. The server writes `.cognition/.gitignore`, which SVN does not read, so set
+the SVN equivalent once:
+
+    svn propset svn:global-ignores -F <file> .cognition
+
+with one glob per line, matching `.cognition/.gitignore`. Write that file WITHOUT a
+UTF-8 BOM: `svn propset -F` mis-decodes a BOM and silently kills the FIRST rule in
+the list, while `svn propget` still displays it as though it were fine. If such a
+file is already committed, `svn rm --keep-local <path>` removes it from version
+control without deleting your copy.
+
+**Ordering matters when adding `.cognition/` to SVN.** Set the ignore property
+BEFORE adding the directory's contents, or the machine-local files above are swept in
+by the same `svn add`.
 """
 
 COGNITION_GETTING_STARTED = """\

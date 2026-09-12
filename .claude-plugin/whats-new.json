@@ -1,4 +1,8 @@
 {
+  "0.36.3": [
+    "Fixed: non-git projects (for example Subversion) now get .cognition/.gitignore, so machine-local files like last-seen.json stop being committed by accident. Upgrading repairs an affected checkout.",
+    "New Subversion guidance: SVN cannot union-merge the journal, so concurrent appends conflict. Ask Claude for the 'Team setup (svn)' section for the keep-both-sides rule and ignore setup."
+  ],
   "0.36.2": [
     "Lifecycle diagnostics now retain client and sidecar supervisor identity details in startup logs for Claude Code and Codex, including when sidecar stderr is discarded.",
     "Logging only: no new shutdown watches or process-exit changes. These diagnostics support investigation; this release does not fix orphaned processes."

@@ -291,13 +291,26 @@ your-project/
 On first startup in a new project, vibe-cognition automatically configures two git hygiene rules for `.cognition/`:
 
 1. **`.gitattributes`** — adds `.cognition/journal.jsonl merge=union` so concurrent journal appends from different branches/clones union-merge cleanly instead of conflicting. (`merge=union` is a built-in git merge driver; it only affects 3-way merge resolution and never rewrites the journal blob.)
-2. **`.cognition/.gitignore`** — adds `chromadb/` so a vector cache written into the repo is never accidentally committed. (Since v0.32.0 the store lives outside the repo, but this line is still written: teammates on older plugin versions sharing the repo still create an in-repo cache.)
+2. **`.cognition/.gitignore`** — keeps machine-local and per-user files out of version control: `last-seen.json*`, `onboard-declined`, `.last-rehydrate.json`, `*.lock`, the hygiene flag, and `chromadb/`. (Since v0.32.0 the vector store lives outside the repo, but the `chromadb/` line is still written: teammates on older plugin versions sharing the repo still create an in-repo cache.) A committed `last-seen.json` conflicts on every teammate's session, so this write matters more than it looks.
 
 Both writes are **idempotent** (existing files are appended, never clobbered) and happen exactly once per working copy, tracked by a local flag file `.cognition/.git-hygiene-managed`. The committed rules (`.gitattributes`, `.cognition/.gitignore`) travel to teammates via git; the flag is git-ignored so every fresh clone self-heals with one pass on first startup.
 
 **Opt out:** set `VIBE_COGNITION_NO_GIT_HYGIENE=1` to suppress the entire pass (useful in single-shared-checkout repos that use the worktree-flush protocol instead of union-merge).
 
 **Re-arm:** delete `.cognition/.git-hygiene-managed` to make the pass re-run and re-add any rule you removed.
+
+**Not a git repo?** Since v0.36.3 the `.cognition/.gitignore` write happens in **any** working copy, not just a git one — the `.gitattributes` write stays git-only, since `merge=union` is a git concept. Before that fix the whole pass was skipped without a `.git` directory, so Subversion working copies got no ignore file at all and machine-local files such as `last-seen.json` could be committed by accident. Upgrading re-runs the pass once and self-heals.
+
+### Subversion teams
+
+**SVN has no equivalent of `merge=union`, and cannot be given one** — there is no per-path merge configuration in Subversion at any version. Two people appending to the journal between syncs **will** conflict on `svn update`.
+
+- **Resolve by keeping BOTH sides.** The journal is append-only and replay order does not matter, so there is no case where one side should win. Concatenate `journal.jsonl.mine` and the highest-numbered `journal.jsonl.rNNN`, drop duplicate lines by node `id`, then `svn resolve --accept working`. Reload the graph afterwards.
+- **`svn update` before a session, commit the journal after one.** Most conflicts come from long uncommitted stretches rather than genuine simultaneous work.
+- **Never set `svn:eol-style` under `.cognition/`.** The journal is replayed by byte offset and the document store is content-addressed, so any line-ending rewrite is damaging. SVN does not translate unless the property is set — the safe state is the default. Watch for a repo-root `svn:auto-props` rule (e.g. `*.md = svn:eol-style=native`): it cannot be neutralized from `.cognition/`, because properties from different ancestors combine rather than override and no value means "do not translate". Exclude `.cognition/` at the root instead.
+- **Mirror the ignore list into SVN.** SVN does not read `.gitignore`, so set `svn:global-ignores` on `.cognition/` with the same globs. Write the value file **without a UTF-8 BOM** — `svn propset -F` mis-decodes a BOM and silently kills the first rule while `svn propget` still displays it correctly. Set the property *before* adding the directory's contents, or machine-local files are swept in by the same `svn add`.
+
+Run `cognition_readme` for the full "Team setup (svn)" section.
 
 ## Cognition History Graph
 
