@@ -130,6 +130,31 @@ def test_readme_does_not_document_tools_that_no_longer_exist():
     )
 
 
+def test_the_cognition_readme_guide_table_lists_every_registered_tool():
+    """The guide is what an agent reads when dropped into an unfamiliar project, and
+    its "Tool groups" table is the quick reference. A tool missing there is a tool
+    that agent will not reach for.
+
+    This gate exists because the release-sync check shipped covering the README and
+    SKILL.md tables but NOT this one -- and `cognition_remove_person` was absent from
+    the guide's table for two releases, found only by reading the live output. Three
+    tables, three chances to miss one; all three are checked now.
+
+    Scoped to the TABLE deliberately. A first draft of this test looked for the name
+    anywhere in the guide and passed while the table was still missing it, because
+    the prose mentioned it further down -- a gate that cannot fail is worse than no
+    gate, so this one was verified by deleting the row and watching it go red.
+    """
+    from vibe_cognition.cognition.readme import COGNITION_GUIDE
+
+    table = COGNITION_GUIDE.split("## Tool groups", 1)[1].split("\n## ", 1)[0]
+    missing = sorted(n for n in _registered_tool_names() if n not in table)
+    assert not missing, (
+        f"cognition_readme's guide table omits: {missing}. Add them — an agent "
+        "reading the guide is entitled to the full tool surface."
+    )
+
+
 # ── prose that named the pre-v0.38 model ─────────────────────────────────────
 
 

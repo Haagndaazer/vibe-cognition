@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.3]
+
+### Fixed
+
+- **The SVN setup guide told teams to strip the trailing slash from `chromadb/`
+  only — which, since 0.38.0, silently leaks `identity.json`.** SVN ignore globs are
+  fnmatch patterns with no directory-only meaning, so `local/` matches nothing while
+  bare `local` works. There are now TWO directory entries, and `local/` is the one
+  holding the machine-local identity file, so a team following the old instruction
+  literally would have `svn add --force` commit a teammate's name and email into the
+  repository. The guide now says to strip the slash from EVERY entry that has one,
+  names `local/` as the one that matters, and says to check the file rather than
+  trust a count.
+- `cognition_remove_person` was missing from the `cognition_readme` guide's tool
+  table — an agent reading the guide would not know the tool exists. Found by
+  reading the live tool output, not by any gate; the gate now covers that table too.
+- The guide still pointed at `.cognition/last-seen.json`; machine-local files moved
+  under `.cognition/local/` in 0.38.0.
+- `_write_gitignore`'s docstring listed the pre-0.38 entry set and did not say it
+  appends rather than replaces, so an upgraded repo keeping its old entries looked
+  like a bug rather than the intended harmless superset.
+
+### Added
+
+- The release-sync gate now also checks the `cognition_readme` guide's tool table,
+  closing the gap that let the missing tool through. All three tool tables — README,
+  SKILL.md and the guide — are checked against the registered tools now.
+
 ## [0.38.2]
 
 ### Fixed

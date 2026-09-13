@@ -52,7 +52,7 @@ commands and .claude/agents have no Codex equivalent.
 | Tasks | cognition_add_task, cognition_list_tasks, cognition_update_task |
 | Identity | cognition_set_identity (confirm who is driving; unblocks refused writes) |
 | People | cognition_register_person, cognition_update_person, cognition_get_person, |
-|        | cognition_list_people |
+|        | cognition_list_people, cognition_remove_person |
 | Env facts | cognition_set_env_fact, cognition_delete_env_fact, |
 |           | cognition_clear_env_facts, cognition_list_env_facts |
 | Search | cognition_search |
@@ -209,8 +209,8 @@ change at all.
 
 ## Session-start prime: "Since You Were Gone" digest
 
-A machine-local, per-email marker (.cognition/last-seen.json, git-ignored, never
-synced) tracks when you last started a session here. Right after Your Manager's
+A machine-local, per-email marker (.cognition/local/last-seen.json, git-ignored,
+never synced) tracks when you last started a session here. Right after Your Manager's
 Recent Decisions, personalized prime shows "## Since You Were Gone": teammates'
 decisions, constraints, and incidents recorded since that marker -- newest first,
 capped, with your own writes excluded (not news to you) but unstamped nodes
@@ -355,18 +355,26 @@ neutralized from `.cognition/` -- properties from different ancestors combine ra
 than override, and there is no property value meaning "do not translate". If your
 repo has such a rule, exclude `.cognition/` from it at the root.
 
-**Machine-local files must stay unversioned.** A versioned `last-seen.json`
-conflicts on every teammate's session, and a versioned `identity.json` publishes
-whoever happens to drive that checkout. The server writes `.cognition/.gitignore`
-with the full list; SVN does not read it, so mirror it once.
+**Machine-local files must stay unversioned.** They all live under
+`.cognition/local/` since 0.38.0, which is why a single `local` ignore entry covers
+them. A versioned `last-seen.json` conflicts on every teammate's session, and a
+versioned `identity.json` publishes whoever happens to drive that checkout. The
+server writes `.cognition/.gitignore` with the full list; SVN does not read it, so
+mirror it once.
 
 TAKE THE GLOBS FROM `.cognition/.gitignore`, NOT FROM THIS PAGE -- that file is
-generated and gains entries across releases (`identity.json*` arrived in 0.37.0),
-so any list transcribed into prose goes stale and silently stops covering a new
-machine-local file. ONE EDIT IS REQUIRED WHILE COPYING: strip the trailing slash
-from `chromadb/`. SVN ignore globs are fnmatch patterns with no directory-only
-meaning, so `chromadb/` matches NOTHING while bare `chromadb` works -- verified in
-the validation lab, and it fails silently, which is why it is called out here.
+generated and gains entries across releases (`local/` arrived in 0.38.0), so any
+list transcribed into prose goes stale and silently stops covering a new
+machine-local file.
+
+ONE EDIT IS REQUIRED WHILE COPYING: **strip the trailing slash from EVERY entry
+that has one.** SVN ignore globs are fnmatch patterns with no directory-only
+meaning, so `local/` matches NOTHING while bare `local` works -- verified in the
+validation lab, and it fails silently, which is why it is called out here. As of
+0.38.0 there are TWO such entries, `local/` and `chromadb/`, and `local/` is the
+one that matters: it holds `identity.json`, so leaving its slash on means the next
+`svn add --force` commits a teammate's name and email into the repository. Check
+the file rather than trusting this count -- more directory entries may be added.
 
 If `.cognition` is not yet under version control, propset alone FAILS with
 `E155010: not under version control`. The full sequence, in this order:

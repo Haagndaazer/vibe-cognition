@@ -243,10 +243,13 @@ def _needs_gitignore_entry(gitignore_path: Path, entry: str, bare: str) -> bool:
 
 
 def _write_gitignore(cognition_dir: Path) -> bool:
-    """Ensure .cognition/.gitignore contains chromadb/, .git-hygiene-managed, *.lock,
-    .last-rehydrate.json, onboard-declined, last-seen.json, and the
-    legacy-identity-backfill skeleton file.
-    Returns True if the file is correct after the call (success or already-present)."""
+    """Ensure .cognition/.gitignore contains every entry in _GITIGNORE_ENTRIES.
+
+    Appends only what is MISSING, never rewriting the file: a repo upgraded from a
+    pre-0.38 version keeps its old per-file entries alongside the new `local/`,
+    which is a harmless superset. A fresh repo gets the three current entries.
+    Returns True if the file is correct after the call (success or already-present).
+    """
     gitignore_path = cognition_dir / ".gitignore"
     lock = cognition_dir / ".gitignore.lock"
     if not _acquire_lock(lock):

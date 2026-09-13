@@ -1,4 +1,8 @@
 {
+  "0.38.3": [
+    "Important for Subversion teams: the setup guide's ignore instructions could let your identity file (name and email) get committed. Re-read the 'Team setup (svn)' section if you use SVN.",
+    "Claude's built-in guide was missing the tool for removing someone from the roster, and still pointed at an old file path."
+  ],
   "0.38.2": [
     "Documentation fix: the README and Claude's own built-in guide still described the old team model in places, which could send you (or Claude) looking for settings that no longer exist.",
     "Releases now fail their own tests if the changelog, the what's-new notes, or the README's tool list were not updated to match, so the docs cannot silently fall behind again."
