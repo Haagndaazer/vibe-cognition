@@ -147,11 +147,12 @@ The nudge above tells you a new version exists; this is the other half — after
 | `cognition_add_task` | File a trackable task, server-attributed to the git user (open work + lifecycle) |
 | `cognition_list_tasks` | List the backlog: open tasks, priority-sorted, grouped by parent |
 | `cognition_update_task` | Update a task's status/owner/priority/parent/assignment in place (status-transition and assignment logged) |
-| `cognition_set_identity` | Confirm who is driving this checkout (machine-local) so writes are attributable; unblocks a refused write |
-| `cognition_register_person` | Register a HUMAN identity (never an agent) as a first-class person node |
-| `cognition_update_person` | Edit a person's profile fields in place (audit-trailed via `profile_history`) |
-| `cognition_get_person` | Get a person's full profile, including the `profile_history` audit trail and stored environment facts |
-| `cognition_list_people` | List every registered person — the team roster |
+| `cognition_set_identity` | Confirm who is driving this checkout AND who they are (name, email, role, seniority, reporting line); the one call that unblocks a refused write |
+| `cognition_register_person` | Put a HUMAN (never an agent) on the roster — writes their committed profile |
+| `cognition_update_person` | Change fields on someone's profile (append-only audit trail) |
+| `cognition_get_person` | One person's profile, its audit trail, and their stored environment facts |
+| `cognition_list_people` | Everyone on the roster |
+| `cognition_remove_person` | Take someone off the roster — they left the team |
 | `cognition_set_env_fact` | Store one durable environment fact about yourself (self-only, per-machine; see [Environment Facts](#environment-facts)) |
 | `cognition_delete_env_fact` | Remove one of your own stored environment facts |
 | `cognition_clear_env_facts` | Bulk-remove your own environment facts (one machine, or all with no args) |
@@ -372,31 +373,66 @@ mostly automatic via `merge=union`), and the full protocol for whichever fits yo
 
 ### Graph Identity
 
-Every memory is attributed to a person, so the server resolves who you are before
-it writes. Resolution order, first hit wins:
+Every memory is attributed to a real person, so **nothing is written until two
+things are true**:
 
-1. **Confirmed** — `.cognition/identity.json`, written by `cognition_set_identity`
-2. **git config** — `[user] email` from the config files (never a subprocess)
-3. **OS user** — a name only, never an address, so writes stay gated
+1. **This checkout is claimed** — `.cognition/local/identity.json` names you. It is
+   machine-local and never committed: it says who is driving *this* working copy,
+   not who exists on the project.
+2. **Your profile is complete** — `.cognition/people/<email>.profile.jsonl`, which
+   IS committed and shared, carries your name, email, role, seniority
+   (`owner | senior | mid | junior`) and reporting line.
+
+`cognition_set_identity(name, email, role, seniority, reports_to)` writes both in
+one call. `reports_to` is your manager's **email**, or the literal `"nobody"` —
+which is valid and the expected answer on a solo project. A manager's *name* is
+rejected, because the reporting chain is resolved by email and a name would break
+it with no error anywhere.
+
+**A working git identity is not enough on its own.** It resolves, and it is offered
+as a *candidate* to confirm, but it does not open the gate: on a shared build
+account every human on the machine would attribute to whatever address sits in git
+config, indistinguishably. That was the v0.37.0 threshold and this replaces it.
+
+Refusals are specific about what to do:
+
+| situation | what you get |
+|---|---|
+| checkout not claimed | asks for all five fields, listing candidates found on the machine |
+| claimed, profile incomplete | names *only* the missing fields |
+| `.cognition/` not writable | says confirmation can never succeed here, and asks you nothing |
 
 **SVN credentials are read but never used to attribute a write.** SVN's auth cache
 is machine-wide and realm-keyed, and no realm-to-working-copy correlation is
 attempted, so trusting it could attribute this repo's history via another
-project's credential. Cached SVN usernames are offered as *candidates* in the
-refusal payload; an SVN user confirms once and is authoritative from then on.
+project's credential. Cached SVN usernames are offered as *candidates* only.
 
-If none of those yields an email, **recording is refused** and the session-start
-digest says so. Reads keep working. Ask Claude to set your identity and it calls
-`cognition_set_identity(name=..., email=...)` — the values must come from you, and
-it will offer candidates it found rather than guess.
-
-`identity.json` is **machine-local and never committed**: it records who is driving
-this working copy, not who exists on the project. Registering a person node
-(`cognition_register_person`) is the separate, shared step.
+Reads always keep working. Ask Claude to set your identity and it will ask you for
+the values rather than guess — it must not invent an address, and must never use
+its own agent name.
 
 **Why this exists:** a Subversion working copy on a machine with no git identity
 used to resolve to an empty address, so every such teammate attributed to nobody
 and was indistinguishable from every other one.
+
+#### The roster
+
+A person is a **committed profile**, not a graph node. Profiles are append-only and
+deliberately multi-writer: a manager can pre-register a teammate with their role,
+seniority and reporting line, and that person then only has to run
+`cognition_set_identity` with their name and email to start writing. When someone
+else changes *your* profile, the next session-start digest says so at the top,
+naming who changed which field and what it replaced — seniority first, because it
+reweights your search results.
+
+Upgrading from an older version migrates your existing `person` nodes to profiles
+automatically on the first session, and says what it wrote. The old nodes are left
+in place (harmless — the roster prefers the profile) until you remove them with
+`cognition_remove_node`.
+
+People are **not searchable**: a profile carries no vector, so
+`cognition_search(node_type="person")` points you at `cognition_list_people`
+instead of returning an empty result that reads as "nobody is registered".
 
 **Already recorded under the wrong address?** Confirming a new identity only affects
 future writes. To correct history — a personal address used before a work one was

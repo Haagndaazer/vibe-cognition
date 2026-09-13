@@ -102,12 +102,20 @@ Tasks (trackable open work, server-attributed to the git user):
 Documents (stored files with text sidecar for search):
   document -- use the /vibe-document skill
 
-People (a HUMAN identity -- name, role, seniority, reports-to; never an agent):
-  person -- create with cognition_register_person (NOT cognition_record). Updated
-  IN PLACE (never supersession-versioned) with an append-only profile_history audit
-  trail. Omit email to self-register (server-resolved git identity); pass one to
-  register someone else. One node per (casefolded) email. List the roster with
-  cognition_list_people(); look up one with cognition_get_person(email_or_id).
+People (HUMANS only -- name, email, role, seniority, reporting line; never an
+agent, that lives in teammate-comms):
+  NOT graph nodes. A person is a committed, append-only profile at
+  .cognition/people/<slug>.profile.jsonl -- add with cognition_register_person (NOT
+  cognition_record). Omit email to target your own confirmed identity; pass one to
+  register someone ELSE, which is how a manager pre-registers a teammate.
+  Deliberately multi-writer: re-registering a COMPLETE profile returns it with
+  already_registered, while an INCOMPLETE one is filled in. reports_to is the
+  manager's EMAIL or the literal "nobody" -- a NAME is rejected, because the chain
+  is resolved by email. Roster: cognition_list_people(); one person:
+  cognition_get_person(email); change fields: cognition_update_person(); someone
+  left: cognition_remove_person(). Removing YOURSELF is refused -- it would close
+  the write gate on you. People are NOT searchable (a profile has no vector);
+  cognition_search(node_type="person") says so and names cognition_list_people.
 
 Environment facts (durable per-machine setup truths -- project root, OS, tool
 choices -- so teammates' sessions detect divergence instead of tripping over it):
@@ -153,7 +161,8 @@ ever pushed lower relative to peers. Every hit carries weight (multiplier, senio
 from_agent, basis), even when neutral -- never silent. basis: exempt:<node_type>
 (constraint/incident, always pinned 1.0), agent (from_agent true -- always weighted
 below every human seniority tier), human:<seniority> (stamped + registered person),
-human:unregistered (stamped, no matching person node), unverified (no stamp at all).
+human:unregistered (stamped, nobody on the roster with that email), unverified
+(no stamp at all).
 cognition_get_workflow's internal match search shares this path and inherits it too.
 
 ## Session-start prime: personalized vs. global
@@ -161,11 +170,11 @@ cognition_get_workflow's internal match search shares this path and inherits it 
 prime_personalize (auto default | on | off) picks whether session-start prime
 shows the global digest or one keyed to your git identity. auto personalizes
 when the graph has more than one distinct stamped writer email OR more than
-one registered person -- the second condition catches a team's
+one person on the roster -- the second condition catches a team's
 first-onboarded member, where every node so far was written by one person but
 several people are now registered (a solo user who registers only themselves
-stays global either way). When personalized and your identity resolves to a
-registered person node, the block opens with a one-line identity header (You
+stays global either way). When personalized and your identity is on the
+roster, the block opens with a one-line identity header (You
 are registered as {name} -- {role} ({seniority}), reporting to {manager}.,
 degrading field-by-field when role/seniority/manager are blank) -- mutually
 exclusive with the New Here notice below, by construction. Full pinned order
@@ -173,10 +182,21 @@ when personalized: identity header -> Your Open Tasks -> Team Critical ->
 Your Team -> Your Manager's Recent Decisions -> Since You Were Gone -> Your
 Recent Activity.
 
+## Session-start prime: someone else changed YOUR profile
+
+Profiles are trust-based multi-writer, so a manager can set your role or reporting
+line. When a record for YOUR email was authored by someone else since your
+last-seen marker, prime opens with a loud alert naming who changed which field and
+what it replaced. Seniority leads the list because it reweights YOUR search results
+-- a silent change there quietly alters what every future session surfaces to you.
+TELL THE HUMAN when you see it; corrections go through cognition_update_person and
+nothing is lost (the trail is append-only). A first run with no marker says nothing
+-- with no baseline, a legitimate pre-registration would read as tampering.
+
 ## Session-start prime: role-aware sections
 
-A person node's reports_to_email (a REPORTING relationship, distinct from the
-free-text person.role job title) drives two personalized prime sections: managers
+A profile's reports_to (a REPORTING relationship, distinct from the free-text
+role job title) drives two personalized prime sections: managers
 get "Your Team" (direct reports' in-progress claims -- claimant + age, stale ones
 first, blocked claims; a claim is stale once its age is strictly greater than
 prime_stale_claim_days, default 7 -- exactly 7 days old is not stale, and a null/
@@ -184,7 +204,7 @@ legacy claimed_at is never stale) right after Team Critical; subordinates get
 "Your Manager's Recent Decisions" (no HEAD-filter, same as the global Recent
 Decisions model) right after that. A middle manager gets both. No new section for
 your OWN claims -- those already surface under Your Open Tasks. A role-less user
-(no person node, no reports either direction) or personalization off sees no
+(not on the roster, no reports either direction) or personalization off sees no
 change at all.
 
 ## Session-start prime: "Since You Were Gone" digest
@@ -226,21 +246,37 @@ cognition_get_edgeless_nodes, and cognition_get_uncurated_nodes. Single-node too
 
 ## Graph identity (required before you can record)
 
-Every memory is attributed to a person. The server resolves who is driving, first
-hit wins: the confirmed `.cognition/identity.json`, then git config `[user] email`,
-then the OS user (name only, no address). SVN credentials are read but NEVER
-attribute a write -- the auth cache is machine-wide and realm-keyed, so trusting it
-could attribute this repo via another project's credential; SVN usernames appear
-only as `suggestions` in the refusal payload.
+Every memory is attributed to a real person, so **every write is REFUSED with
+`identity_required: true` until BOTH of these hold**:
 
-**If no email resolves, every write is REFUSED** with `identity_required: true`.
-Reads still work. The fix: ASK THE HUMAN for their name and work email, then call
-`cognition_set_identity(name=..., email=...)`. The refusal payload carries
-`suggestions` drawn from git config and cached SVN credentials -- offer them for
-confirmation, never assume one, and NEVER use your own agent name.
+1. this checkout is CLAIMED -- `.cognition/local/identity.json` names someone. It is
+   machine-local and never committed: who drives THIS working copy, not who exists
+   on the project.
+2. that person's COMMITTED profile is complete -- name, email, role, seniority
+   (owner|senior|mid|junior) and reports_to.
 
-`identity.json` is machine-local and never committed: it says who drives THIS
-checkout. Registering a person node is a separate, shared step -- still do it.
+A working git identity is NOT enough. It resolves and is offered as a candidate,
+but it does not open the gate: on a shared build account every human would
+attribute to whatever sits in git config, indistinguishably. SVN credentials are
+read but NEVER attribute a write -- the auth cache is machine-wide and realm-keyed,
+so trusting it could attribute this repo via another project's credential; SVN
+usernames appear only as `suggestions`.
+
+The fix is one call: ASK THE HUMAN for their name, work email, role, seniority
+(present the four tiers and let them pick -- never infer one from a job title) and
+who they report to, then call `cognition_set_identity(name=..., email=..., role=...,
+seniority=..., reports_to=...)`. **"nobody" is a valid and expected reports_to on a
+solo project -- say so when asking**, or a solo user has no true answer to give. A
+manager's NAME is rejected; the chain is resolved by email.
+
+Three different refusals, because they need three different actions: not confirmed
+(asks for all five, listing candidates found on the machine), confirmed but
+incomplete (names ONLY the missing fields), and a read-only checkout (says
+confirmation can never succeed there and asks the human NOTHING -- do not prompt
+them for an answer that cannot be saved). Reads always keep working.
+
+Never assume a candidate, never invent an address, and NEVER use your own agent
+name.
 
 `cognition_set_identity` only affects future writes. To correct attribution already
 recorded (a personal address used before a work one), the graph owner runs the

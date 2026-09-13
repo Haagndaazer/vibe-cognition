@@ -1,4 +1,9 @@
 {
+  "0.38.0": [
+    "Recording now needs your name, work email, role, seniority and who you report to -- \"nobody\" is fine on a solo project. Ask Claude to set your identity; it will ask you rather than guess.",
+    "Your team roster moved into small committed files, so a manager can set a teammate up before they onboard. Your existing team migrates automatically and Claude tells you what it wrote.",
+    "If someone else changes your profile -- especially your seniority, which affects what your searches surface -- the next session opens by saying what changed and who changed it."
+  ],
   "0.37.0": [
     "Vibe Cognition now refuses to record memories when it cannot tell who you are, instead of silently attributing them to nobody. Ask Claude to set your identity and it will offer the addresses it found.",
     "Subversion users get identity too: cached SVN credentials are read as a suggestion, so a project with no git setup is no longer anonymous.",

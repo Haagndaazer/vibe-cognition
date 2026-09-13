@@ -7,6 +7,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.0]
+
+### Added
+
+- **The team roster is now committed per-person PROFILES, not `person` nodes.** A
+  person is `.cognition/people/<email>.profile.jsonl` — append-only, committed, and
+  folded last-write-wins by TIMESTAMP (not file position, because `merge=union`
+  does not preserve chronological order and the interleaving depends on which side
+  merged; position-ordered folding would let the same two commits produce different
+  values on different machines). Profiles are deliberately multi-writer: a manager
+  can pre-register a teammate's role, seniority and reporting line, and that person
+  then only has to confirm their checkout.
+- **`cognition/roster.py`** — one snapshot every consumer reads. Search ranking,
+  the prime digest's manager rollup and identity header, the dashboard, the
+  identity backfill and the person tools each had their own `person`-node scan; a
+  missed one is silent, because a seniority that stops reaching
+  `_person_seniority_map` does not error, it just quietly changes what search
+  returns. Legacy `person` nodes are folded in for any email with no profile, so an
+  un-migrated clone still works; a profile always wins for the same email.
+- **`cognition_remove_person(email)`** — someone left the team. Clears their
+  profile's fields (the record trail survives and still merges) without cascading:
+  their environment facts and everything they authored stay, because attribution is
+  history. Removing YOURSELF is refused — it would close the write gate on you and
+  the next tool call would fail with no obvious cause. Orphaned direct reports are
+  named in `orphaned_reports` rather than silently re-parented.
+- **Automatic migration of existing `person` nodes to profiles**, versioned and
+  flag-gated like the git-hygiene pass, run from storage construction so a session
+  that never primes still converges. `reports_to_email: ""` becomes `"nobody"`,
+  without which every migrated solo owner would fail the new gate on upgrade. The
+  old nodes are left in place (harmless) and prime says so loudly, since this wrote
+  committed files nobody asked for. Phase 2 (removing the nodes) is manual, so an
+  interruption leaves harmless duplicates rather than a half-deleted roster.
+- **A loud session-start alert when someone ELSE changes your profile**, naming who
+  changed which field and what it replaced. Seniority leads, because it reweights
+  your search results. Gated on your last-seen marker so it neither fires on a
+  first run nor re-fires forever.
+
+### Changed
+
+- **BREAKING (behaviour): a write now requires a CONFIRMED identity whose profile
+  is COMPLETE** — name, email, role, seniority, `reports_to`. An unconfirmed git
+  email no longer passes. v0.37.0 allowed it so existing installs would not break
+  on upgrade, but that readmits the case the gate exists to close: several humans
+  on one shared build account, every write stamped with whatever address sits in
+  git config, indistinguishably. Three distinct refusals, because they need three
+  different actions — not confirmed, confirmed-but-incomplete (names only the
+  missing fields), and a read-only checkout, which says confirmation can never
+  succeed there and deliberately asks the human nothing.
+- **`cognition_set_identity` gains `role`, `seniority`, `reports_to`** and writes
+  both the machine-local pointer and the committed profile in one call. The three
+  are optional so re-pointing an already-profiled identity at a new address does
+  not force re-answering everything, and a pre-registered teammate finishes in one
+  call; `write_ready` and `missing_profile_fields` say what is left.
+- **BREAKING (tool surface): `reports_to` replaces `reports_to_email`** on
+  `cognition_register_person` and `cognition_update_person`, and takes an email or
+  the literal `"nobody"`. A manager's NAME is now rejected: the chain is resolved
+  by email, so a name would break it with no error anywhere — it would simply stop
+  walking.
+- **BREAKING (tool surface): the four roster tools return a profile row**
+  (`email`, `name`, `role`, `seniority`, `reports_to`, `answered_reports_to`,
+  `reports_to_registered`, `detail`, `summary`, `source`, `id`) instead of a graph
+  node. `id` is the legacy node id and is `None` once migrated.
+  `cognition_get_person`'s `profile_history` is now one record per field change
+  (`field`, `value`, `by`, `at`); a row still backed by a legacy node returns that
+  node's older `{changed: {field: {from, to}}}` entries unchanged.
+- **BREAKING: people are no longer searchable.** A profile carries no vector, so
+  `cognition_search(node_type="person")` returns an error naming
+  `cognition_list_people` rather than an empty result that reads as "nobody is
+  registered".
+- `cognition_update_person` re-submitting values that are already current now
+  succeeds with everything in `profile_skipped`. It used to return "No updatable
+  fields provided", which was indistinguishable from passing nothing at all.
+- `from_agent` on a profile is per-RECORD, so a human-dictated edit no longer
+  retroactively relabels an agent-written registration.
+- **Five more mutation paths joined the identity gate**, found by review:
+  `cognition_update_node` (which could anonymously rewrite any node's narrative and
+  re-embed it), `cognition_remove_edge`, and the three curation writes. A curation
+  token proves which agent is calling, not who it belongs to. The token is still
+  checked first, so an agent that should not be calling those at all is told that
+  rather than told to onboard. Env-fact writes are gated too; the env-fact read is
+  not, since reads stay open for divergence detection.
+- `cognition_update_task`: an unverifiable caller (blank email) used to bypass the
+  WP-TC4 note requirement and silently seize a live foreign claim. It is now
+  refused. The unverifiable-PRIOR-claimant branch remains, since legacy journal
+  data can still contain one.
+
+### Fixed
+
+- `profiles.py` carried a second copy of the `SENIORITY_LEVELS` closed set that
+  `models.py` already defined identically — one source of truth now.
+- `require_identity`'s documented return shape omitted three keys it actually
+  returns (`confirmed`, `missing_profile_fields`, `read_only`).
+- `cognition_set_identity` could raise instead of returning an error dict if the
+  profile write failed after the pointer was written.
+- The tools and the dashboard had each derived "said nobody" vs "never asked"
+  separately and drifted; it is one property on `Person` now.
+
 ## [0.37.0]
 
 ### Added
