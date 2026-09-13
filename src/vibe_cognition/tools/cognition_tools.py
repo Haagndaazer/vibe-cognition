@@ -267,13 +267,19 @@ def _gated_identity(
     cognition_dir = storage.cognition_dir
     stamp = _acting_identity(cognition_dir)
     missing: list[str] | None = None
+    removed = False
     if stamp.get("confirmed") and stamp.get("email"):
-        missing = storage.profile_missing_required(str(stamp["email"]))
-        if not missing:
+        email = str(stamp["email"])
+        missing = storage.profile_missing_required(email)
+        removed = email in storage.removed_profile_emails()
+        if not missing and not removed:
             return None, stamp
     # Refusal path only: the stamp is discarded, so re-resolving here is harmless
     # and buys the richer payload (candidate suggestions) for the error.
-    return require_identity(cognition_dir.parent, cognition_dir, missing), stamp
+    return (
+        require_identity(cognition_dir.parent, cognition_dir, missing, removed),
+        stamp,
+    )
 
 
 def _record_node(
@@ -3531,13 +3537,23 @@ def register_cognition_tools(mcp) -> None:
             `answered_reports_to` is False when nobody has been asked yet;
             `source` is "profile", or "node" for a legacy person node not yet
             migrated, whose id is then in `id` (None otherwise).
-            Plus `profile_history` (the append-only trail, oldest first: one
-            record per field change with `field`, `value`, `by`, `at` — a row
-            still backed by a legacy person node instead returns that node's
-            older `{changed: {field: {from, to}}, at, by}` entries) and
+            Plus `profile_history` (the append-only trail, oldest first) and
             `environment` (their stored env facts, {machine: {key: value}}, empty
             dict when none — see cognition_list_env_facts).
             {"error": ...} if not found.
+
+            THREE record shapes appear in `profile_history`; check `action` before
+            reading anything else, or a removed-then-re-registered person will
+            KeyError on `field`:
+              * `profile_set` / `profile_unset` — one field change: `action`,
+                `field`, `value` (set only), `by`, `at`, `from_agent`.
+              * `profile_removed` — a removal tombstone: `action`, `by`, `at`.
+                NO `field`, NO `value`.
+              * `profile_history_legacy` — a migrated person node's older trail,
+                carried verbatim: `action`, `from_node`, `entries` (a list of
+                `{changed: {field: {from, to}}, at, by}`), `at`. NO `field`.
+            A row still backed by a legacy person node that was never migrated
+            returns that node's `{changed: ...}` entries directly instead.
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         return _get_person(storage, email_or_id)

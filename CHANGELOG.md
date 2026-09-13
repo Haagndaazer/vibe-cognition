@@ -128,6 +128,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `vibe-cognition-remap-identity` now says plainly that it does NOT move your
   profile, and that every write stays refused until you re-run
   `cognition_set_identity` with all five values under the new address.
+- **A single unrelated field edit could un-remove a departed teammate**, leaving a
+  roster row with a blank name and an incomplete profile and no error anywhere.
+  Two clones merge: one removes someone, the other edits that person's role, and
+  whichever landed later won. Coming back now requires every required field to be
+  written after the removal — a deliberate re-registration, not an accident.
+- `get_status` gained a `roster` block. `cognition_graph["person"]` counts leftover
+  legacy nodes and is no longer the roster size; reading it as one was the trap.
+- Being removed from the roster mid-session now says exactly that, instead of
+  "your profile is incomplete" — which would send an agent through a
+  re-onboarding interview rather than telling the human what happened.
 
 ## [0.37.0]
 

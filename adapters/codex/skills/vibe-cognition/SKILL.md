@@ -117,14 +117,14 @@ are injected at session start and listed via `cognition_list_tasks`, so the grap
   `## New Here?` below. Full order: identity header → `## Your Open Tasks` →
   `## Team Critical` → `## Your Team` → `## Your Manager's Recent Decisions` →
   `## Since You Were Gone` → `## Your Recent Activity`.
-- **Role-aware session-start prime.** A person node's `reports_to_email` (a
+- **Role-aware session-start prime.** A profile's `reports_to` (a
   reporting relationship — not the free-text `person.role` job title) drives two
   personalized sections: managers get `## Your Team` (direct reports' in-progress
   claims with claimant + age, stale ones first, blocked claims, capped) right after
   `## Team Critical`; subordinates get `## Your Manager's Recent Decisions` right
   after that. Your OWN claimed tasks stay under `## Your Open Tasks` — these are
   new sections about your reports/manager, not a replacement. No new section for
-  own-claims; a role-less user (no person node, no reports either direction) sees
+  own-claims; a role-less user (not on the roster, no reports either direction) sees
   no change at all.
 - **"Since You Were Gone" digest.** A machine-local, per-email marker
   (`.cognition/last-seen.json`, git-ignored) tracks your last session-start here.

@@ -210,6 +210,7 @@ def require_identity(
     repo_path: Path | str,
     cognition_dir: Path | str,
     missing_profile_fields: list[str] | None = None,
+    removed_from_roster: bool = False,
 ) -> dict[str, Any] | None:
     """Gate for every graph WRITE. Returns None when allowed, else a refusal.
 
@@ -227,6 +228,10 @@ def require_identity(
         missing_profile_fields: which required profile fields are absent, from
             the caller's ProfileRegistry (passed in rather than read here, so
             this module stays free of storage). None means "not checked".
+        removed_from_roster: True when this identity was deliberately taken off
+            the roster. Same refusal, different message: "your profile is
+            incomplete" would be a baffling thing to read when what actually
+            happened is that a teammate removed you.
 
     Returns:
         None when writing is allowed. Otherwise a refusal dict, handed straight
@@ -241,6 +246,8 @@ def require_identity(
               the read-only branch.
           `missing_profile_fields` -- the list passed in, echoed so the agent can
               ask for exactly those. Absent on the read-only branch.
+          `removed_from_roster` -- bool, True when this identity was deliberately
+              removed rather than never completed. Absent on the read-only branch.
           `read_only` -- True, and ONLY present, when .cognition/ cannot be
               written; that branch asks the human for nothing.
     """
@@ -283,6 +290,14 @@ def require_identity(
             "identity."
             f"{hint}"
         )
+    elif removed_from_roster:
+        what = (
+            f"YOU WERE REMOVED FROM THE ROSTER -- refusing to write. {ident.get('email')} "
+            "is confirmed as the identity driving this checkout, but someone took that "
+            "person off the project roster (possibly by mistake, possibly because they "
+            "left and this checkout is being reused). Nothing was deleted: the record "
+            "trail is intact and re-registering restores it."
+        )
     else:
         what = (
             "GRAPH PROFILE INCOMPLETE -- refusing to write. Identity is confirmed as "
@@ -301,6 +316,7 @@ def require_identity(
         ),
         "identity_required": True,
         "confirmed": confirmed,
+        "removed_from_roster": removed_from_roster,
         "missing_profile_fields": list(missing_profile_fields or []),
         "resolved": ident,
         "suggestions": suggestions,

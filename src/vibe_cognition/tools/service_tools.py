@@ -34,6 +34,20 @@ def register_service_tools(mcp) -> None:
               chromadb_path: str,  # resolved vector-store persist directory
                                    # (WP-Chroma-Home: under the plugin data
                                    # dir by default, NOT inside the repo)
+              roster: {people: int, from_profiles: int,
+                       unmigrated_person_nodes: int, removed: int,
+                       incomplete_profiles: list[str]}
+                      -- who is on the project. Read THIS for roster size, not
+                      cognition_graph["person"]: since v0.38.0 the roster is
+                      committed profiles under .cognition/people/, and that node
+                      count is only whatever legacy `person` nodes have not been
+                      cleaned up yet. `unmigrated_person_nodes` is how many roster
+                      rows still come from such a node; `removed` counts people
+                      deliberately taken off the roster (tombstoned, so they stay
+                      off); `incomplete_profiles` names anyone whose profile is
+                      missing a required field, and who is therefore still
+                      refused writes. {"error": ...} when storage is not
+                      initialized.
               cognition_graph: {nodes, edges, <count per node type>,
                                 edge_<count per edge type>, uncurated,
                                 edges_outside_curation: int, edge_sources:
@@ -193,6 +207,27 @@ def register_service_tools(mcp) -> None:
             result["cognition_graph"] = cognition_storage.get_statistics()
         else:
             result["cognition_graph"] = {"error": "not initialized"}
+
+        # The roster is no longer graph content, so cognition_graph["person"]
+        # counts LEFTOVER legacy nodes and says nothing about who is on the team.
+        # Reading it as the roster size is the mistake this block prevents.
+        if cognition_storage:
+            roster = cognition_storage.roster()
+            incomplete = [
+                p.email for p in roster.all()
+                if cognition_storage.profile_missing_required(p.email)
+            ]
+            result["roster"] = {
+                "people": len(roster.people),
+                "from_profiles": sum(1 for p in roster.all() if p.source == "profile"),
+                "unmigrated_person_nodes": sum(
+                    1 for p in roster.all() if p.source == "node"
+                ),
+                "removed": len(cognition_storage.removed_profile_emails()),
+                "incomplete_profiles": incomplete,
+            }
+        else:
+            result["roster"] = {"error": "not initialized"}
 
         # Journal rehydrate-reset events (WP-1 loss visibility): null when none
         # occurred in this process; otherwise the count plus the last event's

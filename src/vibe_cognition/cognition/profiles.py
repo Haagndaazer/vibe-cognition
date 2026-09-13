@@ -169,16 +169,25 @@ class ProfileRegistry(JsonlDirRegistry):
     def is_removed(self, email: str) -> bool:
         """Whether this person was deliberately taken off the roster.
 
-        A tombstone only counts while it is NEWER than every field on the profile,
-        so re-registering someone who left simply works: their new records outrank
-        it and they come back, with the whole trail intact.
+        Coming back takes a DELIBERATE re-registration: every required field has to
+        be written after the tombstone. Beating it with the newest single field is
+        not enough, and that distinction is the whole point. Two clones merge via
+        `merge=union`: one removes a departed teammate, the other -- not yet aware
+        -- edits that person's role. Under a newest-field-wins rule, whichever
+        landed later resurrected them with ONLY that field set: a roster row with a
+        blank name and an incomplete profile, no error anywhere. That needs no
+        malice and no unusual setup, just two people working with some merge
+        latency between them.
+
+        A tie favours removal, which is also what makes the answer identical on
+        every machine.
         """
         folded = _casefold(email)
         tombstone = self._removed.get(folded)
         if not tombstone:
             return False
         stamps = self._stamps.get(folded) or {}
-        return tombstone >= max(stamps.values(), default="")
+        return not all(stamps.get(f, "") > tombstone for f in REQUIRED_FIELDS)
 
     def removed_emails(self) -> set[str]:
         return {e for e in self._removed if self.is_removed(e)}

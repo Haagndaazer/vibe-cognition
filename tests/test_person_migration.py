@@ -413,6 +413,38 @@ def test_the_alert_is_the_first_thing_in_the_digest(tmp_path, graph_identity):
     assert out.startswith(header + "## ⚠ Someone else changed YOUR profile")
 
 
+def test_being_removed_mid_session_says_so_rather_than_profile_incomplete(
+    tmp_path, mock_mcp, build_lc, make_ctx, graph_identity
+):
+    """A teammate removing the wrong person is plausible. "your profile is
+    incomplete" would be a baffling thing to read when what actually happened is
+    that someone took you off the roster — and it would send the agent through a
+    re-onboarding interview instead of telling the human what occurred."""
+    from vibe_cognition.tools.cognition_tools import register_cognition_tools
+
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    ctx = make_ctx(lc)
+    storage = lc["cognition_storage"]
+    me = "test-user@example.invalid"  # the seeded acting identity
+    assert "error" not in mock_mcp.tools["cognition_record"](
+        ctx, node_type="decision", summary="before", detail="d", context="", author="a",
+    )
+
+    by = {"name": "Someone Else", "email": "else@example.com"}
+    for field in ("name", "email", "role", "seniority", "reports_to", "detail"):
+        storage.unset_profile_field(me, field, by)
+    storage.mark_profile_removed(me, by)
+
+    refused = mock_mcp.tools["cognition_record"](
+        ctx, node_type="decision", summary="after", detail="d", context="", author="a",
+    )
+    assert refused.get("identity_required") is True, refused
+    assert refused["removed_from_roster"] is True
+    assert "REMOVED FROM THE ROSTER" in refused["error"]
+    assert "Nothing was deleted" in refused["error"]
+
+
 def test_an_unsigned_change_is_treated_as_foreign_not_skipped(tmp_path, graph_identity):
     """A record with no `by.email` cannot be shown to be yours. Silently excluding
     exactly the records nobody signed is backwards — a hand-edited or injected line

@@ -92,7 +92,11 @@ class Roster:
         removed = storage.removed_profile_emails()
         for profile in storage.all_profiles():
             email = _fold(profile.get("email"))
-            if not email:
+            # A tombstoned email is skipped on BOTH sides, not just the legacy-node
+            # fallback: a partial write after a removal leaves real fields behind,
+            # and showing those as a roster row is the half-resurrected person this
+            # is here to prevent.
+            if not email or email in removed:
                 continue
             raw_manager = str(profile.get("reports_to") or "").strip()
             folded_manager = raw_manager.casefold()

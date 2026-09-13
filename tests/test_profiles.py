@@ -7,6 +7,7 @@ import pytest
 from vibe_cognition.cognition.people_facts import PeopleFactsRegistry
 from vibe_cognition.cognition.profiles import (
     NO_MANAGER,
+    PROFILE_FIELDS,
     SENIORITY_LEVELS,
     ProfileRegistry,
     profile_filename,
@@ -321,3 +322,96 @@ def test_a_decomposed_accent_is_the_same_person_as_a_composed_one(registry):
     registry.catch_up()
     assert registry.get(decomposed) is not None
     assert profile_filename(composed) == profile_filename(decomposed)
+
+
+# ── removal has to survive an unrelated concurrent edit ─────────────────────
+
+
+def _remove(reg, email):
+    for field in PROFILE_FIELDS:
+        reg.unset_field(email, field, BY)
+    reg.mark_removed(email, BY)
+    reg.catch_up()
+
+
+def test_an_unrelated_single_field_edit_does_not_un_remove_someone(registry):
+    """Two clones merge via `merge=union`: one removes a departed teammate, the
+    other -- not yet aware -- edits that person's role. Under a newest-field-wins
+    rule whichever landed later resurrected them with ONLY that field set: a roster
+    row with a blank name and an incomplete profile, and no error anywhere. No
+    malice, no unusual setup, just two people with some merge latency between them.
+    """
+    email = _complete(registry, email="leaver@x.com")
+    _remove(registry, email)
+    assert registry.is_removed(email)
+
+    registry.set_fields(email, {"role": "staff engineer"}, {"name": "Peer", "email": "p@x.com"})
+    registry.catch_up()
+    assert registry.is_removed(email), "a single unrelated field must not resurrect"
+    assert email in registry.removed_emails()
+
+
+def test_a_deliberate_full_re_registration_brings_someone_back(registry):
+    """The flip side: coming back must actually work, and carry the whole trail."""
+    email = _complete(registry, email="boom@x.com")
+    _remove(registry, email)
+    assert registry.is_removed(email)
+
+    _complete(registry, email=email, role="sre", seniority="mid")
+    assert not registry.is_removed(email)
+    assert registry.get(email)["role"] == "sre"
+    assert registry.is_complete(email)
+    # Nothing was lost: the removal is still in the trail.
+    actions = [r.get("action") for r in registry.history_for(email)]
+    assert "profile_removed" in actions
+
+
+def test_a_tie_between_the_tombstone_and_a_field_favours_removal(registry, tmp_path):
+    """Equal timestamps must resolve the same way on every machine, and the safe
+    direction is staying removed -- a resurrection should be deliberate."""
+    people = tmp_path / ".cognition" / "people"
+    people.mkdir(parents=True, exist_ok=True)
+    email = "tie@x.com"
+    at = "2026-05-05T00:00:00+00:00"
+    lines = [
+        json.dumps({"action": "profile_set", "email": email, "field": f,
+                    "value": "v", "by": BY, "at": at})
+        for f in ("name", "email", "role", "seniority", "reports_to")
+    ]
+    lines.append(json.dumps({"action": "profile_removed", "email": email,
+                             "by": BY, "at": at}))
+    (people / profile_filename(email)).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    registry.catch_up()
+    assert registry.is_removed(email)
+
+
+def test_the_tombstone_survives_a_rewrite_of_another_file_for_the_same_email(
+    registry, tmp_path
+):
+    """The removal and the fields can legitimately live in different files -- a
+    manager's and the person's own. A divergent rewrite of one must not drop the
+    other's tombstone."""
+    people = tmp_path / ".cognition" / "people"
+    people.mkdir(parents=True, exist_ok=True)
+    email = "split@x.com"
+    own = people / profile_filename(email)
+    mgr = people / "manager-side.profile.jsonl"
+
+    own.write_text("\n".join(
+        json.dumps({"action": "profile_set", "email": email, "field": f, "value": "v",
+                    "by": BY, "at": "2026-01-01T00:00:00+00:00"})
+        for f in ("name", "email", "role", "seniority", "reports_to")
+    ) + "\n", encoding="utf-8")
+    mgr.write_text(json.dumps({"action": "profile_removed", "email": email,
+                               "by": BY, "at": "2026-02-01T00:00:00+00:00"}) + "\n",
+                   encoding="utf-8")
+    registry.catch_up()
+    assert registry.is_removed(email)
+
+    # Rewrite the person's own file divergently (a merge would do this).
+    own.write_text(json.dumps({"action": "profile_set", "email": email, "field": "role",
+                               "value": "rewritten", "by": BY,
+                               "at": "2026-01-15T00:00:00+00:00"}) + "\n", encoding="utf-8")
+    registry.catch_up()
+    registry.catch_up()  # the engine's re-fold of the overlapping file
+    assert registry.is_removed(email), "the other file's tombstone was lost"
