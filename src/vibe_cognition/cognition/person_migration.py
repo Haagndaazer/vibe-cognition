@@ -25,9 +25,12 @@ Never raises. A migration that crashes a session start is worse than one that
 reports it did nothing.
 """
 
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
+from .local_paths import read_path, write_path
 from .models import CognitionNodeType
 from .people_facts import fold_email
 from .profiles import NO_MANAGER, SENIORITY_LEVELS
@@ -155,6 +158,39 @@ def _carry_history(
             report["errors"].append(f"{email}: history not carried across: {exc}")
 
 
+#: Where a migration report waits to be announced. The migration runs from
+#: CognitionStorage.__init__, and TWO separate processes construct storage: the
+#: MCP server and the session-start prime hook. Whichever got there first did the
+#: work and held the report in memory, so if that was the server, prime found
+#: nothing left to migrate and said NOTHING -- the user silently got committed
+#: files written on their behalf. Persisting it and consuming it exactly once is
+#: the same shape the journal-loss alert already uses for the same reason.
+MIGRATION_REPORT_FILENAME = ".person-migration-report.json"
+
+
+def _stash_report(cognition_dir: Path, report: dict[str, Any]) -> None:
+    try:
+        write_path(cognition_dir, MIGRATION_REPORT_FILENAME).write_text(
+            json.dumps(report), encoding="utf-8"
+        )
+    except OSError as exc:
+        logger.debug("person-migration: cannot stash report: %s", exc)
+
+
+def consume_migration_report(cognition_dir: Path) -> dict[str, Any] | None:
+    """Read and DELETE a stashed report. Announced once, by whoever primes next."""
+    path = read_path(cognition_dir, MIGRATION_REPORT_FILENAME)
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    try:
+        path.unlink()
+    except OSError as exc:
+        logger.debug("person-migration: cannot clear stashed report: %s", exc)
+    return report if isinstance(report, dict) else None
+
+
 def ensure_person_migration(storage: Any) -> dict[str, Any] | None:
     """Run phase 1. Returns the report when anything needed doing, else None.
 
@@ -178,6 +214,7 @@ def ensure_person_migration(storage: Any) -> dict[str, Any] | None:
         return None
     if not (report["migrated"] or report["errors"] or report["skipped_no_email"]):
         return None
+    _stash_report(Path(storage.cognition_dir), report)
     return report
 
 

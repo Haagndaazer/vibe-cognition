@@ -772,9 +772,18 @@ def test_onboarding_notice_contains_required_guidance_substrings(tmp_path):
     drop one of the required facts."""
     storage = CognitionStorage(tmp_path / ".cognition")
     result = generate_prime(storage, current_email=ME["email"])
+    # The ONE call that unblocks writing, with every field it needs.
+    assert "cognition_set_identity" in result
+    for field in ("name", "email", "role", "seniority", "reports_to"):
+        assert field in result, field
+    assert "owner|senior|mid|junior" in result
+    # A solo user must be told "nobody" is a real answer, or they have none to give.
+    assert "nobody" in result
+    # And the agent must be steered OFF the tool the gate will refuse.
     assert "cognition_register_person" in result
-    assert "email omitted" in result
-    assert "from_agent=false" in result
+    assert "refused until an identity is confirmed" in result
+    # Never guess, never use the agent's own name.
+    assert "NEVER use your own agent name" in result
     assert ONBOARD_DECLINE_FILENAME in result
 
 

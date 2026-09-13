@@ -187,12 +187,19 @@ def test_check_nudges_on_newer_remote_exact_text(tmp_path, monkeypatch):
     note = update_check.check(str(plugin_root), str(plugin_data))
 
     assert note == (
-        "vibe-cognition v0.29.0 is available (you have v0.28.0). To update: "
-        "run /plugin update vibe-cognition@coltondyck, then restart Claude "
-        "Code. Updating is always your call - this notice is informational "
-        "only. Disable it with VIBE_UPDATE_NUDGE=off."
+        "## Update Available: vibe-cognition v0.29.0\n"
+        "You are running v0.28.0.\n"
+        "- Update with: /plugin update vibe-cognition@coltondyck\n"
+        "- Then RESTART Claude Code. The new version is not active until you do, "
+        "and a half-updated session is the most confusing state to debug from.\n"
+        "- TELL THE HUMAN this is waiting. Do not update on their behalf: it is "
+        "always their call, and nothing is blocked while they decide.\n"
+        "- Silence it with VIBE_UPDATE_NUDGE=off."
     )
     assert note.isascii(), "nudge text must be pure ASCII -- a Windows pipe mangles non-ASCII bytes"
+    # A heading, so it reads as a section of the digest rather than a sentence
+    # lost inside it -- the same level as the other session-start alerts.
+    assert note.startswith("## ")
 
 
 def test_check_no_nudge_when_versions_equal(tmp_path, monkeypatch):
@@ -411,7 +418,7 @@ def test_main_prints_nudge_to_stdout(tmp_path, monkeypatch, capsys):
 
     assert update_check.main(argv=[]) == 0
     out = capsys.readouterr().out
-    assert "vibe-cognition v0.29.0 is available" in out
+    assert "## Update Available: vibe-cognition v0.29.0" in out
 
 
 def test_main_never_crashes_when_check_raises(tmp_path, monkeypatch):
@@ -478,9 +485,10 @@ def test_check_on_codex_uses_codex_manifest_paths_and_cta(tmp_path, monkeypatch)
 
     note = update_check.check(str(plugin_root), str(plugin_data))
 
-    assert note.startswith("vibe-cognition v0.36.0 is available (you have v0.35.0).")
+    assert note.startswith("## Update Available: vibe-cognition v0.36.0")
+    assert "You are running v0.35.0." in note
     assert "codex plugin marketplace upgrade coltondyck && codex plugin add vibe-cognition@coltondyck" in note
-    assert "then restart Codex." in note
+    assert "RESTART Codex." in note
     assert "Claude" not in note
     assert note.isascii()
 
@@ -501,5 +509,6 @@ def test_check_on_codex_reads_the_codex_manifest_not_the_claude_one(tmp_path, mo
                        ".codex-plugin/plugin.json": (200, {"version": "0.36.0"})}),
     )
     note = update_check.check(str(plugin_root), str(tmp_path / "plugin_data"))
-    assert "(you have v0.35.0)" in note
-    assert note.count("restart") == 1
+    assert "You are running v0.35.0." in note
+    # One restart instruction, naming one harness -- not both.
+    assert note.lower().count("restart") == 1

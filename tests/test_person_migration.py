@@ -280,6 +280,39 @@ def test_the_announce_flags_two_nodes_sharing_one_email(tmp_path, graph_identity
     assert "cognition_list_people" in note
 
 
+def test_the_announce_survives_the_server_migrating_before_prime_runs(
+    tmp_path, graph_identity
+):
+    """Found in live testing, not by any of these tests, because they all construct
+    storage once.
+
+    The migration runs from CognitionStorage.__init__, and TWO separate processes
+    construct storage: the MCP server and the session-start prime hook. Whichever
+    got there first did the work and held the report in memory. When that was the
+    server, prime found nothing left to migrate and said NOTHING — so the user
+    silently got committed files written on their behalf, with no prompt to review
+    or commit them and no mention of the leftover nodes.
+    """
+    from vibe_cognition.cognition.person_migration import consume_migration_report
+
+    graph_identity.unonboarded()
+    cognition = tmp_path / ".cognition"
+    seed = CognitionStorage(cognition)
+    seed.add_node(_person_node("p1", "old@example.com"))
+
+    server = CognitionStorage(cognition)          # the MCP server gets there first
+    assert (server.person_migration_report or {})["migrated"] == ["old@example.com"]
+
+    prime_side = CognitionStorage(cognition)      # the prime hook, separate process
+    assert prime_side.person_migration_report is None  # nothing left for it to do
+    stashed = consume_migration_report(cognition)
+    assert stashed is not None, "the report was lost with the process that made it"
+    assert format_migration_announce(stashed)
+
+    # Announced exactly once: the next session start must not repeat it.
+    assert consume_migration_report(cognition) is None
+
+
 def test_the_announce_is_silent_when_nothing_happened():
     assert format_migration_announce({}) == ""
     assert format_migration_announce(

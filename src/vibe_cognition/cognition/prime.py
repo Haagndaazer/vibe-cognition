@@ -18,7 +18,7 @@ from .local_paths import read_path as local_read_path
 from .local_paths import write_path as local_write_path
 from .models import CognitionEdgeType, CognitionNodeType
 from .people_facts import fold_email
-from .person_migration import format_migration_announce
+from .person_migration import consume_migration_report, format_migration_announce
 from .readme import ONBOARDING_BLOCK
 from .roster import Person
 from .storage import REHYDRATE_FLAG_FILENAME, CognitionStorage
@@ -48,14 +48,22 @@ _LAST_SEEN_LOCK_RETRY_DELAY_S = 0.02
 
 ONBOARDING_NOTICE = (
     "## New Here?\n"
-    "This graph has no person node for your email yet.\n"
-    "- Ask the human: name, role, seniority (owner|senior|mid|junior), and who "
-    "they directly report to (optional).\n"
-    "- Then call cognition_register_person (email omitted -- the server resolves "
-    "it) with from_agent=false (the human dictated this, not you).\n"
-    "- If they'd rather skip it: append their casefolded email to "
-    f".cognition/{ONBOARD_DECLINE_FILENAME} (one per line) -- never create a "
-    "placeholder person node."
+    "Nobody on this project's roster matches your email, so EVERY write is "
+    "currently refused -- recording, tasks, documents, all of it.\n"
+    "- Ask the human for all five: name, work email, role, seniority "
+    "(owner|senior|mid|junior -- present the four and let them pick, never infer "
+    "one from a job title), and who they report to. \"nobody\" is a valid and "
+    "expected answer on a solo project -- say so when you ask, or someone working "
+    "alone has no true answer to give.\n"
+    "- Then call cognition_set_identity(name=..., email=..., role=..., "
+    "seniority=..., reports_to=...). That one call unblocks writing. Do NOT reach "
+    "for cognition_register_person here -- it is itself a gated write and will be "
+    "refused until an identity is confirmed.\n"
+    "- Never guess, never invent an address, and NEVER use your own agent name.\n"
+    "- There is no skipping it any more: declining leaves writes refused. If they "
+    "genuinely do not want to record anything, say so plainly and stop asking "
+    f"(the legacy .cognition/{ONBOARD_DECLINE_FILENAME} list still silences this "
+    "notice, but it does not open the gate)."
 )
 
 
@@ -1139,7 +1147,10 @@ def main(argv: list[str] | None = None):
         storage = CognitionStorage(cognition_dir)
         # Announced because construction may have written committed files nobody
         # asked for, and the leftover person nodes need a human decision.
-        report = storage.person_migration_report or {}
+        # Its own report when THIS process migrated, else the one stashed by
+        # whichever process did -- usually the MCP server, which has no way to
+        # tell the user anything.
+        report = storage.person_migration_report or consume_migration_report(cognition_dir) or {}
         incomplete = [
             email for email in (report.get("migrated") or [])
             if storage.profile_missing_required(email)

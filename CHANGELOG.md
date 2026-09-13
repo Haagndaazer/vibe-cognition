@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.1]
+
+### Fixed
+
+- **The roster-migration notice was silently lost**, so an upgrading user got
+  committed files written under `.cognition/people/` on their behalf with nothing
+  telling them to review and commit them, and no mention of the leftover `person`
+  nodes. The migration runs from `CognitionStorage.__init__`, and two separate
+  processes construct storage — the MCP server and the session-start prime hook.
+  Whichever got there first did the work and held the report in memory; when that
+  was the server, prime found nothing left to migrate and said nothing. The report
+  is now stashed and consumed exactly once, the same shape the journal-loss alert
+  already uses. Found in live testing on a real upgrade, not by the test suite,
+  which constructs storage once and always hit the lucky ordering.
+- **The "New Here?" onboarding notice still told agents to call
+  `cognition_register_person`**, which is itself a gated write and is refused until
+  an identity is confirmed — so the notice sent an agent straight into a wall. It
+  now names `cognition_set_identity` with all five fields, says "nobody" is valid
+  and expected on a solo project, and says plainly that declining no longer skips
+  anything because writes stay refused.
+
+### Changed
+
+- **The update-available notice is now a section, not a sentence.** It was a
+  single run-on line with no heading, so it read as part of the digest rather
+  than as something to act on. It now carries a `## Update Available` heading
+  matching the other session-start alerts, puts the update command and the
+  RESTART step on their own lines, and tells the agent to relay it to the human
+  rather than act on it. Still pure ASCII, because it reaches prime through an
+  env var and a Windows pipe mangles non-ASCII bytes. Updating remains entirely
+  the user's call and nothing is blocked while they decide.
+
 ## [0.38.0]
 
 ### Added

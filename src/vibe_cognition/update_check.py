@@ -72,10 +72,14 @@ _NUDGE_OFF_VALUES = frozenset({"off", "0", "false", "no"})
 # through bash/env toward prime as invalid UTF-8. See also main()'s
 # sys.stdout.reconfigure() for defense in depth.
 NUDGE_TEMPLATE = (
-    "vibe-cognition v{remote} is available (you have v{installed}). To "
-    "update: run {cta}, then restart {harness}. Updating is always your "
-    "call - this notice is informational only. Disable it with "
-    "VIBE_UPDATE_NUDGE=off."
+    "## Update Available: vibe-cognition v{remote}\n"
+    "You are running v{installed}.\n"
+    "- Update with: {cta}\n"
+    "- Then RESTART {harness}. The new version is not active until you do, and a "
+    "half-updated session is the most confusing state to debug from.\n"
+    "- TELL THE HUMAN this is waiting. Do not update on their behalf: it is "
+    "always their call, and nothing is blocked while they decide.\n"
+    "- Silence it with VIBE_UPDATE_NUDGE=off."
 )
 
 
