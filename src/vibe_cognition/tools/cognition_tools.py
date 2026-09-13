@@ -55,9 +55,10 @@ from ..cognition.identity import (
     resolve_identity,
     write_confirmed_identity,
 )
+from ..cognition.people_facts import fold_email
 from ..cognition.prime import SEVERITY_ORDER, _node_email
 from ..cognition.profiles import NO_MANAGER, PROFILE_FIELDS
-from ..cognition.roster import Person, Roster
+from ..cognition.roster import SOURCE_NODE, Person, Roster
 
 # WP-TC16 re-export: keeps tests/test_task.py:32-37's direct
 # `from ...cognition_tools import _task_claimed_at` path valid; the
@@ -2176,9 +2177,10 @@ _SENIORITY_SET: frozenset[str] = frozenset(SENIORITY_LEVELS)
 
 
 def _casefold_email(email: str) -> str:
-    """The single email-normalization point for person matching (WP-P13n convention:
-    casefold, never .lower() — Unicode-aware). Also strips surrounding whitespace."""
-    return email.strip().casefold()
+    """The single email-normalization point for person matching. Delegates to
+    fold_email, which is NFC + lower rather than casefold — see its docstring for
+    why casefold merged two distinct people."""
+    return fold_email(email)
 
 
 def _person_summary(name: str, role: str) -> str:
@@ -2308,7 +2310,10 @@ def _register_person(
         fields["reports_to"] = manager
     if detail:
         fields["detail"] = detail
-    written = storage.set_profile_fields(resolved_email, fields, by, from_agent)
+    try:
+        written = storage.set_profile_fields(resolved_email, fields, by, from_agent)
+    except OSError as exc:
+        return {"error": f"could not write to .cognition/people/: {exc}"}
     if "error" in written:
         return written
 
@@ -2394,7 +2399,10 @@ def _update_person(
     if gate is not None:
         return gate
 
-    written = storage.set_profile_fields(self_email, fields, by, from_agent)
+    try:
+        written = storage.set_profile_fields(self_email, fields, by, from_agent)
+    except OSError as exc:
+        return {"error": f"could not write to .cognition/people/: {exc}"}
     if "error" in written:
         return written
 
@@ -2655,11 +2663,32 @@ def _remove_person(ctx: Context, email: str, from_agent: bool = True) -> dict[st
             )
         }
 
+    if person.source == SOURCE_NODE:
+        # Clearing profile fields would do nothing here: the roster row comes
+        # from a legacy person node, and the node fallback rebuilds it
+        # identically on the next read. Reporting removed=True with six cleared
+        # fields would be a confident lie.
+        return {
+            "removed": False,
+            "email": person.email,
+            "name": person.name,
+            "cleared_fields": [],
+            "error": (
+                f"{person.email} is still a legacy person node ({person.node_id}) "
+                "with no profile, so there are no profile fields to clear and the "
+                "roster would be unchanged. Remove the node itself with "
+                f"cognition_remove_node(node_id='{person.node_id}')."
+            ),
+        }
+
     reports = [r.email for r in roster.direct_reports(person.email)]
-    cleared = [
-        field for field in PROFILE_FIELDS
-        if "error" not in storage.unset_profile_field(person.email, field, by)
-    ]
+    try:
+        cleared = [
+            field for field in PROFILE_FIELDS
+            if "error" not in storage.unset_profile_field(person.email, field, by)
+        ]
+    except OSError as exc:
+        return {"error": f"could not write to .cognition/people/: {exc}"}
     result: dict[str, Any] = {
         "removed": True,
         "email": person.email,
@@ -2674,12 +2703,6 @@ def _remove_person(ctx: Context, email: str, from_agent: bool = True) -> dict[st
             f"{', '.join(reports)} — their reporting line now dangles. Ask the "
             "human who those people report to now, then use "
             "cognition_update_person to set it."
-        )
-    if person.source == "node":
-        result["warning_legacy_node"] = (
-            f"this person is still a legacy person node ({person.node_id}); the "
-            "profile is now empty but the node remains and will reappear on the "
-            "roster until it is removed with cognition_remove_node"
         )
     return result
 
@@ -3573,11 +3596,12 @@ def register_cognition_tools(mcp) -> None:
 
         Returns:
             {"removed": true, "email", "name", "cleared_fields", "orphaned_reports",
-            "from_agent"}, plus `warning` when they managed someone, and
-            `warning_legacy_node` when a not-yet-migrated person node still backs
-            them (the node must also be removed with cognition_remove_node, or they
-            reappear on the roster).
-            {"error": ...} when no such person, or when the email is your own;
+            "from_agent"}, plus `warning` when they managed someone.
+            {"error": ...} when no such person, when the email is your own, when
+            `.cognition/people/` is not writable, or when they are still a legacy
+            person node with no profile — there is nothing to clear in that case
+            and the roster would be unchanged, so it returns `removed: false` and
+            names `cognition_remove_node` instead of claiming a removal.
             `{"identity_required": true, ...}` when your own identity is
             unconfirmed or your profile incomplete.
         """
@@ -4568,12 +4592,26 @@ def register_cognition_tools(mcp) -> None:
         Args:
             (none)
 
+        Identity-gated even though it writes nothing to the graph. Every write it
+        leads to IS gated, and the curate-orchestrator has no way to confirm an
+        identity (cognition_set_identity is deliberately not in its tool list), so
+        without this the run would assess the backlog, spawn analyzers, burn their
+        tokens, and only then be refused at the first edge write. Failing here
+        costs nothing and says exactly what to do.
+
         Returns:
             {"curation_token": str, "session_id": str ("cur-<hex>"),
              "uncurated": int (the full uncurated backlog, uncapped)}
+            Refused with `{"identity_required": true, ...}` when this checkout has
+            no CONFIRMED identity or its profile is incomplete. The orchestrator
+            cannot fix that itself: stop and report it, so the human's own session
+            can run cognition_set_identity.
         """
         lc = get_lifespan(ctx)
         storage: CognitionStorage = lc["cognition_storage"]
+        gate, _ = _gated_identity(storage)
+        if gate is not None:
+            return gate
         sessions = lc.setdefault(_CURATION_TOKEN_KEY, {})
         token = secrets.token_urlsafe(18)
         session_id = f"cur-{secrets.token_hex(6)}"

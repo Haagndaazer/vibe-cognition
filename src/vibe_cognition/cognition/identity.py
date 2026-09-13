@@ -38,6 +38,7 @@ from typing import Any
 
 from .git_identity import resolve_git_identity
 from .local_paths import local_dir, read_path, write_path
+from .people_facts import fold_email
 from .profiles import SENIORITY_LEVELS
 from .svn_identity import _looks_like_email, is_svn_working_copy, svn_username_candidates
 
@@ -52,7 +53,7 @@ SOURCE_OS_USER = "os-user"
 
 
 def _casefold_email(value: str) -> str:
-    return (value or "").strip().casefold()
+    return fold_email(value)
 
 
 def is_valid_email(value: str) -> bool:

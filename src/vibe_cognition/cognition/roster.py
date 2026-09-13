@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .models import CognitionNodeType
+from .people_facts import fold_email
 from .profiles import NO_MANAGER
 
 #: Where a roster row came from. Legacy rows are what the migration consumes.
@@ -31,7 +32,7 @@ SOURCE_NODE = "node"
 
 
 def _fold(value: Any) -> str:
-    return str(value or "").strip().casefold()
+    return fold_email(str(value or ""))
 
 
 @dataclass(frozen=True)

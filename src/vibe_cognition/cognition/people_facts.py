@@ -31,6 +31,7 @@ resolved (the tools layer).
 import hashlib
 import json
 import logging
+import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -74,22 +75,41 @@ _MISSING = object()
 _DIR_MTIME_RACY_WINDOW_NS = 2_000_000_000  # 2s
 
 
+def fold_email(value: str) -> str:
+    """THE identity key: NFC-normalized, stripped, lowercased.
+
+    Every module that keys anything by email must use this one function. It is
+    `.lower()`, NOT `.casefold()`, and that difference is the whole point: full
+    Unicode casefolding also folds ``ß`` to ``ss`` and ligatures like ``ﬁ`` to
+    ``fi``, so ``groß@x.com`` and ``gross@x.com`` — two different, valid,
+    deliverable addresses — collapsed into ONE identity. That is not a filename
+    collision, it is two people sharing a profile, an env-fact file and a write
+    gate, with one silently overwriting the other's role and seniority.
+
+    `.lower()` still folds ASCII case, which is what the case-insensitivity
+    guarantee actually needs (``Alice@X`` and ``alice@x`` are one person). NFC
+    first so two byte-sequences for the same character do not split one person in
+    two — the opposite failure, and equally silent.
+    """
+    return unicodedata.normalize("NFC", value or "").strip().lower()
+
+
 def email_slug(email: str) -> str:
     """Deterministic filesystem-safe slug for a (raw) identity email.
 
-    Casefold FIRST (topology-dependent-collision guard: ``Alice@X`` and
-    ``alice@x`` must be ONE file on case-sensitive filesystems too), then
-    percent-encode every UTF-8 byte outside ``[a-z0-9._-]`` with LOWERCASE hex
-    digits — pinned explicitly, because encoder libraries legally differ on hex
-    case and an unpinned case would let two implementations mint two files for
-    one person. Lossy sanitize-and-strip is banned: ``alice+a@x`` and
-    ``alice+b@x`` colliding into one file would be a silent data merge.
+    Fold FIRST (topology-dependent-collision guard: ``Alice@X`` and ``alice@x``
+    must be ONE file on case-sensitive filesystems too), then percent-encode
+    every UTF-8 byte outside ``[a-z0-9._-]`` with LOWERCASE hex digits — pinned
+    explicitly, because encoder libraries legally differ on hex case and an
+    unpinned case would let two implementations mint two files for one person.
+    Lossy sanitize-and-strip is banned: ``alice+a@x`` and ``alice+b@x`` colliding
+    into one file would be a silent data merge.
 
     Over-length encodings collapse to ``prefix + '-' + sha256[:12]`` (lowercase
     hex) so a very long address can never push the path toward MAX_PATH while
     uniqueness rides on the hash, not the readable prefix.
     """
-    folded = email.strip().casefold()
+    folded = fold_email(email)
     out: list[str] = []
     for b in folded.encode("utf-8"):
         if b in _SLUG_SAFE:

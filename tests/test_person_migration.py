@@ -14,8 +14,6 @@ import pytest
 from vibe_cognition.cognition import CognitionStorage
 from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
 from vibe_cognition.cognition.person_migration import (
-    MIGRATION_FLAG_FILENAME,
-    PERSON_MIGRATION_VERSION,
     ensure_person_migration,
     format_migration_announce,
     migrate_person_nodes,
@@ -166,30 +164,59 @@ def test_legacy_profile_history_is_preserved_but_never_folded(legacy):
 # ── the automatic pass ───────────────────────────────────────────────────────
 
 
-def test_storage_construction_migrates_once_and_records_a_flag(tmp_path, graph_identity):
+def test_storage_construction_migrates_and_then_reports_nothing_to_do(tmp_path, graph_identity):
     graph_identity.unonboarded()
     cognition = tmp_path / ".cognition"
     seed = CognitionStorage(cognition)
     seed.add_node(_person_node("p1", "old@example.com"))
 
-    # A fresh storage over the same dir is what a new session does.
     first = CognitionStorage(cognition)
-    assert first.person_migration_report is None  # already flagged by `seed`
-    # ...so migrate explicitly to prove the path, then confirm the flag blocks it.
-    assert (cognition / "local" / MIGRATION_FLAG_FILENAME).read_text(
-        encoding="utf-8"
-    ).strip() == str(PERSON_MIGRATION_VERSION)
-    assert ensure_person_migration(first) is None
+    assert (first.person_migration_report or {}).get("migrated") == ["old@example.com"]
+
+    second = CognitionStorage(cognition)
+    assert second.person_migration_report is None  # nothing left needing migration
 
 
-def test_the_flag_is_not_written_when_something_errored(tmp_path, graph_identity, monkeypatch):
+def test_a_person_node_arriving_after_a_completed_migration_is_still_migrated(
+    tmp_path, graph_identity
+):
+    """The check is content-based, not a stored version flag, and this is why.
+
+    Teammates upgrade at different times: the marketplace pins a SHA and each
+    person applies it when they apply it. Someone still on the old build commits a
+    new person node; an already-migrated clone pulls it. Under a "have I ever
+    migrated this graph" flag that node is invisible forever — its owner gets
+    re-asked all five onboarding questions and cannot be removed from the roster.
+    """
+    graph_identity.unonboarded()
+    cognition = tmp_path / ".cognition"
+    storage = CognitionStorage(cognition)
+    storage.add_node(_person_node("p1", "first@example.com"))
+    assert (CognitionStorage(cognition).person_migration_report or {})["migrated"] == [
+        "first@example.com"
+    ]
+
+    # Arrives later, from a teammate who had not upgraded yet.
+    storage = CognitionStorage(cognition)
+    storage.add_node(_person_node("p2", "later@example.com", name="Later"))
+
+    report = CognitionStorage(cognition).person_migration_report or {}
+    assert report.get("migrated") == ["later@example.com"]
+    assert CognitionStorage(cognition).profile_missing_required("later@example.com") == []
+
+
+def test_a_graph_with_no_person_nodes_reports_nothing(tmp_path, graph_identity):
+    graph_identity.unonboarded()
+    assert CognitionStorage(tmp_path / ".cognition").person_migration_report is None
+
+
+def test_errors_do_not_stop_the_next_session_from_retrying(tmp_path, graph_identity, monkeypatch):
     """A half-done migration must be retried, or the people it failed on stay
     locked out of writing with nothing scheduled to fix it."""
     graph_identity.unonboarded()
     cognition = tmp_path / ".cognition"
     storage = CognitionStorage(cognition)
     storage.add_node(_person_node("p1", "old@example.com"))
-    (cognition / "local" / MIGRATION_FLAG_FILENAME).unlink()
 
     monkeypatch.setattr(
         type(storage), "set_profile_fields",
@@ -197,15 +224,12 @@ def test_the_flag_is_not_written_when_something_errored(tmp_path, graph_identity
     )
     report = ensure_person_migration(storage)
     assert report is not None and report["errors"]
-    assert not (cognition / "local" / MIGRATION_FLAG_FILENAME).exists()
+    assert storage.get_profile("old@example.com") is None
 
-
-def test_a_graph_with_no_person_nodes_is_a_completed_migration(tmp_path, graph_identity):
-    """"nothing to do" must flag as done, or every startup rescans forever."""
-    graph_identity.unonboarded()
-    cognition = tmp_path / ".cognition"
-    CognitionStorage(cognition)
-    assert (cognition / "local" / MIGRATION_FLAG_FILENAME).exists()
+    monkeypatch.undo()
+    assert (CognitionStorage(cognition).person_migration_report or {})["migrated"] == [
+        "old@example.com"
+    ]
 
 
 def test_prime_announces_the_migration_loudly(tmp_path, graph_identity):
@@ -213,7 +237,6 @@ def test_prime_announces_the_migration_loudly(tmp_path, graph_identity):
     cognition = tmp_path / ".cognition"
     seed = CognitionStorage(cognition)
     seed.add_node(_person_node("p1", "old@example.com"))
-    (cognition / "local" / MIGRATION_FLAG_FILENAME).unlink()
 
     storage = CognitionStorage(cognition)
     note = format_migration_announce(storage.person_migration_report or {})
@@ -221,6 +244,40 @@ def test_prime_announces_the_migration_loudly(tmp_path, graph_identity):
     assert "old@example.com" in note
     assert "NOT committed" in note
     assert "cognition_remove_node" in note  # the leftover nodes need a decision
+
+
+def test_the_announce_says_which_migrated_people_are_still_incomplete(tmp_path, graph_identity):
+    """Listing them plainly as "migrated" would leave them to discover at their
+    next write that the gate still refuses them."""
+    graph_identity.unonboarded()
+    cognition = tmp_path / ".cognition"
+    seed = CognitionStorage(cognition)
+    seed.add_node(_person_node("p1", "odd@example.com", seniority="archmage"))
+
+    storage = CognitionStorage(cognition)
+    report = storage.person_migration_report or {}
+    incomplete = [
+        e for e in report["migrated"] if storage.profile_missing_required(e)
+    ]
+    assert incomplete == ["odd@example.com"]
+    note = format_migration_announce(report, incomplete)
+    assert "still need a field answered" in note
+    assert "odd@example.com" in note
+
+
+def test_the_announce_flags_two_nodes_sharing_one_email(tmp_path, graph_identity):
+    """Only the first is used, which matches the roster's own collapse — but the
+    human should be told two conflicting records existed."""
+    graph_identity.unonboarded()
+    cognition = tmp_path / ".cognition"
+    seed = CognitionStorage(cognition)
+    seed.add_node(_person_node("p1", "dupe@example.com", name="First", role="a"))
+    seed.add_node(_person_node("p2", "dupe@example.com", name="Second", role="b"))
+
+    storage = CognitionStorage(cognition)
+    note = format_migration_announce(storage.person_migration_report or {})
+    assert "shared an email" in note
+    assert "cognition_list_people" in note
 
 
 def test_the_announce_is_silent_when_nothing_happened():
@@ -354,6 +411,31 @@ def test_the_alert_is_the_first_thing_in_the_digest(tmp_path, graph_identity):
     out = generate_prime(storage, PrimeConfig(), current_email=me)
     header = "# Vibe Cognition — Project Context\n\n"
     assert out.startswith(header + "## ⚠ Someone else changed YOUR profile")
+
+
+def test_an_unsigned_change_is_treated_as_foreign_not_skipped(tmp_path, graph_identity):
+    """A record with no `by.email` cannot be shown to be yours. Silently excluding
+    exactly the records nobody signed is backwards — a hand-edited or injected line
+    is the case most worth surfacing."""
+    graph_identity.unonboarded()
+    cognition = tmp_path / ".cognition"
+    storage = CognitionStorage(cognition)
+    me = "me@example.com"
+    storage.set_profile_fields(
+        me, {"name": "Me", "email": me, "seniority": "mid"}, {"name": "Me", "email": me},
+    )
+    _stamp_last_seen(cognition, me, "2026-01-01T00:00:00+00:00")
+
+    from vibe_cognition.cognition.profiles import profile_filename
+    with (cognition / "people" / profile_filename(me)).open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({
+            "action": "profile_set", "email": me, "field": "seniority",
+            "value": "owner", "by": {}, "at": "2026-06-01T00:00:00+00:00",
+        }) + "\n")
+
+    alert = _profile_change_alert(CognitionStorage(cognition), me)
+    assert "Someone else changed YOUR profile" in alert
+    assert "seniority" in alert
 
 
 def test_an_empty_email_never_alerts(tmp_path, graph_identity):

@@ -184,6 +184,35 @@ def test_removing_your_own_profile_is_refused(
     assert mock_mcp.tools["cognition_list_env_facts"](ctx)["registered"] is True
 
 
+def test_removing_a_legacy_node_person_refuses_instead_of_claiming_success(
+    build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch
+):
+    """Clearing profile fields does nothing for a roster row that comes from a
+    legacy person NODE — the node fallback rebuilds it identically on the next
+    read. Reporting removed=True with six cleared fields would be a confident lie,
+    and the caller would move on believing the person was gone."""
+    from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
+
+    lc, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
+    lc["cognition_storage"].add_node(CognitionNode(
+        id="legacyperson", type=CognitionNodeType.PERSON, summary="Old — sre",
+        detail="", context=[], references=[], timestamp="2026-01-01T00:00:00+00:00",
+        author="Old",
+        metadata={"person": {"email": "old@example.com", "name": "Old", "role": "sre",
+                             "seniority": "senior", "reports_to_email": ""}},
+    ))
+
+    result = mock_mcp.tools["cognition_remove_person"](ctx, email="old@example.com")
+    assert result["removed"] is False
+    assert result["cleared_fields"] == []
+    assert "cognition_remove_node" in result["error"]
+    assert "legacyperson" in result["error"]
+    # Still there, exactly as before.
+    assert mock_mcp.tools["cognition_get_person"](ctx, email_or_id="old@example.com")[
+        "seniority"
+    ] == "senior"
+
+
 def test_removing_a_manager_names_the_people_left_dangling(
     build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch
 ):

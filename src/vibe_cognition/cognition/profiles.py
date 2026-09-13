@@ -22,14 +22,14 @@ An empty string is NOT accepted, because a skippable field gets skipped.
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from .journal_io import append_journal_line
 from .jsonl_dir_registry import FileState, JsonlDirRegistry
 from .models import SENIORITY_LEVELS
-from .people_facts import PEOPLE_DIRNAME, email_slug
+from .people_facts import PEOPLE_DIRNAME, email_slug, fold_email
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,7 @@ NO_MANAGER = "nobody"
 
 
 def _casefold(value: str) -> str:
-    return (value or "").strip().casefold()
+    return fold_email(value)
 
 
 def profile_filename(email: str) -> str:
@@ -175,6 +175,30 @@ class ProfileRegistry(JsonlDirRegistry):
 
     # ── Write surface ───────────────────────────────────────────────────
 
+    def _winning_at(self, email: str, field: str, now: str) -> tuple[str, bool]:
+        """A stamp that is guaranteed to beat the field's current winner.
+
+        Normally just `now`. But the fold is last-write-wins by TIMESTAMP, and
+        these files merge across machines: one teammate whose clock is a year
+        ahead (dead CMOS battery, broken NTP, a hand-edited line) writes a record
+        no later write can ever beat. Every subsequent correction would then be
+        appended, reported as written, and silently lose the fold forever.
+
+        So a write that would lose is bumped one microsecond past the record it
+        has to beat. This keeps the fold deterministic — no wall clock is
+        consulted when folding, so every machine still agrees — while making
+        "the most recent deliberate write wins" actually true. The bump is
+        reported so the skew is visible rather than inherited in silence.
+        """
+        winner = (self._stamps.get(email) or {}).get(field, "")
+        if not winner or now > winner:
+            return now, False
+        try:
+            bumped = datetime.fromisoformat(winner) + timedelta(microseconds=1)
+        except ValueError:
+            return now, False
+        return bumped.isoformat(), True
+
     def set_fields(
         self, email: str, fields: dict[str, Any], by: dict[str, str], from_agent: bool = True
     ) -> dict[str, Any]:
@@ -182,12 +206,17 @@ class ProfileRegistry(JsonlDirRegistry):
 
         Unchanged values journal NOTHING, so a re-confirmation on an unchanged
         profile is free rather than appending noise every session.
+
+        A field whose current winning record is stamped in the future (clock skew
+        on another machine, or a hand-edited line) is written with a stamp one
+        microsecond past it, and named in `clock_skew`: without that, the write
+        would be reported as successful and then lose the fold forever.
         """
         folded = _casefold(email)
         if not folded:
             return {"error": "email must not be blank"}
         current = self._profiles.get(folded) or {}
-        written, skipped = [], []
+        written, skipped, skewed = [], [], []
         now = datetime.now(UTC).isoformat()
         for field, value in fields.items():
             if field not in PROFILE_FIELDS:
@@ -199,12 +228,23 @@ class ProfileRegistry(JsonlDirRegistry):
             if current.get(field) == value:
                 skipped.append(field)
                 continue
+            at, bumped = self._winning_at(folded, field, now)
+            if bumped:
+                skewed.append(field)
             self._append(folded, {
                 "action": "profile_set", "email": folded, "field": field,
-                "value": value, "by": by, "from_agent": from_agent, "at": now,
+                "value": value, "by": by, "from_agent": from_agent, "at": at,
             })
             written.append(field)
-        return {"written": written, "skipped": skipped}
+        result: dict[str, Any] = {"written": written, "skipped": skipped}
+        if skewed:
+            result["clock_skew"] = (
+                f"{', '.join(skewed)} had a record stamped in the FUTURE — some "
+                "machine writing to this profile has a wrong clock. The write went "
+                "through, but tell the human to check system clocks, or every "
+                "future edit to those fields inherits the skew."
+            )
+        return result
 
     def unset_field(self, email: str, field: str, by: dict[str, str]) -> dict[str, Any]:
         folded = _casefold(email)
@@ -212,9 +252,10 @@ class ProfileRegistry(JsonlDirRegistry):
             return {"error": "email must not be blank"}
         if field not in PROFILE_FIELDS:
             return {"error": f"unknown profile field {field!r}"}
+        at, _ = self._winning_at(folded, field, datetime.now(UTC).isoformat())
         self._append(folded, {
             "action": "profile_unset", "email": folded, "field": field,
-            "by": by, "at": datetime.now(UTC).isoformat(),
+            "by": by, "at": at,
         })
         return {"unset": field}
 

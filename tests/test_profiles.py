@@ -219,3 +219,105 @@ def test_fact_registry_excludes_profiles_even_if_profiles_never_imported(tmp_pat
 
     assert not any(n.endswith(".profile.jsonl") for n in facts._files)
     assert facts.facts_for("a@x.com") == {"m": {"k": "v"}}
+
+
+# ── a wrong clock on ONE machine must not poison a field forever ────────────
+
+
+def test_a_future_dated_record_cannot_lock_a_field_forever(registry):
+    """The fold is last-write-wins by TIMESTAMP and these files merge across
+    machines, so one teammate whose clock is a year ahead (dead CMOS battery,
+    broken NTP, a hand-edited line) could write a record no later write can beat.
+    Every correction after it would be appended, reported as written, and silently
+    lose the fold — the worst shape available: a successful-looking no-op.
+    """
+    email = "victim@example.com"
+    registry.set_fields(email, {"seniority": "mid"}, BY)
+    registry.catch_up()
+
+    people = registry._dir
+    people.mkdir(parents=True, exist_ok=True)
+    (people / profile_filename(email)).open("a", encoding="utf-8").write(
+        json.dumps({
+            "action": "profile_set", "email": email, "field": "seniority",
+            "value": "owner", "by": {"name": "Skewed", "email": "skew@example.com"},
+            "at": "2099-01-01T00:00:00+00:00",
+        }) + "\n"
+    )
+    registry.catch_up()
+    assert registry.get(email)["seniority"] == "owner"
+
+    result = registry.set_fields(email, {"seniority": "senior"}, BY)
+    registry.catch_up()
+    assert registry.get(email)["seniority"] == "senior", "the correction lost the fold"
+    assert "clock_skew" in result, "the skew must be surfaced, not silently absorbed"
+    assert "seniority" in result["clock_skew"]
+
+
+def test_a_normal_write_is_stamped_now_and_says_nothing_about_skew(registry):
+    result = registry.set_fields("a@x.com", {"role": "eng"}, BY)
+    assert "clock_skew" not in result
+    registry.catch_up()
+    assert registry.get("a@x.com")["role"] == "eng"
+
+
+def test_unset_also_beats_a_future_dated_record(registry):
+    """Otherwise cognition_remove_person silently fails on a skew-poisoned field
+    while reporting the field cleared."""
+    email = "victim@example.com"
+    registry.set_fields(email, {"role": "eng"}, BY)
+    registry.catch_up()
+    (registry._dir / profile_filename(email)).open("a", encoding="utf-8").write(
+        json.dumps({
+            "action": "profile_set", "email": email, "field": "role",
+            "value": "poisoned", "by": {"name": "S", "email": "s@x.com"},
+            "at": "2099-01-01T00:00:00+00:00",
+        }) + "\n"
+    )
+    registry.catch_up()
+
+    registry.unset_field(email, "role", BY)
+    registry.catch_up()
+    assert (registry.get(email) or {}).get("role") is None
+
+
+# ── the identity key must not merge two different people ────────────────────
+
+
+def test_two_distinct_addresses_are_two_people_not_one(registry):
+    """`str.casefold()` folds ß to ss and ligatures to their letters, so
+    `groß@x.com` and `gross@x.com` — both valid, deliverable, and plausible for a
+    German surname — became ONE identity: one profile file, one write-gate state,
+    each silently overwriting the other's role and seniority.
+    """
+    a, b = "gross@x.com", "gro\u00df@x.com"
+    assert profile_filename(a) != profile_filename(b)
+
+    registry.set_fields(a, {"name": "Gross", "role": "eng"}, BY)
+    registry.set_fields(b, {"name": "Gro\u00df", "role": "design"}, BY)
+    registry.catch_up()
+
+    assert registry.get(a)["role"] == "eng"
+    assert registry.get(b)["role"] == "design"
+    assert sorted(registry.all_emails()) == sorted([a, b])
+
+
+def test_ascii_case_still_folds_to_one_person(registry):
+    """The case-insensitivity guarantee is the whole reason folding exists; it
+    must survive the switch from casefold() to lower()."""
+    registry.set_fields("Alice@Example.COM", {"name": "Alice", "role": "eng"}, BY)
+    registry.set_fields("alice@example.com", {"role": "lead"}, BY)
+    registry.catch_up()
+
+    assert registry.all_emails() == ["alice@example.com"]
+    assert registry.get("ALICE@EXAMPLE.COM")["role"] == "lead"
+
+
+def test_a_decomposed_accent_is_the_same_person_as_a_composed_one(registry):
+    """NFC first, or one person splits in two depending on how their mail client
+    encoded the accent — the opposite failure, and just as silent."""
+    composed, decomposed = "caf\u00e9@x.com", "cafe\u0301@x.com"
+    registry.set_fields(composed, {"name": "Cafe", "role": "eng"}, BY)
+    registry.catch_up()
+    assert registry.get(decomposed) is not None
+    assert profile_filename(composed) == profile_filename(decomposed)

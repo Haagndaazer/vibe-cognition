@@ -670,7 +670,10 @@ def _profile_change_alert(storage: CognitionStorage, current_email: str) -> str:
         author = str((record.get("by") or {}).get("email") or "").casefold()
         at = str(record.get("at") or "")
         value = record.get("value") if record.get("action") == "profile_set" else None
-        if author and author != current_email and at > since:
+        # No author means it cannot be shown to be yours: a hand-edited or
+        # externally injected line. Treated as foreign rather than skipped —
+        # silently excluding exactly the records nobody signed is backwards.
+        if author != current_email and at > since:
             foreign.append((field, previous.get(field), value, record))
         previous[field] = value
     if not foreign:
@@ -1135,7 +1138,12 @@ def main(argv: list[str] | None = None):
         storage = CognitionStorage(cognition_dir)
         # Announced because construction may have written committed files nobody
         # asked for, and the leftover person nodes need a human decision.
-        migration_note = format_migration_announce(storage.person_migration_report or {})
+        report = storage.person_migration_report or {}
+        incomplete = [
+            email for email in (report.get("migrated") or [])
+            if storage.profile_missing_required(email)
+        ]
+        migration_note = format_migration_announce(report, incomplete)
         if migration_note:
             sections.append(migration_note)
 

@@ -443,6 +443,7 @@ WRITE_TOOLS = [
     ("cognition_set_env_fact", {"key": "os", "value": "w11"}),
     ("cognition_delete_env_fact", {"key": "os"}),
     ("cognition_clear_env_facts", {}),
+    ("cognition_begin_curation", {}),
 ]
 
 #: Tools that write only AFTER a curation token is checked. The token check runs
@@ -463,8 +464,6 @@ CURATION_WRITE_TOOLS = [
 UNGATED_TOOLS = {
     # The unblock path itself. Gating this would be a deadlock.
     "cognition_set_identity",
-    # Mints a session token; writes nothing to the graph.
-    "cognition_begin_curation",
     # Reads.
     "cognition_get_node", "cognition_get_document", "cognition_search",
     "cognition_get_chain", "cognition_get_superseded_chain", "cognition_get_workflow",
@@ -559,6 +558,40 @@ def test_curation_write_tools_refuse_without_identity_even_with_a_valid_token(
     and permanently remove nodes from the uncurated worklist. Before this they
     were the one mutation path with no identity requirement at all, so a checkout
     with no confirmed identity could still rewrite the graph's semantic structure.
+
+    The token is minted while the checkout IS claimed, then the identity is taken
+    away — a valid token must not be a way past the gate. (In practice
+    cognition_begin_curation is itself gated, so the run stops earlier; this
+    covers the token outliving the identity that minted it.)
+    """
+    from vibe_cognition.tools.cognition_tools import register_cognition_tools
+
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    ctx = make_ctx(lc)
+    token = mock_mcp.tools["cognition_begin_curation"](ctx)["curation_token"]
+
+    graph_identity.unresolvable("Ghost")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "nope"))
+    monkeypatch.setenv("SVN_CONFIG_DIR", str(tmp_path / "nope-svn"))
+    monkeypatch.setattr("vibe_cognition.cognition.git_identity.getpass.getuser", lambda: "x")
+
+    result = mock_mcp.tools[tool_name](ctx, curation_token=token, **kwargs)
+    assert result.get("identity_required") is True, (tool_name, result)
+
+
+def test_curation_stops_at_the_very_first_call_not_after_spawning_analyzers(
+    tmp_path, mock_mcp, build_lc, make_ctx, graph_identity, monkeypatch
+):
+    """cognition_begin_curation writes nothing to the graph, but it is gated
+    anyway: the curate-orchestrator has no cognition_set_identity in its tool list,
+    so on an unclaimed checkout it would assess the backlog, spawn analyzers, burn
+    their tokens, and only then be refused at the first edge write. It cannot fix
+    the problem itself, so the cheapest honest answer is to refuse in step 1.
+
+    This is reachable without anyone doing anything wrong: identity.json is
+    machine-local while the journal is committed, so pulling a teammate's nodes and
+    running /vibe-curate on a fresh clone hits exactly this.
     """
     from vibe_cognition.tools.cognition_tools import register_cognition_tools
 
@@ -568,12 +601,11 @@ def test_curation_write_tools_refuse_without_identity_even_with_a_valid_token(
     monkeypatch.setattr("vibe_cognition.cognition.git_identity.getpass.getuser", lambda: "x")
 
     register_cognition_tools(mock_mcp)
-    lc = build_lc(tmp_path, embeddings_ready=True)
-    ctx = make_ctx(lc)
+    ctx = make_ctx(build_lc(tmp_path, embeddings_ready=True))
 
-    token = mock_mcp.tools["cognition_begin_curation"](ctx)["curation_token"]
-    result = mock_mcp.tools[tool_name](ctx, curation_token=token, **kwargs)
-    assert result.get("identity_required") is True, (tool_name, result)
+    result = mock_mcp.tools["cognition_begin_curation"](ctx)
+    assert result.get("identity_required") is True, result
+    assert "curation_token" not in result
 
 
 def test_remove_person_is_gated_even_though_it_resolves_the_target_first(

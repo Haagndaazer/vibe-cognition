@@ -2,11 +2,13 @@
 
 Two phases, deliberately separate.
 
-PHASE 1 (automatic, versioned, at startup) writes a profile for every person node
-that has no profile yet. It has to be automatic: the write gate reads PROFILES, not
-the roster, so until a person node becomes a profile its owner is asked all five
+PHASE 1 (automatic, at every startup) writes a profile for every person node that
+has no profile yet. It has to be automatic: the write gate reads PROFILES, not the
+roster, so until a person node becomes a profile its owner is asked all five
 onboarding questions again — exactly what migration exists to prevent. Anything
-manual leaves a window between upgrading and someone remembering to run it.
+manual leaves a window between upgrading and someone remembering to run it. It is
+CONTENT-checked rather than version-flagged, because "no node lacks a profile" can
+stop being true after a successful migration — see ensure_person_migration.
 
 PHASE 2 (manual) removes the nodes. It stays separate because an interruption then
 leaves duplicates, which are harmless — the roster prefers the profile — instead of
@@ -24,35 +26,13 @@ reports it did nothing.
 """
 
 import logging
-from pathlib import Path
 from typing import Any
 
-from .local_paths import read_path, write_path
 from .models import CognitionNodeType
+from .people_facts import fold_email
 from .profiles import NO_MANAGER, SENIORITY_LEVELS
 
 logger = logging.getLogger(__name__)
-
-PERSON_MIGRATION_VERSION = 1
-
-MIGRATION_FLAG_FILENAME = ".person-migration"
-
-
-def _read_flag(cognition_dir: Path) -> int | None:
-    try:
-        raw = read_path(cognition_dir, MIGRATION_FLAG_FILENAME).read_text(encoding="utf-8")
-    except OSError:
-        return None
-    try:
-        return int(raw.strip())
-    except ValueError:
-        return None
-
-
-def _write_flag(cognition_dir: Path) -> None:
-    write_path(cognition_dir, MIGRATION_FLAG_FILENAME).write_text(
-        str(PERSON_MIGRATION_VERSION), encoding="utf-8"
-    )
 
 
 def _person_nodes(storage: Any) -> list[dict[str, Any]]:
@@ -71,7 +51,7 @@ def _fields_from_node(node: dict[str, Any]) -> tuple[str, dict[str, Any]] | None
     Such a node is reported and left alone for a human to fix.
     """
     info = (node.get("metadata") or {}).get("person") or {}
-    email = str(info.get("email") or "").strip().casefold()
+    email = fold_email(str(info.get("email") or ""))
     if not email:
         return None
 
@@ -155,7 +135,7 @@ def _carry_history(storage: Any, migrated: list[str], nodes: list[dict[str, Any]
     wanted = set(migrated)
     for node in nodes:
         info = (node.get("metadata") or {}).get("person") or {}
-        email = str(info.get("email") or "").strip().casefold()
+        email = fold_email(str(info.get("email") or ""))
         if email not in wanted:
             continue
         entries = (node.get("metadata") or {}).get("profile_history") or []
@@ -168,38 +148,43 @@ def _carry_history(storage: Any, migrated: list[str], nodes: list[dict[str, Any]
 
 
 def ensure_person_migration(storage: Any) -> dict[str, Any] | None:
-    """Run phase 1 once per graph. Returns the report when it ran, else None.
+    """Run phase 1. Returns the report when anything needed doing, else None.
 
-    Versioned like the git-hygiene pass so it cannot re-run every startup, and
-    flag-gated BEFORE the node scan so a migrated graph costs one small file read.
+    Deliberately NOT gated on a stored version flag, which is the shape the
+    git-hygiene pass uses. A flag answers "has this graph ever been migrated",
+    and the question that actually matters is "does any person node still lack a
+    profile" — which can become true again AFTER a successful migration. Teammates
+    upgrade at different times (the marketplace pins a SHA, and each person applies
+    it when they apply it), so someone still on the old build can commit a new
+    person node that a already-migrated clone then pulls. Under a flag that node is
+    invisible to migration forever: its owner is re-asked all five onboarding
+    questions and cognition_remove_person cannot touch them.
+
+    The content check is two in-memory reads, so running it every time costs
+    effectively nothing and cannot go stale.
     """
-    cognition_dir = Path(storage.cognition_dir)
-    flag = _read_flag(cognition_dir)
-    if flag is not None and flag >= PERSON_MIGRATION_VERSION:
-        return None
-
     try:
         report = migrate_person_nodes(storage)
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("person-migration: failed: %s", exc)
         return None
-
-    # The flag is written even when nothing was migrated: "no person nodes" is a
-    # completed migration, not a pending one. It is NOT written if anything
-    # errored, so the next startup retries only the genuinely unfinished case.
-    if not report["errors"]:
-        try:
-            _write_flag(cognition_dir)
-        except OSError as exc:
-            logger.debug("person-migration: cannot write flag: %s", exc)
+    if not (report["migrated"] or report["errors"] or report["skipped_no_email"]):
+        return None
     return report
 
 
-def format_migration_announce(report: dict[str, Any]) -> str:
+def format_migration_announce(
+    report: dict[str, Any], still_incomplete: list[str] | None = None
+) -> str:
     """The session-start notice. Empty string when there is nothing to say.
 
     Loud on purpose: this wrote committed files the user did not ask for, and the
     leftover nodes need a human decision.
+
+    `still_incomplete` names migrated people whose profile is STILL missing a
+    required field — a node with an unrecognized seniority, say. Listing them
+    plainly under "migrated" would leave them to discover at their next write that
+    the gate still refuses them, with the notice having said everything was fine.
     """
     if not report:
         return ""
@@ -221,6 +206,23 @@ def format_migration_announce(report: dict[str, Any]) -> str:
             "roster prefers the profile) but they still appear in graph listings. "
             "Remove them with `cognition_remove_node` once you are happy with the "
             "profiles."
+        )
+    if still_incomplete:
+        lines.append(
+            f"- {len(still_incomplete)} of them still need a field answered before "
+            f"they can record anything: {', '.join(sorted(still_incomplete))}. Their "
+            "old node did not carry a usable value (an unrecognized seniority, for "
+            "example), so the gate will ask them for it."
+        )
+    # An email in BOTH lists means a second node carried the same address: the
+    # first became the profile, the rest were skipped. An email only in
+    # skipped_existing is the ordinary idempotent case and says nothing.
+    doubled = sorted(set(report.get("skipped_existing") or []) & set(migrated))
+    if doubled:
+        lines.append(
+            f"- More than one person node shared an email ({', '.join(doubled)}); "
+            "only the first was used, so any differing role or seniority on the "
+            "others was dropped. Check the roster with `cognition_list_people`."
         )
     if no_email:
         lines.append(
