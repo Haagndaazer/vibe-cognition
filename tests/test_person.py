@@ -1,18 +1,21 @@
-"""WP-TC5 + WP-TC6: person node type + from_agent provenance tests.
+"""The roster tools, now backed by committed profiles instead of person nodes.
 
-Covers the acceptance criteria from
-scratchpad/scope-identity-layer.md (WP-TC5 + WP-TC6):
-- register/update/get/list person tools; one-node-per-email invariant
-- self-registration uses server-resolved email; explicit-email registration
-  is recorded in the audit trail (recorded_by/from_agent), not enforced
-- update appends exact profile_history entries ({changed, by} asserted)
-- reports_to: self/cycle rejection tested; dangling reports_to legal + flagged
-- from_agent stamped on cognition_record/cognition_add_task/cognition_store_document/
-  cognition_register_person/cognition_update_person (default true, explicit false
-  honored); missing key surfaces as unknown (None), never coerced to false
-- person searchable via cognition_search(node_type="person"); update re-embeds
-- PERSON in _INERT_TYPES lives in test_deterministic_edges.py (TestPersonInertGate)
-- solo prime output is byte-identical whether or not person nodes exist
+WP-Identity-Profiles moved the roster out of the graph: a person is
+`.cognition/people/<email>.profile.jsonl`, append-only and committed, not a
+`person` node with a vector. The four tool NAMES are unchanged, so this file still
+covers the same contract questions — one profile per email, self- vs third-party
+registration, the reporting line and its cycle guard, dangling managers, seniority
+as a closed set, `from_agent` provenance — against the new return shape.
+
+Three deliberate contract changes are pinned here rather than left implicit:
+  * `reports_to` replaces `reports_to_email`, takes an email or the literal
+    "nobody", and REJECTS a name (the chain resolves by email);
+  * re-submitting values that are already current succeeds with everything in
+    `profile_skipped`, where it used to be "No updatable fields provided";
+  * people are no longer searchable, because a profile carries no vector.
+
+Also retained verbatim: the WP-TC6 `from_agent` coverage for record/add_task/
+store_document/search, which this WP does not touch.
 """
 
 from __future__ import annotations
@@ -20,40 +23,73 @@ from __future__ import annotations
 from tests.conftest import identity_stamp
 from vibe_cognition.cognition.models import SENIORITY_LEVELS
 from vibe_cognition.cognition.prime import PrimeConfig, generate_prime
+from vibe_cognition.cognition.profiles import NO_MANAGER
 from vibe_cognition.tools.cognition_tools import register_cognition_tools
+
+ROW_KEYS = {
+    "email", "name", "role", "seniority", "reports_to", "answered_reports_to",
+    "reports_to_registered", "detail", "summary", "source", "id",
+}
+
 
 # ── cognition_register_person ───────────────────────────────────────────────
 
 
-def test_register_person_self_uses_server_resolved_email(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
-    """Omitting `email` self-registers using the server-resolved git identity's
-    email (impersonation-resistant) -- not any client-supplied value."""
-    graph_identity.acting_as("Vorpid", "Vorpid@Example.com")
+def test_register_person_self_uses_server_resolved_email(
+    build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch
+):
+    """Omitting `email` targets the SERVER-resolved identity, never a client value.
+
+    Note what the gate did to this path: to call any write tool you must already
+    have a complete profile, so self-registration now almost always lands on the
+    dedup branch. It is kept because the email-resolution rule is the thing being
+    asserted -- an agent that could pass an arbitrary email here could register a
+    profile in someone else's name and have it look self-authored.
+    """
+    graph_identity.acting_as("Vorpid", "Vorpid@Example.com", role="implementer")
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
 
     result = mock_mcp.tools["cognition_register_person"](
-        ctx, name="Vorpid", role="implementer", seniority="mid",
+        ctx, name="Someone Entirely Different", role="pretend role", seniority="owner",
     )
     assert "error" not in result, result
-    assert result["type"] == "person"
-    assert result["summary"] == "Vorpid — implementer"
-    person = result["metadata"]["person"]
-    assert person["email"] == "vorpid@example.com"  # casefolded
-    assert person["name"] == "Vorpid"
-    assert person["role"] == "implementer"
-    assert person["seniority"] == "mid"
-    assert person["reports_to_email"] == ""
-    assert result["metadata"]["recorded_by"] == identity_stamp("Vorpid", "Vorpid@Example.com")
-    assert result["metadata"]["from_agent"] is True
-    assert result["metadata"]["profile_history"] == []
-    assert result["already_registered"] is False
+    assert result["email"] == "vorpid@example.com"  # casefolded, server-resolved
+    assert result["already_registered"] is True
+    # The client-supplied fields did NOT overwrite the existing profile.
+    assert result["name"] == "Vorpid"
+    assert result["role"] == "implementer"
 
 
-def test_register_person_explicit_email_registers_someone_else(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
+def test_register_person_writes_a_committed_profile_not_a_graph_node(
+    build_lc, make_ctx, mock_mcp, tmp_path
+):
+    """The roster is no longer graph content: registering someone adds a file under
+    .cognition/people/ and NO node. A person node in the graph would come back into
+    search results and the uncurated worklist, which is what moving them out fixed.
+    """
+    from vibe_cognition.cognition.profiles import profile_filename
+
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    storage = lc["cognition_storage"]
+    before = len(storage.get_all_nodes())
+
+    mock_mcp.tools["cognition_register_person"](
+        ctx, name="X", role="r", seniority="mid", email="x@example.com",
+        reports_to=NO_MANAGER,
+    )
+    assert len(storage.get_all_nodes()) == before
+    assert (storage.cognition_dir / "people" / profile_filename("x@example.com")).exists()
+
+
+def test_register_person_explicit_email_registers_someone_else(
+    build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch
+):
     """An explicit `email` registers a THIRD PARTY -- allowed, trust-based; who did
-    it is recorded via recorded_by, not enforced against the explicit email."""
+    it is in the profile records' `by`, not enforced against the explicit email."""
     graph_identity.acting_as("Vince", "vince@example.com")
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
@@ -61,12 +97,51 @@ def test_register_person_explicit_email_registers_someone_else(build_lc, make_ct
 
     result = mock_mcp.tools["cognition_register_person"](
         ctx, name="Colton Dyck", role="owner", seniority="owner",
-        email="Colton.Dyck@AcrylicCode.com",
+        email="Colton.Dyck@AcrylicCode.com", reports_to=NO_MANAGER,
     )
     assert "error" not in result, result
-    assert result["metadata"]["person"]["email"] == "colton.dyck@acryliccode.com"
-    # recorded_by names the ACTUAL caller (Vince), not the registered person.
-    assert result["metadata"]["recorded_by"]["email"] == "vince@example.com"
+    assert result["email"] == "colton.dyck@acryliccode.com"
+
+    # The records name the ACTUAL caller (Vince), not the registered person.
+    history = mock_mcp.tools["cognition_get_person"](
+        ctx, email_or_id="colton.dyck@acryliccode.com",
+    )["profile_history"]
+    assert history
+    assert all(r["by"]["email"] == "vince@example.com" for r in history)
+
+
+def test_a_manager_can_pre_register_a_teammate_who_then_only_confirms(
+    build_lc, make_ctx, mock_mcp, tmp_path, graph_identity
+):
+    """The multi-writer flow, end to end through the TOOLS.
+
+    A manager fills in role, seniority and reporting line for someone who has not
+    onboarded; that person then runs cognition_set_identity with just name and
+    email and is immediately able to write. Without this, every teammate would
+    answer all five questions even when their manager already had the answers.
+    """
+    graph_identity.acting_as("Manager", "mgr@example.com")
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+
+    pre = mock_mcp.tools["cognition_register_person"](
+        ctx, name="Bob", role="engineer", seniority="junior",
+        email="bob@example.com", reports_to="mgr@example.com",
+    )
+    assert "error" not in pre, pre
+    assert pre["missing_profile_fields"] == []
+
+    graph_identity.acting_as("Bob", "bob@example.com", seed=False)
+    confirmed = mock_mcp.tools["cognition_set_identity"](
+        ctx, name="Bob", email="bob@example.com",
+    )
+    assert confirmed["write_ready"] is True, confirmed
+    assert confirmed["profile"]["role"] == "engineer"
+    assert confirmed["profile"]["reports_to"] == "mgr@example.com"
+    assert "error" not in mock_mcp.tools["cognition_record"](
+        ctx, node_type="decision", summary="s", detail="d", context="", author="Bob",
+    )
 
 
 def test_register_person_blank_explicit_email_rejected(build_lc, make_ctx, mock_mcp, tmp_path):
@@ -80,9 +155,11 @@ def test_register_person_blank_explicit_email_rejected(build_lc, make_ctx, mock_
     assert "error" in result
 
 
-def test_register_person_no_resolvable_email_errors(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
-    """No explicit email AND an unresolvable git identity -> clean error (WP-P13n
-    empty-email edge case), never a person node with a blank identity key."""
+def test_register_person_no_resolvable_email_errors(
+    build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch
+):
+    """No explicit email AND an unresolvable identity -> clean error (WP-P13n
+    empty-email edge case), never a profile keyed on a blank address."""
     graph_identity.unresolvable("unknown")
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
@@ -116,27 +193,59 @@ def test_register_person_seniority_casefolded(build_lc, make_ctx, mock_mcp, tmp_
         ctx, name="X", role="r", seniority="SENIOR", email="x@example.com",
     )
     assert "error" not in result, result
-    assert result["metadata"]["person"]["seniority"] == "senior"
+    assert result["seniority"] == "senior"
 
 
-def test_register_person_one_node_per_email(build_lc, make_ctx, mock_mcp, tmp_path):
-    """Re-registering an existing (casefolded) email returns the EXISTING node
-    with already_registered=True -- never a silent duplicate, never a lost caller."""
+def test_register_person_one_profile_per_email(build_lc, make_ctx, mock_mcp, tmp_path):
+    """Re-registering an email whose profile is COMPLETE returns it with
+    already_registered=True and writes nothing -- never a silent overwrite of
+    someone's role by a second caller who guessed."""
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
 
     first = mock_mcp.tools["cognition_register_person"](
         ctx, name="X", role="r", seniority="mid", email="Dupe@Example.com",
+        reports_to=NO_MANAGER,
     )
+    assert first["already_registered"] is False
     second = mock_mcp.tools["cognition_register_person"](
         ctx, name="Someone Else", role="different role", seniority="senior",
         email="dupe@example.com",  # same email, different case
+        reports_to=NO_MANAGER,
     )
-    assert second["id"] == first["id"]
     assert second["already_registered"] is True
-    # The existing profile was NOT silently overwritten by the second call's fields.
-    assert second["metadata"]["person"]["name"] == "X"
+    assert second["email"] == first["email"]
+    assert second["name"] == "X"
+    assert second["role"] == "r"
+
+
+def test_register_person_fills_in_an_incomplete_profile_rather_than_refusing(
+    build_lc, make_ctx, mock_mcp, tmp_path
+):
+    """An INCOMPLETE profile is completed, not reported as already_registered.
+
+    Otherwise someone who confirmed an identity (name + email only) could never be
+    given a role by their manager: the dedup branch would return the half-filled
+    profile and write nothing, with no error to explain why.
+    """
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    # As it arrives by merge from the half-onboarded person's own machine.
+    lc["cognition_storage"].set_profile_fields(
+        "half@example.com",
+        {"name": "Half", "email": "half@example.com"},
+        {"name": "Half", "email": "half@example.com"},
+    )
+
+    filled = mock_mcp.tools["cognition_register_person"](
+        ctx, name="Half", role="engineer", seniority="mid", email="half@example.com",
+        reports_to=NO_MANAGER,
+    )
+    assert filled["already_registered"] is False, filled
+    assert filled["missing_profile_fields"] == []
+    assert filled["role"] == "engineer"
 
 
 def test_register_person_self_reporting_rejected(build_lc, make_ctx, mock_mcp, tmp_path):
@@ -146,48 +255,51 @@ def test_register_person_self_reporting_rejected(build_lc, make_ctx, mock_mcp, t
 
     result = mock_mcp.tools["cognition_register_person"](
         ctx, name="X", role="r", seniority="mid", email="x@example.com",
-        reports_to_email="x@example.com",
+        reports_to="x@example.com",
     )
     assert "error" in result
 
 
 def test_register_person_dangling_reports_to_is_legal(build_lc, make_ctx, mock_mcp, tmp_path):
-    """A reports_to_email with no backing person node is LEGAL (a manager may
-    register later) -- surfaced as reports_to_registered=False, not an error."""
+    """A manager who is not on the roster yet is LEGAL (they may register later) --
+    surfaced as reports_to_registered=False, not an error."""
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
 
     result = mock_mcp.tools["cognition_register_person"](
         ctx, name="X", role="r", seniority="mid", email="x@example.com",
-        reports_to_email="nobody@example.com",
+        reports_to="ghost@example.com",
     )
     assert "error" not in result, result
-    assert result["metadata"]["person"]["reports_to_email"] == "nobody@example.com"
+    assert result["reports_to"] == "ghost@example.com"
     assert result["reports_to_registered"] is False
+    assert result["answered_reports_to"] is True
 
 
-def test_register_person_cycle_via_dangling_reports_to_rejected(build_lc, make_ctx, mock_mcp, tmp_path):
-    """A cycle must be rejected even when it's only completed AT REGISTRATION time,
-    via a reports_to that was legally dangling when set. Fails-before: registration
-    only checked self-reporting, not the transitive chain -- so (1) B registers with
-    reports_to=a@example.com while a@example.com doesn't exist yet (legal dangling),
-    then (2) A registers with reports_to=b@example.com would silently close an
-    A -> B -> A loop with no guard firing."""
+def test_register_person_cycle_via_dangling_reports_to_rejected(
+    build_lc, make_ctx, mock_mcp, tmp_path
+):
+    """A cycle must be rejected even when it is only completed AT REGISTRATION
+    time, via a reports_to that was legally dangling when set. Fails-before:
+    registration only checked self-reporting, not the transitive chain -- so (1) B
+    registers with reports_to=a@example.com while a@example.com does not exist yet
+    (legal dangling), then (2) A registering with reports_to=b@example.com would
+    silently close an A -> B -> A loop with no guard firing."""
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
 
     b = mock_mcp.tools["cognition_register_person"](
         ctx, name="B", role="r", seniority="mid", email="b@example.com",
-        reports_to_email="a@example.com",
+        reports_to="a@example.com",
     )
     assert "error" not in b, b
-    assert b["reports_to_registered"] is False  # a@example.com not registered yet
+    assert b["reports_to_registered"] is False  # a@example.com not on the roster yet
 
     result = mock_mcp.tools["cognition_register_person"](
         ctx, name="A", role="r", seniority="mid", email="a@example.com",
-        reports_to_email="b@example.com",
+        reports_to="b@example.com",
     )
     assert "error" in result
 
@@ -197,19 +309,56 @@ def test_register_person_registered_reports_to_flagged_true(build_lc, make_ctx, 
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
 
-    manager = mock_mcp.tools["cognition_register_person"](
+    mock_mcp.tools["cognition_register_person"](
         ctx, name="Manager", role="lead", seniority="senior", email="mgr@example.com",
+        reports_to=NO_MANAGER,
     )
     report = mock_mcp.tools["cognition_register_person"](
         ctx, name="Report", role="ic", seniority="mid", email="ic@example.com",
-        reports_to_email="mgr@example.com",
+        reports_to="mgr@example.com",
     )
     assert report["reports_to_registered"] is True
-    assert manager["id"] != report["id"]
+
+
+def test_nobody_is_a_real_answer_and_is_not_a_dangling_manager(
+    build_lc, make_ctx, mock_mcp, tmp_path
+):
+    """"nobody" satisfies the gate and must not be reported as an unregistered
+    manager -- a solo owner would otherwise see a permanent "manager not
+    registered" flag against an answer that is correct."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+
+    solo = mock_mcp.tools["cognition_register_person"](
+        ctx, name="Solo", role="owner", seniority="owner", email="solo@example.com",
+        reports_to="NOBODY",
+    )
+    assert "error" not in solo, solo
+    assert solo["reports_to"] == NO_MANAGER
+    assert solo["answered_reports_to"] is True
+    assert solo["reports_to_registered"] is False
+    assert solo["missing_profile_fields"] == []
+
+
+def test_reports_to_rejects_a_managers_name(build_lc, make_ctx, mock_mcp, tmp_path):
+    """A name here would break the reporting chain with no error anywhere: the
+    chain is walked by email, so it would simply stop."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+
+    for bad in ("Jane Manager", "jane", "", "   "):
+        result = mock_mcp.tools["cognition_register_person"](
+            ctx, name="X", role="r", seniority="mid", email="x@example.com",
+            reports_to=bad,
+        )
+        assert "error" in result, (bad, result)
+        assert NO_MANAGER in result["error"]
 
 
 def test_register_person_has_no_created_by_parameter(build_lc, make_ctx, mock_mcp, tmp_path):
-    """Mirrors cognition_add_task's contract: no client-settable creator identity param."""
+    """Mirrors cognition_add_task's contract: no client-settable creator identity."""
     import inspect
     register_cognition_tools(mock_mcp)
     params = set(inspect.signature(mock_mcp.tools["cognition_register_person"]).parameters)
@@ -235,98 +384,95 @@ def test_cognition_record_rejects_person(build_lc, make_ctx, mock_mcp, tmp_path)
 # ── cognition_update_person ──────────────────────────────────────────────────
 
 
-def test_update_person_appends_exact_profile_history_entry(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
+def test_update_person_records_one_entry_per_changed_field(
+    build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch
+):
     graph_identity.acting_as("Vince", "vince@example.com")
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
 
-    p = mock_mcp.tools["cognition_register_person"](
+    mock_mcp.tools["cognition_register_person"](
         ctx, name="X", role="junior dev", seniority="junior", email="x@example.com",
+        reports_to=NO_MANAGER,
     )
-
     updated = mock_mcp.tools["cognition_update_person"](
         ctx, email_or_id="x@example.com", role="senior dev", seniority="senior",
     )
     assert "error" not in updated, updated
-    history = updated["metadata"]["profile_history"]
-    assert len(history) == 1
-    entry = history[0]
-    assert entry["changed"] == {
-        "role": {"from": "junior dev", "to": "senior dev"},
-        "seniority": {"from": "junior", "to": "senior"},
-    }
-    assert entry["by"] == identity_stamp("Vince", "vince@example.com")
-    assert "at" in entry
-    # summary regenerated because role changed
-    assert updated["summary"] == "X — senior dev"
-    assert updated["id"] == p["id"]
+    assert sorted(updated["profile_written"]) == ["role", "seniority"]
+    assert updated["summary"] == "X — senior dev"  # regenerated from the new role
+
+    history = mock_mcp.tools["cognition_get_person"](ctx, email_or_id="x@example.com")[
+        "profile_history"
+    ]
+    changes = [(r["field"], r["value"]) for r in history if r["action"] == "profile_set"]
+    assert ("role", "senior dev") in changes
+    assert ("seniority", "senior") in changes
+    assert history[-1]["by"] == identity_stamp("Vince", "vince@example.com")
+    assert "at" in history[-1]
 
 
-def test_update_person_by_node_id_also_works(build_lc, make_ctx, mock_mcp, tmp_path):
-    register_cognition_tools(mock_mcp)
-    lc = build_lc(tmp_path)
-    ctx = make_ctx(lc)
-
-    p = mock_mcp.tools["cognition_register_person"](
-        ctx, name="X", role="r", seniority="mid", email="x@example.com",
-    )
-    updated = mock_mcp.tools["cognition_update_person"](ctx, email_or_id=p["id"], detail="new bio")
-    assert "error" not in updated, updated
-    assert updated["detail"] == "new bio"
-
-
-def test_update_person_summary_unchanged_when_only_detail_changes(build_lc, make_ctx, mock_mcp, tmp_path):
+def test_update_person_leaves_untouched_fields_alone(build_lc, make_ctx, mock_mcp, tmp_path):
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
 
     mock_mcp.tools["cognition_register_person"](
         ctx, name="X", role="r", seniority="mid", email="x@example.com",
+        reports_to=NO_MANAGER,
     )
     updated = mock_mcp.tools["cognition_update_person"](
         ctx, email_or_id="x@example.com", detail="new bio",
     )
+    assert "error" not in updated, updated
+    assert updated["detail"] == "new bio"
     assert updated["summary"] == "X — r"
+    assert updated["reports_to"] == NO_MANAGER
 
 
-def test_update_person_reports_to_clear_with_empty_string(build_lc, make_ctx, mock_mcp, tmp_path):
+def test_update_person_reports_to_nobody_clears_the_reporting_line(
+    build_lc, make_ctx, mock_mcp, tmp_path
+):
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
 
     mock_mcp.tools["cognition_register_person"](
         ctx, name="Mgr", role="lead", seniority="senior", email="mgr@example.com",
+        reports_to=NO_MANAGER,
     )
     mock_mcp.tools["cognition_register_person"](
         ctx, name="IC", role="ic", seniority="mid", email="ic@example.com",
-        reports_to_email="mgr@example.com",
+        reports_to="mgr@example.com",
     )
     cleared = mock_mcp.tools["cognition_update_person"](
-        ctx, email_or_id="ic@example.com", reports_to_email="",
+        ctx, email_or_id="ic@example.com", reports_to=NO_MANAGER,
     )
     assert "error" not in cleared, cleared
-    assert cleared["metadata"]["person"]["reports_to_email"] == ""
+    assert cleared["reports_to"] == NO_MANAGER
     assert cleared["reports_to_registered"] is False
+    assert mock_mcp.tools["cognition_list_people"](ctx)["count"] == 3  # incl. the test user
 
 
 def test_update_person_reports_to_omitted_leaves_unchanged(build_lc, make_ctx, mock_mcp, tmp_path):
-    """None (omitted) means no change -- distinct from "" (clear)."""
+    """None (omitted) means no change -- distinct from "nobody" (top of chain)."""
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
 
     mock_mcp.tools["cognition_register_person"](
         ctx, name="Mgr", role="lead", seniority="senior", email="mgr@example.com",
+        reports_to=NO_MANAGER,
     )
     mock_mcp.tools["cognition_register_person"](
         ctx, name="IC", role="ic", seniority="mid", email="ic@example.com",
-        reports_to_email="mgr@example.com",
+        reports_to="mgr@example.com",
     )
     updated = mock_mcp.tools["cognition_update_person"](
         ctx, email_or_id="ic@example.com", role="ic2",
     )
-    assert updated["metadata"]["person"]["reports_to_email"] == "mgr@example.com"
+    assert updated["reports_to"] == "mgr@example.com"
 
 
 def test_update_person_self_reporting_rejected(build_lc, make_ctx, mock_mcp, tmp_path):
@@ -336,9 +482,10 @@ def test_update_person_self_reporting_rejected(build_lc, make_ctx, mock_mcp, tmp
 
     mock_mcp.tools["cognition_register_person"](
         ctx, name="X", role="r", seniority="mid", email="x@example.com",
+        reports_to=NO_MANAGER,
     )
     result = mock_mcp.tools["cognition_update_person"](
-        ctx, email_or_id="x@example.com", reports_to_email="x@example.com",
+        ctx, email_or_id="x@example.com", reports_to="x@example.com",
     )
     assert "error" in result
 
@@ -352,14 +499,14 @@ def test_update_person_cycle_rejected(build_lc, make_ctx, mock_mcp, tmp_path):
 
     mock_mcp.tools["cognition_register_person"](
         ctx, name="A", role="r", seniority="mid", email="a@example.com",
+        reports_to=NO_MANAGER,
     )
     mock_mcp.tools["cognition_register_person"](
         ctx, name="B", role="r", seniority="mid", email="b@example.com",
-        reports_to_email="a@example.com",
+        reports_to="a@example.com",
     )
-    # A -> B would close the loop (A already indirectly under B via B -> A).
     result = mock_mcp.tools["cognition_update_person"](
-        ctx, email_or_id="a@example.com", reports_to_email="b@example.com",
+        ctx, email_or_id="a@example.com", reports_to="b@example.com",
     )
     assert "error" in result
 
@@ -371,9 +518,10 @@ def test_update_person_dangling_reports_to_still_legal(build_lc, make_ctx, mock_
 
     mock_mcp.tools["cognition_register_person"](
         ctx, name="X", role="r", seniority="mid", email="x@example.com",
+        reports_to=NO_MANAGER,
     )
     result = mock_mcp.tools["cognition_update_person"](
-        ctx, email_or_id="x@example.com", reports_to_email="ghost@example.com",
+        ctx, email_or_id="x@example.com", reports_to="ghost@example.com",
     )
     assert "error" not in result, result
     assert result["reports_to_registered"] is False
@@ -386,6 +534,7 @@ def test_update_person_invalid_seniority_rejected(build_lc, make_ctx, mock_mcp, 
 
     mock_mcp.tools["cognition_register_person"](
         ctx, name="X", role="r", seniority="mid", email="x@example.com",
+        reports_to=NO_MANAGER,
     )
     result = mock_mcp.tools["cognition_update_person"](
         ctx, email_or_id="x@example.com", seniority="P0",
@@ -400,9 +549,32 @@ def test_update_person_no_fields_errors(build_lc, make_ctx, mock_mcp, tmp_path):
 
     mock_mcp.tools["cognition_register_person"](
         ctx, name="X", role="r", seniority="mid", email="x@example.com",
+        reports_to=NO_MANAGER,
     )
     result = mock_mcp.tools["cognition_update_person"](ctx, email_or_id="x@example.com")
     assert "error" in result
+
+
+def test_resubmitting_current_values_is_a_no_op_not_an_error(
+    build_lc, make_ctx, mock_mcp, tmp_path
+):
+    """CONTRACT CHANGE: this used to return "No updatable fields provided", which
+    was indistinguishable from passing nothing at all. Profiles are append-only, so
+    "already that value" has an honest answer -- write nothing and say so."""
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+
+    mock_mcp.tools["cognition_register_person"](
+        ctx, name="X", role="r", seniority="mid", email="x@example.com",
+        reports_to=NO_MANAGER,
+    )
+    again = mock_mcp.tools["cognition_update_person"](
+        ctx, email_or_id="x@example.com", role="r", seniority="mid",
+    )
+    assert "error" not in again, again
+    assert again["profile_written"] == []
+    assert sorted(again["profile_skipped"]) == ["role", "seniority"]
 
 
 def test_update_person_not_found_errors(build_lc, make_ctx, mock_mcp, tmp_path):
@@ -419,18 +591,36 @@ def test_update_person_not_found_errors(build_lc, make_ctx, mock_mcp, tmp_path):
 # ── cognition_get_person / cognition_list_people ─────────────────────────────
 
 
-def test_get_person_by_email_and_id(build_lc, make_ctx, mock_mcp, tmp_path):
+def test_get_person_is_email_keyed_and_case_insensitive(build_lc, make_ctx, mock_mcp, tmp_path):
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
 
-    p = mock_mcp.tools["cognition_register_person"](
+    mock_mcp.tools["cognition_register_person"](
         ctx, name="X", role="r", seniority="mid", email="x@example.com",
+        reports_to=NO_MANAGER,
     )
-    by_email = mock_mcp.tools["cognition_get_person"](ctx, email_or_id="X@Example.com")
-    by_id = mock_mcp.tools["cognition_get_person"](ctx, email_or_id=p["id"])
-    assert by_email["id"] == p["id"] == by_id["id"]
-    assert "profile_history" in by_email["metadata"]
+    got = mock_mcp.tools["cognition_get_person"](ctx, email_or_id="X@Example.com")
+    assert got["email"] == "x@example.com"
+    assert set(got) >= ROW_KEYS
+    assert got["profile_history"]
+    assert got["environment"] == {}
+    assert got["id"] is None  # no backing node any more
+
+
+def test_get_person_joins_environment_facts(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity):
+    graph_identity.acting_as("X", "x@example.com")
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+
+    mock_mcp.tools["cognition_register_person"](
+        ctx, name="X", role="r", seniority="mid", email="x@example.com",
+        reports_to=NO_MANAGER,
+    )
+    mock_mcp.tools["cognition_set_env_fact"](ctx, key="os", value="w11", machine="desk")
+    got = mock_mcp.tools["cognition_get_person"](ctx, email_or_id="x@example.com")
+    assert got["environment"] == {"desk": {"os": "w11"}}
 
 
 def test_get_person_not_found(build_lc, make_ctx, mock_mcp, tmp_path):
@@ -442,66 +632,125 @@ def test_get_person_not_found(build_lc, make_ctx, mock_mcp, tmp_path):
     assert "error" in result
 
 
-def test_list_people_roster_sorted_by_name(build_lc, make_ctx, mock_mcp, tmp_path):
+def test_list_people_roster_sorted_by_name(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity):
+    graph_identity.acting_as("Mid", "mid@example.com")
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
 
     mock_mcp.tools["cognition_register_person"](
         ctx, name="Zed", role="r", seniority="mid", email="zed@example.com",
+        reports_to=NO_MANAGER,
     )
     mock_mcp.tools["cognition_register_person"](
         ctx, name="Amy", role="r", seniority="mid", email="amy@example.com",
+        reports_to=NO_MANAGER,
     )
     roster = mock_mcp.tools["cognition_list_people"](ctx)
-    assert roster["count"] == 2
     names = [p["name"] for p in roster["people"]]
-    assert names == ["Amy", "Zed"]
-    row = roster["people"][0]
-    assert set(row) == {
-        "id", "email", "name", "role", "seniority", "reports_to_email",
-        "reports_to_registered",
-    }
+    assert names == sorted(names, key=str.casefold)
+    assert names.index("Amy") < names.index("Zed")
+    assert roster["count"] == len(roster["people"])
+    assert set(roster["people"][0]) == ROW_KEYS
 
 
-# ── person searchability + re-embed ──────────────────────────────────────────
+def test_a_legacy_person_node_still_appears_on_the_roster(build_lc, make_ctx, mock_mcp, tmp_path):
+    """A clone that predates the migration has person NODES and no profiles. Its
+    roster must still work, or upgrading would silently empty the team list and
+    remove every seniority weighting from search ranking."""
+    from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
+
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    lc["cognition_storage"].add_node(CognitionNode(
+        id="legacyperson", type=CognitionNodeType.PERSON, summary="Old Timer — sre",
+        detail="from before the migration", context=[], references=[],
+        timestamp="2026-01-01T00:00:00+00:00", author="Old Timer",
+        metadata={"person": {"email": "old@example.com", "name": "Old Timer",
+                             "role": "sre", "seniority": "senior",
+                             "reports_to_email": ""},
+                  "profile_history": [{"changed": {"role": {"from": "", "to": "sre"}},
+                                       "at": "2026-01-02T00:00:00+00:00",
+                                       "by": {"name": "A", "email": "a@example.com"}}]},
+    ))
+
+    row = mock_mcp.tools["cognition_get_person"](ctx, email_or_id="old@example.com")
+    assert row["name"] == "Old Timer"
+    assert row["seniority"] == "senior"
+    assert row["source"] == "node"
+    assert row["id"] == "legacyperson"
+    # The node's own older-shaped history is returned rather than an empty list.
+    assert row["profile_history"][0]["changed"]["role"]["to"] == "sre"
+
+    emails = [p["email"] for p in mock_mcp.tools["cognition_list_people"](ctx)["people"]]
+    assert "old@example.com" in emails
 
 
-def test_person_searchable_by_node_type(build_lc, make_ctx, mock_mcp, tmp_path):
+def test_a_profile_wins_over_a_legacy_node_for_the_same_email(
+    build_lc, make_ctx, mock_mcp, tmp_path
+):
+    """The migration writes a profile per node and may run while stale nodes are
+    still present. The profile is the newer answer, so a double-counted person or
+    a resurrected old role would both be wrong."""
+    from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
+
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path)
+    ctx = make_ctx(lc)
+    lc["cognition_storage"].add_node(CognitionNode(
+        id="dupe", type=CognitionNodeType.PERSON, summary="Both — old role",
+        detail="", context=[], references=[], timestamp="2026-01-01T00:00:00+00:00",
+        author="Both",
+        metadata={"person": {"email": "both@example.com", "name": "Both",
+                             "role": "old role", "seniority": "junior",
+                             "reports_to_email": ""}},
+    ))
+    mock_mcp.tools["cognition_register_person"](
+        ctx, name="Both", role="new role", seniority="senior",
+        email="both@example.com", reports_to=NO_MANAGER,
+    )
+
+    rows = [p for p in mock_mcp.tools["cognition_list_people"](ctx)["people"]
+            if p["email"] == "both@example.com"]
+    assert len(rows) == 1
+    assert rows[0]["role"] == "new role"
+    assert rows[0]["source"] == "profile"
+
+
+# ── people are no longer searchable ──────────────────────────────────────────
+
+
+def test_searching_for_people_says_where_the_roster_lives(build_lc, make_ctx, mock_mcp, tmp_path):
+    """CONTRACT CHANGE: profiles carry no vector, so node_type="person" can never
+    match. An empty result would read as "nobody is registered"; the error names
+    the tool that does answer the question."""
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path, embeddings_ready=True)
     ctx = make_ctx(lc)
 
     mock_mcp.tools["cognition_register_person"](
         ctx, name="Alpha Person", role="engineer alpha", seniority="mid",
-        email="alpha@example.com",
+        email="alpha@example.com", reports_to=NO_MANAGER,
     )
     result = mock_mcp.tools["cognition_search"](ctx, query="alpha", node_type="person")
-    assert result["count"] == 1
-    assert result["results"][0]["node_type"] == "person"
+    assert "error" in result
+    assert "cognition_list_people" in result["error"]
 
 
-def test_update_person_reembeds_changed_summary(build_lc, make_ctx, mock_mcp, tmp_path):
-    """The _TextKeyedGen fake embedder returns a distinct vector per marker word
-    ("alpha"/"beta") -- an update that changes role from one marker to the other
-    must move the stored Chroma metadata's summary text (proving a real re-embed,
-    not a stale vector)."""
+def test_registering_someone_embeds_nothing(build_lc, make_ctx, mock_mcp, tmp_path):
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path, embeddings_ready=True)
     ctx = make_ctx(lc)
     chroma = lc["cognition_embedding_storage"]
+    before = chroma.count_documents()
 
     mock_mcp.tools["cognition_register_person"](
         ctx, name="P", role="alpha role", seniority="mid", email="p@example.com",
+        reports_to=NO_MANAGER,
     )
-    assert chroma.count_documents(filter={"summary": "P — alpha role"}) == 1
-
-    updated = mock_mcp.tools["cognition_update_person"](
-        ctx, email_or_id="p@example.com", role="beta role",
-    )
-    assert updated["reembed"] == "done"
-    assert chroma.count_documents(filter={"summary": "P — beta role"}) == 1
-    assert chroma.count_documents(filter={"summary": "P — alpha role"}) == 0
+    mock_mcp.tools["cognition_update_person"](ctx, email_or_id="p@example.com", role="beta role")
+    assert chroma.count_documents() == before
 
 
 # ── from_agent (WP-TC6) ───────────────────────────────────────────────────────
@@ -514,36 +763,58 @@ def test_register_person_from_agent_defaults_true(build_lc, make_ctx, mock_mcp, 
 
     result = mock_mcp.tools["cognition_register_person"](
         ctx, name="X", role="r", seniority="mid", email="x@example.com",
+        reports_to=NO_MANAGER,
     )
-    assert result["metadata"]["from_agent"] is True
+    assert result["from_agent"] is True
 
 
-def test_register_person_from_agent_explicit_false_honored(build_lc, make_ctx, mock_mcp, tmp_path):
+def test_register_person_from_agent_explicit_false_lands_in_the_records(
+    build_lc, make_ctx, mock_mcp, tmp_path
+):
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
 
     result = mock_mcp.tools["cognition_register_person"](
-        ctx, name="X", role="r", seniority="mid", email="x@example.com", from_agent=False,
+        ctx, name="X", role="r", seniority="mid", email="x@example.com",
+        reports_to=NO_MANAGER, from_agent=False,
     )
-    assert result["metadata"]["from_agent"] is False
+    assert result["from_agent"] is False
+    history = mock_mcp.tools["cognition_get_person"](ctx, email_or_id="x@example.com")[
+        "profile_history"
+    ]
+    assert all(r["from_agent"] is False for r in history)
 
 
-def test_update_person_from_agent_overwrites_node_level_stamp(build_lc, make_ctx, mock_mcp, tmp_path):
+def test_update_person_from_agent_is_per_record_not_per_person(
+    build_lc, make_ctx, mock_mcp, tmp_path
+):
+    """Provenance belongs to each CHANGE, not to the person: a human-dictated edit
+    on top of an agent-written registration must not retroactively relabel the
+    registration."""
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
 
     mock_mcp.tools["cognition_register_person"](
-        ctx, name="X", role="r", seniority="mid", email="x@example.com", from_agent=True,
+        ctx, name="X", role="r", seniority="mid", email="x@example.com",
+        reports_to=NO_MANAGER, from_agent=True,
     )
     updated = mock_mcp.tools["cognition_update_person"](
         ctx, email_or_id="x@example.com", role="r2", from_agent=False,
     )
-    assert updated["metadata"]["from_agent"] is False
+    assert updated["from_agent"] is False
+
+    history = mock_mcp.tools["cognition_get_person"](ctx, email_or_id="x@example.com")[
+        "profile_history"
+    ]
+    assert history[0]["from_agent"] is True
+    assert history[-1]["from_agent"] is False
 
 
-def test_cognition_record_from_agent_defaults_true_and_false_honored(build_lc, make_ctx, mock_mcp, tmp_path):
+def test_cognition_record_from_agent_defaults_true_and_false_honored(
+    build_lc, make_ctx, mock_mcp, tmp_path
+):
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
@@ -560,7 +831,9 @@ def test_cognition_record_from_agent_defaults_true_and_false_honored(build_lc, m
     assert storage.get_node(explicit["id"])["metadata"]["from_agent"] is False
 
 
-def test_cognition_add_task_from_agent_defaults_true_and_false_honored(build_lc, make_ctx, mock_mcp, tmp_path):
+def test_cognition_add_task_from_agent_defaults_true_and_false_honored(
+    build_lc, make_ctx, mock_mcp, tmp_path
+):
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
@@ -597,7 +870,9 @@ def test_cognition_store_document_from_agent_defaults_true_and_false_honored(
     assert storage.get_node(explicit["node_id"])["metadata"]["from_agent"] is False
 
 
-def test_search_result_from_agent_missing_key_is_none_not_false(build_lc, make_ctx, mock_mcp, tmp_path):
+def test_search_result_from_agent_missing_key_is_none_not_false(
+    build_lc, make_ctx, mock_mcp, tmp_path
+):
     """A node embedded before from_agent existed has NO 'from_agent' key in Chroma
     metadata -- the search result must surface None ("unknown"), never coerce it
     to False (which would misrepresent unknown provenance as "known agent-written")."""
@@ -606,7 +881,6 @@ def test_search_result_from_agent_missing_key_is_none_not_false(build_lc, make_c
     ctx = make_ctx(lc)
     chroma = lc["cognition_embedding_storage"]
 
-    # Simulate a pre-TC6 vector: upsert directly with no from_agent key.
     storage = lc["cognition_storage"]
     from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
     node = CognitionNode(
@@ -625,19 +899,20 @@ def test_search_result_from_agent_missing_key_is_none_not_false(build_lc, make_c
     assert result["results"][0]["from_agent"] is None
 
 
-# ── prime.py: NO changes in this WP -- person nodes must not appear ─────────
+# ── prime.py: the roster must stay invisible to the solo digest ─────────────
 
 
-def test_solo_prime_byte_identical_with_and_without_person_nodes(tmp_path):
-    """Person nodes are otherwise invisible to prime.py -- the solo digest is
-    byte-identical whether or not person nodes exist in the graph, PROVIDED no
-    current_email is passed (as here). WP-TC7 landed a person-node-aware
-    onboarding notice, but it is gated on a resolvable current_email -- both
-    calls below pass none, so this pin is unaffected and intentionally retained
-    unmodified. See test_prime.py's onboarding block for the TC7-specific
-    byte-identity pins (registered vs. unregistered current_email)."""
+def test_solo_prime_byte_identical_with_and_without_a_roster(tmp_path, graph_identity):
+    """The roster is otherwise invisible to prime.py -- the solo digest is
+    byte-identical whether or not people are registered, PROVIDED no current_email
+    is passed (as here). WP-TC7 landed a roster-aware onboarding notice, but it is
+    gated on a resolvable current_email -- both calls below pass none, so this pin
+    is unaffected and intentionally retained. See test_prime.py's onboarding block
+    for the TC7-specific byte-identity pins."""
     from vibe_cognition.cognition import CognitionStorage
     from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
+
+    graph_identity.unonboarded()
 
     def _make_storage(path):
         storage = CognitionStorage(path / ".cognition")
@@ -651,16 +926,14 @@ def test_solo_prime_byte_identical_with_and_without_person_nodes(tmp_path):
     baseline = _make_storage(tmp_path / "baseline")
     baseline_out = generate_prime(baseline, PrimeConfig())
 
-    with_person = _make_storage(tmp_path / "with_person")
-    with_person.add_node(CognitionNode(
-        id="p1", type=CognitionNodeType.PERSON, summary="A — role",
-        detail="", context=[], references=[], timestamp="2026-01-01T00:00:00+00:00",
-        author="A",
-        metadata={"person": {"email": "a@example.com", "name": "A", "role": "role",
-                              "seniority": "mid", "reports_to_email": ""},
-                  "profile_history": [], "from_agent": True},
-    ))
-    with_person_out = generate_prime(with_person, PrimeConfig())
+    with_people = _make_storage(tmp_path / "with_people")
+    with_people.set_profile_fields(
+        "a@example.com",
+        {"name": "A", "email": "a@example.com", "role": "role",
+         "seniority": "mid", "reports_to": NO_MANAGER},
+        {"name": "A", "email": "a@example.com"},
+    )
+    with_people_out = generate_prime(with_people, PrimeConfig())
 
-    assert baseline_out == with_person_out
-    assert "person" not in with_person_out.lower()
+    assert baseline_out == with_people_out
+    assert "person" not in with_people_out.lower()

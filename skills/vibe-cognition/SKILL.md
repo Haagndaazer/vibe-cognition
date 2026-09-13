@@ -13,10 +13,11 @@ description: You MUST use this skill any time you need to retrieve information a
 | `cognition_list_tasks` | List the backlog — open tasks, priority-sorted, grouped by parent; optional `exclude_people` filter |
 | `cognition_update_task` | Update a task's status/owner/priority/parent/assignment in place (transition- and assignment-logged) |
 | `cognition_set_identity` | Confirm who is driving this checkout (machine-local) so writes are attributable; unblocks a refused write |
-| `cognition_register_person` | Register a HUMAN identity (never an agent) as a first-class person node |
-| `cognition_update_person` | Edit a person's profile fields in place (audit-trailed via profile_history) |
-| `cognition_get_person` | Get a person's full profile, including the profile_history audit trail and their stored environment facts |
-| `cognition_list_people` | List every registered person — the team roster |
+| `cognition_register_person` | Put a HUMAN (never an agent) on the roster — writes their committed profile |
+| `cognition_update_person` | Change fields on someone's profile (append-only audit trail) |
+| `cognition_get_person` | One person's profile, its audit trail, and their stored environment facts |
+| `cognition_list_people` | Everyone on the roster |
+| `cognition_remove_person` | Take someone off the roster — they left the team |
 | `cognition_set_env_fact` | Store one durable environment fact about YOURSELF (self-only; per-machine; response carries a disclosure you MUST relay) |
 | `cognition_delete_env_fact` | Remove one of your own stored environment facts (self-only) |
 | `cognition_clear_env_facts` | Bulk-remove your own environment facts — one machine, or ALL with no args (the removal-on-request path) |
@@ -140,23 +141,40 @@ are injected at session start and listed via `cognition_list_tasks`, so the grap
 
 ## People — the team roster
 
-A `person` node models a **HUMAN identity only** — agent identity lives in
-teammate-comms, never here. Fields: name, role, seniority
-(`owner | senior | mid | junior`), and an optional `reports_to_email` (direct
-manager; dangling — no backing node yet — is legal).
+The roster models **HUMANS only** — agent identity lives in teammate-comms, never
+here. A person is a **committed profile**, one append-only file per person at
+`.cognition/people/<email>.profile.jsonl`, NOT a graph node. Required fields: name,
+email, role, seniority (`owner | senior | mid | junior`) and `reports_to` — a
+manager's **email**, or the literal `"nobody"`, which is valid and expected on a
+solo project. A manager who is not on the roster yet is legal (`reports_to_registered:
+false`); a manager's NAME is rejected, because the chain is resolved by email.
 
-- **Create with `cognition_register_person`** (NOT `cognition_record` — that path is
-  rejected for `person`). Omit `email` to self-register using your server-resolved
-  git identity (impersonation-resistant); pass an explicit `email` to register
-  someone else. One node per (casefolded) email — re-registering an existing email
-  returns the existing node with `already_registered: true`, never a duplicate.
-- **Update in place** with `cognition_update_person` — anyone may update anyone
-  (local trust domain; the append-only `profile_history` audit trail is the
-  control, not an ACL). `summary` ("Name — role") regenerates automatically.
-- **Look up** with `cognition_get_person(email_or_id)` (full profile + history) or
-  browse the whole roster with `cognition_list_people()`.
-- Person nodes are graph-inert (no automatic `part_of` edges) and searchable via
-  `cognition_search(node_type="person")`.
+**Nothing can be written to the graph until the person driving this checkout has a
+confirmed identity AND a complete profile.** The one call that fixes that is
+`cognition_set_identity(name, email, role, seniority, reports_to)` — see Graph
+Identity below. Every write tool refuses with `identity_required: true` until then.
+
+- **Add someone with `cognition_register_person`** (NOT `cognition_record` — that
+  path is rejected for `person`). Omit `email` to target your own server-resolved
+  identity; pass an explicit `email` to register someone ELSE, which is how a
+  manager pre-registers a teammate: fill in their role, seniority and reporting
+  line, and that person then only has to run `cognition_set_identity` with their
+  name and email. Re-registering an email whose profile is already COMPLETE returns
+  it with `already_registered: true` and writes nothing; an INCOMPLETE one is filled
+  in.
+- **Change fields** with `cognition_update_person` — anyone may update anyone
+  (local trust domain; the append-only record trail is the control, not an ACL).
+  Only values that actually change are written, so re-submitting costs nothing.
+- **Look up** with `cognition_get_person(email)` (profile + audit trail + env facts)
+  or browse the roster with `cognition_list_people()`.
+- **Remove** with `cognition_remove_person(email)` when someone leaves. It clears
+  their profile fields; their env facts and everything they authored stay, because
+  attribution is history. Removing YOURSELF is refused — it would close the write
+  gate on you. If they managed anyone, those reporting lines are left dangling and
+  named in `orphaned_reports`: ask the human who those people report to now.
+- People are **not searchable** — a profile has no vector.
+  `cognition_search(node_type="person")` says so and points at
+  `cognition_list_people`.
 
 ## Two Kinds of Nodes
 

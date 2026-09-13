@@ -778,10 +778,14 @@ def test_onboarding_notice_contains_required_guidance_substrings(tmp_path):
     assert ONBOARD_DECLINE_FILENAME in result
 
 
-def test_onboarding_notice_byte_identical_delta_when_registered(tmp_path):
+def test_onboarding_notice_byte_identical_delta_when_registered(tmp_path, graph_identity):
     """A registered current_email produces output byte-identical to current_email=None
     -- proving the notice (and nothing else) is what current_email gates here, since
-    a matching person node isn't itself a stamped email counted by personalization."""
+    being on the roster isn't itself a stamped email counted by personalization.
+
+    Onboarding is off: the default onboarded checkout puts a SECOND person on the
+    roster, which legitimately trips the multi-user auto-detect and personalizes."""
+    graph_identity.unonboarded()
     storage = CognitionStorage(tmp_path / ".cognition")
     _person(storage, "p-me", ME["email"])
     _add(storage, "d1", CognitionNodeType.DECISION, "some decision")
@@ -845,12 +849,19 @@ def test_auto_personalizes_on_two_registered_persons_single_writer_fails_before(
     assert "## Open Tasks\n" not in result
 
 
-def test_auto_duplicate_person_nodes_one_email_stays_global_fails_before(tmp_path):
+def test_auto_duplicate_person_nodes_one_email_stays_global_fails_before(
+    tmp_path, graph_identity
+):
     """Replay-duplicate shape: TWO person nodes carrying the SAME email (the
     write path's already_registered guard prevents this at write time, but not
-    on replay/hand-edited data). Must stay global -- a node-count implementation
+    on replay/hand-edited data). Must stay global -- a row-count implementation
     would wrongly see 2 'registered persons' and flip; the correct set-of-emails
-    implementation sees exactly 1 distinct email."""
+    implementation sees exactly 1 distinct email.
+
+    Onboarding is off so the seeded checkout identity is not a genuine second
+    person on the roster, which would flip this for the RIGHT reason and hide the
+    duplicate-collapsing behaviour under test."""
+    graph_identity.unonboarded()
     storage = CognitionStorage(tmp_path / ".cognition")
     _task(storage, "t1", "solo task", created_by=ME)
     _person(storage, "p-me-1", ME["email"], name="Alice")

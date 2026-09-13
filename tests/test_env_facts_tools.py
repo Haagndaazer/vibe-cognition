@@ -137,22 +137,76 @@ def test_explicit_blank_machine_is_retryable_error(build_lc, make_ctx, mock_mcp,
     assert not _person_file(tmp_path, SELF_FOLDED).exists()
 
 
-def test_person_removal_leaves_fact_file_registered_false(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
-    """Final-gate regression: cognition_remove_node on a person node does NOT
-    touch their env-fact file — facts persist and surface as registered:false
-    (the documented orphaned-file KNOWN LIMIT)."""
+def test_person_removal_leaves_fact_file_registered_false(
+    build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch
+):
+    """Final-gate regression: taking someone off the roster does NOT touch their
+    env-fact file — facts persist and surface as registered:false (the documented
+    orphaned-file KNOWN LIMIT). Removal is deliberately not a cascade: their facts
+    and everything they authored are history, not the leaver's property.
+    """
+    lc, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
+    storage = lc["cognition_storage"]
+    leaver = "leaver@example.com"
+    mock_mcp.tools["cognition_register_person"](
+        ctx, name="Leaver", role="eng", seniority="mid", email=leaver,
+        reports_to="nobody",
+    )
+    # Their own facts, as they arrive by merge from their machine (writes are
+    # self-only, so this is the only way they can exist here).
+    storage.set_env_fact(leaver, "their-box", "os", "linux", dict(SELF), False)
+    assert mock_mcp.tools["cognition_list_env_facts"](
+        ctx, email_or_id=leaver,
+    )["registered"] is True
+
+    removed = mock_mcp.tools["cognition_remove_person"](ctx, email=leaver)
+    assert removed.get("removed") is True, removed
+    assert removed["orphaned_reports"] == []
+
+    r = mock_mcp.tools["cognition_list_env_facts"](ctx, email_or_id=leaver)
+    assert r["registered"] is False  # off the roster, facts remain
+    assert r["environment"] == {"their-box": {"os": "linux"}}
+    assert _person_file(tmp_path, leaver).exists()
+
+
+def test_removing_your_own_profile_is_refused(
+    build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch
+):
+    """Clearing the profile of the identity driving this checkout would close the
+    write gate immediately, and the NEXT tool call would be refused with no obvious
+    cause. The refusal names the two things the user probably meant instead."""
     _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
-    reg = mock_mcp.tools["cognition_register_person"](ctx, name="Colton", role="owner", seniority="owner")
-    mock_mcp.tools["cognition_set_env_fact"](ctx, key="os", value="w11")
+
+    result = mock_mcp.tools["cognition_remove_person"](ctx, email=SELF["email"])
+    assert "error" in result
+    assert "cognition_update_person" in result["error"]
+    assert "cognition_set_identity" in result["error"]
     assert mock_mcp.tools["cognition_list_env_facts"](ctx)["registered"] is True
 
-    removed = mock_mcp.tools["cognition_remove_node"](ctx, node_id=reg["id"])
-    assert removed.get("removed") is True, removed
 
-    r = mock_mcp.tools["cognition_list_env_facts"](ctx)
-    assert r["registered"] is False  # person gone, facts remain
-    assert r["environment"] == {"desktop-abc": {"os": "w11"}}
-    assert _person_file(tmp_path, SELF_FOLDED).exists()
+def test_removing_a_manager_names_the_people_left_dangling(
+    build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch
+):
+    """Silently orphaning someone's reporting line would quietly change their prime
+    digest (no manager, no rollup) with nothing anywhere saying why."""
+    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
+    mock_mcp.tools["cognition_register_person"](
+        ctx, name="Boss", role="lead", seniority="senior", email="boss@example.com",
+        reports_to="nobody",
+    )
+    mock_mcp.tools["cognition_register_person"](
+        ctx, name="Report", role="eng", seniority="mid", email="rep@example.com",
+        reports_to="boss@example.com",
+    )
+
+    removed = mock_mcp.tools["cognition_remove_person"](ctx, email="boss@example.com")
+    assert removed["orphaned_reports"] == ["rep@example.com"]
+    assert "rep@example.com" in removed["warning"]
+    assert "cognition_update_person" in removed["warning"]
+    # The report is still on the roster, now with a dangling manager.
+    rep = mock_mcp.tools["cognition_get_person"](ctx, email_or_id="rep@example.com")
+    assert rep["reports_to"] == "boss@example.com"
+    assert rep["reports_to_registered"] is False
 
 
 # ── disclosure contract ─────────────────────────────────────────────────────

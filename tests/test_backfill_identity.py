@@ -114,15 +114,32 @@ def test_eligibility_backfilled_marker_only_recomputable_with_flag():
 # ── roster_suggestions ────────────────────────────────────────────────────────
 
 
-def test_roster_suggestions_unambiguous_match(tmp_path):
+def test_roster_suggestions_unambiguous_match(tmp_path, graph_identity):
+    graph_identity.unonboarded()
     storage = CognitionStorage(tmp_path / ".cognition")
     _person(storage, "p1", "Casey Lead", "casey@x.com")
     assert roster_suggestions(storage) == {"casey lead": "casey@x.com"}
 
 
-def test_roster_suggestions_collision_excluded(tmp_path):
-    """Two registered persons sharing a casefolded name -> unmappable by this
-    source, falls through entirely (never picked arbitrarily)."""
+def test_roster_suggestions_reads_profiles_not_only_legacy_nodes(tmp_path, graph_identity):
+    """The roster is committed profiles now. A backfill that only saw person NODES
+    would map nobody on a migrated graph -- and silently, since an empty suggestion
+    map is indistinguishable from "no names matched"."""
+    graph_identity.unonboarded()
+    storage = CognitionStorage(tmp_path / ".cognition")
+    storage.set_profile_fields(
+        "casey@x.com",
+        {"name": "Casey Lead", "email": "casey@x.com", "role": "lead",
+         "seniority": "senior", "reports_to": "nobody"},
+        {"name": "Casey Lead", "email": "casey@x.com"},
+    )
+    assert roster_suggestions(storage) == {"casey lead": "casey@x.com"}
+
+
+def test_roster_suggestions_collision_excluded(tmp_path, graph_identity):
+    """Two people sharing a casefolded name -> unmappable by this source, falls
+    through entirely (never picked arbitrarily)."""
+    graph_identity.unonboarded()
     storage = CognitionStorage(tmp_path / ".cognition")
     _person(storage, "p1", "Colton Dyck", "colton.dyck@acryliccode.com")
     _person(storage, "p2", "colton dyck", "colton.dyck@studiomonsoon.net")

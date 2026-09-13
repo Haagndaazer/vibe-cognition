@@ -1280,7 +1280,7 @@ def test_all_39_tools_registered(mock_mcp):
     register_all_tools(mock_mcp)
 
     expected = {
-        # cognition_tools.py (28)
+        # cognition_tools.py (29)
         "cognition_record", "cognition_set_identity", "cognition_store_document", "cognition_get_document",
         "cognition_begin_curation",
         "cognition_get_node", "cognition_update_node", "cognition_search",
@@ -1293,9 +1293,9 @@ def test_all_39_tools_registered(mock_mcp):
         "cognition_load_project", "cognition_unload_project", "cognition_list_projects",
         # task tools (WP-Task-Node, +3)
         "cognition_add_task", "cognition_list_tasks", "cognition_update_task",
-        # person tools (WP-TC5, +4)
+        # roster tools (WP-TC5 +4; WP-Identity-Profiles +1)
         "cognition_register_person", "cognition_update_person",
-        "cognition_get_person", "cognition_list_people",
+        "cognition_get_person", "cognition_list_people", "cognition_remove_person",
         # env-fact tools (WP-EnvFacts-A, +4)
         "cognition_set_env_fact", "cognition_delete_env_fact",
         "cognition_clear_env_facts", "cognition_list_env_facts",
@@ -1309,6 +1309,6 @@ def test_all_39_tools_registered(mock_mcp):
 
     missing = expected - set(mock_mcp.tools.keys())
     assert not missing, f"Tools not registered: {missing}"
-    assert len(mock_mcp.tools) == 39, (
-        f"Expected 39 tools, got {len(mock_mcp.tools)}: {set(mock_mcp.tools.keys())}"
+    assert len(mock_mcp.tools) == 40, (
+        f"Expected 40 tools, got {len(mock_mcp.tools)}: {set(mock_mcp.tools.keys())}"
     )

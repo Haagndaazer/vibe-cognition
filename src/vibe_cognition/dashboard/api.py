@@ -692,15 +692,10 @@ def _stamped_identity(node: dict[str, Any]) -> tuple[str, str | None]:
 
 
 def _registered_person_emails(storage: CognitionStorage) -> set[str]:
-    """Casefolded emails of every registered PERSON node -- shared by get_people
-    and get_unregistered_writers so the two views can't disagree on who counts
-    as registered."""
-    emails = {
-        (n.get("metadata", {}).get("person", {}).get("email") or "").casefold()
-        for n in storage.get_nodes_by_type(CognitionNodeType.PERSON)
-    }
-    emails.discard("")
-    return emails
+    """Casefolded emails of everyone on the roster -- shared by get_people and
+    get_unregistered_writers so the two views can't disagree on who counts as
+    registered."""
+    return storage.roster().emails()
 
 
 def get_unregistered_writers(request):
@@ -813,25 +808,28 @@ def get_people(request):
     """
     lc = _ctx(request)
     storage = lc["cognition_storage"]
-    nodes = storage.get_nodes_by_type(CognitionNodeType.PERSON)
-    registered_emails = _registered_person_emails(storage)
+    roster = storage.roster()
+    registered_emails = roster.emails()
 
     rows = []
-    for n in nodes:
-        meta = n.get("metadata", {}) or {}
-        person = meta.get("person", {}) or {}
-        reports_to = person.get("reports_to_email") or None
+    for person in roster.all():
+        records = storage.profile_history(person.email)
+        last = records[-1] if records else {}
         rows.append({
-            "id": n["id"],
-            "name": person.get("name"),
-            "email": person.get("email"),
-            "role": person.get("role"),
-            "seniority": person.get("seniority"),
-            "reports_to_email": reports_to,
-            "reports_to_registered": bool(reports_to) and (reports_to or "").casefold() in registered_emails,
-            "recorded_by": meta.get("recorded_by"),
-            "from_agent": meta.get("from_agent"),
-            "timestamp": n.get("timestamp"),
+            "id": person.node_id,
+            "name": person.name,
+            "email": person.email,
+            "role": person.role,
+            "seniority": person.seniority,
+            "reports_to": person.reports_to_display or None,
+            "reports_to_registered": bool(person.reports_to)
+            and person.reports_to in registered_emails,
+            "source": person.source,
+            # Provenance is per-record now, so the row shows the LATEST change:
+            # who made it, whether an agent did, and when.
+            "recorded_by": last.get("by"),
+            "from_agent": last.get("from_agent"),
+            "timestamp": last.get("at"),
         })
     rows.sort(key=lambda r: (r.get("name") or "").casefold())
     return JSONResponse({"people": rows, "count": len(rows)})

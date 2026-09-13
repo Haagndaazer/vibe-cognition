@@ -481,7 +481,9 @@ UNGATED_TOOLS = {
 #: the target person BEFORE the gate and returns "no person found", and seeding a
 #: person first needs a write that is itself gated. Verified by reading
 #: _update_person, which calls _gated_identity before appending any history.
-GATED_NOT_DIRECTLY_TESTABLE = {"cognition_update_person", "cognition_update_task"}
+GATED_NOT_DIRECTLY_TESTABLE = {
+    "cognition_update_person", "cognition_update_task", "cognition_remove_person",
+}
 
 
 def test_every_registered_tool_is_classified_as_gated_or_deliberately_not(mock_mcp):
@@ -572,6 +574,35 @@ def test_curation_write_tools_refuse_without_identity_even_with_a_valid_token(
     token = mock_mcp.tools["cognition_begin_curation"](ctx)["curation_token"]
     result = mock_mcp.tools[tool_name](ctx, curation_token=token, **kwargs)
     assert result.get("identity_required") is True, (tool_name, result)
+
+
+def test_remove_person_is_gated_even_though_it_resolves_the_target_first(
+    tmp_path, mock_mcp, build_lc, make_ctx, graph_identity, monkeypatch
+):
+    """The three tools in GATED_NOT_DIRECTLY_TESTABLE resolve their target before
+    the gate, so the parametrized refusal test above cannot reach their gate. This
+    one seeds a real target first and then unclaims the checkout.
+
+    Taking someone off the roster changes search ranking and everyone's reporting
+    chain, so an unidentified caller must not be able to do it.
+    """
+    from vibe_cognition.tools.cognition_tools import register_cognition_tools
+
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    ctx = make_ctx(lc)
+    lc["cognition_storage"].set_profile_fields(
+        "leaver@example.com",
+        {"name": "Leaver", "email": "leaver@example.com", "role": "eng",
+         "seniority": "mid", "reports_to": "nobody"},
+        {"name": "Seed", "email": "seed@example.com"},
+    )
+
+    graph_identity.unresolvable("Ghost")
+    result = mock_mcp.tools["cognition_remove_person"](ctx, email="leaver@example.com")
+    assert result.get("identity_required") is True, result
+    # Nothing was cleared: they are still on the roster.
+    assert lc["cognition_storage"].get_profile("leaver@example.com") is not None
 
 
 # ── round-3 regressions ───────────────────────────────────────────────────────

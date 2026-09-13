@@ -404,6 +404,16 @@
         "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
       }
     },
+    "tool:cognition_remove_person": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_env_facts_tools.py::test_person_removal_leaves_fact_file_registered_false"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
     "tool:cognition_remove_edge": {
       "claude-code": {
         "status": "full",

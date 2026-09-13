@@ -1067,10 +1067,25 @@ class TestActivityAPI:
 
 
 class TestPeopleAPI:
-    """WP-DashV3: GET /api/people — roster for the People view."""
+    """WP-DashV3: GET /api/people — roster for the People view.
 
-    def _person(self, node_id, name, email, role="engineer", seniority="mid",
-                reports_to_email="", **extra_meta):
+    Reads the roster, which is committed PROFILES since WP-Identity-Profiles, with
+    legacy person nodes folded in for any email that has no profile. Both shapes are
+    exercised here: a dashboard that only understood one of them would show an empty
+    team on an un-migrated clone, or a doubled one mid-migration.
+    """
+
+    def _profile(self, storage, name, email, role="engineer", seniority="mid",
+                 reports_to="nobody"):
+        storage.set_profile_fields(
+            email.casefold(),
+            {"name": name, "email": email.casefold(), "role": role,
+             "seniority": seniority, "reports_to": reports_to.casefold()},
+            {"name": name, "email": email.casefold()},
+        )
+
+    def _person_node(self, node_id, name, email, role="engineer", seniority="mid",
+                     reports_to_email="", **extra_meta):
         return CognitionNode(
             id=node_id, type=CognitionNodeType.PERSON, summary=f"{name} — {role}",
             detail="", context=[], references=[],
@@ -1088,38 +1103,45 @@ class TestPeopleAPI:
         c, _ = client
         assert c.get("/api/people").status_code == 403
 
-    def test_empty_roster(self, client):
-        c, _ = client  # base fixture graph has no person nodes
-        r = c.get("/api/people", headers=_hdr())
-        assert r.status_code == 200
-        assert r.json() == {"people": [], "count": 0}
+    def test_roster_of_a_project_nobody_else_has_joined(self, client):
+        """A graph with content necessarily has ONE person on it: whoever wrote the
+        content had to be profiled to be allowed to. A truly empty roster is only
+        reachable in a graph nobody has written to, so this pins the solo shape
+        rather than an emptiness that can no longer occur."""
+        c, _ = client
+        body = c.get("/api/people", headers=_hdr()).json()
+        assert body["count"] == 1
+        assert body["people"][0]["email"] == "test-user@example.invalid"
 
     def test_roster_shape_and_sorted_by_name(self, client):
         c, lc = client
         s = lc["cognition_storage"]
-        s.add_node(self._person("pz", "Zara", "zara@example.com", role="lead", seniority="senior"))
-        s.add_node(self._person("pa", "Amir", "amir@example.com", role="engineer", seniority="mid"))
+        self._profile(s, "Zara", "zara@example.com", role="lead", seniority="senior")
+        self._profile(s, "Amir", "amir@example.com", role="engineer", seniority="mid")
 
         body = c.get("/api/people", headers=_hdr()).json()
-        assert body["count"] == 2
         names = [p["name"] for p in body["people"]]
-        assert names == ["Amir", "Zara"], "roster must sort by name, not insertion order"
-        amir = next(p for p in body["people"] if p["id"] == "pa")
-        assert amir["email"] == "amir@example.com"
+        assert names == sorted(names, key=str.casefold), "roster must sort by name"
+        assert body["count"] == len(body["people"])
+        amir = next(p for p in body["people"] if p["email"] == "amir@example.com")
         assert amir["role"] == "engineer"
         assert amir["seniority"] == "mid"
-        assert amir["reports_to_email"] is None
+        assert amir["reports_to"] == "nobody"
+        assert amir["source"] == "profile"
+        assert amir["id"] is None  # no backing node
+        # Provenance is per-record now: the row shows the latest change.
+        assert amir["recorded_by"]["email"] == "amir@example.com"
+        assert amir["timestamp"]
 
     def test_reports_to_registered_true_for_a_real_chain(self, client):
         c, lc = client
         s = lc["cognition_storage"]
-        s.add_node(self._person("pmgr", "Manager", "mgr@example.com", role="lead", seniority="senior"))
-        s.add_node(self._person("prep", "Report", "rep@example.com",
-                                 reports_to_email="mgr@example.com"))
+        self._profile(s, "Manager", "mgr@example.com", role="lead", seniority="senior")
+        self._profile(s, "Report", "rep@example.com", reports_to="mgr@example.com")
 
         body = c.get("/api/people", headers=_hdr()).json()
-        report = next(p for p in body["people"] if p["id"] == "prep")
-        assert report["reports_to_email"] == "mgr@example.com"
+        report = next(p for p in body["people"] if p["email"] == "rep@example.com")
+        assert report["reports_to"] == "mgr@example.com"
         assert report["reports_to_registered"] is True
 
     def test_reports_to_registered_false_for_a_dangling_email(self, client):
@@ -1127,13 +1149,53 @@ class TestPeopleAPI:
         a crash -- just flagged false."""
         c, lc = client
         s = lc["cognition_storage"]
-        s.add_node(self._person("prep", "Report", "rep@example.com",
-                                 reports_to_email="nobody@example.com"))
+        self._profile(s, "Report", "rep@example.com", reports_to="ghost@example.com")
 
         body = c.get("/api/people", headers=_hdr()).json()
-        report = body["people"][0]
-        assert report["reports_to_email"] == "nobody@example.com"
+        report = next(p for p in body["people"] if p["email"] == "rep@example.com")
+        assert report["reports_to"] == "ghost@example.com"
         assert report["reports_to_registered"] is False
+
+    def test_nobody_is_not_reported_as_an_unregistered_manager(self, client):
+        """"nobody" is a real answer, not a manager who failed to register. Flagging
+        it false-and-dangling would put a permanent bogus warning on every solo
+        owner's row."""
+        c, lc = client
+        self._profile(lc["cognition_storage"], "Solo", "solo@example.com",
+                      role="owner", seniority="owner", reports_to="nobody")
+
+        row = next(p for p in c.get("/api/people", headers=_hdr()).json()["people"]
+                   if p["email"] == "solo@example.com")
+        assert row["reports_to"] == "nobody"
+        assert row["reports_to_registered"] is False
+
+    def test_a_legacy_person_node_still_shows_on_the_roster(self, client):
+        """An un-migrated clone has nodes and no profiles. Showing an empty team
+        there would read as "nobody has onboarded"."""
+        c, lc = client
+        lc["cognition_storage"].add_node(
+            self._person_node("plegacy", "Old Timer", "old@example.com",
+                              role="sre", seniority="senior")
+        )
+        row = next(p for p in c.get("/api/people", headers=_hdr()).json()["people"]
+                   if p["email"] == "old@example.com")
+        assert row["name"] == "Old Timer"
+        assert row["seniority"] == "senior"
+        assert row["source"] == "node"
+        assert row["id"] == "plegacy"
+
+    def test_a_person_with_both_a_node_and_a_profile_appears_once(self, client):
+        """Mid-migration state. A doubled row would also double-count the team."""
+        c, lc = client
+        s = lc["cognition_storage"]
+        s.add_node(self._person_node("pdupe", "Both", "both@example.com", role="old role"))
+        self._profile(s, "Both", "both@example.com", role="new role")
+
+        rows = [p for p in c.get("/api/people", headers=_hdr()).json()["people"]
+                if p["email"] == "both@example.com"]
+        assert len(rows) == 1
+        assert rows[0]["role"] == "new role"
+        assert rows[0]["source"] == "profile"
 
 
 class TestUnregisteredWriters:

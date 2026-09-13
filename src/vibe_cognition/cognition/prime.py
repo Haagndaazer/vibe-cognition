@@ -17,6 +17,7 @@ from .local_paths import read_path as local_read_path
 from .local_paths import write_path as local_write_path
 from .models import CognitionEdgeType, CognitionNodeType
 from .readme import ONBOARDING_BLOCK
+from .roster import Person
 from .storage import REHYDRATE_FLAG_FILENAME, CognitionStorage
 from .task_meta import _task_claimed_at
 
@@ -193,19 +194,13 @@ def _distinct_stamped_emails(storage: CognitionStorage) -> set[str]:
 
 
 def _registered_person_emails(storage: CognitionStorage) -> set[str]:
-    """Every non-empty registered person email in the graph (WP-OnboardPayoff),
-    for the multi-user auto-detect's second signal.
+    """Every email on the roster (WP-OnboardPayoff), for the multi-user
+    auto-detect's second signal.
 
-    A SET OF EMAILS, not a node count -- duplicate person nodes carrying the SAME
-    email (a journal-replay shape; the write path's `already_registered` guard
-    prevents this at write time but not on replay/hand-edited data, same lesson
-    as WP-TC9's 98dcca4) must not flip a solo graph to "multi-user". Trusts stored
-    casefolding (module convention, matches `_has_person_node`)."""
-    return {
-        email
-        for n in storage.get_nodes_by_type(CognitionNodeType.PERSON)
-        if (email := n.get("metadata", {}).get("person", {}).get("email"))
-    }
+    A SET OF EMAILS, not a row count -- two rows carrying the SAME email (a
+    journal-replay shape, same lesson as WP-TC9's 98dcca4) must not flip a solo
+    graph to "multi-user"."""
+    return storage.roster().emails()
 
 
 def _should_personalize(storage: CognitionStorage, config: PrimeConfig, current_email: str) -> bool:
@@ -455,12 +450,9 @@ def _onboard_declined_emails(cognition_dir: Path) -> set[str]:
 
 
 def _has_person_node(storage: CognitionStorage, email: str) -> bool:
-    """Whether a person node's (casefolded, stored-casefolded) email matches."""
-    for n in storage.get_nodes_by_type(CognitionNodeType.PERSON):
-        person = n.get("metadata", {}).get("person", {})
-        if person.get("email") == email:
-            return True
-    return False
+    """Whether this email is on the roster (a committed profile, or a legacy
+    person node not yet migrated)."""
+    return storage.roster().is_registered(email)
 
 
 # ── WP-TC16: role-aware prime (manager rollup / subordinate view) ──────────────
@@ -472,52 +464,37 @@ def _has_person_node(storage: CognitionStorage, email: str) -> bool:
 
 @dataclass(frozen=True)
 class _RoleContext:
-    """Result of ONE person-node scan (WP-TC16) -- built once per prime run and
+    """Result of ONE roster snapshot (WP-TC16) -- built once per prime run and
     threaded into the manager-rollup, subordinate-decisions, and (WP-OnboardPayoff)
-    identity-header sections, so a middle manager's prime never re-scans person
-    nodes for any of them."""
+    identity-header sections, so a middle manager's prime never rebuilds the roster
+    for any of them."""
 
-    my_person: dict | None
-    direct_reports: list[dict]
+    my_person: Person | None
+    direct_reports: list[Person]
     my_manager_email: str  # casefolded; "" when absent
-    # WP-OnboardPayoff: resolved NAME of my_manager_email (via the same scan's
-    # email->name map), "" when unresolved -- defaulted so the early short-circuit
-    # in _derive_role (which legitimately has no manager to resolve) stays a valid
-    # construction even if that call site is ever missed in a future edit.
+    # WP-OnboardPayoff: resolved NAME of my_manager_email, "" when unresolved --
+    # defaulted so the early short-circuit in _derive_role (which legitimately has
+    # no manager to resolve) stays a valid construction even if that call site is
+    # ever missed in a future edit.
     my_manager_name: str = ""
 
 
 def _derive_role(storage: CognitionStorage, current_email: str) -> _RoleContext:
     """Resolve `current_email` (already casefolded by generate_prime's single
-    normalization point) into a `_RoleContext` via ONE `get_nodes_by_type(PERSON)`
-    scan: `my_person` (a person node whose stored, already-casefolded email
-    matches), `direct_reports` (person nodes whose `reports_to_email` matches
-    `current_email`), `my_manager_email` (my_person's own `reports_to_email`,
-    already casefolded at write time -- see `_register_person`/`_update_person`),
-    and `my_manager_name` (WP-OnboardPayoff: resolved from an email->name map
-    built during the SAME scan -- one scan preserved, no second pass for the
-    identity header). MANAGER role iff `direct_reports` non-empty; SUBORDINATE
-    role iff `my_manager_email` non-empty; both may hold (middle manager). An
-    empty `current_email` short-circuits to an all-empty context without
-    scanning."""
-    my_person: dict | None = None
-    direct_reports: list[dict] = []
+    normalization point) into a `_RoleContext` from ONE roster snapshot:
+    `my_person`, `direct_reports` (everyone whose reporting line points at
+    `current_email`), `my_manager_email`, and `my_manager_name` resolved from the
+    same snapshot -- one build, no second pass for the identity header. MANAGER
+    role iff `direct_reports` non-empty; SUBORDINATE role iff `my_manager_email`
+    non-empty; both may hold (middle manager). An empty `current_email`
+    short-circuits to an all-empty context without building anything."""
     if not current_email:
-        return _RoleContext(my_person, direct_reports, "", "")
-    by_email: dict[str, str] = {}
-    for n in storage.get_nodes_by_type(CognitionNodeType.PERSON):
-        person = n.get("metadata", {}).get("person", {})
-        email = person.get("email")
-        if email:
-            by_email[email] = person.get("name") or ""
-        if email == current_email:
-            my_person = n
-        if person.get("reports_to_email") == current_email:
-            direct_reports.append(n)
-    my_manager_email = ""
-    if my_person is not None:
-        my_manager_email = my_person.get("metadata", {}).get("person", {}).get("reports_to_email") or ""
-    my_manager_name = by_email.get(my_manager_email, "") if my_manager_email else ""
+        return _RoleContext(None, [], "", "")
+    roster = storage.roster()
+    my_person = roster.get(current_email)
+    direct_reports = roster.direct_reports(current_email)
+    my_manager_email = my_person.reports_to if my_person is not None else ""
+    my_manager_name = roster.name_for(my_manager_email) if my_manager_email else ""
     return _RoleContext(my_person, direct_reports, my_manager_email, my_manager_name)
 
 
@@ -565,12 +542,7 @@ def _format_your_team(
     never appear (attribution doctrine). Capped at `config.prime_rollup_cap`
     TOTAL rows: stale first (most actionable), then blocked, then in-progress,
     recency-desc within each group; an overflow line names the remainder."""
-    report_names: dict[str, str] = {}
-    for p in role.direct_reports:
-        info = p.get("metadata", {}).get("person", {})
-        email = info.get("email") or ""
-        if email:
-            report_names[email] = info.get("name") or email
+    report_names = {p.email: (p.name or p.email) for p in role.direct_reports if p.email}
     if not report_names:
         return ""
 
@@ -885,23 +857,21 @@ def _format_identity_header(role: _RoleContext) -> str:
     Format algebra (pinned, peer-review M2 -- exact punctuation, do not drift):
     start with "You are registered as {name}"; append " — {role}" iff the
     person's `role` is non-empty; append " ({seniority})" iff `seniority` is
-    non-empty; append ", reporting to {manager}" iff `reports_to_email` is
-    non-empty, where `{manager}` is `role.my_manager_name` when resolved, else
-    the raw `reports_to_email` (an unresolvable manager email falls back to
-    showing the email rather than disappearing silently); always end with '.'.
-    Never crashes, never renders the string "None" for a missing field."""
+    non-empty; append ", reporting to {manager}" iff a manager email is present,
+    where `{manager}` is `role.my_manager_name` when resolved, else the raw email
+    (an unresolvable manager email falls back to showing the email rather than
+    disappearing silently); always end with '.'. Never crashes, never renders the
+    string "None" for a missing field."""
     if role.my_person is None:
         return ""
-    person = role.my_person.get("metadata", {}).get("person", {})
-    line = f"You are registered as {person.get('name') or ''}"
-    if person.get("role"):
-        line += f" — {person['role']}"
-    if person.get("seniority"):
-        line += f" ({person['seniority']})"
-    reports_to_email = person.get("reports_to_email") or ""
-    if reports_to_email:
-        manager = role.my_manager_name or reports_to_email
-        line += f", reporting to {manager}"
+    person = role.my_person
+    line = f"You are registered as {person.name}"
+    if person.role:
+        line += f" — {person.role}"
+    if person.seniority:
+        line += f" ({person.seniority})"
+    if person.reports_to:
+        line += f", reporting to {role.my_manager_name or person.reports_to}"
     return line + "."
 
 

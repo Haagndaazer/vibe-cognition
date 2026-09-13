@@ -25,6 +25,7 @@ from .models import (
 )
 from .people_facts import DEFAULT_MACHINE_CAP, PeopleFactsRegistry
 from .profiles import ProfileRegistry
+from .roster import Roster
 
 logger = logging.getLogger(__name__)
 
@@ -236,6 +237,12 @@ class CognitionStorage:
     def profile_direct_reports(self, email: str) -> list[str]:
         with self._synced():
             return self._profiles.direct_reports(email)
+
+    def roster(self) -> Roster:
+        """Snapshot of who is on the project: profiles, with legacy person nodes
+        folded in for any email that has no profile yet."""
+        with self._synced():
+            return Roster.load(self)
 
     def profile_history(self, email: str) -> list[dict[str, Any]]:
         """Append-only record trail for one profile — powers the tamper alert."""

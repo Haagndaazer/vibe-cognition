@@ -56,7 +56,8 @@ from ..cognition.identity import (
     write_confirmed_identity,
 )
 from ..cognition.prime import SEVERITY_ORDER, _node_email
-from ..cognition.profiles import NO_MANAGER
+from ..cognition.profiles import NO_MANAGER, PROFILE_FIELDS
+from ..cognition.roster import Person, Roster
 
 # WP-TC16 re-export: keeps tests/test_task.py:32-37's direct
 # `from ...cognition_tools import _task_claimed_at` path valid; the
@@ -393,6 +394,19 @@ def _record_node(
     return result
 
 
+#: The roster moved out of the graph into committed profiles, which carry no
+#: vector. "person" is still a legal stored node type (pre-migration graphs have
+#: them) but is no longer a searchable one, so the error names the tool that
+#: replaces it rather than listing it as invalid vocabulary.
+_UNSEARCHABLE_NODE_TYPES: dict[str, str] = {
+    CognitionNodeType.PERSON.value: (
+        "people are no longer searchable: the roster is committed profiles, not "
+        "graph nodes, so there is no vector to match. Use cognition_list_people "
+        "for the roster or cognition_get_person for one person."
+    ),
+}
+
+
 def _parse_node_type(
     node_type: str | None,
 ) -> tuple[CognitionNodeType | None, dict[str, Any] | None]:
@@ -407,6 +421,15 @@ def _parse_node_type(
     except ValueError:
         valid = [e.value for e in CognitionNodeType]
         return None, {"error": f"Invalid node_type '{node_type}'. Valid: {valid}"}
+
+
+def _parse_searchable_node_type(
+    node_type: str | None,
+) -> tuple[CognitionNodeType | None, dict[str, Any] | None]:
+    """_parse_node_type, plus a clear refusal for a type that carries no vector."""
+    if node_type is not None and node_type in _UNSEARCHABLE_NODE_TYPES:
+        return None, {"error": _UNSEARCHABLE_NODE_TYPES[node_type]}
+    return _parse_node_type(node_type)
 
 
 def _validate_direction(direction: str, allowed: tuple[str, ...]) -> dict[str, Any] | None:
@@ -683,27 +706,21 @@ _AGENT_MULTIPLIER = 0.85
 
 
 def _person_seniority_map(storage: CognitionStorage) -> dict[str, str]:
-    """Casefolded email -> seniority, ONE ``get_nodes_by_type(PERSON)`` scan
-    (WP-TC9). Built ONCE per top-level search call by the caller
-    (``_search_with_embedding``) and threaded down as a plain dict -- NEVER rebuilt
-    inside ``_format_search_results``, which runs once per adaptive-widening round
+    """Casefolded email -> seniority, from ONE roster snapshot (WP-TC9).
+
+    Built ONCE per top-level search call by the caller (``_search_with_embedding``)
+    and threaded down as a plain dict -- NEVER rebuilt inside
+    ``_format_search_results``, which runs once per adaptive-widening round
     (rebuilding there would silently degrade the per-call cost model to per-round,
     the exact accidentally-quadratic shape C2 exists to catch). A read-only cache of
-    data immutable for the call's duration (person nodes don't change mid-search) --
-    contrast TC10's ``excluded_count``, which is per-round OUTPUT and must NOT be
-    cached this way; this caches INPUTS, never outputs.
+    data immutable for the call's duration -- contrast TC10's ``excluded_count``,
+    which is per-round OUTPUT and must NOT be cached this way; this caches INPUTS,
+    never outputs.
 
-    C1 cross-version doctrine: a person node missing ``seniority`` (older schema,
-    hand-edited journal) maps to ``None`` here rather than raising -- readers
-    degrade on unknown/absent vocab, never crash."""
-    result: dict[str, str] = {}
-    for person in storage.get_nodes_by_type(CognitionNodeType.PERSON):
-        info = person["metadata"].get("person", {})
-        email = info.get("email")
-        seniority = info.get("seniority")
-        if email and seniority is not None:
-            result[email] = seniority
-    return result
+    C1 cross-version doctrine: anyone with no recorded seniority is simply absent
+    here rather than raising -- readers degrade on unknown/absent vocab, never
+    crash."""
+    return storage.roster().seniority_map()
 
 
 def _hit_weight(
@@ -2146,14 +2163,14 @@ def _update_task(
     return result
 
 
-# ── Person node core logic (cognition_register_person / _update_person /
-# _get_person / _list_people) ─────────────────────────────────────────────────
+# ── Roster tools (cognition_register_person / _update_person / _get_person /
+# _list_people) ───────────────────────────────────────────────────────────────
 #
-# A ``person`` node models a HUMAN identity ONLY — agent identity lives in
-# teammate-comms, never here. Concise (single entity vector, like a task), UPDATED
-# IN PLACE (not supersession-versioned) with an append-only metadata.profile_history
-# audit trail. Email is the identity key (casefolded), enforcing one node per email.
-# Graph-inert in the matcher (storage._INERT_TYPES).
+# The roster models HUMANS ONLY — agent identity lives in teammate-comms, never
+# here. It is now committed per-person PROFILES
+# (.cognition/people/<email>.profile.jsonl), append-only with a last-write-wins
+# fold; legacy `person` nodes are still read via Roster for any email that has no
+# profile yet. Email is the identity key, casefolded.
 
 _SENIORITY_SET: frozenset[str] = frozenset(SENIORITY_LEVELS)
 
@@ -2164,64 +2181,54 @@ def _casefold_email(email: str) -> str:
     return email.strip().casefold()
 
 
-def _find_person_by_email(storage: CognitionStorage, email: str) -> dict[str, Any] | None:
-    """Linear scan for the person node with this (casefolded) email — same no-index
-    convention as WP-P13n's email match (no email index exists). Returns None for a
-    blank email (never matches, never scans) or no match."""
-    target = _casefold_email(email)
-    if not target:
-        return None
-    for node in storage.get_nodes_by_type(CognitionNodeType.PERSON):
-        if node.get("metadata", {}).get("person", {}).get("email") == target:
-            return node
-    return None
-
-
-def _resolve_person(storage: CognitionStorage, email_or_id: str) -> dict[str, Any] | None:
-    """Resolve a person node by node id OR email. Tries id first (the unambiguous
-    graph key); an id that resolves to a NON-person node is rejected (not silently
-    treated as a not-found email lookup)."""
-    node = storage.get_node(email_or_id)
-    if node is not None:
-        if node.get("type") == CognitionNodeType.PERSON.value:
-            return {"id": email_or_id, **node}
-        return None
-    return _find_person_by_email(storage, email_or_id)
-
-
 def _person_summary(name: str, role: str) -> str:
     return f"{name} — {role}"
 
 
-def _reports_to_cycle(storage: CognitionStorage, self_email: str, reports_to_email: str) -> bool:
-    """True if walking the reports_to EMAIL chain from ``reports_to_email`` ever
-    reaches ``self_email`` — i.e. setting this reports_to would make self its own
-    transitive manager. This is an email-keyed metadata walk (person-node linear
-    scan), NOT a graph-edge walk like the task-parent cycle guard: dangling (an
-    email with no backing person node) terminates the walk GRACEFULLY, never an
-    error — a manager may simply not be registered yet."""
-    self_key = _casefold_email(self_email)
-    current = _casefold_email(reports_to_email)
-    seen: set[str] = set()
-    while current and current not in seen:
-        if current == self_key:
-            return True
-        seen.add(current)
-        node = _find_person_by_email(storage, current)
-        if node is None:
-            return False  # dangling — graceful stop, not a cycle
-        current = _casefold_email(
-            (node.get("metadata", {}).get("person") or {}).get("reports_to_email") or ""
-        )
-    return False
+def _normalize_reports_to(value: str | None) -> str | dict[str, Any] | None:
+    """A reporting line, or an error dict. None means "not supplied".
+
+    Accepts an email or the literal "nobody"; a NAME is rejected, because the chain
+    is resolved by email and a name would break it with no error anywhere. An empty
+    string is also rejected -- "nobody" is the way to say top-of-chain, and a
+    skippable field gets skipped.
+    """
+    if value is None:
+        return None
+    folded = value.strip().casefold()
+    if folded == NO_MANAGER:
+        return NO_MANAGER
+    if not folded or not is_valid_email(value):
+        return {
+            "error": (
+                f"reports_to must be the manager's EMAIL or the literal \"{NO_MANAGER}\", got "
+                f"{value!r} — the reporting chain is resolved by email, so a name cannot be "
+                f"stored here. \"{NO_MANAGER}\" is valid and expected on a solo project."
+            )
+        }
+    return folded
 
 
-def _reports_to_registered(storage: CognitionStorage, reports_to_email: str | None) -> bool:
-    """Whether ``reports_to_email`` resolves to an EXISTING person node — surfaced as
-    ``reports_to_registered`` (dangling is legal, not an error, just flagged)."""
-    if not reports_to_email:
-        return False
-    return _find_person_by_email(storage, reports_to_email) is not None
+def _person_row(person: Person, roster: Roster) -> dict[str, Any]:
+    """One roster row, the shape all four person tools return.
+
+    `reports_to` is an email or "nobody"; `answered_reports_to` distinguishes a
+    deliberate "nobody" from never having been asked, which is what the write gate
+    turns on. `id` is the legacy person-node id and is None once the node is gone.
+    """
+    return {
+        "email": person.email,
+        "name": person.name,
+        "role": person.role,
+        "seniority": person.seniority,
+        "reports_to": person.reports_to_display,
+        "answered_reports_to": person.answered_reports_to,
+        "reports_to_registered": bool(person.reports_to) and roster.is_registered(person.reports_to),
+        "detail": person.detail,
+        "summary": _person_summary(person.name, person.role),
+        "source": person.source,
+        "id": person.node_id,
+    }
 
 
 def _register_person(
@@ -2229,32 +2236,35 @@ def _register_person(
     name: str,
     role: str,
     seniority: str,
-    reports_to_email: str | None = None,
+    reports_to: str | None = None,
     email: str | None = None,
     detail: str = "",
     from_agent: bool = True,
 ) -> dict[str, Any]:
-    """Create a person node (testable core of cognition_register_person).
+    """Write someone's committed profile (testable core of cognition_register_person).
 
-    Identity rule: when ``email`` is omitted, the server resolves the CURRENT git
-    identity's email and registers self (impersonation-resistant onboarding path).
-    An explicit ``email`` registers someone else (e.g. a manager pre-registering a
-    teammate) — allowed, trust-based; ``recorded_by``/``from_agent`` record who did
-    it. One node per (casefolded) email: registering an existing email returns the
-    EXISTING node with ``already_registered: True`` (never a silent duplicate,
-    never a data-losing error)."""
+    Identity rule: when ``email`` is omitted this registers SELF, using the
+    server-resolved confirmed email (impersonation-resistant onboarding path). An
+    explicit ``email`` registers someone ELSE -- a manager pre-registering a
+    teammate -- which is allowed and trust-based; the profile records carry the
+    caller as ``by``, so who did it is in the audit trail rather than enforced.
+
+    Registering an email that already has a complete profile returns it with
+    ``already_registered: True`` and writes nothing: never a silent duplicate,
+    never a data-losing error. An INCOMPLETE profile is filled in instead, which is
+    what makes the manager-pre-registers-then-person-confirms flow work.
+    """
     lc = get_lifespan(ctx)
     storage: CognitionStorage = lc["cognition_storage"]
-    embedding_storage: ChromaDBStorage = lc["cognition_embedding_storage"]
 
     seniority_norm = seniority.strip().casefold()
     if seniority_norm not in _SENIORITY_SET:
         return {"error": f"Invalid seniority '{seniority}'. Valid: {list(SENIORITY_LEVELS)}"}
 
-    # Gated like every other write path: registering someone ELSE (explicit email)
-    # still stamps recorded_by with the CALLER's identity, so an unresolved caller
-    # would land a person node attributed to nobody.
-    gate, recorded_by = _gated_identity(storage)
+    # Gated like every other write path: registering someone ELSE still records the
+    # CALLER as the author, so an unconfirmed caller would write an unattributable
+    # profile record.
+    gate, by = _gated_identity(storage)
     if gate is not None:
         return gate
 
@@ -2263,66 +2273,54 @@ def _register_person(
         if not resolved_email:
             return {"error": "email, if provided, must not be blank"}
     else:
-        resolved_email = _casefold_email(recorded_by.get("email", ""))
+        resolved_email = _casefold_email(by.get("email", ""))
         if not resolved_email:
             return {"error": "could not resolve your email to self-register; pass email explicitly"}
 
-    existing = _find_person_by_email(storage, resolved_email)
-    if existing is not None:
-        result: dict[str, Any] = {"id": existing["id"], **existing}
+    roster = storage.roster()
+    existing = roster.get(resolved_email)
+    if existing is not None and not storage.profile_missing_required(resolved_email):
+        result = _person_row(existing, roster)
         result["already_registered"] = True
         return result
 
-    reports_to = _casefold_email(reports_to_email or "")
-    if reports_to and reports_to == resolved_email:
-        return {"error": "A person cannot report to themselves"}
-    if reports_to and _reports_to_cycle(storage, resolved_email, reports_to):
-        return {
-            "error": (
-                f"reports_to rejected: '{reports_to}' transitively reports to "
-                f"'{resolved_email}' — would create a cycle"
-            )
-        }
+    manager = _normalize_reports_to(reports_to)
+    if isinstance(manager, dict):
+        return manager
+    if manager and manager != NO_MANAGER:
+        if manager == resolved_email:
+            return {"error": "A person cannot report to themselves"}
+        if roster.reports_to_cycle(resolved_email, manager):
+            return {
+                "error": (
+                    f"reports_to rejected: '{manager}' transitively reports to "
+                    f"'{resolved_email}' — would create a cycle"
+                )
+            }
 
-    timestamp = datetime.now(UTC).isoformat()
-    summary = _person_summary(name, role)
-    metadata: dict[str, Any] = {
-        "person": {
-            "email": resolved_email,
-            "name": name,
-            "role": role,
-            "seniority": seniority_norm,
-            "reports_to_email": reports_to,
-        },
-        "profile_history": [],
-        "recorded_by": recorded_by,
-        "from_agent": from_agent,
+    fields: dict[str, Any] = {
+        "name": name,
+        "email": resolved_email,
+        "role": role,
+        "seniority": seniority_norm,
     }
-    node_id = generate_node_id(CognitionNodeType.PERSON.value, summary, timestamp)
-    node = CognitionNode(
-        id=node_id,
-        type=CognitionNodeType.PERSON,
-        summary=summary,
-        detail=detail,
-        context=[],
-        references=[],
-        severity=None,
-        timestamp=timestamp,
-        author=recorded_by["name"],
-        metadata=metadata,
-    )
-    # WP-ID: mint a collision-free id under the lock; rebind BEFORE embed (A1 discipline
-    # shared with _record_node/_add_task/_store_document).
-    node_id = storage.add_node(node, mint_unique_id=True)
-    node = node.model_copy(update={"id": node_id})
+    if manager:
+        fields["reports_to"] = manager
+    if detail:
+        fields["detail"] = detail
+    written = storage.set_profile_fields(resolved_email, fields, by, from_agent)
+    if "error" in written:
+        return written
 
-    if _embeddings_ready(lc):
-        generator: EmbeddingGenerator = lc["embedding_generator"]
-        _embed_entity_node(embedding_storage, generator, node)
-
-    result = _get_node(storage, node_id)
+    roster = storage.roster()
+    person = roster.get(resolved_email)
+    if person is None:  # pragma: no cover - a write that folded to nothing
+        return {"error": f"profile for '{resolved_email}' did not persist"}
+    result = _person_row(person, roster)
     result["already_registered"] = False
-    result["reports_to_registered"] = _reports_to_registered(storage, reports_to)
+    result["profile_written"] = written.get("written", [])
+    result["missing_profile_fields"] = storage.profile_missing_required(resolved_email)
+    result["from_agent"] = from_agent
     return result
 
 
@@ -2332,29 +2330,26 @@ def _update_person(
     name: str | None = None,
     role: str | None = None,
     seniority: str | None = None,
-    reports_to_email: str | None = None,
+    reports_to: str | None = None,
     detail: str | None = None,
     from_agent: bool = True,
 ) -> dict[str, Any]:
-    """In-place field update on a person node (testable core of cognition_update_person).
+    """Change fields on someone's committed profile (core of cognition_update_person).
 
-    Anyone may update anyone (local trust domain; the append-only profile_history
-    audit trail is the control, not an ACL). Every call appends EXACTLY one
-    profile_history entry listing only the fields that actually changed
-    (``{field: {from, to}}``). ``reports_to_email=""`` clears it (top of chain);
-    omitting it leaves the parent unchanged (None = no change, mirroring
-    cognition_update_task's parent_id convention). ``summary`` regenerates whenever
-    name or role changes, so display never desyncs from the profile."""
+    Anyone may update anyone (local trust domain; the append-only profile record
+    trail is the control, not an ACL). Only fields whose value actually CHANGES are
+    journalled, so a no-op update writes nothing. ``reports_to="nobody"`` sets top
+    of chain; omitting it leaves the reporting line unchanged (None = no change,
+    mirroring cognition_update_task's parent_id convention).
+    """
     lc = get_lifespan(ctx)
     storage: CognitionStorage = lc["cognition_storage"]
-    embedding_storage: ChromaDBStorage = lc["cognition_embedding_storage"]
 
-    node = _resolve_person(storage, email_or_id)
-    if node is None:
+    roster = storage.roster()
+    person = roster.resolve(email_or_id)
+    if person is None:
         return {"error": f"No person found for '{email_or_id}'"}
-    node_id = node["id"]
-    person = dict(node.get("metadata", {}).get("person", {}))
-    self_email = person.get("email", "")
+    self_email = person.email
 
     # Validate BEFORE any mutation (same discipline as _update_task).
     if seniority is not None:
@@ -2362,91 +2357,91 @@ def _update_person(
         if seniority not in _SENIORITY_SET:
             return {"error": f"Invalid seniority '{seniority}'. Valid: {list(SENIORITY_LEVELS)}"}
 
-    new_reports_to: str | None = None
-    if reports_to_email is not None:
-        new_reports_to = _casefold_email(reports_to_email)
-        if new_reports_to:
-            if new_reports_to == self_email:
+    manager: str | None = None
+    if reports_to is not None:
+        normalized = _normalize_reports_to(reports_to)
+        if isinstance(normalized, dict):
+            return normalized
+        manager = normalized
+        if manager and manager != NO_MANAGER:
+            if manager == self_email:
                 return {"error": "A person cannot report to themselves"}
-            if _reports_to_cycle(storage, self_email, new_reports_to):
+            if roster.reports_to_cycle(self_email, manager):
                 return {
                     "error": (
-                        f"reports_to rejected: '{new_reports_to}' transitively reports to "
+                        f"reports_to rejected: '{manager}' transitively reports to "
                         f"'{self_email}' — would create a cycle"
                     )
                 }
 
-    changed: dict[str, dict[str, Any]] = {}
-    if name is not None and name != person.get("name"):
-        changed["name"] = {"from": person.get("name"), "to": name}
-        person["name"] = name
-    if role is not None and role != person.get("role"):
-        changed["role"] = {"from": person.get("role"), "to": role}
-        person["role"] = role
-    if seniority is not None and seniority != person.get("seniority"):
-        changed["seniority"] = {"from": person.get("seniority"), "to": seniority}
-        person["seniority"] = seniority
-    if reports_to_email is not None and new_reports_to != person.get("reports_to_email"):
-        changed["reports_to_email"] = {"from": person.get("reports_to_email"), "to": new_reports_to}
-        person["reports_to_email"] = new_reports_to
-
-    top_updates: dict[str, Any] = {}
-    if detail is not None and detail != node.get("detail"):
-        changed["detail"] = {"from": node.get("detail"), "to": detail}
-        top_updates["detail"] = detail
-
-    if not changed:
+    fields: dict[str, Any] = {}
+    if name is not None:
+        fields["name"] = name
+    if role is not None:
+        fields["role"] = role
+    if seniority is not None:
+        fields["seniority"] = seniority
+    if manager is not None:
+        fields["reports_to"] = manager
+    if detail is not None:
+        fields["detail"] = detail
+    if not fields:
         return {
-            "error": (
-                "No updatable fields provided (name, role, seniority, reports_to_email, detail)"
-            )
+            "error": "No updatable fields provided (name, role, seniority, reports_to, detail)"
         }
 
     gate, by = _gated_identity(storage)
     if gate is not None:
         return gate
-    entry = {"changed": changed, "at": datetime.now(UTC).isoformat(), "by": by}
 
-    metadata = dict(node.get("metadata", {}))
-    metadata["person"] = person
-    metadata["profile_history"] = [*metadata.get("profile_history", []), entry]
-    metadata["from_agent"] = from_agent
-    storage.update_node(node_id, metadata=metadata)
+    written = storage.set_profile_fields(self_email, fields, by, from_agent)
+    if "error" in written:
+        return written
 
-    if "name" in changed or "role" in changed:
-        top_updates["summary"] = _person_summary(person["name"], person["role"])
-    if top_updates:
-        storage.update_node(node_id, **top_updates)
-
-    if _embeddings_ready(lc):
-        generator: EmbeddingGenerator = lc["embedding_generator"]
-        post = storage.get_node(node_id)
-        assert post is not None  # just updated it; cannot vanish under the lock
-        cnode = _node_from_dict(node_id, post)
-        _embed_entity_node(embedding_storage, generator, cnode)
-        reembed = "done"
-    else:
-        reembed = "deferred"
-
-    result = _get_node(storage, node_id)
-    result["reembed"] = reembed
-    result["reports_to_registered"] = _reports_to_registered(storage, person.get("reports_to_email"))
+    roster = storage.roster()
+    updated = roster.get(self_email)
+    if updated is None:  # pragma: no cover - a write that folded to nothing
+        return {"error": f"profile for '{self_email}' did not persist"}
+    result = _person_row(updated, roster)
+    result["profile_written"] = written.get("written", [])
+    result["profile_skipped"] = written.get("skipped", [])
+    result["missing_profile_fields"] = storage.profile_missing_required(self_email)
+    result["from_agent"] = from_agent
     return result
 
 
 def _get_person(storage: CognitionStorage, email_or_id: str) -> dict[str, Any]:
-    """Full person node incl. profile_history (testable core of cognition_get_person)."""
-    node = _resolve_person(storage, email_or_id)
-    if node is None:
+    """One person's full profile, audit trail and environment facts.
+
+    Testable core of cognition_get_person. Joins three sources: the committed
+    profile (or a legacy person node, for an email with no profile yet), the
+    append-only record trail behind it, and the env-facts registry.
+    """
+    roster = storage.roster()
+    person = roster.resolve(email_or_id)
+    if person is None:
         return {"error": f"No person found for '{email_or_id}'"}
-    person = node.get("metadata", {}).get("person", {})
-    result = dict(node)
-    result["reports_to_registered"] = _reports_to_registered(storage, person.get("reports_to_email"))
-    # WP-EnvFacts-A: two-source join — graph node + env-facts registry
-    # (.cognition/people/ delta files). Empty dict when the person has no
-    # stored environment facts.
-    result["environment"] = storage.get_env_facts(person.get("email", ""))
+    result = _person_row(person, roster)
+    result["profile_history"] = _profile_history_for(storage, person)
+    result["environment"] = storage.get_env_facts(person.email)
     return result
+
+
+def _profile_history_for(storage: CognitionStorage, person: Person) -> list[dict[str, Any]]:
+    """The append-only trail behind a profile, oldest first.
+
+    A profile-backed row returns the raw records -- one per field change, each with
+    `field`, `value`, `by` and `at`. A row still backed by a legacy person node
+    returns that node's own `metadata.profile_history` entries unchanged, which use
+    the older `{changed: {field: {from, to}}, at, by}` shape.
+    """
+    records = storage.profile_history(person.email)
+    if records:
+        return records
+    if person.node_id:
+        node = storage.get_node(person.node_id) or {}
+        return list((node.get("metadata") or {}).get("profile_history") or [])
+    return []
 
 
 # ── WP-EnvFacts-A: per-person environment facts (self-only tool surface) ────
@@ -2608,43 +2603,93 @@ def _list_env_facts(ctx: Context, email_or_id: str | None = None) -> dict[str, A
         if not email:
             return _identity_gate(storage.cognition_dir) or {"error": _NO_IDENTITY_ERROR}
     else:
-        node = _resolve_person(storage, email_or_id)
-        if node is not None:
-            email = node.get("metadata", {}).get("person", {}).get("email", "")
-        else:
-            email = _casefold_email(email_or_id)
+        person = storage.roster().resolve(email_or_id)
+        email = person.email if person is not None else _casefold_email(email_or_id)
         if not email:
             return {"error": f"could not resolve '{email_or_id}' to an email"}
     environment = storage.get_env_facts(email)
     return {
         "email": email,
-        # A person file with no registration node is first-class legal
-        # (facts for a not-yet-registered identity) — flagged, never an error.
-        "registered": _find_person_by_email(storage, email) is not None,
+        # Facts for an identity with no profile are first-class legal — flagged,
+        # never an error.
+        "registered": storage.roster().is_registered(email),
         "environment": environment,
         "machine_count": len(environment),
         "current_machine": _machine_key(None),
     }
 
 
+def _remove_person(ctx: Context, email: str, from_agent: bool = True) -> dict[str, Any]:
+    """Take someone off the roster (testable core of cognition_remove_person).
+
+    Profiles are append-only, so this clears every field rather than deleting the
+    file: the record trail of who they were and who changed it stays intact and
+    still merges cleanly, while the person stops appearing on the roster, in the
+    reporting chain and in search ranking.
+
+    Deliberately NOT cascading: their env facts and everything they authored stay
+    exactly as they are. Attribution is history — rewriting it because someone
+    left would make the graph lie about who decided what.
+    """
+    lc = get_lifespan(ctx)
+    storage: CognitionStorage = lc["cognition_storage"]
+
+    roster = storage.roster()
+    person = roster.resolve(email)
+    if person is None:
+        return {"error": f"No person found for '{email}'"}
+
+    gate, by = _gated_identity(storage)
+    if gate is not None:
+        return gate
+
+    if person.email == _casefold_email(by.get("email", "")):
+        return {
+            "error": (
+                f"refusing to remove {person.email}: that is the identity driving "
+                "this checkout, and clearing its profile would close the write gate "
+                "on you immediately — the next record or task would be refused with "
+                "no obvious cause. To correct your own details use "
+                "cognition_update_person; to hand this checkout to someone else use "
+                "cognition_set_identity."
+            )
+        }
+
+    reports = [r.email for r in roster.direct_reports(person.email)]
+    cleared = [
+        field for field in PROFILE_FIELDS
+        if "error" not in storage.unset_profile_field(person.email, field, by)
+    ]
+    result: dict[str, Any] = {
+        "removed": True,
+        "email": person.email,
+        "name": person.name,
+        "cleared_fields": cleared,
+        "orphaned_reports": reports,
+        "from_agent": from_agent,
+    }
+    if reports:
+        result["warning"] = (
+            f"{person.name or person.email} was the manager of "
+            f"{', '.join(reports)} — their reporting line now dangles. Ask the "
+            "human who those people report to now, then use "
+            "cognition_update_person to set it."
+        )
+    if person.source == "node":
+        result["warning_legacy_node"] = (
+            f"this person is still a legacy person node ({person.node_id}); the "
+            "profile is now empty but the node remains and will reappear on the "
+            "roster until it is removed with cognition_remove_node"
+        )
+    return result
+
+
 def _list_people(storage: CognitionStorage) -> dict[str, Any]:
     """Roster view (testable core of cognition_list_people): one row per person,
-    sorted by name (casefolded)."""
-    nodes = storage.get_nodes_by_type(CognitionNodeType.PERSON)
-    rows: list[dict[str, Any]] = []
-    for n in nodes:
-        person = n.get("metadata", {}).get("person", {})
-        reports_to = person.get("reports_to_email") or None
-        rows.append({
-            "id": n["id"],
-            "email": person.get("email"),
-            "name": person.get("name"),
-            "role": person.get("role"),
-            "seniority": person.get("seniority"),
-            "reports_to_email": reports_to,
-            "reports_to_registered": _reports_to_registered(storage, reports_to),
-        })
-    rows.sort(key=lambda r: (r.get("name") or "").casefold())
+    name-sorted, with the reporting line and whether each manager is on the roster.
+    """
+    roster = storage.roster()
+    rows = [_person_row(p, roster) for p in roster.all()]
     return {"people": rows, "count": len(rows)}
 
 
@@ -3289,7 +3334,7 @@ def register_cognition_tools(mcp) -> None:
             "source": "confirmed",
             "path": str(identity_write_path(cognition_dir)),
             "previous": previous,
-            "registered_person": _find_person_by_email(storage, folded) is not None,
+            "registered_person": storage.roster().is_registered(folded),
             "profile": storage.get_profile(folded) or {},
             "profile_written": profile_result.get("written", []),
             "profile_skipped": profile_result.get("skipped", []),
@@ -3303,26 +3348,35 @@ def register_cognition_tools(mcp) -> None:
         name: str,
         role: str,
         seniority: str,
-        reports_to_email: str | None = None,
+        reports_to: str | None = None,
         email: str | None = None,
         detail: str = "",
         from_agent: bool = True,
     ) -> dict[str, Any]:
-        """Register a HUMAN identity as a first-class person node.
+        """Register a HUMAN on the project roster — their committed profile.
 
-        Person nodes model HUMANS ONLY — agent identity lives in teammate-comms,
+        The roster models HUMANS ONLY — agent identity lives in teammate-comms,
         never here. Use this for onboarding (introducing your human) or for a
         manager pre-registering a teammate who hasn't onboarded yet.
 
-        Identity rule: omit `email` to self-register — the server resolves the
-        CURRENT git identity's email server-side (impersonation-resistant). Pass an
-        explicit `email` to register someone ELSE (allowed, trust-based; who did it
-        is recorded via `recorded_by`/`from_agent` in the audit trail, not enforced).
+        Profiles are COMMITTED and shared with the team, one file per person
+        (`.cognition/people/<email>.profile.jsonl`), append-only. They are what
+        makes search ranking, the reporting chain and the prime digest work for a
+        real person rather than an anonymous address.
 
-        One node per (casefolded) email: registering an email that already has a
-        person node returns the EXISTING node with `already_registered: true` —
-        never a silent duplicate, never a data-losing error. To edit an existing
-        person's profile, use `cognition_update_person` instead.
+        Identity rule: omit `email` to self-register — the server uses YOUR
+        confirmed identity's email (impersonation-resistant). Pass an explicit
+        `email` to register someone ELSE (allowed, trust-based; the profile records
+        carry you as the author, so who did it is in the audit trail rather than
+        enforced).
+
+        One profile per (casefolded) email. Registering an email whose profile is
+        already COMPLETE returns it with `already_registered: true` and writes
+        nothing — never a silent duplicate, never a data-losing error. An
+        INCOMPLETE profile is filled in instead, so a manager can pre-register a
+        teammate with role/seniority/reporting line and that person then only has
+        to confirm the checkout with `cognition_set_identity`. To change fields on
+        a complete profile, use `cognition_update_person`.
 
         SENIORITY IS A CLOSED SET, ROLE IS NOT: `role` is free text (whatever the
         human says — "backend engineer", "PM", "lead", anything). `seniority` is
@@ -3340,12 +3394,15 @@ def register_cognition_tools(mcp) -> None:
             seniority: One of: owner, senior, mid, junior (closed set, casefolded).
                 Ask the human to pick one of these four words; never map free text
                 onto a tier yourself.
-            reports_to_email: Optional direct manager's email. Need not resolve to
-                an existing person node yet (a manager may register later) —
-                dangling is legal, surfaced as `reports_to_registered: false`.
-                Self-reporting and transitive cycles (A→B→...→A, walked through
-                already-registered people) are rejected.
-            email: Omit to self-register (server-resolved git identity); pass to
+            reports_to: The direct manager's EMAIL, or the literal "nobody" for
+                top-of-chain — valid and expected on a solo project. A manager's
+                NAME is rejected: the chain is resolved by email, and a name would
+                break it with no error anywhere. Need not be on the roster yet (a
+                manager may register later) — dangling is legal, surfaced as
+                `reports_to_registered: false`. Self-reporting and transitive
+                cycles (A→B→...→A, walked through people already on the roster)
+                are rejected.
+            email: Omit to self-register (your confirmed identity); pass to
                 register someone else.
             detail: Optional free-text bio/notes.
             from_agent: Set false ONLY when the human explicitly dictated/authored
@@ -3353,21 +3410,27 @@ def register_cognition_tools(mcp) -> None:
                 doubt, leave the default.
 
         Returns:
-            The person node ({id, type, summary, detail, metadata: {person,
-            profile_history, recorded_by, from_agent}, ...}) plus
-            `already_registered` (bool). `reports_to_registered` (bool) is
-            included ONLY when a NEW node is created — the `already_registered:
-            true` (dedup) branch returns the existing node as-is and omits it;
-            use `cognition_get_person` if you need that flag for an existing
-            person. Returns {"error": ...} for an invalid seniority,
-            self-reporting, a reports_to cycle, or a blank explicit email; and
-            `{"identity_required": true, ...}` when no email resolves for YOU,
-            the caller -- registering someone else still stamps recorded_by with
-            your identity, so call `cognition_set_identity` first.
+            A roster row: `{email, name, role, seniority, reports_to,
+            answered_reports_to, reports_to_registered, detail, summary, source,
+            id}`. `reports_to` is a manager's email or the literal "nobody";
+            `answered_reports_to` is False when nobody has been asked yet;
+            `source` is "profile", or "node" for a legacy person node not yet
+            migrated, whose id is then in `id` (None otherwise).
+            Plus `already_registered` (bool). On a NEW or filled-in profile also
+            `profile_written` (the fields this call appended) and
+            `missing_profile_fields` (what is still absent — empty when the
+            profile is complete); the `already_registered: true` branch omits
+            both, since it wrote nothing.
+            Returns {"error": ...} for an invalid seniority, a `reports_to` that
+            is neither an email nor "nobody", self-reporting, a reports_to cycle,
+            or a blank explicit email; and `{"identity_required": true, ...}` when
+            YOUR own identity is unconfirmed or your profile incomplete —
+            registering someone else still records you as the author, so call
+            `cognition_set_identity` first.
         """
         return _register_person(
             ctx, name, role, seniority,
-            reports_to_email=reports_to_email, email=email, detail=detail,
+            reports_to=reports_to, email=email, detail=detail,
             from_agent=from_agent,
         )
 
@@ -3378,17 +3441,16 @@ def register_cognition_tools(mcp) -> None:
         name: str | None = None,
         role: str | None = None,
         seniority: str | None = None,
-        reports_to_email: str | None = None,
+        reports_to: str | None = None,
         detail: str | None = None,
         from_agent: bool = True,
     ) -> dict[str, Any]:
-        """Edit a person node's profile fields in place, with an audit trail.
+        """Change fields on someone's committed profile, with an audit trail.
 
         Anyone may update anyone — this is a local trust domain; the append-only
-        `metadata.profile_history` audit trail (one entry per call, listing exactly
-        which fields changed as `{field: {from, to}}`, plus who/when) is the
-        control, not an ACL. `summary` ("Name — role") auto-regenerates whenever
-        name or role changes, so display never desyncs from the profile.
+        record trail (one record per changed field, each carrying who and when) is
+        the control, not an ACL. Only fields whose value actually changes are
+        written, so re-submitting an unchanged profile costs nothing.
 
         SENIORITY IS A CLOSED SET, ROLE IS NOT: `role` is free text; `seniority`
         is exactly one of owner | senior | mid | junior — nothing else is valid.
@@ -3403,53 +3465,123 @@ def register_cognition_tools(mcp) -> None:
             seniority: New seniority (owner | senior | mid | junior), if
                 changing. Ask the human to pick one of these four words; never
                 map free text onto a tier yourself.
-            reports_to_email: New manager's email; pass "" to clear (top of chain);
-                omit for no change. Self-reporting and cycles are rejected; a
-                dangling (unregistered) email is legal.
+            reports_to: New manager's EMAIL, or "nobody" for top of chain; omit
+                for no change. A manager's NAME is rejected — the chain is
+                resolved by email. Self-reporting and cycles are rejected; a
+                dangling (not-yet-registered) email is legal.
             detail: New bio/notes, if changing.
             from_agent: Set false ONLY when the human explicitly dictated/authored
                 this update themselves; default true. When in doubt, leave default.
 
         Returns:
-            The updated person node plus `reembed` ("done" | "deferred") and
-            `reports_to_registered` (bool), or {"error": ...} for no matching
-            person, an invalid seniority, self-reporting, a reports_to cycle, or
-            no updatable fields provided. "No updatable fields provided" also
-            fires if every field you pass is identical to its current value —
-            a no-op re-submission is indistinguishable from omitting the field.
+            A roster row: `{email, name, role, seniority, reports_to,
+            answered_reports_to, reports_to_registered, detail, summary, source,
+            id}`. `reports_to` is a manager's email or the literal "nobody";
+            `answered_reports_to` is False when nobody has been asked yet;
+            `source` is "profile", or "node" for a legacy person node not yet
+            migrated, whose id is then in `id` (None otherwise).
+            Plus `profile_written` (fields actually appended), `profile_skipped`
+            (fields already at that value, so not journalled) and
+            `missing_profile_fields`. Returns {"error": ...} for no matching
+            person, an invalid seniority, a `reports_to` that is neither an email
+            nor "nobody", self-reporting, a reports_to cycle, or no updatable
+            field passed at all; and `{"identity_required": true, ...}` when your
+            own identity is unconfirmed or your profile incomplete.
+            NOTE a change from earlier versions: passing only values identical to
+            the current ones is no longer an error — it succeeds with everything
+            in `profile_skipped` and nothing written.
         """
         return _update_person(
             ctx, email_or_id, name=name, role=role, seniority=seniority,
-            reports_to_email=reports_to_email, detail=detail, from_agent=from_agent,
+            reports_to=reports_to, detail=detail, from_agent=from_agent,
         )
 
     @dispatch_tool(mcp)
     def cognition_get_person(ctx: Context, email_or_id: str) -> dict[str, Any]:
-        """Get a person's full profile, including the profile_history audit trail.
+        """Get one person's full profile, its audit trail, and their environment.
 
         Args:
-            email_or_id: The person's email OR node id.
+            email_or_id: The person's email. A legacy person-node id also
+                resolves while that node still exists, but email is the identity
+                key — prefer it.
 
         Returns:
-            The full person node (id, summary, detail, metadata: {person,
-            profile_history, recorded_by, from_agent}, ...) plus
-            `reports_to_registered` (bool) and `environment` (the person's
-            stored env facts, {machine: {key: value}}, empty dict when none —
-            see cognition_list_env_facts), or {"error": ...} if not found.
+            A roster row: `{email, name, role, seniority, reports_to,
+            answered_reports_to, reports_to_registered, detail, summary, source,
+            id}`. `reports_to` is a manager's email or the literal "nobody";
+            `answered_reports_to` is False when nobody has been asked yet;
+            `source` is "profile", or "node" for a legacy person node not yet
+            migrated, whose id is then in `id` (None otherwise).
+            Plus `profile_history` (the append-only trail, oldest first: one
+            record per field change with `field`, `value`, `by`, `at` — a row
+            still backed by a legacy person node instead returns that node's
+            older `{changed: {field: {from, to}}, at, by}` entries) and
+            `environment` (their stored env facts, {machine: {key: value}}, empty
+            dict when none — see cognition_list_env_facts).
+            {"error": ...} if not found.
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         return _get_person(storage, email_or_id)
 
     @dispatch_tool(mcp)
     def cognition_list_people(ctx: Context) -> dict[str, Any]:
-        """List every registered person — the team roster.
+        """List everyone on the project roster.
 
         Returns:
-            {"people": [{id, email, name, role, seniority, reports_to_email,
-             reports_to_registered}, ...], "count": N}, sorted by name.
+            {"people": [row, ...], "count": N}, sorted by name, where each row is:
+            A roster row: `{email, name, role, seniority, reports_to,
+            answered_reports_to, reports_to_registered, detail, summary, source,
+            id}`. `reports_to` is a manager's email or the literal "nobody";
+            `answered_reports_to` is False when nobody has been asked yet;
+            `source` is "profile", or "node" for a legacy person node not yet
+            migrated, whose id is then in `id` (None otherwise).
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
         return _list_people(storage)
+
+    @dispatch_tool(mcp)
+    def cognition_remove_person(
+        ctx: Context, email: str, from_agent: bool = True
+    ) -> dict[str, Any]:
+        """Take someone off the project roster — they left the team.
+
+        Clears every field of their committed profile. Profiles are append-only,
+        so the record trail of who they were, and who changed what, stays intact
+        and still merges cleanly; they simply stop appearing on the roster, in
+        anyone's reporting chain, and in search ranking.
+
+        NOT a cascade, deliberately: their environment facts and everything they
+        authored are untouched. Attribution is history — rewriting it because
+        someone left would make the graph lie about who decided what. To remove
+        stored environment facts, THEY run cognition_clear_env_facts (self-only).
+
+        If they managed anyone, those people's reporting lines are left dangling
+        and named in `orphaned_reports` — ASK THE HUMAN who those people report to
+        now rather than guessing, then set it with cognition_update_person.
+
+        Removing YOURSELF is refused: clearing the profile of the identity driving
+        this checkout would close the write gate immediately, and the next record
+        or task would be refused with no obvious cause. Correct your own details
+        with cognition_update_person, or hand the checkout over with
+        cognition_set_identity.
+
+        Args:
+            email: The person's email. A legacy person-node id also resolves
+                while that node still exists.
+            from_agent: Set false ONLY when the human explicitly dictated this
+                removal themselves; default true.
+
+        Returns:
+            {"removed": true, "email", "name", "cleared_fields", "orphaned_reports",
+            "from_agent"}, plus `warning` when they managed someone, and
+            `warning_legacy_node` when a not-yet-migrated person node still backs
+            them (the node must also be removed with cognition_remove_node, or they
+            reappear on the roster).
+            {"error": ...} when no such person, or when the email is your own;
+            `{"identity_required": true, ...}` when your own identity is
+            unconfirmed or your profile incomplete.
+        """
+        return _remove_person(ctx, email, from_agent)
 
     @dispatch_tool(mcp)
     def cognition_set_env_fact(
@@ -3982,7 +4114,7 @@ def register_cognition_tools(mcp) -> None:
         # uses (not results:[] — an infra-shaped empty result must never look
         # like "no history"). Both the home and multi-project paths share this
         # one check since it runs before the branch.
-        _, nt_err = _parse_node_type(node_type)
+        _, nt_err = _parse_searchable_node_type(node_type)
         if nt_err:
             return nt_err
 

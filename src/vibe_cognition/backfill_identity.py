@@ -108,18 +108,15 @@ def eligibility(node: dict[str, Any], *, recompute_backfilled: bool) -> tuple[bo
 
 
 def roster_suggestions(storage: CognitionStorage) -> dict[str, str]:
-    """casefolded author-name -> email, for names that match EXACTLY ONE
-    registered person (name match, casefolded). A name shared by two
-    registered persons is a collision -- unmappable by this source, falls
-    through (never picked arbitrarily)."""
+    """casefolded author-name -> email, for names that match EXACTLY ONE person on
+    the roster. A name shared by two people is a collision -- unmappable by this
+    source, falls through (never picked arbitrarily)."""
     by_name: dict[str, set[str]] = {}
-    for n in storage.get_nodes_by_type(CognitionNodeType.PERSON):
-        person = (n.get("metadata") or {}).get("person") or {}
-        name = (person.get("name") or "").strip()
-        email = (person.get("email") or "").strip()
-        if not name or not email:
+    for person in storage.roster().all():
+        name = person.name.strip()
+        if not name or not person.email:
             continue
-        by_name.setdefault(name.casefold(), set()).add(email)
+        by_name.setdefault(name.casefold(), set()).add(person.email)
     return {name: next(iter(emails)) for name, emails in by_name.items() if len(emails) == 1}
 
 
@@ -438,10 +435,7 @@ class BackfillPlan:
         return len(current), len(post)
 
     def registered_person_count(self) -> int:
-        return len({
-            (n.get("metadata", {}).get("person", {}).get("email") or "").casefold()
-            for n in self.storage.get_nodes_by_type(CognitionNodeType.PERSON)
-        } - {""})
+        return len(self.storage.roster().emails())
 
 
 def render_report(plan: BackfillPlan) -> str:

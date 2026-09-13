@@ -17,7 +17,10 @@ from typing import Any, cast
 import pytest
 
 from vibe_cognition.cognition import CognitionStorage
-from vibe_cognition.cognition.identity import identity_write_path
+from vibe_cognition.cognition.identity import (
+    identity_write_path,
+    write_confirmed_identity,
+)
 from vibe_cognition.embeddings import ChromaDBStorage, EmbeddingGenerator
 from vibe_cognition.tools.project_registry import build_registry
 
@@ -147,10 +150,15 @@ class GraphIdentity:
         self._enabled = True
         self._dirs: list[Path] = []
 
-    def acting_as(self, name, email, **profile):
-        """Act as this identity: confirmed, with a complete profile."""
+    def acting_as(self, name, email, seed=True, **profile):
+        """Act as this identity, confirmed, with a complete profile.
+
+        `seed=False` confirms the checkout but writes NO profile -- for testing the
+        person whose profile someone else authored, or who has not answered yet.
+        """
         self._identity = {"name": name, "email": email}
         self._profile.update(profile)
+        self._enabled = seed
         self._monkeypatch.setattr(
             "vibe_cognition.tools.cognition_tools._acting_identity",
             lambda cognition_dir: {
@@ -158,7 +166,9 @@ class GraphIdentity:
             },
         )
         for d in self._dirs:
-            self._write(d)
+            write_confirmed_identity(d, name, email)
+            if seed:
+                self._write(d)
 
     def unresolvable(self, name="unknown"):
         """No email resolves at all -- the case the write gate exists to refuse.
@@ -188,7 +198,6 @@ class GraphIdentity:
             self._write(Path(cognition_dir))
 
     def _write(self, cognition_dir):
-        from vibe_cognition.cognition.identity import write_confirmed_identity
         from vibe_cognition.cognition.profiles import ProfileRegistry
 
         name, email = self._identity["name"], self._identity["email"]
