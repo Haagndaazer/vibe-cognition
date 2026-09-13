@@ -22,6 +22,7 @@ from ..cognition import (
     delete_cognition_node,
 )
 from ..cognition.documents import documents_dir, freshness_by_rehash, text_sidecar_path
+from ..cognition.people_facts import fold_email
 from ..cognition.queries import conflict_flags, get_superseded_chain
 from ..cognition.task_meta import _task_claimed_at  # WP-TC16: relocated (was cognition_tools)
 from ..embeddings import adaptive_vector_search
@@ -687,7 +688,7 @@ def _stamped_identity(node: dict[str, Any]) -> tuple[str, str | None]:
     for key in ("recorded_by", "created_by"):
         stamp = meta.get(key)
         if isinstance(stamp, dict) and stamp.get("email"):
-            return stamp["email"].casefold(), stamp.get("name")
+            return fold_email(stamp["email"]), stamp.get("name")
     return "", None
 
 
@@ -742,7 +743,7 @@ def _person_activity(storage: CognitionStorage, email: str) -> dict[str, Any]:
     the creator-stamp match node_counts/created_tasks use — a task created by
     one person and claimed by another must show under the CLAIMANT's
     claimed_tasks (see the loop body for why a naive single gate breaks this)."""
-    email = (email or "").casefold()
+    email = fold_email(email)
     empty = {"node_counts": {}, "last_active": None, "claimed_tasks": [], "created_tasks": []}
     if not email:
         return empty
@@ -767,7 +768,7 @@ def _person_activity(storage: CognitionStorage, email: str) -> dict[str, Any]:
             if (
                 meta.get("status", "open") == "in_progress"
                 and isinstance(claimed_by, dict)
-                and (claimed_by.get("email") or "").casefold() == email
+                and fold_email(claimed_by.get("email") or "") == email
             ):
                 claimed_tasks.append({"id": n["id"], "summary": n.get("summary")})
 

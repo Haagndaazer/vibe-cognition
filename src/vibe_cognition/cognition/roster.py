@@ -78,12 +78,18 @@ class Roster:
     """Snapshot of the project roster, profiles first, legacy nodes as fallback."""
 
     people: dict[str, Person] = field(default_factory=dict)
+    #: email -> legacy person-node id, for EVERY person node, including emails
+    #: that already have a profile. Callers need to know a node still exists even
+    #: when the profile is what they are reading — removing someone, for one.
+    legacy_nodes: dict[str, str] = field(default_factory=dict)
 
     # ── Construction ────────────────────────────────────────────────────
 
     @classmethod
     def load(cls, storage: Any) -> "Roster":
         people: dict[str, Person] = {}
+        legacy_nodes: dict[str, str] = {}
+        removed = storage.removed_profile_emails()
         for profile in storage.all_profiles():
             email = _fold(profile.get("email"))
             if not email:
@@ -104,10 +110,14 @@ class Roster:
         for node in storage.get_nodes_by_type(CognitionNodeType.PERSON):
             info = (node.get("metadata") or {}).get("person") or {}
             email = _fold(info.get("email"))
+            if email:
+                legacy_nodes.setdefault(email, str(node.get("id") or ""))
             # A profile always wins: it is the newer, committed answer, and the
             # migration writes one per node. Duplicate nodes sharing an email
             # (a journal-replay shape) collapse to the first seen, as before.
-            if not email or email in people:
+            # A tombstoned email is skipped outright, or removing someone who
+            # predates profiles would be undone by this very loop.
+            if not email or email in people or email in removed:
                 continue
             manager = _fold(info.get("reports_to_email"))
             people[email] = Person(
@@ -121,7 +131,7 @@ class Roster:
                 node_id=node.get("id"),
                 answered_reports_to=bool(manager),
             )
-        return cls(people)
+        return cls(people, legacy_nodes)
 
     # ── Lookup ──────────────────────────────────────────────────────────
 
@@ -215,3 +225,8 @@ class Roster:
 
     def is_registered(self, email: str) -> bool:
         return self.get(email) is not None
+
+    def legacy_node_id(self, email: str) -> str | None:
+        """The person node still backing this email, if one exists. Present even
+        when a profile shadows it — that is exactly when it is easy to forget."""
+        return self.legacy_nodes.get(_fold(email)) or None

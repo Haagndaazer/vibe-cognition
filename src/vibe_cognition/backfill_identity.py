@@ -37,6 +37,7 @@ from typing import Any
 
 from .cognition.local_paths import write_path as local_write_path
 from .cognition.models import CognitionNodeType
+from .cognition.people_facts import fold_email
 from .cognition.storage import CognitionStorage
 
 # ── Node-type scope (design doc "NODE-TYPE SCOPE") ───────────────────────────
@@ -378,7 +379,7 @@ class BackfillPlan:
             if hit is not None:
                 email, source = hit
                 suggestion = self.suggestion_for(key)
-                if suggestion is None or suggestion[0].casefold() != email.casefold():
+                if suggestion is None or fold_email(suggestion[0]) != fold_email(email):
                     source = "manual"
                 self.to_write.append((node, email, source))
 
@@ -427,11 +428,11 @@ class BackfillPlan:
                 continue
             stamp = (node.get("metadata") or {}).get(stamp_key)
             if isinstance(stamp, dict) and stamp.get("email"):
-                current.add(stamp["email"].casefold())
+                current.add(fold_email(stamp["email"]))
         post = set(current)
         for _node, email, _source in self.to_write:
             if email:
-                post.add(email.casefold())
+                post.add(fold_email(email))
         return len(current), len(post)
 
     def registered_person_count(self) -> int:

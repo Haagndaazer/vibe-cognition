@@ -184,33 +184,67 @@ def test_removing_your_own_profile_is_refused(
     assert mock_mcp.tools["cognition_list_env_facts"](ctx)["registered"] is True
 
 
-def test_removing_a_legacy_node_person_refuses_instead_of_claiming_success(
+def test_removing_someone_with_a_legacy_node_actually_removes_them(
     build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch
 ):
-    """Clearing profile fields does nothing for a roster row that comes from a
-    legacy person NODE — the node fallback rebuilds it identically on the next
-    read. Reporting removed=True with six cleared fields would be a confident lie,
-    and the caller would move on believing the person was gone."""
+    """Clearing the profile fields is not enough on its own.
+
+    An empty profile is indistinguishable from one that was never written, so the
+    legacy person node was folded straight back onto the roster — in the SAME
+    session — and the next startup's migration then re-created the profile from
+    that node's stale values and announced it as a fresh migration. Every
+    pre-v0.38 teammate is in this dual state by design, because phase 2 of the
+    migration is deliberately manual. A removal tombstone is what makes it stick.
+    """
     from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
 
     lc, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
-    lc["cognition_storage"].add_node(CognitionNode(
+    storage = lc["cognition_storage"]
+    storage.add_node(CognitionNode(
         id="legacyperson", type=CognitionNodeType.PERSON, summary="Old — sre",
         detail="", context=[], references=[], timestamp="2026-01-01T00:00:00+00:00",
         author="Old",
         metadata={"person": {"email": "old@example.com", "name": "Old", "role": "sre",
                              "seniority": "senior", "reports_to_email": ""}},
     ))
+    from vibe_cognition.cognition.person_migration import migrate_person_nodes
+    migrate_person_nodes(storage)
+    assert storage.roster().get("old@example.com") is not None
 
     result = mock_mcp.tools["cognition_remove_person"](ctx, email="old@example.com")
-    assert result["removed"] is False
-    assert result["cleared_fields"] == []
-    assert "cognition_remove_node" in result["error"]
-    assert "legacyperson" in result["error"]
-    # Still there, exactly as before.
-    assert mock_mcp.tools["cognition_get_person"](ctx, email_or_id="old@example.com")[
-        "seniority"
-    ] == "senior"
+    assert result["removed"] is True, result
+    # Gone in this session...
+    assert "error" in mock_mcp.tools["cognition_get_person"](ctx, email_or_id="old@example.com")
+    # ...and the node that still exists is named rather than left as a surprise.
+    assert result["legacy_node_id"] == "legacyperson"
+    assert "cognition_remove_node" in result["warning_legacy_node"]
+    # ...and a re-run of the migration does not put them back.
+    assert migrate_person_nodes(storage)["migrated"] == []
+    assert storage.roster().get("old@example.com") is None
+
+
+def test_a_removed_person_can_be_registered_again(
+    build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch
+):
+    """A tombstone must not be a life sentence: people come back, and the append-only
+    trail should carry straight on rather than needing a new address."""
+    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
+    mock_mcp.tools["cognition_register_person"](
+        ctx, name="Boomerang", role="eng", seniority="mid",
+        email="boom@example.com", reports_to="nobody",
+    )
+    mock_mcp.tools["cognition_remove_person"](ctx, email="boom@example.com")
+    assert "error" in mock_mcp.tools["cognition_get_person"](ctx, email_or_id="boom@example.com")
+
+    again = mock_mcp.tools["cognition_register_person"](
+        ctx, name="Boomerang", role="sre", seniority="senior",
+        email="boom@example.com", reports_to="nobody",
+    )
+    assert "error" not in again, again
+    assert again["role"] == "sre"
+    assert mock_mcp.tools["cognition_get_person"](
+        ctx, email_or_id="boom@example.com",
+    )["seniority"] == "senior"
 
 
 def test_removing_a_manager_names_the_people_left_dangling(
@@ -236,6 +270,25 @@ def test_removing_a_manager_names_the_people_left_dangling(
     rep = mock_mcp.tools["cognition_get_person"](ctx, email_or_id="rep@example.com")
     assert rep["reports_to"] == "boss@example.com"
     assert rep["reports_to_registered"] is False
+
+
+def test_env_facts_key_identity_the_same_way_profiles_do(
+    build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch
+):
+    """people_facts kept its own `.casefold()` after the identity key moved to
+    fold_email, so two addresses that fold_email keeps distinct shared ONE facts
+    file, one in-memory bucket and one machine cap — the same merge bug, one
+    module over."""
+    lc, _ = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
+    storage = lc["cognition_storage"]
+    a, b = "gross@example.com", "gro\u00df@example.com"
+
+    storage.set_env_fact(a, "box", "os", "linux", dict(SELF), False)
+    storage.set_env_fact(b, "box", "os", "windows", dict(SELF), False)
+
+    assert storage.get_env_facts(a) == {"box": {"os": "linux"}}
+    assert storage.get_env_facts(b) == {"box": {"os": "windows"}}
+    assert _person_file(tmp_path, a) != _person_file(tmp_path, b)
 
 
 # ── disclosure contract ─────────────────────────────────────────────────────

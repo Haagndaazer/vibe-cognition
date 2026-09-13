@@ -240,6 +240,15 @@ class CognitionStorage:
         with self._synced():
             return self._profiles.all_emails()
 
+    def removed_profile_emails(self) -> set[str]:
+        """Emails deliberately taken off the roster — tombstoned, not merely empty."""
+        with self._synced():
+            return self._profiles.removed_emails()
+
+    def mark_profile_removed(self, email: str, by: dict[str, str]) -> dict[str, Any]:
+        with self._synced():
+            return self._profiles.mark_removed(email, by)
+
     def profile_missing_required(self, email: str) -> list[str]:
         """Which required fields a profile still lacks — the gate's refusal names these."""
         with self._synced():

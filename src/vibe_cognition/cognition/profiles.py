@@ -69,6 +69,12 @@ class ProfileRegistry(JsonlDirRegistry):
         self._history: dict[str, list[dict[str, Any]]] = {}
         # email -> field -> winning record's `at`, so folding is order-independent
         self._stamps: dict[str, dict[str, str]] = {}
+        # email -> `at` of a removal tombstone. Clearing every field is not enough
+        # to remove someone: an absent profile is indistinguishable from one that
+        # was never written, so the legacy person node would be folded back in and
+        # the migration would re-create the profile from it. The tombstone says
+        # "deliberately gone" and outranks both.
+        self._removed: dict[str, str] = {}
 
     # ── Engine hooks ────────────────────────────────────────────────────
 
@@ -76,6 +82,13 @@ class ProfileRegistry(JsonlDirRegistry):
         action = entry.get("action")
         email = _casefold(str(entry.get("email") or ""))
         if not email:
+            return
+        if action == "profile_removed":
+            fs.keys.add(email)
+            at = str(entry.get("at") or "")
+            if at >= self._removed.get(email, ""):
+                self._removed[email] = at
+            self._history.setdefault(email, []).append(entry)
             return
         if action == "profile_history_legacy":
             # Readable, never folded: it carries a migrated person node's old
@@ -126,6 +139,7 @@ class ProfileRegistry(JsonlDirRegistry):
             self._profiles.pop(email, None)
             self._history.pop(email, None)
             self._stamps.pop(email, None)
+            self._removed.pop(email, None)
         fs.keys = set()
         for other in self._files.values():
             if other is fs or not (other.keys & affected):
@@ -137,6 +151,7 @@ class ProfileRegistry(JsonlDirRegistry):
         self._profiles.clear()
         self._history.clear()
         self._stamps.clear()
+        self._removed.clear()
 
     # ── Read surface ────────────────────────────────────────────────────
 
@@ -150,6 +165,23 @@ class ProfileRegistry(JsonlDirRegistry):
 
     def all_emails(self) -> list[str]:
         return sorted(self._profiles)
+
+    def is_removed(self, email: str) -> bool:
+        """Whether this person was deliberately taken off the roster.
+
+        A tombstone only counts while it is NEWER than every field on the profile,
+        so re-registering someone who left simply works: their new records outrank
+        it and they come back, with the whole trail intact.
+        """
+        folded = _casefold(email)
+        tombstone = self._removed.get(folded)
+        if not tombstone:
+            return False
+        stamps = self._stamps.get(folded) or {}
+        return tombstone >= max(stamps.values(), default="")
+
+    def removed_emails(self) -> set[str]:
+        return {e for e in self._removed if self.is_removed(e)}
 
     def all_profiles(self) -> list[dict[str, Any]]:
         return [self.get(e) or {} for e in self.all_emails()]
@@ -189,6 +221,12 @@ class ProfileRegistry(JsonlDirRegistry):
         consulted when folding, so every machine still agrees — while making
         "the most recent deliberate write wins" actually true. The bump is
         reported so the skew is visible rather than inherited in silence.
+
+        Residual, disclosed not fixed: a correction written on a machine that has
+        not yet pulled the future-dated record cannot know to bump past it, so the
+        poison still wins until someone writes again after seeing it. Closing that
+        would mean consulting a wall clock while folding, which is exactly what
+        makes the fold disagree between machines.
         """
         winner = (self._stamps.get(email) or {}).get(field, "")
         if not winner or now > winner:
@@ -245,6 +283,30 @@ class ProfileRegistry(JsonlDirRegistry):
                 "future edit to those fields inherits the skew."
             )
         return result
+
+    def mark_removed(self, email: str, by: dict[str, str]) -> dict[str, Any]:
+        """Tombstone this person: deliberately off the roster.
+
+        Written alongside the field unsets, never instead of them — the unsets are
+        what empties the profile, and this is what stops a legacy person node (or a
+        re-run of the migration that reads it) from putting them straight back.
+        """
+        folded = _casefold(email)
+        if not folded:
+            return {"error": "email must not be blank"}
+        now = datetime.now(UTC).isoformat()
+        stamps = self._stamps.get(folded) or {}
+        newest = max([*stamps.values(), self._removed.get(folded, "")], default="")
+        at = now
+        if newest and now <= newest:
+            try:
+                at = (datetime.fromisoformat(newest) + timedelta(microseconds=1)).isoformat()
+            except ValueError:
+                at = now
+        self._append(folded, {
+            "action": "profile_removed", "email": folded, "by": by, "at": at,
+        })
+        return {"removed": folded, "at": at}
 
     def unset_field(self, email: str, field: str, by: dict[str, str]) -> dict[str, Any]:
         folded = _casefold(email)

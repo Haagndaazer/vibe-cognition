@@ -103,6 +103,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   profile write failed after the pointer was written.
 - The tools and the dashboard had each derived "said nobody" vs "never asked"
   separately and drifted; it is one property on `Person` now.
+- **A wrong clock on one machine could permanently lock a profile field.** The
+  fold is last-write-wins by timestamp and these files merge across machines, so a
+  record stamped in the future was unbeatable: every later correction was
+  appended, reported as written, and silently lost the fold. A write that would
+  lose is now stamped past the record it must beat, and the skew is reported as
+  `clock_skew` rather than inherited in silence.
+- **`str.casefold()` merged two distinct people.** It folds `ß` to `ss` and
+  ligatures to their letters, so `groß@x.com` and `gross@x.com` — both valid,
+  deliverable addresses — shared one profile, one env-fact file and one write-gate
+  state, each silently overwriting the other. Identity now folds through one
+  `fold_email` (NFC + lower), which still folds ASCII case.
+- **`cognition_remove_person` did not durably remove anyone who predates this
+  release.** Clearing profile fields leaves a profile indistinguishable from one
+  that was never written, so the legacy person node was folded back onto the
+  roster in the same session and the next startup re-created the profile from that
+  node's stale values. Removal now writes a tombstone; re-registering someone
+  later still just works.
+- The migration was gated on a version flag, which made a person node arriving
+  from a teammate still on an older build invisible to migration forever. It is
+  content-checked now.
+- `cognition_begin_curation` is identity-gated, so a curation run on an unclaimed
+  checkout stops before spawning analyzers instead of after burning their tokens.
+- `vibe-cognition-remap-identity` now says plainly that it does NOT move your
+  profile, and that every write stays refused until you re-run
+  `cognition_set_identity` with all five values under the new address.
 
 ## [0.37.0]
 

@@ -58,7 +58,7 @@ from ..cognition.identity import (
 from ..cognition.people_facts import fold_email
 from ..cognition.prime import SEVERITY_ORDER, _node_email
 from ..cognition.profiles import NO_MANAGER, PROFILE_FIELDS
-from ..cognition.roster import SOURCE_NODE, Person, Roster
+from ..cognition.roster import Person, Roster
 
 # WP-TC16 re-export: keeps tests/test_task.py:32-37's direct
 # `from ...cognition_tools import _task_claimed_at` path valid; the
@@ -2197,7 +2197,7 @@ def _normalize_reports_to(value: str | None) -> str | dict[str, Any] | None:
     """
     if value is None:
         return None
-    folded = value.strip().casefold()
+    folded = fold_email(value)
     if folded == NO_MANAGER:
         return NO_MANAGER
     if not folded or not is_valid_email(value):
@@ -2663,30 +2663,18 @@ def _remove_person(ctx: Context, email: str, from_agent: bool = True) -> dict[st
             )
         }
 
-    if person.source == SOURCE_NODE:
-        # Clearing profile fields would do nothing here: the roster row comes
-        # from a legacy person node, and the node fallback rebuilds it
-        # identically on the next read. Reporting removed=True with six cleared
-        # fields would be a confident lie.
-        return {
-            "removed": False,
-            "email": person.email,
-            "name": person.name,
-            "cleared_fields": [],
-            "error": (
-                f"{person.email} is still a legacy person node ({person.node_id}) "
-                "with no profile, so there are no profile fields to clear and the "
-                "roster would be unchanged. Remove the node itself with "
-                f"cognition_remove_node(node_id='{person.node_id}')."
-            ),
-        }
-
     reports = [r.email for r in roster.direct_reports(person.email)]
     try:
         cleared = [
             field for field in PROFILE_FIELDS
             if "error" not in storage.unset_profile_field(person.email, field, by)
         ]
+        # Clearing the fields is not enough on its own. An empty profile is
+        # indistinguishable from one that was never written, so a legacy person
+        # node would be folded straight back onto the roster -- and the migration
+        # would then re-create the profile from that node's stale values. The
+        # tombstone is what makes the removal durable.
+        storage.mark_profile_removed(person.email, by)
     except OSError as exc:
         return {"error": f"could not write to .cognition/people/: {exc}"}
     result: dict[str, Any] = {
@@ -2697,6 +2685,14 @@ def _remove_person(ctx: Context, email: str, from_agent: bool = True) -> dict[st
         "orphaned_reports": reports,
         "from_agent": from_agent,
     }
+    if node_id := roster.legacy_node_id(person.email):
+        result["legacy_node_id"] = node_id
+        result["warning_legacy_node"] = (
+            f"a legacy person node ({node_id}) for this email is still in the "
+            "graph. They are off the roster and will stay off, but the node itself "
+            "still shows in graph listings and still has an embedding — remove it "
+            f"with cognition_remove_node(node_id='{node_id}')."
+        )
     if reports:
         result["warning"] = (
             f"{person.name or person.email} was the manager of "
@@ -3312,7 +3308,7 @@ def register_cognition_tools(mcp) -> None:
                 )
             }
         if reports_to is not None:
-            folded_mgr = reports_to.strip().casefold()
+            folded_mgr = fold_email(reports_to)
             if folded_mgr != NO_MANAGER and not is_valid_email(reports_to):
                 return {
                     "error": (
@@ -3336,7 +3332,7 @@ def register_cognition_tools(mcp) -> None:
         if seniority is not None:
             fields["seniority"] = seniority.strip().casefold()
         if reports_to is not None:
-            fields["reports_to"] = reports_to.strip().casefold()
+            fields["reports_to"] = fold_email(reports_to)
         by = {"name": written["name"], "email": folded}
         try:
             profile_result = storage.set_profile_fields(folded, fields, by)
@@ -3568,10 +3564,12 @@ def register_cognition_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Take someone off the project roster — they left the team.
 
-        Clears every field of their committed profile. Profiles are append-only,
-        so the record trail of who they were, and who changed what, stays intact
-        and still merges cleanly; they simply stop appearing on the roster, in
-        anyone's reporting chain, and in search ranking.
+        Clears every field of their committed profile and records a removal
+        tombstone. Profiles are append-only, so the record trail of who they were,
+        and who changed what, stays intact and still merges cleanly; they simply
+        stop appearing on the roster, in anyone's reporting chain, and in search
+        ranking. Registering them again later just works — their new records
+        outrank the tombstone and the whole history is still there.
 
         NOT a cascade, deliberately: their environment facts and everything they
         authored are untouched. Attribution is history — rewriting it because
@@ -3596,12 +3594,13 @@ def register_cognition_tools(mcp) -> None:
 
         Returns:
             {"removed": true, "email", "name", "cleared_fields", "orphaned_reports",
-            "from_agent"}, plus `warning` when they managed someone.
-            {"error": ...} when no such person, when the email is your own, when
-            `.cognition/people/` is not writable, or when they are still a legacy
-            person node with no profile — there is nothing to clear in that case
-            and the roster would be unchanged, so it returns `removed: false` and
-            names `cognition_remove_node` instead of claiming a removal.
+            "from_agent"}, plus `warning` when they managed someone, and
+            `legacy_node_id` + `warning_legacy_node` when a pre-v0.38 person node
+            for them is still in the graph — they are off the roster either way,
+            but that node still shows in graph listings and still has an embedding,
+            so it should be removed with `cognition_remove_node`.
+            {"error": ...} when no such person, when the email is your own, or when
+            `.cognition/people/` is not writable.
             `{"identity_required": true, ...}` when your own identity is
             unconfirmed or your profile incomplete.
         """

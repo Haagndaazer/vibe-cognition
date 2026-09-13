@@ -17,6 +17,7 @@ from .identity import identity_suggestions, resolve_identity
 from .local_paths import read_path as local_read_path
 from .local_paths import write_path as local_write_path
 from .models import CognitionEdgeType, CognitionNodeType
+from .people_facts import fold_email
 from .person_migration import format_migration_announce
 from .readme import ONBOARDING_BLOCK
 from .roster import Person
@@ -179,10 +180,10 @@ def _node_email(node: dict) -> str:
     meta = node.get("metadata", {})
     recorded = meta.get("recorded_by")
     if isinstance(recorded, dict) and recorded.get("email"):
-        return recorded["email"].casefold()
+        return fold_email(recorded["email"])
     created = meta.get("created_by")
     if isinstance(created, dict) and created.get("email"):
-        return created["email"].casefold()
+        return fold_email(created["email"])
     return ""
 
 
@@ -239,16 +240,16 @@ def _task_matches_email(node: dict, email: str) -> bool:
     trust-based -- see cognition_update_task), never the free-text `owner`. Matched
     case-insensitively (casefold, not lower) on all sides -- `email` is already
     casefolded by the single normalization point in `generate_prime`, but this
-    function casefolds the stamp (and re-casefolds `email`) so it's correct
-    called in isolation too."""
+    function folds the stamp (and re-folds `email`) so it's correct called in
+    isolation too."""
     meta = node.get("metadata", {})
-    email = email.casefold()
+    email = fold_email(email)
     for key in ("created_by", "claimed_by"):
         stamp = meta.get(key)
-        if isinstance(stamp, dict) and stamp.get("email") and stamp["email"].casefold() == email:
+        if isinstance(stamp, dict) and stamp.get("email") and fold_email(stamp["email"]) == email:
             return True
     assigned_to = meta.get("assigned_to")
-    return bool(isinstance(assigned_to, str) and assigned_to and assigned_to.casefold() == email)
+    return bool(isinstance(assigned_to, str) and assigned_to and fold_email(assigned_to) == email)
 
 
 def _open_tasks(storage: CognitionStorage) -> list[dict]:
@@ -319,7 +320,7 @@ def _format_your_activity(
         (CognitionNodeType.DECISION, config.prime_your_decision_limit),
         (CognitionNodeType.DISCOVERY, config.prime_your_discovery_limit),
     )
-    current_email = current_email.casefold()
+    current_email = fold_email(current_email)
     lines: list[str] = []
     for node_type, limit in groups:
         mine = [n for n in storage.get_nodes_by_type(node_type) if _node_email(n) == current_email]
@@ -448,7 +449,7 @@ def _onboard_declined_emails(cognition_dir: Path) -> set[str]:
         raw = path.read_text(encoding="utf-8")
     except OSError:
         return set()
-    return {line.strip().casefold() for line in raw.splitlines() if line.strip()}
+    return {fold_email(line) for line in raw.splitlines() if line.strip()}
 
 
 def _has_person_node(storage: CognitionStorage, email: str) -> bool:
@@ -562,7 +563,7 @@ def _format_your_team(
         # casefolded at write time (unlike person emails) -- casefold here at
         # read time, matching the _task_matches_email/_node_email precedent,
         # so a mixed-case git config still matches the casefolded report_names keys.
-        claimant_email = raw_claimant_email.casefold() if raw_claimant_email else None
+        claimant_email = fold_email(raw_claimant_email) if raw_claimant_email else None
         if not claimant_email or claimant_email not in report_names:
             continue
         status = meta.get("status", "open")
@@ -667,7 +668,7 @@ def _profile_change_alert(storage: CognitionStorage, current_email: str) -> str:
         field = str(record.get("field") or "")
         if not field:
             continue
-        author = str((record.get("by") or {}).get("email") or "").casefold()
+        author = fold_email(str((record.get("by") or {}).get("email") or ""))
         at = str(record.get("at") or "")
         value = record.get("value") if record.get("action") == "profile_set" else None
         # No author means it cannot be shown to be yours: a hand-edited or
@@ -709,7 +710,7 @@ def _last_seen_for(cognition_dir: Path, email: str) -> str | None:
     onboard-declined OSError->empty-set model, extended to JSONDecodeError).
     None means "first run or corrupted", NEVER "no digest" -- the caller
     falls back to a capped lookback window instead."""
-    email = (email or "").casefold()
+    email = fold_email(email)
     if not email:
         return None
     path = local_read_path(cognition_dir, LAST_SEEN_FILENAME)
@@ -749,7 +750,7 @@ def _stamp_last_seen(cognition_dir: Path, email: str) -> None:
     never leaves torn JSON, and the whole body is wrapped in
     suppress(OSError) -- a read-only filesystem must never fail the hook.
     """
-    email = (email or "").casefold()
+    email = fold_email(email)
     if not email:
         return
     lock_path = cognition_dir / f"{LAST_SEEN_FILENAME}.lock"
@@ -974,7 +975,7 @@ def generate_prime(
         config = PrimeConfig()
 
     maxlen = config.prime_summary_maxlen
-    current_email = (current_email or "").casefold()
+    current_email = fold_email(current_email or "")
     personalize = _should_personalize(storage, config, current_email)
 
     # WP-TC7: pinned FIRST section, before Active Constraints. The profile-change

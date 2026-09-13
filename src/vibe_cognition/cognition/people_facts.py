@@ -144,7 +144,7 @@ class PeopleFactsRegistry(JsonlDirRegistry):
 
     def facts_for(self, email: str) -> dict[str, dict[str, Any]]:
         """Deep copy of one identity's facts (machine -> key -> value)."""
-        folded = (email or "").strip().casefold()
+        folded = fold_email(email)
         machines = self._facts.get(folded, {})
         return {m: dict(kv) for m, kv in machines.items()}
 
@@ -279,7 +279,7 @@ class PeopleFactsRegistry(JsonlDirRegistry):
 
     def _fold_entry(self, fs: FileState, entry: dict[str, Any]) -> None:
         action = entry.get("action")
-        email = str(entry.get("email") or "").casefold()
+        email = fold_email(str(entry.get("email") or ""))
         if not email or action not in ("fact_set", "fact_delete", "fact_clear"):
             return
         fs.keys.add(email)
@@ -337,7 +337,7 @@ class PeopleFactsRegistry(JsonlDirRegistry):
 
     @staticmethod
     def _require_email(email: str) -> str:
-        folded = (email or "").strip().casefold()
+        folded = fold_email(email)
         if not folded:
             raise ValueError("email must be non-empty (server-resolved identity)")
         return folded

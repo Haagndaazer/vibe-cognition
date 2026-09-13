@@ -63,7 +63,7 @@ def _fields_from_node(node: dict[str, Any]) -> tuple[str, dict[str, Any]] | None
     seniority = str(info.get("seniority") or "").strip().casefold()
     if seniority in SENIORITY_LEVELS:
         fields["seniority"] = seniority
-    manager = str(info.get("reports_to_email") or "").strip().casefold()
+    manager = fold_email(str(info.get("reports_to_email") or ""))
     # "" meant top-of-chain on a node. Carried across verbatim it would read as
     # "never answered" and hold the gate closed on every migrated solo owner.
     fields["reports_to"] = manager or NO_MANAGER
@@ -87,7 +87,9 @@ def migrate_person_nodes(storage: Any) -> dict[str, Any]:
         return report
 
     try:
-        existing = set(storage.profile_emails())
+        # A tombstoned email counts as handled: someone was deliberately removed,
+        # and their old person node must not put them back on the next startup.
+        existing = set(storage.profile_emails()) | set(storage.removed_profile_emails())
     except Exception as exc:  # pragma: no cover - defensive
         report["errors"].append(f"cannot read profiles: {exc}")
         return report
@@ -116,11 +118,13 @@ def migrate_person_nodes(storage: Any) -> dict[str, Any]:
         existing.add(email)
         report["migrated"].append(email)
 
-    _carry_history(storage, report["migrated"], nodes)
+    _carry_history(storage, report["migrated"], nodes, report)
     return report
 
 
-def _carry_history(storage: Any, migrated: list[str], nodes: list[dict[str, Any]]) -> None:
+def _carry_history(
+    storage: Any, migrated: list[str], nodes: list[dict[str, Any]], report: dict[str, Any]
+) -> None:
     """Copy each migrated node's profile_history across as a record.
 
     The old shape is `{changed: {field: {from, to}}, at, by}` — one entry per
@@ -144,7 +148,11 @@ def _carry_history(storage: Any, migrated: list[str], nodes: list[dict[str, Any]
         try:
             storage.append_legacy_profile_history(email, entries, node.get("id") or "")
         except Exception as exc:
-            logger.debug("person-migration: cannot carry history for %s: %s", email, exc)
+            # Reported, not just debug-logged: the profile now exists, so the next
+            # run treats this email as done and never retries. Once the source node
+            # is removed in phase 2 the loss is permanent, and a silent permanent
+            # loss of someone's audit trail is not something to swallow.
+            report["errors"].append(f"{email}: history not carried across: {exc}")
 
 
 def ensure_person_migration(storage: Any) -> dict[str, Any] | None:

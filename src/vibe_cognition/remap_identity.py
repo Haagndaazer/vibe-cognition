@@ -19,9 +19,23 @@ change to the same node between the read and the write has that change silently
 overwritten by the stale copy. The window is small but the loss is not limited to
 identity fields -- any unrelated metadata change on that node goes with it.
 
+THIS DOES NOT MOVE YOUR PROFILE, AND YOU WILL BE LOCKED OUT UNTIL YOU RE-CONFIRM.
+Your roster profile lives in .cognition/people/<slug>.profile.jsonl, keyed by
+email, and is what the write gate reads. Remapping attribution to a new address
+leaves the profile under the OLD one, so the new address has no profile and every
+write is refused until you run:
+
+    cognition_set_identity(name=..., email=<new>, role=..., seniority=...,
+                           reports_to=...)
+
+All five values, because nothing carries across. The old profile stays where it
+is -- profiles are append-only and nothing purges it -- so take yourself off the
+roster under the old address with cognition_remove_person(<old>) once the new one
+is confirmed, or the team list shows you twice.
+
 KNOWN GAP: environment facts in .cognition/people/<slug>.jsonl are keyed by email
-and are NOT remapped -- the old address's file is left in place. Re-record those
-facts under the new identity if you rely on them.
+and are NOT remapped either -- the old address's file is left in place. Re-record
+those facts under the new identity if you rely on them.
 
 History is never rewritten. Each change is an ordinary `update_node` event
 appended to the journal, so replay stays append-only and idempotent and the
@@ -38,6 +52,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .cognition.people_facts import fold_email
 from .cognition.storage import CognitionStorage
 
 # Metadata keys holding an identity dict of {"name", "email"}.
@@ -47,7 +62,7 @@ _IDENTITY_LIST_KEYS = ("transitions", "assignments", "profile_history")
 
 
 def _casefold(email: str) -> str:
-    return (email or "").strip().casefold()
+    return fold_email(email)
 
 
 def _identity_matches(value: Any, old: str) -> bool:
@@ -200,6 +215,15 @@ def main(argv: list[str] | None = None) -> int:
         print("Journal changed during the run and nothing was written; re-run.", file=sys.stderr)
         return 1
     print(f"\nRemapped {changed} node(s). Original addresses preserved as remapped_from.")
+    print(
+        f"\nYOUR PROFILE DID NOT MOVE. The roster profile for {old} stays where it is,\n"
+        f"and {new} has none -- so every write will be REFUSED until you run:\n"
+        f"\n    cognition_set_identity(name=..., email={new}, role=...,\n"
+        f"                           seniority=..., reports_to=...)\n"
+        f"\nAll five values: nothing carries across. Then take the old address off the\n"
+        f"roster with cognition_remove_person({old}), or the team list shows you twice.\n"
+        f"Environment facts under {old} are not remapped either."
+    )
     return 0
 
 
