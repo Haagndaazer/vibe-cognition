@@ -482,16 +482,36 @@ Provenance is verified for **tasks and deletions**, not for other node authorshi
   pattern/etc. node as proof of who actually wrote it the way you can for a task's
   `created_by` or a deletion's `removed_by`.
 
-### Team semantics — person nodes and `from_agent`
+### Team semantics — the roster and `from_agent`
 
-**Person nodes** (`cognition_register_person`) model your team's HUMANS — name, role,
-seniority (`owner | senior | mid | junior`), and a direct `reports_to_email` — so the
-graph knows *about* the people behind its provenance stamps, not just their emails.
-Agent identity is never stored here; agents live in teammate-comms. A person node is
-**updated in place** (never supersession-versioned) with an append-only
-`metadata.profile_history` audit trail (`{changed: {field: {from, to}}, at, by}` per
-edit) — so "who changed what, when" is always recoverable even though the current
-profile can be edited by anyone.
+**The roster** (`cognition_register_person`) models your team's HUMANS — name, email,
+role, seniority (`owner | senior | mid | junior`) and `reports_to` — so the graph knows
+*about* the people behind its provenance stamps, not just their emails. Agent identity
+is never stored here; agents live in teammate-comms.
+
+A person is a **committed profile**, not a graph node:
+`.cognition/people/<email>.profile.jsonl`, append-only, one record per field change
+(`{action, field, value, by, at}`), so "who changed what, when" is always recoverable
+even though anyone sharing the graph may edit anyone's profile. Records fold
+last-write-wins **by timestamp**, not by position in the file, because `merge=union`
+does not preserve chronological order and the interleaving depends on which side
+merged — position-ordered folding would let the same two commits produce different
+values on different machines.
+
+`reports_to` is a manager's **email**, or the literal `"nobody"` — valid and the
+expected answer on a solo project. A manager's *name* is rejected: the chain is
+resolved by email, so a name would break it with no error anywhere.
+
+Profiles are deliberately **multi-writer**. A manager can pre-register a teammate with
+their role, seniority and reporting line before that person ever onboards; the person
+then only runs `cognition_set_identity` with their name and email. When someone else
+changes *your* profile, the next session-start digest opens by naming who changed which
+field and what it replaced — seniority first, because it reweights your search results.
+
+`cognition_remove_person` takes someone off the roster when they leave. It clears their
+profile fields and records a removal tombstone; their environment facts and everything
+they authored stay exactly as they are, because attribution is history. Removing
+yourself is refused — it would close the write gate on you.
 
 **`from_agent`** is a provenance bool stamped on every write from `cognition_record`,
 `cognition_add_task`, `cognition_store_document`, `cognition_register_person`, and
@@ -512,7 +532,7 @@ themselves, same as any other claim. Every EFFECTIVE (genuinely different-email)
 assignment, reassignment, or unassignment (`assigned_to_email=""`) appends one entry to
 the append-only `metadata.assignments` audit trail (`{to, at, by}`, `by`
 server-resolved); resubmitting the same email is a no-op. The target need not be a
-registered person node yet — dangling is legal, mirroring `reports_to_email`.
+on the roster yet — dangling is legal, mirroring `reports_to`.
 
 **Claim collisions and reopen warnings.** `cognition_update_task` never blocks a
 teammate from taking action, with one exception: retaking a task someone else is
@@ -554,7 +574,7 @@ basis}`), even neutral (`multiplier == 1.0`) hits — never silent. `basis` is
 but never itself down-weighted), `"agent"` (from_agent stamped `true` — the one
 multiplier guaranteed strictly below every human seniority multiplier, so human input
 always outweighs agent input), `"human:<seniority>"` (stamped + a matching registered
-person node), `"human:unregistered"` (stamped but no matching person node — a known,
+on the roster), `"human:unregistered"` (stamped but not on the roster — a known,
 just-unrostered author), or `"unverified"` (no identity stamp at all). Shipped
 multipliers: `owner`/`senior` 1.0 (no penalty), `mid` 0.95, `junior` 0.9, agent 0.85.
 Applies to
@@ -574,7 +594,7 @@ alone as proof a search was exhaustive. `cognition_get_history` is always exhaus
 stop early at an internal cap.
 
 **Known trust-model limits** (documented, not "fixed" — this is a local trust domain,
-not a security boundary): `reports_to_email` and `seniority` are trust-declared and
+not a security boundary): `reports_to` and `seniority` are trust-declared and
 freely peer-editable — the audit trail is the control, not an ACL, and anyone sharing
 the graph may update anyone's profile. `from_agent` is client-declared and unverifiable
 by the server (like the `author` field on `cognition_record`). `assigned_to` is
@@ -596,18 +616,17 @@ more than one registered person — the second condition catches a team's
 first-onboarded member, where every node so far was written by one person but
 several people are now registered (a solo user who registers only themselves
 stays global either way, byte-identical to the unregistered digest). When
-personalized AND the current identity resolves to a registered person node, the
-block opens with a one-line identity header — `You are registered as {name} —
-{role} ({seniority}), reporting to {manager}.`, degrading field-by-field when
-role/seniority/manager are blank, falling back to the raw email when the manager
-doesn't resolve to a person node — mutually exclusive with the `## New Here?`
-onboarding notice below, by construction (one needs a matching person node, the
-other needs its absence). Full pinned order when personalized: identity header →
+personalized AND the current identity is on the roster, the block opens with a
+one-line identity header — `You are registered as {name} — {role} ({seniority}),
+reporting to {manager}.`, degrading field-by-field when role/seniority/manager are
+blank, falling back to the raw email when the manager is not on the roster —
+mutually exclusive with the `## New Here?` onboarding notice below, by construction
+(one needs the identity on the roster, the other needs its absence). Full pinned order when personalized: identity header →
 `## Your Open Tasks` → `## Team Critical` → `## Your Team` → `## Your Manager's
 Recent Decisions` → `## Since You Were Gone` → `## Your Recent Activity`.
 
-**Role-aware session-start prime.** `reports_to_email` on a person node (a
-REPORTING relationship — distinct from the free-text `person.role` job title) drives
+**Role-aware session-start prime.** `reports_to` on a profile (a
+REPORTING relationship — distinct from the free-text `role` job title) drives
 two personalized sections when it resolves the current session's identity into a
 manager or subordinate relationship: `## Your Team` (manager role — a direct
 report's `in_progress` claim shows the claimant and claim age, `blocked` claims
@@ -626,12 +645,12 @@ Critical → Your Team → Your Manager's Recent Decisions → Since You Were Go
 Your Recent Activity (see "Personalized session-start prime" above). Your own
 claimed tasks are unaffected —
 they already surface under `## Your Open Tasks`, not a new section. Single-manager
-assumption: `reports_to_email` is one string; matrixed/multi-manager orgs are out of
-scope. A user with no person node, no reports either direction, or personalization
+assumption: `reports_to` is one string; matrixed/multi-manager orgs are out of
+scope. A user not on the roster, with no reports either direction, or personalization
 off sees byte-identical output to before this feature existed.
 
 **"Since You Were Gone" digest.** A machine-local, per-email marker
-(`.cognition/last-seen.json`, git-ignored, never synced — the manager/subordinate
+(`.cognition/local/last-seen.json`, git-ignored, never synced — the manager/subordinate
 per-email ruling applies here too, so a shared machine's two identities don't stomp
 each other's marker) tracks when you last started a session in this repo.
 Personalized prime shows `## Since You Were Gone` right after `## Your Manager's
@@ -649,15 +668,21 @@ section. The marker is stamped only by the real SessionStart hook (`main()`),
 never by a bare `generate_prime()` call — the function itself stays pure
 read-only, so the dashboard, library use, and tests never mark anything "seen."
 
-**New-user onboarding notice.** When a session's git identity resolves to an email
-with no matching person node yet, the session-start prime digest opens with a `## New
-Here?` notice prompting the agent to ask the human for their name, role, seniority,
-and manager, then call `cognition_register_person` with `from_agent=false`. If the
-human would rather skip it, the agent appends their casefolded email to
-`.cognition/onboard-declined` (a per-machine, git-ignored file — never synced, never a
-placeholder person node) instead of registering them. The notice disappears the
-session after a matching person node lands, or immediately once declined. Set
-`PRIME_ONBOARD=false` to disable the notice outright.
+**New-user onboarding notice.** When a session's identity resolves to an email that
+is not on the roster, the session-start prime digest opens with a `## New Here?`
+notice. It tells the agent that **every write is currently refused**, and to ask the
+human for all five values — name, work email, role, seniority (presenting the four
+tiers rather than inferring one from a job title), and who they report to, saying that
+`"nobody"` is valid and expected on a solo project — then call
+`cognition_set_identity`. It explicitly steers *off* `cognition_register_person`, which
+is itself a gated write and would be refused until an identity is confirmed.
+
+There is no skipping it any more: declining leaves writes refused, so the notice says
+that plainly rather than offering an opt-out that does not work. The legacy
+`.cognition/local/onboard-declined` list still silences the notice, but it does not
+open the gate. The notice disappears the session after the identity is confirmed and
+the profile is complete. Set `PRIME_ONBOARD=false` to disable the notice outright —
+which silences the prompt, not the gate.
 
 ### Environment Facts
 
@@ -689,10 +714,11 @@ be detected instead of tripped over.
   trail and the shared journal never bloats. The files union-merge like the
   journal (git hygiene manages the `.gitattributes` rule). Deleting a fact
   removes it from live state, but like every journal write the historical line
-  remains in git history. Deleting a *person node* does **not** touch their
+  remains in git history. `cognition_remove_person` does **not** touch their
   fact file — their facts persist (surfaced as `registered: false`) until they
-  clear them or the file is removed from git; person removal is the natural
-  moment to prompt that cleanup.
+  clear them or the file is removed from git; removal is the natural moment to
+  prompt that cleanup. Deliberately not a cascade: what they authored is history,
+  not their property to take with them.
 - **Shared-checkout teams:** the flush protocol covers these files too — see
   [the topology guide](docs/topology-guide.md).
 

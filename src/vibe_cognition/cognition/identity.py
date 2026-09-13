@@ -22,8 +22,8 @@ attempted, so trusting it could attribute this repo's history via another
 project's credential. SVN users confirm once with ``cognition_set_identity``.
 
 The confirmed file is MACHINE-LOCAL and must never be committed: it says who is
-driving THIS checkout, not who exists in the project. The shared roster stays the
-person nodes in the graph.
+driving THIS checkout, not who exists in the project. The shared roster is the
+committed profiles under `.cognition/people/`.
 
 Only VCS sources may be *suggested* to the user; nothing here ever stamps an
 inferred identity on its own (decision 833e9f67de4d).

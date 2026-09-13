@@ -468,8 +468,8 @@ def _has_person_node(storage: CognitionStorage, email: str) -> bool:
 
 # ── WP-TC16: role-aware prime (manager rollup / subordinate view) ──────────────
 #
-# Reporting relationship (reports_to_email) is DISTINCT from person.role (a
-# free-text job title) — never conflate the two. Graph owns HUMAN roles only;
+# Reporting relationship (reports_to) is DISTINCT from role (a free-text job
+# title) — never conflate the two. The roster owns HUMAN roles only;
 # agent roles stay in teammate-comms (ruling 6be2e867f91e).
 
 
@@ -625,7 +625,7 @@ def _format_manager_decisions(
     can legitimately appear here too, same as in the global section. This is a
     KNOWN, documented overlap with global Recent Decisions -- deduping would
     silently change the global section's own semantics, so it is left alone.
-    A dangling manager email (no person node registered for it) still works:
+    A dangling manager email (nobody on the roster for it) still works:
     decisions filter by the stamped email string, and the manager's name comes
     from the decision's own `recorded_by`, not from a person-node lookup.
     "Own claims" -- the other half of the manager/subordinate ruling -- is
@@ -922,7 +922,7 @@ def _onboarding_notice(storage: CognitionStorage, config: PrimeConfig, current_e
 
 def _format_identity_header(role: _RoleContext) -> str:
     """The one-line preamble opening the personalized block once `current_email`
-    resolves to a registered person node (WP-OnboardPayoff, Gate D S5 fix) -- ""
+    is on the roster (WP-OnboardPayoff, Gate D S5 fix) -- ""
     when `role.my_person` is None. Gating is structural, not a new knob: this
     requires a matching person node, `_onboarding_notice`'s New Here banner
     requires NO matching person node -- mutually exclusive by construction. A

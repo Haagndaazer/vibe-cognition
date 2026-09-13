@@ -1,4 +1,8 @@
 {
+  "0.38.2": [
+    "Documentation fix: the README and Claude's own built-in guide still described the old team model in places, which could send you (or Claude) looking for settings that no longer exist.",
+    "Releases now fail their own tests if the changelog, the what's-new notes, or the README's tool list were not updated to match, so the docs cannot silently fall behind again."
+  ],
   "0.38.1": [
     "Fixed: upgrading quietly wrote your team's new profile files without telling you. Claude now says what it wrote, so you can review and commit them.",
     "Fixed: when Claude asked you to set up your identity, it reached for the wrong tool first and got blocked. It now goes straight to the one call that works.",

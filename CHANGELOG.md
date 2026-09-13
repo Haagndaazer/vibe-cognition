@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.2]
+
+### Fixed
+
+- **Reader-facing prose still described the pre-v0.38 model in several places.** The
+  README's team-semantics section, its role-aware-prime and onboarding-notice
+  sections, the `cognition_readme` guide and `prime.py`'s own docstrings all still
+  said "person node" and `reports_to_email` — a reader would go looking for a
+  parameter that no longer exists on an entity type that no longer holds the roster.
+  The README's onboarding section additionally described the old decline-to-skip flow,
+  which no longer skips anything because writes stay refused either way.
+
+### Added
+
+- **The version bump is now a hard, enforced gate** (`tests/test_release_sync.py`).
+  Bumping `pyproject.toml` without a matching `## [X.Y.Z]` CHANGELOG section, without
+  bullets in it, without a `whats-new.json` entry, or with the three manifests
+  disagreeing, now fails by name. The README's MCP tools table is checked against the
+  registered tools in both directions — a missing row and a stale row both fail. That
+  check was "verify the README by hand" in the release rule, which is the same as
+  unchecked; `cognition_remove_person` shipped last release with nothing but a human
+  reading the table standing between it and an undocumented tool.
+- A reader-facing-prose check fails if `README.md`, the `cognition_readme` guide or
+  `SKILL.md` name a retired field, so this class of drift cannot come back silently.
+
 ## [0.38.1]
 
 ### Fixed
