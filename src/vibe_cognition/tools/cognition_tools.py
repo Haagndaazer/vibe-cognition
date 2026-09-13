@@ -49,11 +49,14 @@ from ..cognition.documents import (
     write_text_sidecar,
 )
 from ..cognition.identity import (
+    identity_write_path,
+    is_valid_email,
     require_identity,
     resolve_identity,
     write_confirmed_identity,
 )
 from ..cognition.prime import SEVERITY_ORDER, _node_email
+from ..cognition.profiles import NO_MANAGER
 
 # WP-TC16 re-export: keeps tests/test_task.py:32-37's direct
 # `from ...cognition_tools import _task_claimed_at` path valid; the
@@ -231,32 +234,44 @@ def _acting_identity(cognition_dir: Path) -> dict[str, str]:
 
 
 def _identity_gate(cognition_dir: Path) -> dict[str, Any] | None:
-    """None when writing is allowed, else the refusal dict to return to the caller.
+    """The refusal payload for a READ path that defaults to "self" and found no email.
 
-    Callers pair this with _acting_identity, which resolves independently. The two
-    reads can disagree if identity.json changes in between (a concurrent
-    cognition_set_identity, a remap run, a second server process), letting a write
-    pass the gate and then stamp a DIFFERENT -- possibly empty -- identity, which
-    is the anonymous-attribution bug this gate exists to close. _gated_identity
-    resolves once and serves both; prefer it in new write paths.
+    Only reachable once the caller has already established that no email resolves,
+    which is why the profile-completeness argument is omitted: a confirmed person
+    with a half-filled profile must still be able to read their own facts. This
+    does NOT return None merely because an email resolved -- require_identity also
+    requires confirmation -- so it is not a usable "any identity" check. Every
+    WRITE path uses _gated_identity instead.
     """
     return require_identity(cognition_dir.parent, cognition_dir)
 
 
-def _gated_identity(cognition_dir: Path) -> tuple[dict[str, Any] | None, dict[str, str]]:
-    """(refusal_or_None, identity_to_stamp) from ONE resolution. See _identity_gate.
+def _gated_identity(
+    storage: CognitionStorage,
+) -> tuple[dict[str, Any] | None, dict[str, str]]:
+    """(refusal_or_None, identity_to_stamp) for every graph WRITE.
 
-    Deliberately routed through _acting_identity rather than calling
-    resolve_identity directly: that keeps a single seam for both the stamp and
-    the gate decision, so they cannot disagree and tests have one place to
-    control identity.
+    Two conditions, both required: the identity is CONFIRMED (an answered
+    identity.json, not merely whatever sits in this machine's git config), and
+    its committed profile carries all of name/email/role/seniority/reports_to.
+    Why an unconfirmed git email is not enough: see cognition/identity.py.
+
+    Resolved ONCE, through _acting_identity, and the same resolution serves both
+    the decision and the stamp. Two independent reads can disagree if
+    identity.json changes in between (a concurrent cognition_set_identity, a
+    remap run, a second server process), letting a write pass the gate and then
+    stamp a different -- possibly empty -- identity.
     """
+    cognition_dir = storage.cognition_dir
     stamp = _acting_identity(cognition_dir)
-    if stamp.get("email"):
-        return None, stamp
+    missing: list[str] | None = None
+    if stamp.get("confirmed") and stamp.get("email"):
+        missing = storage.profile_missing_required(str(stamp["email"]))
+        if not missing:
+            return None, stamp
     # Refusal path only: the stamp is discarded, so re-resolving here is harmless
     # and buys the richer payload (candidate suggestions) for the error.
-    return require_identity(cognition_dir.parent, cognition_dir), stamp
+    return require_identity(cognition_dir.parent, cognition_dir, missing), stamp
 
 
 def _record_node(
@@ -321,7 +336,7 @@ def _record_node(
     # this", distinct from `author` (who dictated the record, caller-provided free
     # text). Same resolve_git_identity used by _add_task's created_by (file-read
     # only, never subprocess — v0.12.1 P0).
-    gate, recorded_by = _gated_identity(storage.cognition_dir)
+    gate, recorded_by = _gated_identity(storage)
     if gate is not None:
         return gate
     node = CognitionNode(
@@ -1266,7 +1281,7 @@ def _store_document(
     # NOT touch the dedup ("already_stored") branch above, which returns an existing node
     # as-is — backfilling legacy documents is legacy-identity-backfill's job (962ab7b442d5),
     # scoped OUT of that WP until this ships (v2 there, not here).
-    gate, recorded_by = _gated_identity(cognition_dir)
+    gate, recorded_by = _gated_identity(storage)
     if gate is not None:
         return gate
     metadata: dict[str, Any] = {
@@ -1576,7 +1591,7 @@ def _add_task(
     # Server-resolved identity from the repo backing THIS storage (home project).
     # Assumes the standard layout where the repo root is the .cognition dir's parent
     # (true for every real install; config.py resolves the same root from REPO_PATH).
-    gate, created_by = _gated_identity(storage.cognition_dir)
+    gate, created_by = _gated_identity(storage)
     if gate is not None:
         return gate
 
@@ -1900,7 +1915,7 @@ def _update_task(
     # WP-TC4 (2-MECH #1): resolve the caller identity ONCE, early -- was previously
     # resolved inside the transition body below; that call is now dropped in favor of
     # this hoisted result, which also feeds takeover detection.
-    gate, caller = _gated_identity(storage.cognition_dir)
+    gate, caller = _gated_identity(storage)
     if gate is not None:
         return gate
     caller_email = _casefold_email(caller.get("email", ""))
@@ -2239,7 +2254,7 @@ def _register_person(
     # Gated like every other write path: registering someone ELSE (explicit email)
     # still stamps recorded_by with the CALLER's identity, so an unresolved caller
     # would land a person node attributed to nobody.
-    gate, recorded_by = _gated_identity(storage.cognition_dir)
+    gate, recorded_by = _gated_identity(storage)
     if gate is not None:
         return gate
 
@@ -2387,7 +2402,7 @@ def _update_person(
             )
         }
 
-    gate, by = _gated_identity(storage.cognition_dir)
+    gate, by = _gated_identity(storage)
     if gate is not None:
         return gate
     entry = {"changed": changed, "at": datetime.now(UTC).isoformat(), "by": by}
@@ -2446,12 +2461,24 @@ def _get_person(storage: CognitionStorage, email_or_id: str) -> dict[str, Any]:
 
 
 def _self_identity(storage: CognitionStorage) -> tuple[dict[str, str] | None, str]:
-    """(recorded_by, casefolded email) for the server-resolved identity (confirmed
-    file, else git config), or (None, "") when no email is resolvable — callers
-    return a retryable error rather than ever guessing an identity."""
+    """(recorded_by, casefolded email) for the server-resolved identity, or
+    (None, "") when no email resolves at all.
+
+    READ paths only — they need *an* email to default "self" to. Env-fact WRITES
+    go through _gated_identity like every other write, so a confirmed identity
+    with an incomplete profile can still read its own facts but cannot add one.
+    """
     by = _acting_identity(storage.cognition_dir)
     email = _casefold_email(by.get("email", ""))
     return (by, email) if email else (None, "")
+
+
+def _gated_self(
+    storage: CognitionStorage,
+) -> tuple[dict[str, Any] | None, dict[str, str], str]:
+    """(refusal_or_None, by, casefolded email) for an env-fact WRITE."""
+    gate, by = _gated_identity(storage)
+    return gate, by, "" if gate is not None else _casefold_email(by.get("email", ""))
 
 
 def _machine_key(machine: str | None) -> str:
@@ -2480,9 +2507,9 @@ def _set_env_fact(
     """Testable core of cognition_set_env_fact."""
     lc = get_lifespan(ctx)
     storage: CognitionStorage = lc["cognition_storage"]
-    by, email = _self_identity(storage)
-    if by is None:
-        return _identity_gate(storage.cognition_dir) or {"error": _NO_IDENTITY_ERROR}
+    gate, by, email = _gated_self(storage)
+    if gate is not None:
+        return gate
     machine_key = _machine_key(machine)
     if not machine_key:
         return {"error": _NO_MACHINE_ERROR}
@@ -2519,9 +2546,9 @@ def _delete_env_fact(
     """Testable core of cognition_delete_env_fact."""
     lc = get_lifespan(ctx)
     storage: CognitionStorage = lc["cognition_storage"]
-    by, email = _self_identity(storage)
-    if by is None:
-        return _identity_gate(storage.cognition_dir) or {"error": _NO_IDENTITY_ERROR}
+    gate, by, email = _gated_self(storage)
+    if gate is not None:
+        return gate
     machine_key = _machine_key(machine)
     if not machine_key:
         return {"error": _NO_MACHINE_ERROR}
@@ -2547,9 +2574,9 @@ def _clear_env_facts(
     machine"."""
     lc = get_lifespan(ctx)
     storage: CognitionStorage = lc["cognition_storage"]
-    by, email = _self_identity(storage)
-    if by is None:
-        return _identity_gate(storage.cognition_dir) or {"error": _NO_IDENTITY_ERROR}
+    gate, by, email = _gated_self(storage)
+    if gate is not None:
+        return gate
     machine_key: str | None = None
     if machine is not None:
         machine_key = _machine_key(machine)
@@ -3133,18 +3160,35 @@ def register_cognition_tools(mcp) -> None:
         ctx: Context,
         name: str,
         email: str,
+        role: str | None = None,
+        seniority: str | None = None,
+        reports_to: str | None = None,
     ) -> dict[str, Any]:
-        """Confirm WHO IS DRIVING this checkout, so memories are attributable.
+        """Confirm WHO IS DRIVING this checkout AND who they are, so memories are
+        attributable. This is the one call that unblocks a refused write.
 
-        Call this when a write was refused with `identity_required: true`, or when
-        the human says the attributed identity is wrong. The values MUST come from
-        the human — ASK THEM. Never guess, never invent an address, and never pass
-        an agent's own name: memories are always attributed to the person.
+        Call it when any write was refused with `identity_required: true`, or when
+        the human says the attributed identity is wrong. Every value MUST come from
+        the human — ASK THEM. Never guess, never infer from a role title, never
+        invent an address, and never pass an agent's own name: memories are always
+        attributed to the person, not the assistant.
 
-        Writes `.cognition/identity.json`, which is MACHINE-LOCAL and ignored by
-        version control: it records who is driving THIS working copy, not who
-        exists on the project. The shared roster is person nodes
-        (`cognition_register_person`), which is a separate step you should still do.
+        Two things are written, and BOTH are needed before any graph write is
+        allowed:
+          * the pointer — `.cognition/local/identity.json`, MACHINE-LOCAL and
+            ignored by git and SVN. It says who is driving THIS working copy, not
+            who exists on the project, so it is never committed.
+          * the profile — `.cognition/people/<email>.profile.jsonl`, COMMITTED and
+            shared with the team. Name, role, seniority and reporting line live
+            here; this is what makes search ranking, the manager chain and the
+            prime digest work for a real person instead of an anonymous address.
+
+        Passing the pointer alone leaves the gate closed. The return says exactly
+        what is still missing in `missing_profile_fields`, and `write_ready` is
+        True only once nothing is. The three profile arguments are optional purely
+        so that (a) re-pointing an already-profiled identity at a new address does
+        not force the human to re-answer everything, and (b) a teammate whose
+        manager already pre-registered them is finished in one call.
 
         This overrides git config and SVN credentials for all future writes, so it
         is also the fix when git reports a personal address and the human wants
@@ -3153,15 +3197,35 @@ def register_cognition_tools(mcp) -> None:
 
         Args:
             name: The human's display name, e.g. "Ada Lovelace". Must not be blank.
-            email: Their email address, lowercased on write. Must contain "@".
+            email: Their email address, lowercased on write. Must be a real
+                address (local@domain.tld); a bare login name is rejected.
+            role: Free text, whatever the human says — "backend engineer", "PM",
+                "lead". Omit to leave an existing value untouched.
+            seniority: Exactly one of owner | senior | mid | junior. A CLOSED SET:
+                present the four options to the human and ask which applies. Do
+                NOT infer a tier from a role title or an offhand word. Anything
+                else is rejected and nothing is written.
+            reports_to: The manager's EMAIL, or the literal "nobody". "nobody" is
+                valid and is the expected answer on a solo project — say so when
+                asking, or a solo user has no true answer to give. A manager's
+                NAME is rejected, because the reporting chain is resolved by
+                email and a name would break it silently.
 
         Returns:
             On success: `{"name": str, "email": str, "source": "confirmed",
-            "path": str, "previous": dict | None, "registered_person": bool}` --
-            `previous` is the identity that was in effect before this call (with
-            its own `source`), and `registered_person` reports whether a person
-            node already exists for this email.
-            On failure: `{"error": str}` for a blank name or an address with no "@".
+            "path": str, "previous": dict | None, "registered_person": bool,
+            "profile": dict, "profile_written": list[str],
+            "profile_skipped": list[str], "missing_profile_fields": list[str],
+            "write_ready": bool}`.
+            `previous` is the identity in effect before this call (with its own
+            `source`); `registered_person` reports whether a legacy person node
+            also exists for this email; `profile_written` lists the fields this
+            call actually appended and `profile_skipped` those already at that
+            value (re-confirming an unchanged profile writes nothing);
+            `missing_profile_fields` is empty exactly when `write_ready` is True.
+            On failure: `{"error": str}` — a blank name, an address that is not a
+            valid email, a seniority outside the closed set, or a `reports_to`
+            that is neither "nobody" nor an email. Nothing is written on failure.
 
         Suggestions for what to offer the human are in the refusal payload of any
         gated write (`suggestions`), drawn from git config and cached SVN
@@ -3171,17 +3235,66 @@ def register_cognition_tools(mcp) -> None:
         storage: CognitionStorage = lc["cognition_storage"]
         cognition_dir = storage.cognition_dir
 
+        if seniority is not None and seniority.strip().casefold() not in SENIORITY_LEVELS:
+            return {
+                "error": (
+                    f"seniority must be one of {list(SENIORITY_LEVELS)}, got "
+                    f"{seniority!r} — ASK THE HUMAN which of those four applies; "
+                    "do not infer it from their role title"
+                )
+            }
+        if reports_to is not None:
+            folded_mgr = reports_to.strip().casefold()
+            if folded_mgr != NO_MANAGER and not is_valid_email(reports_to):
+                return {
+                    "error": (
+                        "reports_to must be the manager's EMAIL or the literal "
+                        f'"{NO_MANAGER}", got {reports_to!r} — the reporting chain '
+                        "is resolved by email, so a name cannot be stored here. Ask "
+                        "the human for their manager's address, or "
+                        f'"{NO_MANAGER}" if they have none (normal on a solo project).'
+                    )
+                }
+
         previous = resolve_identity(cognition_dir.parent, cognition_dir)
         written = write_confirmed_identity(cognition_dir, name, email)
         if "error" in written:
             return written
 
+        folded = written["email"]
+        fields: dict[str, Any] = {"name": written["name"], "email": folded}
+        if role is not None:
+            fields["role"] = role.strip()
+        if seniority is not None:
+            fields["seniority"] = seniority.strip().casefold()
+        if reports_to is not None:
+            fields["reports_to"] = reports_to.strip().casefold()
+        by = {"name": written["name"], "email": folded}
+        try:
+            profile_result = storage.set_profile_fields(folded, fields, by)
+        except OSError as exc:
+            return {
+                "error": (
+                    f"identity confirmed as {folded}, but the profile could not be "
+                    f"written: {exc}. The gate stays closed until it is — retry this "
+                    "same call once the problem is fixed."
+                )
+            }
+        if "error" in profile_result:
+            return profile_result
+
+        missing = storage.profile_missing_required(folded)
         return {
             **written,
             "source": "confirmed",
-            "path": str(cognition_dir / "identity.json"),
+            "path": str(identity_write_path(cognition_dir)),
             "previous": previous,
-            "registered_person": _find_person_by_email(storage, written["email"]) is not None,
+            "registered_person": _find_person_by_email(storage, folded) is not None,
+            "profile": storage.get_profile(folded) or {},
+            "profile_written": profile_result.get("written", []),
+            "profile_skipped": profile_result.get("skipped", []),
+            "missing_profile_fields": missing,
+            "write_ready": not missing,
         }
 
     @dispatch_tool(mcp)
@@ -3373,9 +3486,13 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             {email, machine, key, value, written, noop, old, disclosure} —
             `written` false + `noop` true when the identical value was already
-            stored (nothing journaled). {"error": ...} (retryable) on: no
-            resolvable git email, blank key/machine, or a NEW machine at the
-            per-person machine cap (the error names the prune remedy).
+            stored (nothing journaled). {"error": ...} (retryable) on a blank
+            key/machine, or a NEW machine at the per-person machine cap (the error
+            names the prune remedy).
+            Refused with `{"identity_required": true, ...}` when this checkout has
+            no CONFIRMED identity, or its profile is missing role/seniority/
+            reports_to — the payload names what to ask the human for and the
+            `cognition_set_identity` call that fixes it. Nothing is written.
         """
         return _set_env_fact(ctx, key, value, machine, from_agent)
 
@@ -3400,8 +3517,12 @@ def register_cognition_tools(mcp) -> None:
 
         Returns:
             {email, machine, key, written, noop, old, disclosure} — noop when
-            the key wasn't stored. {"error": ...} (retryable) on no resolvable
-            git email or blank key/machine.
+            the key wasn't stored. {"error": ...} (retryable) on a blank
+            key/machine.
+            Refused with `{"identity_required": true, ...}` when this checkout has
+            no CONFIRMED identity, or its profile is missing role/seniority/
+            reports_to — the payload names what to ask the human for and the
+            `cognition_set_identity` call that fixes it. Nothing is written.
         """
         return _delete_env_fact(ctx, key, machine, from_agent)
 
@@ -3427,8 +3548,11 @@ def register_cognition_tools(mcp) -> None:
             {email, machine, written, noop, cleared_keys, disclosure} —
             cleared_keys is uniformly "machine/key" strings; the audit line
             enumerates exactly what was removed (never an opaque wipe). noop
-            when nothing was stored in scope. {"error": ...} on no resolvable
-            git email.
+            when nothing was stored in scope.
+            Refused with `{"identity_required": true, ...}` when this checkout has
+            no CONFIRMED identity, or its profile is missing role/seniority/
+            reports_to — the payload names what to ask the human for and the
+            `cognition_set_identity` call that fixes it. Nothing is written.
         """
         return _clear_env_facts(ctx, machine, from_agent)
 
@@ -3666,12 +3790,20 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             The updated node dict (as cognition_get_node) plus `reembed`, or
             {"error": ...} if the node is absent or no editable field was given.
+            Refused with `{"identity_required": true, ...}` when this checkout has
+            no CONFIRMED identity, or its profile is missing role/seniority/
+            reports_to — the payload names what to ask the human for and the
+            `cognition_set_identity` call that fixes it. Nothing is written.
         """
         lc = get_lifespan(ctx)
+        storage: CognitionStorage = lc["cognition_storage"]
+        gate, _ = _gated_identity(storage)
+        if gate is not None:
+            return gate
         # WP-Wedge (AC4): same ready-then-read ordering as cognition_update_task.
         ready = _embeddings_ready(lc)
         return _update_node(
-            lc["cognition_storage"],
+            storage,
             lc["cognition_embedding_storage"],
             lc["embedding_generator"] if ready else None,
             node_id=node_id,
@@ -4416,6 +4548,12 @@ def register_cognition_tools(mcp) -> None:
             {"created": true, "from_id", "to_id", "edge_type", "timestamp"} on
             success; the accepted edge carries ``curation_session`` (the session
             id from cognition_begin_curation). {"error": "..."} otherwise.
+            Refused with `{"identity_required": true, ...}` when this checkout has
+            no CONFIRMED identity, or its profile is missing role/seniority/
+            reports_to — the payload names what to ask the human for and the
+            `cognition_set_identity` call that fixes it. Nothing is written.
+            A valid token is checked FIRST, so a caller with no token is told that
+            rather than told to onboard.
         """
         lc = get_lifespan(ctx)
         session, refusal = _require_curation(lc, curation_token)
@@ -4423,6 +4561,9 @@ def register_cognition_tools(mcp) -> None:
             return refusal
         assert session is not None
         storage: CognitionStorage = lc["cognition_storage"]
+        gate, _ = _gated_identity(storage)
+        if gate is not None:
+            return gate
         result = _add_edge_core(
             storage, from_id, to_id, edge_type, reason, source,
             curation_session=session["session_id"],
@@ -4510,6 +4651,12 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             {"created": N, "skipped": N, "errors": [...]}; every created edge
             carries ``curation_session``.
+            Refused with `{"identity_required": true, ...}` when this checkout has
+            no CONFIRMED identity, or its profile is missing role/seniority/
+            reports_to — the payload names what to ask the human for and the
+            `cognition_set_identity` call that fixes it. Nothing is written.
+            A valid token is checked FIRST, so a caller with no token is told that
+            rather than told to onboard.
         """
         lc = get_lifespan(ctx)
         session, refusal = _require_curation(lc, curation_token)
@@ -4517,6 +4664,9 @@ def register_cognition_tools(mcp) -> None:
             return refusal
         assert session is not None
         storage: CognitionStorage = lc["cognition_storage"]
+        gate, _ = _gated_identity(storage)
+        if gate is not None:
+            return gate
         result = _add_edges_batch_core(storage, edges, curation_session=session["session_id"])
         session["writes"] += int(result.get("created", 0) or 0)
         return result
@@ -4678,6 +4828,12 @@ def register_cognition_tools(mcp) -> None:
 
         Returns:
             {"marked": N, "not_found": [...]} or {"error": "..."}
+            Refused with `{"identity_required": true, ...}` when this checkout has
+            no CONFIRMED identity, or its profile is missing role/seniority/
+            reports_to — the payload names what to ask the human for and the
+            `cognition_set_identity` call that fixes it. Nothing is written.
+            A valid token is checked FIRST, so a caller with no token is told that
+            rather than told to onboard.
         """
         lc = get_lifespan(ctx)
         session, refusal = _require_curation(lc, curation_token)
@@ -4685,6 +4841,9 @@ def register_cognition_tools(mcp) -> None:
             return refusal
         assert session is not None
         storage: CognitionStorage = lc["cognition_storage"]
+        gate, _ = _gated_identity(storage)
+        if gate is not None:
+            return gate
         ids = [nid.strip() for nid in node_ids.split(",") if nid.strip()]
 
         marked = 0
@@ -4815,8 +4974,15 @@ def register_cognition_tools(mcp) -> None:
 
         Returns:
             {"removed": true} or {"error": "..."}
+            Refused with `{"identity_required": true, ...}` when this checkout has
+            no CONFIRMED identity, or its profile is missing role/seniority/
+            reports_to — the payload names what to ask the human for and the
+            `cognition_set_identity` call that fixes it. Nothing is written.
         """
         storage: CognitionStorage = get_lifespan(ctx)["cognition_storage"]
+        gate, _ = _gated_identity(storage)
+        if gate is not None:
+            return gate
 
         try:
             et = CognitionEdgeType(edge_type)
@@ -4884,7 +5050,7 @@ def register_cognition_tools(mcp) -> None:
 
         # Delete provenance (WP-1): server-resolved identity, same source as
         # cognition_add_task's creator (pure file reads, never raises).
-        gate, removed_by = _gated_identity(storage.cognition_dir)
+        gate, removed_by = _gated_identity(storage)
         if gate is not None:
             return gate
 

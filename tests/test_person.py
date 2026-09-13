@@ -17,6 +17,7 @@ scratchpad/scope-identity-layer.md (WP-TC5 + WP-TC6):
 
 from __future__ import annotations
 
+from tests.conftest import identity_stamp
 from vibe_cognition.cognition.models import SENIORITY_LEVELS
 from vibe_cognition.cognition.prime import PrimeConfig, generate_prime
 from vibe_cognition.tools.cognition_tools import register_cognition_tools
@@ -24,13 +25,10 @@ from vibe_cognition.tools.cognition_tools import register_cognition_tools
 # ── cognition_register_person ───────────────────────────────────────────────
 
 
-def test_register_person_self_uses_server_resolved_email(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
+def test_register_person_self_uses_server_resolved_email(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
     """Omitting `email` self-registers using the server-resolved git identity's
     email (impersonation-resistant) -- not any client-supplied value."""
-    monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools._acting_identity",
-        lambda repo: {"name": "Vorpid", "email": "Vorpid@Example.com"},
-    )
+    graph_identity.acting_as("Vorpid", "Vorpid@Example.com")
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
@@ -47,19 +45,16 @@ def test_register_person_self_uses_server_resolved_email(build_lc, make_ctx, moc
     assert person["role"] == "implementer"
     assert person["seniority"] == "mid"
     assert person["reports_to_email"] == ""
-    assert result["metadata"]["recorded_by"] == {"name": "Vorpid", "email": "Vorpid@Example.com"}
+    assert result["metadata"]["recorded_by"] == identity_stamp("Vorpid", "Vorpid@Example.com")
     assert result["metadata"]["from_agent"] is True
     assert result["metadata"]["profile_history"] == []
     assert result["already_registered"] is False
 
 
-def test_register_person_explicit_email_registers_someone_else(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
+def test_register_person_explicit_email_registers_someone_else(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
     """An explicit `email` registers a THIRD PARTY -- allowed, trust-based; who did
     it is recorded via recorded_by, not enforced against the explicit email."""
-    monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools._acting_identity",
-        lambda repo: {"name": "Vince", "email": "vince@example.com"},
-    )
+    graph_identity.acting_as("Vince", "vince@example.com")
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
@@ -85,13 +80,10 @@ def test_register_person_blank_explicit_email_rejected(build_lc, make_ctx, mock_
     assert "error" in result
 
 
-def test_register_person_no_resolvable_email_errors(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
+def test_register_person_no_resolvable_email_errors(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
     """No explicit email AND an unresolvable git identity -> clean error (WP-P13n
     empty-email edge case), never a person node with a blank identity key."""
-    monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools._acting_identity",
-        lambda repo: {"name": "unknown", "email": ""},
-    )
+    graph_identity.unresolvable("unknown")
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
@@ -243,11 +235,8 @@ def test_cognition_record_rejects_person(build_lc, make_ctx, mock_mcp, tmp_path)
 # ── cognition_update_person ──────────────────────────────────────────────────
 
 
-def test_update_person_appends_exact_profile_history_entry(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
-    monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools._acting_identity",
-        lambda repo: {"name": "Vince", "email": "vince@example.com"},
-    )
+def test_update_person_appends_exact_profile_history_entry(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
+    graph_identity.acting_as("Vince", "vince@example.com")
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
@@ -267,7 +256,7 @@ def test_update_person_appends_exact_profile_history_entry(build_lc, make_ctx, m
         "role": {"from": "junior dev", "to": "senior dev"},
         "seniority": {"from": "junior", "to": "senior"},
     }
-    assert entry["by"] == {"name": "Vince", "email": "vince@example.com"}
+    assert entry["by"] == identity_stamp("Vince", "vince@example.com")
     assert "at" in entry
     # summary regenerated because role changed
     assert updated["summary"] == "X — senior dev"

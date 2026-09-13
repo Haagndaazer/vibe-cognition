@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 
+from tests.conftest import identity_stamp
 from vibe_cognition.cognition.people_facts import email_slug
 from vibe_cognition.tools.cognition_tools import register_cognition_tools
 
@@ -29,11 +30,11 @@ SELF = {"name": "Colton Dyck", "email": "Colton@Example.com"}  # resolver output
 SELF_FOLDED = "colton@example.com"
 
 
-def _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch, hostname="DESKTOP-Abc"):
-    monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools._acting_identity",
-        lambda repo: dict(SELF),
-    )
+def _setup(
+    build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch,
+    hostname="DESKTOP-Abc",
+):
+    graph_identity.acting_as(SELF["name"], SELF["email"])
     monkeypatch.setattr(
         "vibe_cognition.tools.cognition_tools.platform.node", lambda: hostname
     )
@@ -49,11 +50,11 @@ def _person_file(tmp_path, email):
 # ── self-only by construction ───────────────────────────────────────────────
 
 
-def test_write_tools_have_no_email_parameter(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
+def test_write_tools_have_no_email_parameter(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
     """The brief's impersonation-resistance: there is no email parameter AT ALL
     on write tools — a caller trying to target someone else gets a TypeError
     from the signature, not an ACL decision."""
-    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch)
+    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
     for tool in ("cognition_set_env_fact", "cognition_delete_env_fact", "cognition_clear_env_facts"):
         fn = mock_mcp.tools[tool]
         try:
@@ -68,8 +69,8 @@ def test_write_tools_have_no_email_parameter(build_lc, make_ctx, mock_mcp, tmp_p
             pass
 
 
-def test_set_targets_server_resolved_identity(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
-    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch)
+def test_set_targets_server_resolved_identity(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
+    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
     r = mock_mcp.tools["cognition_set_env_fact"](ctx, key="os", value="Windows 11")
     assert "error" not in r, r
     assert r["email"] == SELF_FOLDED  # casefolded resolver email, no override possible
@@ -79,12 +80,9 @@ def test_set_targets_server_resolved_identity(build_lc, make_ctx, mock_mcp, tmp_
 
 
 def test_unresolvable_identity_is_retryable_error_nothing_written(
-    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+    build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch
 ):
-    monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools._acting_identity",
-        lambda repo: {"name": "Ghost", "email": ""},
-    )
+    graph_identity.unresolvable("Ghost")
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path)
     ctx = make_ctx(lc)
@@ -95,23 +93,26 @@ def test_unresolvable_identity_is_retryable_error_nothing_written(
         lambda: mock_mcp.tools["cognition_list_env_facts"](ctx),
     ):
         r = call()
-        assert "error" in r and "user.email" in r["error"] or "self-only" in r.get("error", "")
+        # Writes AND the self-defaulting read refuse the same way: identity
+        # first, with the retry path named, never a silent empty-address write.
+        assert r.get("identity_required") is True, r
+        assert "cognition_set_identity" in r["error"]
     assert not (tmp_path / "home" / ".cognition" / "people").exists()
 
 
 # ── machine defaulting ──────────────────────────────────────────────────────
 
 
-def test_explicit_machine_override_casefolded(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
-    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch)
+def test_explicit_machine_override_casefolded(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
+    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
     r = mock_mcp.tools["cognition_set_env_fact"](ctx, key="os", value="macOS", machine="My-Laptop")
     assert r["machine"] == "my-laptop"
     listing = mock_mcp.tools["cognition_list_env_facts"](ctx)
     assert listing["environment"] == {"my-laptop": {"os": "macOS"}}
 
 
-def test_unresolvable_hostname_is_retryable_error(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
-    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch, hostname="")
+def test_unresolvable_hostname_is_retryable_error(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
+    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch, hostname="")
     r = mock_mcp.tools["cognition_set_env_fact"](ctx, key="os", value="w11")
     assert "error" in r and "machine=" in r["error"]
     # Explicit machine unblocks (the retry the error names).
@@ -119,11 +120,11 @@ def test_unresolvable_hostname_is_retryable_error(build_lc, make_ctx, mock_mcp, 
     assert r["written"] is True
 
 
-def test_explicit_blank_machine_is_retryable_error(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
+def test_explicit_blank_machine_is_retryable_error(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
     """machine='' / whitespace-only errors on every write tool (final-gate LOW:
     the error text must cover the blank-argument case, not just an
     unresolvable hostname), and nothing is written."""
-    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch)
+    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
     for call in (
         lambda: mock_mcp.tools["cognition_set_env_fact"](ctx, key="k", value=1, machine="   "),
         lambda: mock_mcp.tools["cognition_delete_env_fact"](ctx, key="k", machine=""),
@@ -131,14 +132,16 @@ def test_explicit_blank_machine_is_retryable_error(build_lc, make_ctx, mock_mcp,
     ):
         r = call()
         assert "error" in r and "blank" in r["error"]
-    assert not (tmp_path / "home" / ".cognition" / "people").exists()
+    # people/ exists (the acting identity has a committed profile in it); what
+    # must not exist is an env-fact file for them.
+    assert not _person_file(tmp_path, SELF_FOLDED).exists()
 
 
-def test_person_removal_leaves_fact_file_registered_false(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
+def test_person_removal_leaves_fact_file_registered_false(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
     """Final-gate regression: cognition_remove_node on a person node does NOT
     touch their env-fact file — facts persist and surface as registered:false
     (the documented orphaned-file KNOWN LIMIT)."""
-    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch)
+    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
     reg = mock_mcp.tools["cognition_register_person"](ctx, name="Colton", role="owner", seniority="owner")
     mock_mcp.tools["cognition_set_env_fact"](ctx, key="os", value="w11")
     assert mock_mcp.tools["cognition_list_env_facts"](ctx)["registered"] is True
@@ -155,10 +158,10 @@ def test_person_removal_leaves_fact_file_registered_false(build_lc, make_ctx, mo
 # ── disclosure contract ─────────────────────────────────────────────────────
 
 
-def test_every_successful_write_carries_disclosure(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
+def test_every_successful_write_carries_disclosure(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
     """Schema-level: written=True responses ALWAYS include a non-empty
     disclosure naming the identity; noop responses disclose the no-change."""
-    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch)
+    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
     set_r = mock_mcp.tools["cognition_set_env_fact"](ctx, key="shell", value="pwsh")
     assert set_r["written"] and SELF_FOLDED in set_r["disclosure"]
     assert "removed" in set_r["disclosure"].lower()  # removal-on-request named
@@ -179,8 +182,8 @@ def test_every_successful_write_carries_disclosure(build_lc, make_ctx, mock_mcp,
 # ── machine cap via config ──────────────────────────────────────────────────
 
 
-def test_machine_cap_read_from_config(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
-    lc, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch)
+def test_machine_cap_read_from_config(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
+    lc, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
     lc["config"].env_fact_machine_cap = 2
     mock_mcp.tools["cognition_set_env_fact"](ctx, key="os", value=1, machine="m1")
     mock_mcp.tools["cognition_set_env_fact"](ctx, key="os", value=1, machine="m2")
@@ -192,11 +195,11 @@ def test_machine_cap_read_from_config(build_lc, make_ctx, mock_mcp, tmp_path, mo
 # ── clear scope policy ──────────────────────────────────────────────────────
 
 
-def test_clear_no_arg_means_all_machines_not_current(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
+def test_clear_no_arg_means_all_machines_not_current(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
     """The deliberate non-default: no-arg clear is "forget everything", NOT
     "forget this machine" — a hostname-defaulted clear would silently leave
     other machines' facts behind on a removal request."""
-    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch)
+    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
     mock_mcp.tools["cognition_set_env_fact"](ctx, key="os", value="w11")  # current machine
     mock_mcp.tools["cognition_set_env_fact"](ctx, key="os", value="macos", machine="laptop")
     r = mock_mcp.tools["cognition_clear_env_facts"](ctx)
@@ -205,8 +208,8 @@ def test_clear_no_arg_means_all_machines_not_current(build_lc, make_ctx, mock_mc
     assert mock_mcp.tools["cognition_list_env_facts"](ctx)["environment"] == {}
 
 
-def test_clear_machine_scope(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
-    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch)
+def test_clear_machine_scope(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
+    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
     mock_mcp.tools["cognition_set_env_fact"](ctx, key="os", value="w11")
     mock_mcp.tools["cognition_set_env_fact"](ctx, key="os", value="macos", machine="laptop")
     r = mock_mcp.tools["cognition_clear_env_facts"](ctx, machine="LAPTOP")
@@ -219,9 +222,9 @@ def test_clear_machine_scope(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
 
 
 def test_list_defaults_to_self_and_surfaces_current_machine(
-    build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch
+    build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch
 ):
-    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch)
+    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
     mock_mcp.tools["cognition_set_env_fact"](ctx, key="os", value="w11")
     r = mock_mcp.tools["cognition_list_env_facts"](ctx)
     assert r["email"] == SELF_FOLDED
@@ -229,10 +232,10 @@ def test_list_defaults_to_self_and_surfaces_current_machine(
     assert r["machine_count"] == 1
 
 
-def test_list_open_reads_and_registered_flag(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
+def test_list_open_reads_and_registered_flag(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
     """Facts for an identity with NO person node: first-class legal,
     registered:false — never an error. After registration: registered:true."""
-    lc, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch)
+    lc, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
     storage = lc["cognition_storage"]
     storage.set_env_fact("teammate@x.com", "their-box", "os", "linux", {"name": "T", "email": "teammate@x.com"})
 
@@ -249,16 +252,16 @@ def test_list_open_reads_and_registered_flag(build_lc, make_ctx, mock_mcp, tmp_p
     assert r["registered"] is True
 
 
-def test_list_resolves_person_node_id(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
-    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch)
+def test_list_resolves_person_node_id(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
+    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
     reg = mock_mcp.tools["cognition_register_person"](ctx, name="Colton", role="owner", seniority="owner")
     mock_mcp.tools["cognition_set_env_fact"](ctx, key="os", value="w11")
     r = mock_mcp.tools["cognition_list_env_facts"](ctx, email_or_id=reg["id"])
     assert r["email"] == SELF_FOLDED and r["environment"]["desktop-abc"]["os"] == "w11"
 
 
-def test_get_person_joins_environment(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
-    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch)
+def test_get_person_joins_environment(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
+    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
     mock_mcp.tools["cognition_register_person"](ctx, name="Colton", role="owner", seniority="owner")
     mock_mcp.tools["cognition_set_env_fact"](ctx, key="project_root", value="C:/proj")
     r = mock_mcp.tools["cognition_get_person"](ctx, email_or_id=SELF_FOLDED)
@@ -274,7 +277,7 @@ def test_get_person_joins_environment(build_lc, make_ctx, mock_mcp, tmp_path, mo
 # ── provenance ──────────────────────────────────────────────────────────────
 
 
-def test_settings_knob_default_and_env_override(monkeypatch):
+def test_settings_knob_default_and_env_override(graph_identity, monkeypatch):
     from vibe_cognition.config import Settings
 
     monkeypatch.delenv("ENV_FACT_MACHINE_CAP", raising=False)
@@ -283,8 +286,8 @@ def test_settings_knob_default_and_env_override(monkeypatch):
     assert Settings().env_fact_machine_cap == 3
 
 
-def test_from_agent_lands_in_delta_line(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch):
-    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, monkeypatch)
+def test_from_agent_lands_in_delta_line(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch):
+    _, ctx = _setup(build_lc, make_ctx, mock_mcp, tmp_path, graph_identity, monkeypatch)
     mock_mcp.tools["cognition_set_env_fact"](ctx, key="a", value=1)  # default true
     mock_mcp.tools["cognition_set_env_fact"](ctx, key="b", value=2, from_agent=False)
     lines = [
@@ -292,4 +295,5 @@ def test_from_agent_lands_in_delta_line(build_lc, make_ctx, mock_mcp, tmp_path, 
         for ln in _person_file(tmp_path, SELF_FOLDED).read_text(encoding="utf-8").splitlines()
     ]
     assert lines[0]["from_agent"] is True and lines[1]["from_agent"] is False
-    assert all(ln["by"] == SELF for ln in lines)  # server-resolved stamp, verbatim
+    stamp = identity_stamp(SELF["name"], SELF["email"])
+    assert all(ln["by"] == stamp for ln in lines)  # server-resolved stamp, verbatim

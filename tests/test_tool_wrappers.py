@@ -15,6 +15,7 @@ import json
 from typing import Any
 from unittest.mock import patch
 
+from tests.conftest import identity_stamp
 from vibe_cognition.cognition import CognitionStorage
 from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
 from vibe_cognition.tools import register_all_tools
@@ -517,17 +518,14 @@ def test_cognition_record_valid_type_returns_node_shape(tmp_path, mock_mcp, buil
 # ── cognition_record wrapper — server-stamped recorded_by (WP-P13n-1) ─────────
 
 
-def test_cognition_record_stamps_recorded_by(tmp_path, mock_mcp, build_lc, make_ctx, monkeypatch):
+def test_cognition_record_stamps_recorded_by(tmp_path, mock_mcp, build_lc, make_ctx, graph_identity, monkeypatch):
     """_record_node stamps metadata.recorded_by from server-resolved git identity —
     distinct from `author` (client-supplied free text, left untouched).
 
     Fails-before: if recorded_by wasn't stamped at all, or if stamping it clobbered
     the caller-supplied author.
     """
-    monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools._acting_identity",
-        lambda repo: {"name": "Server Resolved", "email": "srv@x.com"},
-    )
+    graph_identity.acting_as("Server Resolved", "srv@x.com")
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path, embeddings_ready=True)
     ctx = make_ctx(lc)
@@ -538,12 +536,12 @@ def test_cognition_record_stamps_recorded_by(tmp_path, mock_mcp, build_lc, make_
     assert "error" not in result, result
     node = lc["cognition_storage"].get_node(result["id"])
     assert node is not None
-    assert node["metadata"]["recorded_by"] == {"name": "Server Resolved", "email": "srv@x.com"}
+    assert node["metadata"]["recorded_by"] == identity_stamp("Server Resolved", "srv@x.com")
     assert node["author"] == "Client Author"  # author stays free text, untouched
 
 
 def test_cognition_record_recorded_by_survives_identity_failure(
-    tmp_path, mock_mcp, build_lc, make_ctx, monkeypatch
+    tmp_path, mock_mcp, build_lc, make_ctx, graph_identity, monkeypatch
 ):
     """v0.37.0 CONTRACT CHANGE: a total identity failure now REFUSES the write.
 
@@ -556,6 +554,7 @@ def test_cognition_record_recorded_by_survives_identity_failure(
     The half of the v0.12.1 P0 contract that still holds is asserted here too:
     identity failure must never RAISE or hang. It returns an error dict.
     """
+    graph_identity.unonboarded()
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "does-not-exist"))
     monkeypatch.setenv("SVN_CONFIG_DIR", str(tmp_path / "no-svn-either"))
 
@@ -757,7 +756,7 @@ def test_cognition_store_document_not_ready_still_stores(tmp_path, mock_mcp, bui
 
 
 def test_cognition_store_document_stamps_recorded_by(
-    tmp_path, mock_mcp, build_lc, make_ctx, monkeypatch
+    tmp_path, mock_mcp, build_lc, make_ctx, graph_identity, monkeypatch
 ):
     """A freshly stored document's metadata carries recorded_by {name, email}
     matching server-resolved git identity (WP-provenance-smalls, task 2858ae93bf17).
@@ -765,10 +764,7 @@ def test_cognition_store_document_stamps_recorded_by(
     Fails-before: if _store_document didn't stamp recorded_by at all, the document
     node would carry only the free-text `author` with no verifiable identity.
     """
-    monkeypatch.setattr(
-        "vibe_cognition.tools.cognition_tools._acting_identity",
-        lambda repo: {"name": "Server Resolved", "email": "srv@x.com"},
-    )
+    graph_identity.acting_as("Server Resolved", "srv@x.com")
     register_cognition_tools(mock_mcp)
     lc = build_lc(tmp_path, embeddings_ready=True)
     ctx = make_ctx(lc)
@@ -784,7 +780,7 @@ def test_cognition_store_document_stamps_recorded_by(
     assert "error" not in result, result
     node = lc["cognition_storage"].get_node(result["node_id"])
     assert node is not None
-    assert node["metadata"]["recorded_by"] == {"name": "Server Resolved", "email": "srv@x.com"}
+    assert node["metadata"]["recorded_by"] == identity_stamp("Server Resolved", "srv@x.com")
     assert node["author"] == "Client Author"  # author stays free text, untouched
 
 

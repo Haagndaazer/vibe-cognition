@@ -234,19 +234,84 @@ def test_gate_blocks_when_no_email_resolves(repo):
     assert "cognition_set_identity" in err["error"]
 
 
-def test_gate_allows_unconfirmed_git_identity(repo, monkeypatch, tmp_path):
-    """An existing install with a working git email must NOT break on upgrade."""
+def test_gate_refuses_unconfirmed_git_identity_and_offers_it_as_a_candidate(
+    repo, monkeypatch, tmp_path
+):
+    """CONTRACT CHANGE (WP-Identity-Profiles): a working git email is no longer
+    enough. v0.37.0 let it through so existing installs would not break on
+    upgrade; that readmits the shared-build-account case this module exists to
+    close -- several humans on one machine, every write stamped with whatever
+    address sits in git config, indistinguishably.
+
+    The git identity is still SUGGESTED, so confirming it is one answer away.
+    """
     root, cognition = repo
     _write_git_config(tmp_path / "gitconfig", "Git Name", "git@example.com")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
-    assert require_identity(root, cognition) is None
+
+    err = require_identity(root, cognition)
+    assert err is not None
+    assert err["identity_required"] is True
+    assert err["confirmed"] is False
+    assert "NOT CONFIRMED" in err["error"]
+    assert {"name": "Git Name", "email": "git@example.com", "source": SOURCE_GIT} in (
+        err["suggestions"]
+    )
 
 
-def test_gate_allows_after_set_identity(repo):
+def test_confirming_identity_satisfies_the_identity_half_of_the_gate(repo):
+    """NOT the full write gate: `missing_profile_fields=None` means "not checked",
+    so this exercises confirmation alone.
+
+    Kept scoped on purpose. Every real call site computes the profile fields and
+    passes them -- see the gated-tool tests below, and
+    test_gate_refuses_a_confirmed_identity_whose_profile_is_incomplete for the
+    other half. Read as a full-gate test this would pass even if profile
+    completeness were deleted entirely.
+    """
     root, cognition = repo
     assert require_identity(root, cognition) is not None
     write_confirmed_identity(cognition, "Ada", "ada@example.com")
-    assert require_identity(root, cognition) is None
+    assert require_identity(root, cognition, None) is None
+    assert require_identity(root, cognition, ["role"]) is not None
+
+
+def test_gate_refuses_a_confirmed_identity_whose_profile_is_incomplete(repo):
+    """Confirmation alone is not the bar -- role, seniority and reporting line are
+    part of what must be answered before anything is written, so the graph can
+    rank and route by them instead of carrying anonymous rows."""
+    root, cognition = repo
+    write_confirmed_identity(cognition, "Ada", "ada@example.com")
+    missing = ["role", "seniority", "reports_to"]
+
+    err = require_identity(root, cognition, missing)
+    assert err is not None
+    assert err["confirmed"] is True
+    assert err["missing_profile_fields"] == missing
+    assert "PROFILE INCOMPLETE" in err["error"]
+    assert "ada@example.com" in err["error"]
+    for field in missing:
+        assert field in err["error"]
+    # "nobody" must be offered, or a solo user is asked an unanswerable question.
+    assert "nobody" in err["error"]
+
+
+def test_gate_in_a_read_only_checkout_refuses_without_asking_anyone(repo, monkeypatch):
+    """A checkout that cannot persist identity.json can never be confirmed, so the
+    refusal must say so instead of asking five questions whose answer cannot be
+    saved (ruling Q4)."""
+    root, cognition = repo
+
+    def _no_touch(self, *a, **kw):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr("pathlib.Path.touch", _no_touch)
+
+    err = require_identity(root, cognition)
+    assert err is not None
+    assert err["read_only"] is True
+    assert "CANNOT BE CONFIRMED IN THIS CHECKOUT" in err["error"]
+    assert "ASK THE HUMAN" not in err["error"]
 
 
 def test_gate_error_offers_svn_candidate_without_assuming_it(repo, monkeypatch, tmp_path):
@@ -372,12 +437,85 @@ WRITE_TOOLS = [
      {"title": "t", "document_text": "c", "content_text": "c", "context": "", "author": "a"}),
     ("cognition_register_person",
      {"name": "n", "role": "r", "seniority": "mid", "email": "someone@example.com"}),
+    ("cognition_update_node", {"node_id": "whatever", "summary": "rewritten"}),
+    ("cognition_remove_node", {"node_id": "whatever"}),
+    ("cognition_remove_edge", {"from_id": "a", "to_id": "b", "edge_type": "led_to"}),
+    ("cognition_set_env_fact", {"key": "os", "value": "w11"}),
+    ("cognition_delete_env_fact", {"key": "os"}),
+    ("cognition_clear_env_facts", {}),
 ]
+
+#: Tools that write only AFTER a curation token is checked. The token check runs
+#: first deliberately -- an agent that must not be calling these at all should be
+#: told that, not told to onboard -- so they need a valid token before the
+#: identity refusal is reachable.
+CURATION_WRITE_TOOLS = [
+    ("cognition_add_edge", {"from_id": "a", "to_id": "b", "edge_type": "led_to"}),
+    ("cognition_add_edges_batch",
+     {"edges": '[{"from_id": "a", "to_id": "b", "edge_type": "led_to"}]'}),
+    ("cognition_mark_curated", {"node_ids": "a,b"}),
+]
+
+#: Every registered tool that does NOT write to the graph, with why. Paired with
+#: the roster test below so a newly added tool cannot quietly land in neither
+#: list: cognition_register_person shipped ungated in v0.37.0 precisely because
+#: nothing forced that decision to be made.
+UNGATED_TOOLS = {
+    # The unblock path itself. Gating this would be a deadlock.
+    "cognition_set_identity",
+    # Mints a session token; writes nothing to the graph.
+    "cognition_begin_curation",
+    # Reads.
+    "cognition_get_node", "cognition_get_document", "cognition_search",
+    "cognition_get_chain", "cognition_get_superseded_chain", "cognition_get_workflow",
+    "cognition_get_incident_resolution", "cognition_get_history",
+    "cognition_get_edgeless_nodes", "cognition_get_uncurated_nodes",
+    "cognition_get_neighbors", "cognition_list_tasks", "cognition_get_person",
+    "cognition_list_people", "cognition_list_env_facts", "cognition_list_projects",
+    "get_status", "cognition_dashboard", "cognition_readme",
+    # Process/registry state, not graph content.
+    "cognition_reload", "cognition_load_project", "cognition_unload_project",
+}
+
+#: Gated, but not callable in the parametrized refusal tests above: it resolves
+#: the target person BEFORE the gate and returns "no person found", and seeding a
+#: person first needs a write that is itself gated. Verified by reading
+#: _update_person, which calls _gated_identity before appending any history.
+GATED_NOT_DIRECTLY_TESTABLE = {"cognition_update_person", "cognition_update_task"}
+
+
+def test_every_registered_tool_is_classified_as_gated_or_deliberately_not(mock_mcp):
+    """A new write tool must not be able to ship ungated unnoticed.
+
+    v0.37.0 shipped cognition_register_person without the gate, and the
+    single-tool test in place at the time could not see it. This asserts the
+    PARTITION is total: every registered tool is either exercised by a refusal
+    test, listed as gated-but-awkward-to-call, or explicitly declared
+    non-writing. Adding a tool without touching one of these three lists fails
+    here, forcing the decision to be made.
+    """
+    from vibe_cognition.tools import register_all_tools
+
+    register_all_tools(mock_mcp)
+    registered = set(mock_mcp.tools)
+    classified = (
+        {name for name, _ in WRITE_TOOLS}
+        | {name for name, _ in CURATION_WRITE_TOOLS}
+        | UNGATED_TOOLS
+        | GATED_NOT_DIRECTLY_TESTABLE
+    )
+    assert not registered - classified, (
+        "unclassified tool(s) — gate them and add to WRITE_TOOLS, or declare them "
+        f"non-writing in UNGATED_TOOLS: {sorted(registered - classified)}"
+    )
+    assert not classified - registered, (
+        f"classified but not registered (stale list): {sorted(classified - registered)}"
+    )
 
 
 @pytest.mark.parametrize("tool_name,kwargs", WRITE_TOOLS, ids=[t for t, _ in WRITE_TOOLS])
 def test_every_write_tool_refuses_without_identity(
-    tool_name, kwargs, tmp_path, mock_mcp, build_lc, make_ctx, monkeypatch
+    tool_name, kwargs, tmp_path, mock_mcp, build_lc, make_ctx, graph_identity, monkeypatch
 ):
     """No write path may stamp attribution when no identity resolves.
 
@@ -390,6 +528,7 @@ def test_every_write_tool_refuses_without_identity(
     """
     from vibe_cognition.tools.cognition_tools import register_cognition_tools
 
+    graph_identity.unonboarded()
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "nope"))
     monkeypatch.setenv("SVN_CONFIG_DIR", str(tmp_path / "nope-svn"))
     monkeypatch.setattr("vibe_cognition.cognition.git_identity.getpass.getuser", lambda: "x")
@@ -404,6 +543,35 @@ def test_every_write_tool_refuses_without_identity(
     result = mock_mcp.tools[tool_name](ctx, **kwargs)
     assert result.get("identity_required") is True, (tool_name, result)
     assert lc["cognition_storage"].get_all_nodes() == [], tool_name
+
+
+@pytest.mark.parametrize(
+    "tool_name,kwargs", CURATION_WRITE_TOOLS, ids=[t for t, _ in CURATION_WRITE_TOOLS]
+)
+def test_curation_write_tools_refuse_without_identity_even_with_a_valid_token(
+    tool_name, kwargs, tmp_path, mock_mcp, build_lc, make_ctx, graph_identity, monkeypatch
+):
+    """A curation token proves WHICH agent is calling, not WHO it belongs to.
+
+    Edges and curation marks are graph content: they change what search returns
+    and permanently remove nodes from the uncurated worklist. Before this they
+    were the one mutation path with no identity requirement at all, so a checkout
+    with no confirmed identity could still rewrite the graph's semantic structure.
+    """
+    from vibe_cognition.tools.cognition_tools import register_cognition_tools
+
+    graph_identity.unonboarded()
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "nope"))
+    monkeypatch.setenv("SVN_CONFIG_DIR", str(tmp_path / "nope-svn"))
+    monkeypatch.setattr("vibe_cognition.cognition.git_identity.getpass.getuser", lambda: "x")
+
+    register_cognition_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    ctx = make_ctx(lc)
+
+    token = mock_mcp.tools["cognition_begin_curation"](ctx)["curation_token"]
+    result = mock_mcp.tools[tool_name](ctx, curation_token=token, **kwargs)
+    assert result.get("identity_required") is True, (tool_name, result)
 
 
 # ── round-3 regressions ───────────────────────────────────────────────────────

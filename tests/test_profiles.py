@@ -188,7 +188,8 @@ def test_profile_and_fact_registries_do_not_see_each_others_files(tmp_path):
 
     assert all(n.endswith(".profile.jsonl") for n in profiles._files)
     assert not any(n.endswith(".profile.jsonl") for n in facts._files)
-    assert profiles.get("ada@example.com")["name"] == "Ada"
+    ada = profiles.get("ada@example.com")
+    assert ada is not None and ada["name"] == "Ada"
     assert facts.facts_for("ada@example.com") == {"desk": {"os": "Windows"}}
 
 

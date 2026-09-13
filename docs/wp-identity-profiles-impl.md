@@ -231,3 +231,84 @@ concurrency.
 | Search ranking silently changes | Roster covers every consumer of seniority; test asserts ranking parity |
 | Lock path change breaks mutual exclusion | `*.lock` deliberately not moved |
 | Tool-surface drift | Audit in B8, gates in C |
+
+---
+
+## E. Build log — what actually shipped, and where it deviated from this plan
+
+Kept here rather than in a commit message because the deviations are contract
+decisions a future maintainer will need, and two of them contradict the plan text
+above.
+
+| step | state | commit |
+|---|---|---|
+| STEP 0 / 0b | done | `dd88d77` |
+| A (`local/`, one ignore entry, `GIT_HYGIENE_VERSION` 9) | done | `dd88d77` |
+| B1 (profile store + shared JSONL engine) | done | `311a5ba` |
+| B2 (gate) | done | working tree |
+| B3 (`cognition_set_identity` full profile) | done | working tree |
+| B4–B8 | outstanding | — |
+
+### Deviation 1 — the bootstrap exemption list is smaller than planned
+
+B2 above says the exemption covers `cognition_set_identity`, **the four person
+tools**, and pure reads. The person tools are NOT exempt. `cognition_set_identity`
+is the unblock path, so nothing else needs an exemption; exempting
+`register_person` is what let it ship ungated in v0.37.0, found by a reviewer only
+because the gate test was parametrized across every write tool. A manager
+pre-registering a teammate is still possible — the manager's own identity has to be
+confirmed and complete first, which is the point.
+
+### Deviation 2 — the three profile arguments to `cognition_set_identity` are optional
+
+B3 reads as though all five are required. They are not: `role`, `seniority` and
+`reports_to` default to `None`, and the return carries `missing_profile_fields`
+plus `write_ready`. Two flows need this:
+
+* re-pointing an already-profiled identity at a different address (the "git reports
+  my personal address" fix) must not force the human to re-answer everything;
+* a teammate whose manager already filled in their profile is finished in one call.
+
+The gate, not the signature, is what enforces completeness — so an agent that
+passes only name and email gets a refusal naming exactly the three fields left,
+rather than a schema error it cannot act on.
+
+### Deviation 3 — env-fact writes are gated, the env-fact read is not
+
+`cognition_set_env_fact` / `delete_env_fact` / `clear_env_facts` go through the
+full gate. `cognition_list_env_facts` defaults to "self" and therefore needs *an*
+email, but not a complete profile: a confirmed person with a half-filled profile
+can still read their own facts. Reads stay open by design (divergence detection
+needs teammates' facts).
+
+### Contract changes this stage makes, for CHANGELOG and whats-new
+
+1. An unconfirmed git identity no longer passes the gate. v0.37.0 allowed it so
+   upgrades would not break; that readmits the shared-build-account case.
+2. A confirmed identity with an incomplete profile is refused, with a distinct
+   message naming the missing fields.
+3. A read-only checkout gets a third message saying confirmation can never succeed
+   there, and deliberately does NOT ask the human anything (ruling Q4).
+4. `cognition_update_task`: an unverifiable caller (blank email) used to bypass the
+   WP-TC4 note requirement and silently seize a live foreign claim. It is now
+   refused. The unverifiable-PRIOR-claimant branch still exists and is still
+   reachable from legacy journal data.
+5. `cognition_set_identity` gains `role`, `seniority`, `reports_to` and four return
+   keys (`profile`, `profile_written`, `profile_skipped`, `missing_profile_fields`,
+   `write_ready`). `reports_to` rejects a manager's NAME — the chain resolves by
+   email, and a name would break it with no error anywhere.
+
+### Test-suite change worth knowing about
+
+Every test now builds an ONBOARDED checkout: `tests/conftest.py`'s autouse
+`graph_identity` fixture wraps `CognitionStorage.__init__` and seeds
+`local/identity.json` plus a complete profile. Opt out with
+`graph_identity.unonboarded()` (seed nothing) or `graph_identity.unresolvable()`
+(no email resolves at all). Seeding is wrapped around the constructor rather than
+put in one fixture because storage is built from eight different places.
+
+`identity_stamp(name, email)` in `tests/conftest.py` is the expected shape of a
+write's identity stamp. Around twenty assertions compared `recorded_by` against a
+two-key `{name, email}` dict while production has stamped four keys
+(`source`, `confirmed`) since v0.37.0 — they were asserting the old hand-rolled
+mock's shape, and passed for that reason alone.

@@ -28,6 +28,7 @@ from typing import Any
 
 from .journal_io import append_journal_line
 from .jsonl_dir_registry import FileState, JsonlDirRegistry
+from .models import SENIORITY_LEVELS
 from .people_facts import PEOPLE_DIRNAME, email_slug
 
 logger = logging.getLogger(__name__)
@@ -41,8 +42,6 @@ REQUIRED_FIELDS: tuple[str, ...] = ("name", "email", "role", "seniority", "repor
 PROFILE_FIELDS: tuple[str, ...] = (*REQUIRED_FIELDS, "detail")
 
 NO_MANAGER = "nobody"
-
-SENIORITY_LEVELS: tuple[str, ...] = ("owner", "senior", "mid", "junior")
 
 
 def _casefold(value: str) -> str:

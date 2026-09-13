@@ -221,7 +221,11 @@ def test_machine_cap_rejects_new_machine_and_allows_existing(tmp_path):
 # ── fresh project / directory lifecycle ─────────────────────────────────────
 
 
-def test_fresh_project_first_write_creates_people_dir(tmp_path):
+def test_fresh_project_first_write_creates_people_dir(tmp_path, graph_identity):
+    """Storage init must not create people/ -- a project with no env facts and no
+    profiles carries no directory at all. Onboarding is off here for that reason:
+    the default onboarded checkout writes a profile, which creates it."""
+    graph_identity.unonboarded()
     store = _store(tmp_path)
     people = tmp_path / ".cognition" / "people"
     assert not people.exists()  # init does NOT create it

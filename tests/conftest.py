@@ -6,15 +6,18 @@ build_lc owns the storage/threading state; make_ctx owns only the Context shim.
 """
 
 import asyncio
+import contextlib
 import functools
 import inspect
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
 from vibe_cognition.cognition import CognitionStorage
+from vibe_cognition.cognition.identity import identity_write_path
 from vibe_cognition.embeddings import ChromaDBStorage, EmbeddingGenerator
 from vibe_cognition.tools.project_registry import build_registry
 
@@ -106,6 +109,129 @@ def _isolate_identity_resolution(monkeypatch, tmp_path):
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", str(tmp_path / "_no_system_gitconfig"))
     # SVN is suggestion-only and must never be read off the real machine.
     monkeypatch.setenv("SVN_CONFIG_DIR", str(tmp_path / "_no_svn_config"))
+
+
+TEST_IDENTITY = {"name": "Test User", "email": "test-user@example.invalid"}
+
+TEST_PROFILE = {"role": "engineer", "seniority": "mid", "reports_to": "nobody"}
+
+
+class GraphIdentity:
+    """The acting graph identity for one test, and how it reaches the code.
+
+    WP-Identity-Profiles made every graph WRITE require a CONFIRMED identity
+    whose committed profile is complete. A test that only has a git config no
+    longer passes the gate, so the default checkout every test gets must be an
+    ONBOARDED one -- which is also the only state the product can be in once
+    anyone has recorded anything.
+
+    Seeding happens inside CognitionStorage construction rather than in one
+    fixture, because tests build storage from eight different places (build_lc
+    plus seven files with their own lifespan dicts) and a per-site helper would
+    be forgotten by the next site added.
+
+    Three knobs:
+      * default -- identity.json + a complete profile for TEST_IDENTITY, written
+        through the real write paths, so resolve_identity/require_identity run
+        for real rather than being patched out.
+      * acting_as(...) -- a different identity, for tests asserting what gets
+        stamped. Patches _acting_identity too, so a raw (non-casefolded) address
+        still reaches the tool and casefolding assertions stay meaningful.
+      * unonboarded() -- seed nothing, for the refusal tests.
+    """
+
+    def __init__(self, monkeypatch):
+        self._monkeypatch = monkeypatch
+        self._identity = dict(TEST_IDENTITY)
+        self._profile = dict(TEST_PROFILE)
+        self._enabled = True
+        self._dirs: list[Path] = []
+
+    def acting_as(self, name, email, **profile):
+        """Act as this identity: confirmed, with a complete profile."""
+        self._identity = {"name": name, "email": email}
+        self._profile.update(profile)
+        self._monkeypatch.setattr(
+            "vibe_cognition.tools.cognition_tools._acting_identity",
+            lambda cognition_dir: {
+                "name": name, "email": email, "source": "confirmed", "confirmed": True,
+            },
+        )
+        for d in self._dirs:
+            self._write(d)
+
+    def unresolvable(self, name="unknown"):
+        """No email resolves at all -- the case the write gate exists to refuse.
+
+        Any already-seeded identity.json is removed, not just left behind: the
+        gate's refusal payload re-resolves from disk, so a stale confirmed file
+        would contradict the patched stamp and the gate would pass.
+        """
+        self._enabled = False
+        for d in self._dirs:
+            with contextlib.suppress(OSError):
+                identity_write_path(d).unlink()
+        self._monkeypatch.setattr(
+            "vibe_cognition.tools.cognition_tools._acting_identity",
+            lambda cognition_dir: {
+                "name": name, "email": "", "source": "os-user", "confirmed": False,
+            },
+        )
+
+    def unonboarded(self):
+        """Seed nothing: a checkout nobody has confirmed an identity in."""
+        self._enabled = False
+
+    def seed(self, cognition_dir):
+        self._dirs.append(Path(cognition_dir))
+        if self._enabled:
+            self._write(Path(cognition_dir))
+
+    def _write(self, cognition_dir):
+        from vibe_cognition.cognition.identity import write_confirmed_identity
+        from vibe_cognition.cognition.profiles import ProfileRegistry
+
+        name, email = self._identity["name"], self._identity["email"]
+        folded = email.strip().casefold()
+        if not folded:
+            return
+        write_confirmed_identity(cognition_dir, name, email)
+        registry = ProfileRegistry(cognition_dir)
+        # Fold what is already on disk first: set_fields skips a field only when
+        # it can see the current value, so an unfolded registry re-appends every
+        # field on each re-seed.
+        registry.catch_up()
+        registry.set_fields(
+            folded,
+            {"name": name, "email": folded, **self._profile},
+            {"name": name, "email": folded},
+            from_agent=False,
+        )
+
+
+def identity_stamp(name, email, source="confirmed", confirmed=True):
+    """The identity dict a write actually stamps.
+
+    Four keys, not two: source/confirmed ride along so a later audit can tell a
+    human-confirmed identity from whatever sat in a shared machine's git config.
+    Assertions that spelled out {name, email} were matching the old hand-rolled
+    mock's shape rather than the product's, and passed for that reason alone.
+    """
+    return {"name": name, "email": email, "source": source, "confirmed": confirmed}
+
+
+@pytest.fixture(autouse=True)
+def graph_identity(monkeypatch, _isolate_identity_resolution):
+    """Every CognitionStorage a test builds starts as an onboarded checkout."""
+    state = GraphIdentity(monkeypatch)
+    real_init = CognitionStorage.__init__
+
+    def init(self, cognition_dir, *args, **kwargs):
+        state.seed(cognition_dir)
+        real_init(self, cognition_dir, *args, **kwargs)
+
+    monkeypatch.setattr(CognitionStorage, "__init__", init)
+    return state
 
 
 @pytest.fixture(autouse=True)

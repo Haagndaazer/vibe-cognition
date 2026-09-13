@@ -24,6 +24,7 @@ from .models import (
     generate_node_id,
 )
 from .people_facts import DEFAULT_MACHINE_CAP, PeopleFactsRegistry
+from .profiles import ProfileRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,8 @@ class CognitionStorage:
         # Guarded by self._lock like everything else; caught up alongside the
         # main journal in _synced.
         self._people_facts = PeopleFactsRegistry(cognition_dir)
+        # Caught up under the lock in _synced, like the facts registry.
+        self._profiles = ProfileRegistry(cognition_dir)
 
         self._dir.mkdir(parents=True, exist_ok=True)
 
@@ -140,6 +143,7 @@ class CognitionStorage:
         # Initial hydrate is just a catch-up from offset 0.
         self._catch_up()
         self._people_facts.catch_up()
+        self._profiles.catch_up()
 
     @property
     def graph(self) -> nx.MultiDiGraph:
@@ -199,6 +203,44 @@ class CognitionStorage:
         """One identity's facts, machine -> key -> value (empty dict if none)."""
         with self._synced():
             return self._people_facts.facts_for(email)
+
+    # ── Profiles (committed, per person; replaces person nodes) ─────────
+
+    def set_profile_fields(
+        self, email: str, fields: dict[str, Any], by: dict[str, str], from_agent: bool = True
+    ) -> dict[str, Any]:
+        with self._synced():
+            return self._profiles.set_fields(email, fields, by, from_agent)
+
+    def unset_profile_field(self, email: str, field: str, by: dict[str, str]) -> dict[str, Any]:
+        with self._synced():
+            return self._profiles.unset_field(email, field, by)
+
+    def get_profile(self, email: str) -> dict[str, Any] | None:
+        with self._synced():
+            return self._profiles.get(email)
+
+    def all_profiles(self) -> list[dict[str, Any]]:
+        with self._synced():
+            return self._profiles.all_profiles()
+
+    def profile_emails(self) -> list[str]:
+        with self._synced():
+            return self._profiles.all_emails()
+
+    def profile_missing_required(self, email: str) -> list[str]:
+        """Which required fields a profile still lacks — the gate's refusal names these."""
+        with self._synced():
+            return self._profiles.missing_required(email)
+
+    def profile_direct_reports(self, email: str) -> list[str]:
+        with self._synced():
+            return self._profiles.direct_reports(email)
+
+    def profile_history(self, email: str) -> list[dict[str, Any]]:
+        """Append-only record trail for one profile — powers the tamper alert."""
+        with self._synced():
+            return self._profiles.history_for(email)
 
     def env_fact_emails(self) -> list[str]:
         """Every email with folded facts — registered person or not."""
@@ -264,6 +306,7 @@ class CognitionStorage:
             if self._sync_depth == 0:
                 self._catch_up()
                 self._people_facts.catch_up()
+                self._profiles.catch_up()
             self._sync_depth += 1
             try:
                 yield

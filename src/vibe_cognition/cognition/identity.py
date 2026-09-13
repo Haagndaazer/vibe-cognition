@@ -5,10 +5,16 @@ module exists to fix: a Subversion working copy on a machine with no git identit
 resolves to ``email=""``, so every such user attributes to an empty address and
 is indistinguishable from every other one.
 
+A write is allowed only when identity is CONFIRMED and the person's committed
+profile is COMPLETE (name, email, role, seniority, reports_to -- where "nobody"
+is a valid reports_to and the expected answer on a solo project). An unconfirmed
+git email is NOT enough: that is the shared-build-account case, where every human
+on one machine attributes to whatever address happens to be in git config.
+
 Resolution order (first hit wins):
-  1. CONFIRMED -- ``.cognition/identity.json``, written by the user answering once
-  2. git config files
-  3. OS user (name only, never an email -- so writes stay gated)
+  1. CONFIRMED -- ``.cognition/local/identity.json``, written by answering once
+  2. git config files -- resolves, but does NOT satisfy the gate
+  3. OS user (name only, never an email)
 
 SVN credentials are SUGGESTION-ONLY and never stamp a write: the auth cache is
 machine-wide and realm-keyed, and correlating a realm to this working copy is not
@@ -31,7 +37,8 @@ from pathlib import Path
 from typing import Any
 
 from .git_identity import resolve_git_identity
-from .local_paths import read_path, write_path
+from .local_paths import local_dir, read_path, write_path
+from .profiles import SENIORITY_LEVELS
 from .svn_identity import _looks_like_email, is_svn_working_copy, svn_username_candidates
 
 logger = logging.getLogger(__name__)
@@ -178,17 +185,86 @@ def identity_suggestions(repo_path: Path | str, cognition_dir: Path | str) -> li
     return out
 
 
-def require_identity(repo_path: Path | str, cognition_dir: Path | str) -> dict[str, Any] | None:
-    """Gate for every graph WRITE. Returns None when allowed, else an error dict.
+def can_persist_identity(cognition_dir: Path | str) -> bool:
+    """Whether identity could ever be confirmed here.
 
-    Blocks when no email resolves -- the state which silently attributes work to
-    nobody. An unconfirmed GIT email passes (blocking it would break every working
-    install on upgrade for no correctness gain). An SVN-only machine does NOT pass:
-    its credentials are suggestion-only, so those users confirm once.
+    A read-only checkout cannot persist the pointer, so no answer from a human
+    would help -- the refusal must say that rather than asking five questions
+    whose answer cannot be saved (ruling Q4).
+    """
+    target = local_dir(Path(cognition_dir))
+    probe = target / f".identity-probe.{os.getpid()}"
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        probe.touch()
+    except OSError:
+        return False
+    finally:
+        with contextlib.suppress(OSError):
+            probe.unlink()
+    return True
+
+
+def require_identity(
+    repo_path: Path | str,
+    cognition_dir: Path | str,
+    missing_profile_fields: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Gate for every graph WRITE. Returns None when allowed, else a refusal.
+
+    Three conditions, all required:
+      1. identity.json names an email (this checkout is claimed), AND
+      2. a committed profile exists for it, AND
+      3. that profile is complete -- name, email, role, seniority, reports_to,
+         where "nobody" is a valid reports_to.
+
+    An unconfirmed git email does NOT pass; see this module's docstring.
+
+    Args:
+        repo_path: repository root, for VCS identity suggestions.
+        cognition_dir: the .cognition/ directory.
+        missing_profile_fields: which required profile fields are absent, from
+            the caller's ProfileRegistry (passed in rather than read here, so
+            this module stays free of storage). None means "not checked".
+
+    Returns:
+        None when writing is allowed. Otherwise a refusal dict, handed straight
+        back to the calling agent by every gated tool:
+          `error` -- what is missing and how to fix it, including the exact
+              cognition_set_identity call to make.
+          `identity_required` -- always True.
+          `resolved` -- the identity that DID resolve, with its `source`.
+          `suggestions` -- candidates from git config and cached SVN
+              credentials; empty on the read-only branch.
+          `confirmed` -- bool, whether the checkout is claimed at all. Absent on
+              the read-only branch.
+          `missing_profile_fields` -- the list passed in, echoed so the agent can
+              ask for exactly those. Absent on the read-only branch.
+          `read_only` -- True, and ONLY present, when .cognition/ cannot be
+              written; that branch asks the human for nothing.
     """
     ident = resolve_identity(repo_path, cognition_dir)
-    if ident.get("email"):
+    confirmed = bool(ident.get("confirmed")) and bool(ident.get("email"))
+    complete = not missing_profile_fields
+
+    if confirmed and complete:
         return None
+
+    if not can_persist_identity(cognition_dir):
+        # Ruling Q4: not "blocked until a human answers" -- unfixable from here.
+        return {
+            "error": (
+                "GRAPH IDENTITY CANNOT BE CONFIRMED IN THIS CHECKOUT -- refusing to "
+                "write. .cognition/ is not writable, so the identity file can never "
+                "be saved and no answer from a human would help. Recording is "
+                "unavailable here; reads still work. Do NOT ask the human to set "
+                "an identity -- nothing could persist it."
+            ),
+            "identity_required": True,
+            "read_only": True,
+            "resolved": ident,
+            "suggestions": [],
+        }
 
     suggestions = identity_suggestions(repo_path, cognition_dir)
     hint = ""
@@ -197,18 +273,34 @@ def require_identity(repo_path: Path | str, cognition_dir: Path | str) -> dict[s
             f"{s['name']}{' <' + s['email'] + '>' if s['email'] else ''} (from {s['source']})"
             for s in suggestions
         )
-        hint = f" Candidates found on this machine: {names}."
+        hint = f" Candidates found on this machine (confirm, do not assume): {names}."
+
+    if not confirmed:
+        what = (
+            "GRAPH IDENTITY NOT CONFIRMED -- refusing to write. Every memory must be "
+            "attributable to a real person, and this checkout has no confirmed "
+            "identity."
+            f"{hint}"
+        )
+    else:
+        what = (
+            "GRAPH PROFILE INCOMPLETE -- refusing to write. Identity is confirmed as "
+            f"{ident.get('email')}, but the profile still needs: "
+            f"{', '.join(missing_profile_fields or [])}."
+        )
+
     return {
         "error": (
-            "GRAPH IDENTITY NOT SET -- refusing to write. Every memory must be "
-            "attributable to a person, and no email address could be resolved from "
-            "git config, and SVN credentials are suggestion-only."
-            f"{hint}"
-            " ASK THE HUMAN for their name and work email, then call "
-            "cognition_set_identity(name=..., email=...). Do NOT guess on their "
-            "behalf and do NOT invent an address."
+            f"{what} ASK THE HUMAN for their name, work email, role, seniority "
+            f"({'|'.join(SENIORITY_LEVELS)}), and who they report to -- \"nobody\" is a "
+            "valid and expected answer on a solo project. Then call "
+            "cognition_set_identity(name=..., email=..., role=..., seniority=..., "
+            "reports_to=...). Do NOT guess on their behalf, do NOT invent an "
+            "address, and NEVER use your own agent name."
         ),
         "identity_required": True,
+        "confirmed": confirmed,
+        "missing_profile_fields": list(missing_profile_fields or []),
         "resolved": ident,
         "suggestions": suggestions,
     }
