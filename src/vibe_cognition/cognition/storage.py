@@ -24,6 +24,7 @@ from .models import (
     generate_node_id,
 )
 from .people_facts import DEFAULT_MACHINE_CAP, PeopleFactsRegistry
+from .person_migration import ensure_person_migration
 from .profiles import ProfileRegistry
 from .roster import Roster
 
@@ -146,6 +147,16 @@ class CognitionStorage:
         self._people_facts.catch_up()
         self._profiles.catch_up()
 
+        # Runs here, not in prime, so a session that never primes still converges:
+        # the write gate reads PROFILES, so an unmigrated person node would have
+        # its owner re-answer all five onboarding questions. Report is stashed for
+        # prime to announce, since this wrote committed files nobody asked for.
+        self.person_migration_report: dict[str, Any] | None = None
+        try:
+            self.person_migration_report = ensure_person_migration(self)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("person-migration: unexpected error (swallowed): %s", exc)
+
     @property
     def graph(self) -> nx.MultiDiGraph:
         """Access the underlying NetworkX graph.
@@ -243,6 +254,12 @@ class CognitionStorage:
         folded in for any email that has no profile yet."""
         with self._synced():
             return Roster.load(self)
+
+    def append_legacy_profile_history(
+        self, email: str, entries: list[dict[str, Any]], node_id: str
+    ) -> dict[str, Any]:
+        with self._synced():
+            return self._profiles.append_legacy_history(email, entries, node_id)
 
     def profile_history(self, email: str) -> list[dict[str, Any]]:
         """Append-only record trail for one profile — powers the tamper alert."""

@@ -75,7 +75,15 @@ class ProfileRegistry(JsonlDirRegistry):
     def _fold_entry(self, fs: FileState, entry: dict[str, Any]) -> None:
         action = entry.get("action")
         email = _casefold(str(entry.get("email") or ""))
-        if not email or action not in ("profile_set", "profile_unset"):
+        if not email:
+            return
+        if action == "profile_history_legacy":
+            # Readable, never folded: it carries a migrated person node's old
+            # per-CALL history, which has no single field/value to apply.
+            fs.keys.add(email)
+            self._history.setdefault(email, []).append(entry)
+            return
+        if action not in ("profile_set", "profile_unset"):
             return
         field = str(entry.get("field") or "")
         if field not in PROFILE_FIELDS:
@@ -209,6 +217,29 @@ class ProfileRegistry(JsonlDirRegistry):
             "by": by, "at": datetime.now(UTC).isoformat(),
         })
         return {"unset": field}
+
+    def append_legacy_history(
+        self, email: str, entries: list[dict[str, Any]], node_id: str
+    ) -> dict[str, Any]:
+        """Preserve a migrated person node's `profile_history` verbatim.
+
+        A separate action from profile_set/profile_unset so `_fold_entry` ignores
+        it: the old shape is one entry per update CALL listing several fields, and
+        replaying it as sets would need invented timestamps that then compete with
+        real ones in the last-write-wins fold. Readable, never folded, never able
+        to overwrite a current value.
+        """
+        folded = _casefold(email)
+        if not folded:
+            return {"error": "email must not be blank"}
+        if not entries:
+            return {"written": 0}
+        self._append(folded, {
+            "action": "profile_history_legacy", "email": folded,
+            "from_node": node_id, "entries": entries,
+            "at": datetime.now(UTC).isoformat(),
+        })
+        return {"written": len(entries)}
 
     def _append(self, email: str, entry: dict[str, Any]) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)

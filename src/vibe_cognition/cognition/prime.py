@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from ..config import Settings, resolve_repo_path_env
 from .git_hygiene import _acquire_lock, _release_lock, check_hygiene_state, format_hygiene_announce
@@ -16,6 +17,7 @@ from .identity import identity_suggestions, resolve_identity
 from .local_paths import read_path as local_read_path
 from .local_paths import write_path as local_write_path
 from .models import CognitionEdgeType, CognitionNodeType
+from .person_migration import format_migration_announce
 from .readme import ONBOARDING_BLOCK
 from .roster import Person
 from .storage import REHYDRATE_FLAG_FILENAME, CognitionStorage
@@ -634,6 +636,66 @@ def _format_manager_decisions(
     return "## Your Manager's Recent Decisions\n" + "\n".join(lines)
 
 
+# ── WP-Identity-Profiles: someone else changed YOUR profile ─────────────────
+
+
+def _profile_change_alert(storage: CognitionStorage, current_email: str) -> str:
+    """Loud notice when someone OTHER than you changed your profile since you last
+    primed. Empty string otherwise.
+
+    Profiles are deliberately trust-based multi-writer -- a manager can set your
+    role and reporting line -- and the ruling that allowed that also asked for a
+    strong alert when it happens, because the alternative is your seniority
+    changing under you with nothing anywhere saying so. Seniority leads the list:
+    it reweights your search results, so a silent change quietly alters what every
+    future session surfaces to you.
+
+    Gated on the last-seen marker, so a first run says nothing: with no baseline
+    every legitimate pre-registration would read as tampering, and a fresh user
+    sees their profile in the identity header anyway.
+    """
+    if not current_email:
+        return ""
+    since = _last_seen_for(storage.cognition_dir, current_email)
+    if not since:
+        return ""
+
+    # Replay in order so each foreign change can name what it replaced.
+    previous: dict[str, Any] = {}
+    foreign: list[tuple[str, Any, Any, dict[str, Any]]] = []
+    for record in storage.profile_history(current_email):
+        field = str(record.get("field") or "")
+        if not field:
+            continue
+        author = str((record.get("by") or {}).get("email") or "").casefold()
+        at = str(record.get("at") or "")
+        value = record.get("value") if record.get("action") == "profile_set" else None
+        if author and author != current_email and at > since:
+            foreign.append((field, previous.get(field), value, record))
+        previous[field] = value
+    if not foreign:
+        return ""
+
+    foreign.sort(key=lambda row: (row[0] != "seniority", row[0]))
+    lines = ["## ⚠ Someone else changed YOUR profile"]
+    for field, was, now, record in foreign:
+        who = (record.get("by") or {}).get("name") or (record.get("by") or {}).get("email") or "?"
+        shown_was = "(unset)" if was in (None, "") else repr(was)
+        shown_now = "(cleared)" if now in (None, "") else repr(now)
+        note = ""
+        if field == "seniority":
+            note = " — this reweights YOUR search results"
+        lines.append(
+            f"- `{field}`: {shown_was} -> {shown_now}, by {who} at {record.get('at')}{note}"
+        )
+    lines.append(
+        "TELL THE HUMAN. If any of it is wrong, correct it with "
+        "`cognition_update_person`; the change trail is append-only, so nothing "
+        "was lost."
+    )
+    return "\n".join(lines)
+
+
 # ── WP-TC14: "Since You Were Gone" digest ───────────────────────────────────
 
 
@@ -912,8 +974,13 @@ def generate_prime(
     current_email = (current_email or "").casefold()
     personalize = _should_personalize(storage, config, current_email)
 
-    # WP-TC7: pinned FIRST section, before Active Constraints.
-    sections = [_onboarding_notice(storage, config, current_email)]
+    # WP-TC7: pinned FIRST section, before Active Constraints. The profile-change
+    # alert goes above even that: it is about the reader, and it is the one thing
+    # here they may need to dispute.
+    sections = [
+        _profile_change_alert(storage, current_email),
+        _onboarding_notice(storage, config, current_email),
+    ]
     sections.append(_format_constraints(storage, config.prime_constraint_limit, maxlen))
 
     if personalize:
@@ -1066,6 +1133,11 @@ def main(argv: list[str] | None = None):
     storage: CognitionStorage | None = None
     if cognition_dir.exists():
         storage = CognitionStorage(cognition_dir)
+        # Announced because construction may have written committed files nobody
+        # asked for, and the leftover person nodes need a human decision.
+        migration_note = format_migration_announce(storage.person_migration_report or {})
+        if migration_note:
+            sections.append(migration_note)
 
     empty = storage is None or storage.get_statistics()["nodes"] == 0
 
