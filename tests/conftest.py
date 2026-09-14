@@ -264,6 +264,17 @@ def _isolate_chroma_resolution(monkeypatch, tmp_path):
     )
 
 
+@pytest.fixture(autouse=True)
+def _no_real_svn(request, monkeypatch):
+    """The default suite spawns no real subprocess: several tests fake an SVN
+    checkout, and on a machine with svn installed the automatic setup would run
+    the real binary against it. Tests marked `svn` get the real client."""
+    if request.node.get_closest_marker("svn") is None:
+        from vibe_cognition.cognition import svn_hygiene
+
+        monkeypatch.setattr(svn_hygiene, "_svn_command", lambda: None)
+
+
 @pytest.fixture
 def fake_generator() -> EmbeddingGenerator:
     """A text-keyed fake embedder (3-D, no model load)."""

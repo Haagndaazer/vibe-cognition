@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -168,16 +168,26 @@ class Settings(BaseSettings):
         description="Logging level",
     )
 
-    # Git hygiene settings
+    # Version-control hygiene settings
+    vibe_cognition_no_vcs_hygiene: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "VIBE_COGNITION_NO_VCS_HYGIENE", "VIBE_COGNITION_NO_GIT_HYGIENE",
+        ),
+        description=(
+            "Set to a truthy value to suppress BOTH automatic version-control "
+            "passes: git (.gitattributes merge=union, .cognition/.gitignore) and "
+            "SVN (adding .cognition/, its svn:global-ignores property, and "
+            "scheduling new files). Use this in single-shared-checkout git repos "
+            "where union-merge is the wrong topology, or to manage SVN by hand. "
+            "VIBE_COGNITION_NO_GIT_HYGIENE is the older name and still works. "
+            "Documents the variable: git_hygiene.vcs_hygiene_opted_out reads the "
+            "environment directly, since the hygiene modules never build Settings."
+        ),
+    )
     vibe_cognition_no_git_hygiene: bool = Field(
         default=False,
-        description=(
-            "Set to a truthy value to suppress the one-time git-hygiene pass "
-            "(disables auto-writing .gitattributes merge=union and "
-            ".cognition/.gitignore chromadb/ on startup). Use this in "
-            "single-shared-checkout repos where union-merge is the wrong "
-            "topology (worktree-flush protocol is used instead)."
-        ),
+        description="Deprecated name for vibe_cognition_no_vcs_hygiene; still honoured.",
     )
 
     # WP-Nudge-1: session-start "new version available" nudge (see

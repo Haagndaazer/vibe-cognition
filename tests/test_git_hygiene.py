@@ -513,6 +513,34 @@ def test_announce_configured(tmp_path):
     assert "CONFLICT" not in line
 
 
+def test_a_relocation_deferred_by_a_locked_file_is_retried_next_start(tmp_path, monkeypatch):
+    """Review finding, reproduced: the pass wrote its done-flag even when a legacy
+    identity.json could not be moved (Windows file in use), so it never retried --
+    and the new ignore list names only `local/`, leaving the file unignored."""
+    repo, cognition = _make_git_repo(tmp_path)
+    (cognition / "identity.json").write_text('{"name": "A", "email": "a@x.com"}', encoding="utf-8")
+    real_replace = Path.replace
+
+    def locked(self, target):
+        if self.name == "identity.json":
+            raise PermissionError("in use")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", locked)
+    _run(repo, cognition)
+    assert (cognition / "identity.json").exists()
+    flag = local_read_path(cognition, _FLAG_FILENAME)
+    assert not flag.exists() or flag.read_text(encoding="utf-8").strip() != str(GIT_HYGIENE_VERSION), (
+        "pass marked done with a machine-local file still at the legacy path"
+    )
+
+    monkeypatch.setattr(Path, "replace", real_replace)
+    _run(repo, cognition)
+    assert not (cognition / "identity.json").exists()
+    assert (cognition / "local" / "identity.json").exists()
+    assert local_read_path(cognition, _FLAG_FILENAME).read_text(encoding="utf-8").strip() == str(GIT_HYGIENE_VERSION)
+
+
 def test_announce_warns_no_union_merge_on_svn(tmp_path):
     """v7: an SVN working copy is told plainly that appends conflict and how to resolve."""
     cognition = tmp_path / ".cognition"
@@ -531,6 +559,29 @@ def test_announce_warns_no_union_merge_on_svn(tmp_path):
     assert "SVN has no union-merge equivalent" in line
     assert "CONFLICT" in line
     assert "BOTH" in line
+    # "local-only files ignored" is false on SVN until the property is set by hand.
+    assert "local-only files ignored" not in line
+    assert "svn:global-ignores" in line
+    assert "svn add --force .cognition" in line
+
+
+def test_a_project_inside_a_larger_svn_checkout_is_recognised_as_svn(tmp_path):
+    """Since SVN 1.7 `.svn` exists only at the checkout root, so a project checked
+    out as `trunk/proj` has none of its own and was reported as an unknown VCS."""
+    (tmp_path / ".svn").mkdir()
+    project = tmp_path / "proj"
+    cognition = project / ".cognition"
+    cognition.mkdir(parents=True)
+    assert check_hygiene_state(project, cognition)["is_svn"]
+
+
+def test_a_git_repo_inside_an_svn_checkout_is_not_svn(tmp_path):
+    (tmp_path / ".svn").mkdir()
+    project = tmp_path / "proj"
+    (project / ".git").mkdir(parents=True)
+    cognition = project / ".cognition"
+    cognition.mkdir()
+    assert not check_hygiene_state(project, cognition)["is_svn"]
 
 
 def test_announce_nothing_configured(tmp_path):

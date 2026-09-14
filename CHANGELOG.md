@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.0]
+
+A post-release audit found that SVN setup, designed and approved in
+`docs/wp-svn-hygiene-plan.md`, had never been built: every step was manual, and a
+new teammate's `svn commit` silently left their profile out. This release builds it.
+
+### Added
+
+- **Automatic SVN setup.** At every session start on a Subversion working copy with
+  the `svn` command-line client on PATH, `.cognition/` is added to version control,
+  `svn:global-ignores` is set on it from `.cognition/.gitignore` (trailing slashes
+  stripped, merged with any existing value), and every new file under it is scheduled
+  for addition. A new profile or stored document is scheduled the moment it is
+  written, so a new teammate's first commit includes them. **Nothing is ever
+  committed**; the session-start context says what changed, what is uncommitted (the
+  property shows as `M` in the second column of `svn status`), and any problem: no
+  svn client, the project folder not versioned, `.cognition` ignored above it, or the
+  journal excluded by an inherited rule. Never added: `local/`, `*.lock`,
+  `chromadb/`, local-only documents and `documents/.gitignore`, and conflict leftovers
+  (`.mine`, `.rNNN`); nothing is added while a conflict is open. State is re-read
+  every run, so a reverted property is put back. Runs from the session-start hook on
+  both Claude Code and Codex.
+- **`vibe-cognition-resolve-journal`** (also `python -m
+  vibe_cognition.cognition.resolve_journal <project> [--dry-run]`): resolves SVN
+  conflicts on `.cognition/*.jsonl` by keeping every line from both sides exactly
+  once, then runs `svn resolve --accept working`. Never commits. The session start
+  names a conflicted file and prints the exact command with the plugin's own Python.
+- `VIBE_COGNITION_NO_VCS_HYGIENE` turns off both the git and SVN setup.
+  `VIBE_COGNITION_NO_GIT_HYGIENE` still works as the older name.
+- A real-svn test suite (`uv run pytest -m svn`), deselected by default and local
+  only, as ruled; the release procedure now requires it for SVN-touching releases.
+
+### Fixed
+
+- **The documented manual keep-both recipe deleted memories.** It said to "drop
+  duplicate lines by node `id`", but `update_node` lines reuse the id of the node they
+  change and edge lines have no id, so following it literally threw away the other
+  side's edits and links. The docs and the resolver now dedupe identical lines only,
+  and a release gate forbids the old wording.
+- Caught in the live run before release: a profile written in a project's first
+  session triggered a file add before any ignore property existed, and
+  `local/identity.json` was committed. Nothing is now added until `.cognition/` is
+  versioned and carries every ignore glob, the background add runs the full ordered
+  pass, and a path matching an ignore glob is never added regardless.
+- Found by adversarial review, reproduced on real SVN, fixed before release:
+  - **Upgrading could strand `identity.json` outside `local/`, unignored.** The
+    0.38 move of machine-local files into `local/` skips a file Windows has locked,
+    but still marked itself done, so it never retried. The pass now stays un-done
+    until every file has moved (this protects git users too), and the SVN ignore list
+    names every machine-local file by name as well.
+  - The resolver found conflicts only by their `.mine` file. With that missing, SVN
+    still reported the conflict and the session start named it, but the resolver
+    said there was nothing to do. It now asks SVN which files are conflicted, and
+    rebuilds both sides from the conflicted file when `.mine` is gone.
+  - A locked working-copy database (TortoiseSVN's cache, another svn command) made
+    each svn call wait about 14 seconds, stalling session start. The wait is capped at
+    2 seconds; the pass retries next session. Failures now report svn's own error
+    code and a hint (busy working copy, or `svn upgrade` needed) instead of a guess.
+- Manual `svn add --force .cognition` also adds local-only documents, since SVN does
+  not read `documents/.gitignore`; the manual steps now say so.
+- On SVN the session-start note claimed "local-only files ignored (.cognition/.gitignore)",
+  which SVN never reads. A project inside a larger SVN checkout was not recognised as
+  SVN at all.
+- The first-session onboarding text described only the git setup.
+- Five identity-gated tools (`cognition_record`, `cognition_add_task`,
+  `cognition_update_task`, `cognition_store_document`, `cognition_remove_node`)
+  never mentioned the `identity_required` refusal in their docstrings; a test now
+  requires it of every gated tool. `cognition_update_node` now documents the workflow
+  refusal.
+- README: the hygiene flag path and the generated `.gitignore` contents were out of
+  date.
+- Session start now constructs storage before reading the loss alert, so a
+  between-session loss detected by the session-start process is shown in that
+  session rather than the next.
+
 ## [0.39.0]
 
 Found by deliberately misusing two-person SVN checkouts the way a hurried human

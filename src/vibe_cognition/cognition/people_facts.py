@@ -38,6 +38,7 @@ from typing import Any
 
 from .journal_io import append_journal_line
 from .jsonl_dir_registry import FileState, JsonlDirRegistry
+from .svn_hygiene import add_new_files_in_background
 
 logger = logging.getLogger(__name__)
 
@@ -306,7 +307,10 @@ class PeopleFactsRegistry(JsonlDirRegistry):
         # a fresh project has no people/ dir until the first write.
         self._dir.mkdir(parents=True, exist_ok=True)
         name = f"{email_slug(email)}.jsonl"
+        is_new = not (self._dir / name).exists()
         append_journal_line(self._dir / name, json.dumps(entry))
+        if is_new:
+            add_new_files_in_background(self._dir.parent)
         # Register our OWN file immediately: dir-mtime discovery is
         # timestamp-racy (a creation in the same coarse tick as a cached dir
         # stat is numerically invisible — the Windows CI catch), and our own

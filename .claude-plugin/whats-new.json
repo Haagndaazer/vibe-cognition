@@ -1,4 +1,9 @@
 {
+  "0.40.0": [
+    "Subversion teams: memory files are now added to SVN for you, with the right ignore rules. Nothing is committed; each session tells you what to review and commit.",
+    "SVN memory conflicts now have a one-command fix that keeps both sides. Claude gives you the exact command when it happens.",
+    "Fixed: the manual SVN conflict instructions could throw away a teammate's edits. They now keep everything."
+  ],
   "0.39.0": [
     "Your identity is now tied to your machine, account and project folder, so a copied or committed identity file can't make a teammate record as you. You may be asked to confirm once.",
     "On Subversion, resolving a memory conflict with 'use mine' or 'use theirs' used to silently delete memories. Claude now warns you at the next session and explains how to recover them.",

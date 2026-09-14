@@ -59,6 +59,7 @@ from ..cognition.people_facts import fold_email
 from ..cognition.prime import SEVERITY_ORDER, _node_email
 from ..cognition.profiles import NO_MANAGER, PROFILE_FIELDS
 from ..cognition.roster import Person, Roster
+from ..cognition.svn_hygiene import add_new_files_in_background
 
 # WP-TC16 re-export: keeps tests/test_task.py:32-37's direct
 # `from ...cognition_tools import _task_claimed_at` path valid; the
@@ -1253,6 +1254,7 @@ def _store_document(
                 })
                 if warnings:
                     result["warnings"] = warnings
+                add_new_files_in_background(cognition_dir)
             return result
 
     # WP-12 (db65f1568fa5): OFFER (never auto-create) a supersedes linkage when this
@@ -1363,6 +1365,7 @@ def _store_document(
             f"cognition_add_edge(from_id='{node_id}', to_id='{prior_version_id}', "
             "edge_type='supersedes')"
         )
+    add_new_files_in_background(cognition_dir)
     return result
 
 
@@ -2952,6 +2955,10 @@ def register_cognition_tools(mcp) -> None:
             way (never silently reused/merged) — this is a visibility signal
             for a curator to reconcile manually (e.g. supersedes), not an
             automatic dedup.
+            Refused with `{"identity_required": true, ...}` when this checkout has
+            no CONFIRMED identity, or its profile is missing role/seniority/
+            reports_to — the payload names what to ask the human for and the
+            `cognition_set_identity` call that fixes it. Nothing is written.
         """
         try:
             nt = CognitionNodeType(node_type)
@@ -3046,6 +3053,10 @@ def register_cognition_tools(mcp) -> None:
         Returns:
             The created task node ({id, type, summary, ..., severity, metadata}) or
             {"error": ...} if the parent is missing or not a task.
+            Refused with `{"identity_required": true, ...}` when this checkout has
+            no CONFIRMED identity, or its profile is missing role/seniority/
+            reports_to — the payload names what to ask the human for and the
+            `cognition_set_identity` call that fixes it. Nothing is written.
         """
         return _add_task(
             ctx, summary, detail, context,
@@ -3202,6 +3213,11 @@ def register_cognition_tools(mcp) -> None:
             else closed (`claimant` is who closed it, `claimed_at` is when). The key is
             simply absent when nothing collision-worthy happened (your own task, a
             released claim, or an identity that couldn't be verified on either side).
+
+            Refused with `{"identity_required": true, ...}` when this checkout has
+            no CONFIRMED identity, or its profile is missing role/seniority/
+            reports_to — the payload names what to ask the human for and the
+            `cognition_set_identity` call that fixes it. Nothing is written.
         """
         lc = get_lifespan(ctx)
         # WP-Wedge (AC4): compute readiness FIRST, then read the generator
@@ -3255,6 +3271,8 @@ def register_cognition_tools(mcp) -> None:
             shared with the team. Name, role, seniority and reporting line live
             here; this is what makes search ranking, the manager chain and the
             prime digest work for a real person instead of an anonymous address.
+            On an SVN working copy a new profile file is scheduled for addition
+            automatically (never committed), so the user's next commit includes it.
 
         Passing the pointer alone leaves the gate closed. The return says exactly
         what is still missing in `missing_profile_fields`, and `write_ready` is
@@ -3806,7 +3824,10 @@ def register_cognition_tools(mcp) -> None:
             mime: Optional MIME type (metadata only).
             force_new: Store even if a document with the same content already exists.
             store_copy: Copy the bytes into the content-addressed blob store.
-            local_only: Keep the copied blob out of git (copy mode only).
+            local_only: Keep the copied blob out of version control (copy mode
+                        only). On an SVN working copy, new document files are
+                        scheduled for addition automatically (never committed) and
+                        local-only blobs are skipped.
             from_agent: Set false ONLY when the human explicitly dictated/authored
                         this store themselves; default true. When in doubt, leave
                         the default. Stamped as metadata.from_agent (new documents
@@ -3829,6 +3850,10 @@ def register_cognition_tools(mcp) -> None:
             genuinely is a new version, record it as a new document and run /vibe-curate,
             the ONLY path that writes the supersedes edge (semantic edges, including
             supersedes, are never written directly, cognition_add_edge included).
+            Refused with `{"identity_required": true, ...}` when this checkout has
+            no CONFIRMED identity, or its profile is missing role/seniority/
+            reports_to — the payload names what to ask the human for and the
+            `cognition_set_identity` call that fixes it. Nothing is written.
         """
         lifespan = get_lifespan(ctx)
         storage: CognitionStorage = lifespan["cognition_storage"]
@@ -3964,8 +3989,9 @@ def register_cognition_tools(mcp) -> None:
 
         Returns:
             The updated node dict (as cognition_get_node) plus `reembed`, or
-            {"error": ...} if the node is absent or no editable field was given.
-            Refused with `{"identity_required": true, ...}` when this checkout has
+            {"error": ...} if the node is absent, no editable field was given, or
+            the node is a workflow (workflows are versioned by supersession: record
+            a new one instead). Refused with `{"identity_required": true, ...}` when this checkout has
             no CONFIRMED identity, or its profile is missing role/seniority/
             reports_to — the payload names what to ask the human for and the
             `cognition_set_identity` call that fixes it. Nothing is written.
@@ -5232,6 +5258,10 @@ def register_cognition_tools(mcp) -> None:
             .cognition/documents/) reclaimed because no other document
             references them — note a previously committed blob still survives
             in git history. Returns {"error": "..."} if the node does not exist.
+            Refused with `{"identity_required": true, ...}` when this checkout has
+            no CONFIRMED identity, or its profile is missing role/seniority/
+            reports_to — the payload names what to ask the human for and the
+            `cognition_set_identity` call that fixes it. Nothing is written.
         """
         lc = get_lifespan(ctx)
         storage: CognitionStorage = lc["cognition_storage"]

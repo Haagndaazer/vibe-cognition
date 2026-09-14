@@ -1,6 +1,16 @@
 # WP-SVN-Hygiene — `.cognition/` hygiene for Subversion working copies
 
-**Status:** rev 3 — re-baselined 2026-09-11 against a codebase that went
+**Status:** IMPLEMENTED in v0.40.0 (2026-09-14) as `cognition/svn_hygiene.py`
+(the pass, run from session start and after new profile/document files) and
+`cognition/resolve_journal.py` (the keep-both resolver). Departures from this plan:
+no `.svn-hygiene-managed` flag at all — state is re-read every run (§7a); the pass
+runs from the session-start hook rather than storage startup, keeping svn
+subprocesses out of tool calls; adds are file-by-file so local-only documents and
+conflict leftovers are skipped; nothing is added until the ignore property is in
+place (a first-session profile write swept `local/` in during the live run). Kept
+below for the reasoning.
+
+Original status: rev 3 — re-baselined 2026-09-11 against a codebase that went
 multi-harness since rev 2. Research complete, not implemented, pending peer review.
 **Scope:** parity with the git-hygiene pass (`cognition/git_hygiene.py`, still at
 `GIT_HYGIENE_VERSION = 6`, untouched since rev 1) for teams whose repo is SVN.

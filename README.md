@@ -294,27 +294,73 @@ your-project/
 On first startup in a new project, vibe-cognition automatically configures two git hygiene rules for `.cognition/`:
 
 1. **`.gitattributes`** — adds `.cognition/journal.jsonl merge=union` so concurrent journal appends from different branches/clones union-merge cleanly instead of conflicting. (`merge=union` is a built-in git merge driver; it only affects 3-way merge resolution and never rewrites the journal blob.)
-2. **`.cognition/.gitignore`** — keeps machine-local and per-user files out of version control: `last-seen.json*`, `onboard-declined`, `.last-rehydrate.json`, `*.lock`, the hygiene flag, and `chromadb/`. (Since v0.32.0 the vector store lives outside the repo, but the `chromadb/` line is still written: teammates on older plugin versions sharing the repo still create an in-repo cache.) A committed `last-seen.json` conflicts on every teammate's session, so this write matters more than it looks.
+2. **`.cognition/.gitignore`** — keeps machine-local and per-user files out of version control: `local/` (since 0.38.0 every machine-local file lives there — the identity file, `last-seen.json`, alert flags, the hygiene flag), `*.lock`, and `chromadb/`. Repos upgraded from older versions keep their earlier per-file entries too; they are harmless. (Since v0.32.0 the vector store lives outside the repo, but the `chromadb/` line is still written: teammates on older plugin versions sharing the repo still create an in-repo cache.) A committed `last-seen.json` conflicts on every teammate's session, so this write matters more than it looks.
 
-Both writes are **idempotent** (existing files are appended, never clobbered) and happen exactly once per working copy, tracked by a local flag file `.cognition/.git-hygiene-managed`. The committed rules (`.gitattributes`, `.cognition/.gitignore`) travel to teammates via git; the flag is git-ignored so every fresh clone self-heals with one pass on first startup.
+Both writes are **idempotent** (existing files are appended, never clobbered) and happen exactly once per working copy, tracked by a local flag file `.cognition/local/.git-hygiene-managed`. The committed rules (`.gitattributes`, `.cognition/.gitignore`) travel to teammates via git; the flag is git-ignored so every fresh clone self-heals with one pass on first startup.
 
-**Opt out:** set `VIBE_COGNITION_NO_GIT_HYGIENE=1` to suppress the entire pass (useful in single-shared-checkout repos that use the worktree-flush protocol instead of union-merge).
+**Opt out:** set `VIBE_COGNITION_NO_VCS_HYGIENE=1` to suppress the entire pass (useful in single-shared-checkout repos that use the worktree-flush protocol instead of union-merge). It also turns off the automatic SVN setup. The older name `VIBE_COGNITION_NO_GIT_HYGIENE` still works.
 
-**Re-arm:** delete `.cognition/.git-hygiene-managed` to make the pass re-run and re-add any rule you removed.
+**Re-arm:** delete `.cognition/local/.git-hygiene-managed` (or `.cognition/.git-hygiene-managed` on a repo last started before 0.38.0) to make the pass re-run and re-add any rule you removed.
 
-**Not a git repo?** Since v0.36.3 the `.cognition/.gitignore` write happens in **any** working copy, not just a git one — the `.gitattributes` write stays git-only, since `merge=union` is a git concept. Before that fix the whole pass was skipped without a `.git` directory, so Subversion working copies got no ignore file at all and machine-local files such as `last-seen.json` could be committed by accident. Upgrading re-runs the pass once and self-heals.
+**Not a git repo?** Since v0.36.3 the `.cognition/.gitignore` write happens in **any** working copy, not just a git one — the `.gitattributes` write stays git-only, since `merge=union` is a git concept. Subversion does not read `.gitignore`; on an SVN working copy the separate SVN setup below turns that file into the `svn:global-ignores` property.
 
 ### Subversion teams
 
+Since 0.40.0, **setting up `.cognition/` for SVN is automatic** — you review and commit, nothing more. It needs the `svn` command-line client on `PATH` (TortoiseSVN users: re-run the installer and enable *command line client tools*); without it, the session start says so and the manual steps below still work.
+
+**What happens automatically, every session start on an SVN working copy:**
+
+- `.cognition/` is added to version control (never committed — see below).
+- The `svn:global-ignores` property on `.cognition/` is set from `.cognition/.gitignore`, trailing slashes stripped (SVN globs have no directory-only form, so `local/` would match nothing) and merged with any value already there. If someone runs `svn revert` on it, the next session sets it again.
+- Every new file under `.cognition/` is scheduled for addition — a new teammate's `people/<email>.profile.jsonl` as soon as they onboard, and a newly stored document as soon as it is stored. `svn commit` never includes new files on its own and succeeds silently without them, so without this a new teammate never appears on anyone else's roster.
+- Never added: anything under `.cognition/local/` (your identity file and other machine-local state), `*.lock`, `chromadb/`, documents you stored as **local-only**, and conflict leftovers (`.mine`, `.rNNN`). Nothing at all is added while a conflict is unresolved.
+- The session-start context says exactly what was changed, what is still uncommitted (including the property, which shows as `M` in the **second** column of `svn status`), and names any conflicted file.
+
+**Nothing is ever committed for you.** Review with `svn status .cognition` and commit when ready. It never touches anything outside `.cognition/`. If the folder containing `.cognition/` is not itself under version control, or a rule above it ignores `.cognition`, the session start says so and adds nothing.
+
+**Opt out** with `VIBE_COGNITION_NO_VCS_HYGIENE=1` (the older name `VIBE_COGNITION_NO_GIT_HYGIENE` also works). It turns off the git setup too.
+
+**What gets committed:** `.cognition/.gitignore`, `.cognition/journal.jsonl`, every `.cognition/people/*.jsonl`, and `.cognition/documents/` except local-only documents. **What never gets committed:** `.cognition/local/`, `*.lock`, `chromadb/`, local-only documents and `documents/.gitignore`.
+
 **SVN has no equivalent of `merge=union`, and cannot be given one** — there is no per-path merge configuration in Subversion at any version. Two people appending to the journal between syncs **will** conflict on `svn update`.
 
-- **Resolve by keeping BOTH sides.** The journal is append-only and replay order does not matter, so there is no case where one side should win. Concatenate `journal.jsonl.mine` and the highest-numbered `journal.jsonl.rNNN`, drop duplicate lines by node `id`, then `svn resolve --accept working`. Reload the graph afterwards.
-- **`svn update` before a session, commit the journal after one.** Most conflicts come from long uncommitted stretches rather than genuine simultaneous work.
+- **Resolve with the resolver, which keeps BOTH sides.** The session start names the conflicted file and gives the exact command, which runs with the plugin's own Python:
+
+  ```bash
+  "<plugin python>" -m vibe_cognition.cognition.resolve_journal "<project>"   # add --dry-run to preview
+  ```
+
+  It keeps every line from your side and the other side exactly once, runs `svn resolve --accept working`, and never commits. Then reload the graph (`cognition_reload` or a new session) and commit. It also covers `people/*.jsonl`.
+- **Never choose "use mine" or "use theirs"** (or `mine-full` / `theirs-full`). Each deletes one side's memories. Since 0.39.0 the next session start notices memories that vanished without a deletion record and says so, with the `svn log` / `svn cat` commands to recover them. `svn switch` and `svn update -r <older>` are recognised as deliberate and stay silent.
+- **Resolving by hand?** Concatenate `<file>.mine` and the highest-numbered `<file>.rNNN`, drop lines that are **exactly identical** — never deduplicate by node `id`: `update_node` lines reuse the id of the node they change and edge lines have no id, so that deletes the other side's edits and links — then `svn resolve --accept working <file>`.
+- **`svn update` before a session, commit after one.** Most conflicts come from long uncommitted stretches rather than genuine simultaneous work.
 - **Never set `svn:eol-style` under `.cognition/`.** The journal is replayed by byte offset and the document store is content-addressed, so any line-ending rewrite is damaging. SVN does not translate unless the property is set — the safe state is the default. Watch for a repo-root `svn:auto-props` rule (e.g. `*.md = svn:eol-style=native`): it cannot be neutralized from `.cognition/`, because properties from different ancestors combine rather than override and no value means "do not translate". Exclude `.cognition/` at the root instead.
-- **Mirror the ignore list into SVN.** SVN does not read `.gitignore`, so set `svn:global-ignores` on `.cognition/` with the same globs — **take them from `.cognition/.gitignore` itself, not from documentation**, since that file gains entries across releases (`local/` arrived in 0.38.0) and a transcribed list silently stops covering new machine-local files. **One edit while copying: strip the trailing slash from EVERY entry that has one** — SVN ignore globs have no directory-only meaning, so `local/` matches nothing while bare `local` works (verified in the lab; it fails silently). `local/` is the one that matters: it holds your identity file, so leaving its slash on means the next `svn add --force` commits your name and email.
 - **If an identity file gets committed anyway, it is not trusted.** Since 0.39.0 the file records the machine, OS account and checkout folder it was written for. A teammate who receives it through `svn update` is refused rather than silently writing as you, and is told the exact `svn rm --keep-local .cognition/local/identity.json` command to stop it travelling.
-- **Resolving a journal conflict with "use mine" or "use theirs" deletes memories** — one side's lines are simply dropped. Since 0.39.0 the next session start on an SVN checkout notices memories that vanished without a deletion record and says so, with the `svn log` / `svn cat` commands to recover them. Keep both sides and it never fires. `svn switch` to another branch and `svn update -r` to an older revision are recognised as deliberate and stay silent too. This works when the project is a subfolder of a larger checkout as well.
-- **On a `.cognition/` not yet in SVN, propset alone fails** (`E155010`). The order is `svn add --depth empty .cognition`, then the propset, then `svn add --force .cognition` — `--force` because plain `add` refuses an already-versioned directory, and the final add is filtered by the property set in step 2. Write the value file **without a UTF-8 BOM** — `svn propset -F` mis-decodes a BOM and silently kills the first rule while `svn propget` still displays it correctly. Set the property *before* adding the directory's contents, or machine-local files are swept in by the same `svn add`.
+- **Committed a machine-local file by mistake?** `svn rm --keep-local <path>` takes it out of version control without deleting your copy.
+
+#### Manual setup (no `svn` client on PATH, or opted out)
+
+Run from the project root after the first vibe-cognition session has created `.cognition/`:
+
+1. Build the ignore list from the generated file — comments and blank lines dropped, **trailing slash stripped from every entry**, written **without a UTF-8 BOM**. Take it from `.cognition/.gitignore`, never from documentation: that file gains entries across releases (`local/` arrived in 0.38.0). Today the directory entries are `local/` and `chromadb/`, and `local/` holds your identity file.
+
+   ```bash
+   grep -v '^[[:space:]]*#' .cognition/.gitignore | sed -e 's#/$##' -e '/^[[:space:]]*$/d' > svn-ignores.txt
+   ```
+
+   ```powershell
+   (Get-Content .cognition\.gitignore | Where-Object { $_ -and $_ -notmatch '^\s*#' }) -replace '/$','' | Set-Content -Encoding ascii svn-ignores.txt
+   ```
+
+   Do not hand-write the list or use PowerShell's `>` / `Out-File`: Windows PowerShell 5.1 writes a BOM, and `svn propset -F` then silently kills the first rule — `local` — while `svn propget` still shows it.
+2. `svn add --depth empty .cognition`
+3. `svn propset svn:global-ignores -F svn-ignores.txt .cognition`
+4. `svn add --force .cognition`
+5. Check `svn status --no-ignore .cognition`: `local` must show `I`, and nothing under it may show `A`. Then commit, and delete `svn-ignores.txt`.
+
+The order matters: propset on an unversioned folder fails with `E155010`, and adding contents before the property sweeps `local/` into the commit.
+
+**Before every commit**, run `svn add --force .cognition` so new files (a new teammate's profile, a new document) are included. **Exception — local-only documents:** `--force` adds them too, because SVN does not read `documents/.gitignore`. If you store local-only documents, add new files individually instead, or `svn revert` those paths before committing. When a release adds an ignore entry, repeat steps 1, 3 and 5.
 
 Run `cognition_readme` for the full "Team setup (svn)" section.
 
@@ -768,6 +814,7 @@ All configuration is optional. Vibe Cognition works out of the box with sensible
 | `VIBE_MODEL_SMALL` | `haiku` (Claude Code) / `gpt-5.6-luna` (Codex) | Model for analyzer and backfill-worker subagents; `inherit` opts into the parent's model |
 | `VIBE_MODEL_MID` | `sonnet` (Claude Code) / `gpt-5.6-sol` (Codex) | Model for the curate/backfill orchestrator; `inherit` opts into the parent's model |
 | `VIBE_UPDATE_NUDGE` | on | `off` disables the daily update check (see [Update Notifications](#update-notifications)) |
+| `VIBE_COGNITION_NO_VCS_HYGIENE` | unset | `1` turns off the automatic version-control setup: the git pass (`.gitattributes`, `.cognition/.gitignore`) and the SVN pass (adding `.cognition/`, its ignore property, scheduling new files). The older `VIBE_COGNITION_NO_GIT_HYGIENE` also works |
 | `VIBE_WHATS_NEW` | on | `off` disables the post-update summary (see [What's New](#whats-new)) |
 
 ### Using Ollama for Embeddings (Optional)

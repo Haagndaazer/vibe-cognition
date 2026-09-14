@@ -192,6 +192,24 @@ def test_svn_guidance_names_every_directory_ignore_entry():
         )
 
 
+def test_conflict_guidance_never_deduplicates_by_node_id():
+    """Journal lines are operations: update_node reuses the id of the node it
+    changes and edges carry no id. The manual keep-both recipe said "drop duplicate
+    lines by node id", which a literal reader follows straight into deleting the
+    other side's edits and links. Only identical lines are duplicates."""
+    from vibe_cognition.cognition.readme import COGNITION_GUIDE
+
+    surfaces = {
+        "README.md": (REPO / "README.md").read_text(encoding="utf-8"),
+        "cognition_readme guide": COGNITION_GUIDE,
+    }
+    for label, text in surfaces.items():
+        flat = " ".join(text.split())
+        for wrong in ("duplicate lines by node `id`", "duplicate lines by their node `id`"):
+            assert wrong not in flat, f"{label} still says to deduplicate by node id"
+        assert "identical" in flat.lower(), f"{label} no longer says what a duplicate is"
+
+
 # ── prose that named the pre-v0.38 model ─────────────────────────────────────
 
 

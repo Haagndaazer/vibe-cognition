@@ -518,6 +518,27 @@ def test_every_registered_tool_is_classified_as_gated_or_deliberately_not(mock_m
     )
 
 
+def test_every_gated_tool_documents_the_identity_refusal(mock_mcp):
+    """An agent reads the docstring, not the gate. Five gated tools -- including
+    cognition_record, the most-called one -- shipped with Returns blocks that never
+    mentioned `identity_required`, found only by the release tool-surface audit."""
+    from vibe_cognition.tools import register_all_tools
+
+    register_all_tools(mock_mcp)
+    gated = (
+        {name for name, _ in WRITE_TOOLS}
+        | {name for name, _ in CURATION_WRITE_TOOLS}
+        | GATED_NOT_DIRECTLY_TESTABLE
+    )
+    undocumented = sorted(
+        name for name in gated if "identity_required" not in (mock_mcp.tools[name].__doc__ or "")
+    )
+    assert not undocumented, (
+        f"gated tool(s) whose docstring never mentions the identity_required refusal: "
+        f"{undocumented}"
+    )
+
+
 @pytest.mark.parametrize("tool_name,kwargs", WRITE_TOOLS, ids=[t for t, _ in WRITE_TOOLS])
 def test_every_write_tool_refuses_without_identity(
     tool_name, kwargs, tmp_path, mock_mcp, build_lc, make_ctx, graph_identity, monkeypatch

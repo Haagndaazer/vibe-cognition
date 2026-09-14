@@ -25,12 +25,13 @@ is safe where -text (an EOL/filter attribute) is NOT: -text reactivates the C-3
 byte-rewrite + duplication scar (nodes 90ee3c1b968c, 54304ecf567c).  The writer
 emits ONLY merge=union, never -text.
 
-Opt-out: set VIBE_COGNITION_NO_GIT_HYGIENE=1 (or true/yes/on) to skip the whole
-pass (the flag is not written; the pass retries on next start when the env is
+Opt-out: set VIBE_COGNITION_NO_VCS_HYGIENE=1 (or the older
+VIBE_COGNITION_NO_GIT_HYGIENE; true/yes/on also work) to skip this pass and the SVN
+one (the flag is not written; the pass retries on next start when the env is
 cleared).  "0", "false", and empty string do NOT suppress the pass.
 
-Re-arm: delete .cognition/.git-hygiene-managed to make the pass re-run (re-adds
-any rule that was removed).
+Re-arm: delete .cognition/local/.git-hygiene-managed to make the pass re-run
+(re-adds any rule that was removed).
 """
 
 import contextlib
@@ -294,17 +295,34 @@ def _write_gitignore(cognition_dir: Path) -> bool:
         _release_lock(lock)
 
 
-def _opt_out() -> bool:
-    """Return True if VIBE_COGNITION_NO_GIT_HYGIENE is set to a truthy value.
+OPT_OUT_ENV = "VIBE_COGNITION_NO_VCS_HYGIENE"
+LEGACY_OPT_OUT_ENV = "VIBE_COGNITION_NO_GIT_HYGIENE"
 
-    Only "1", "true", "yes", "on" (case-insensitive) suppress the pass.
-    "0", "false", "no", "off", and the empty string do NOT suppress it.
+
+def vcs_hygiene_opted_out() -> bool:
+    """True if either opt-out variable is truthy; it suppresses the git AND SVN passes.
+
+    Only "1", "true", "yes", "on" (case-insensitive) suppress.
+    "0", "false", "no", "off", and the empty string do NOT.
     """
-    val = os.environ.get("VIBE_COGNITION_NO_GIT_HYGIENE", "").strip().lower()
-    return val in ("1", "true", "yes", "on")
+    return any(
+        os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+        for name in (OPT_OUT_ENV, LEGACY_OPT_OUT_ENV)
+    )
 
 
-def _relocate_local_files(cognition_dir: Path) -> None:
+def _opt_out() -> bool:
+    return vcs_hygiene_opted_out()
+
+
+def _legacy_files_remain(cognition_dir: Path) -> bool:
+    return any(
+        (cognition_dir / candidate).is_file()
+        for name in RELOCATED_FILENAMES for candidate in (name, f"{name}.tmp")
+    )
+
+
+def _relocate_local_files(cognition_dir: Path) -> bool:
     """Move machine-local files into .cognition/local/ (v9). Never raises.
 
     Under one lock so two servers starting together cannot both move; atomic
@@ -312,17 +330,21 @@ def _relocate_local_files(cognition_dir: Path) -> None:
     the destination already holds content so a faster process's newer copy is
     never clobbered; and defer on PermissionError (Windows file-in-use) so a
     write in flight is never truncated -- the next pass retries.
+
+    Returns True only when no machine-local file is left at a legacy path. The
+    caller must not mark the pass done otherwise: the new ignore list names only
+    `local/`, so a stranded identity.json would be unignored and never retried.
     """
     lock = cognition_dir / ".relocate.lock"
     if not _acquire_lock(lock):
-        return
+        return not _legacy_files_remain(cognition_dir)
     try:
         target_dir = local_dir(cognition_dir)
         try:
             target_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             logger.debug("git-hygiene: cannot create local/: %s", exc)
-            return
+            return False
         for name in RELOCATED_FILENAMES:
             for candidate in (name, f"{name}.tmp"):
                 src = cognition_dir / candidate
@@ -338,6 +360,7 @@ def _relocate_local_files(cognition_dir: Path) -> None:
                     logger.debug("git-hygiene: %s in use, deferring relocation", candidate)
                 except OSError as exc:
                     logger.debug("git-hygiene: relocating %s failed: %s", candidate, exc)
+        return not _legacy_files_remain(cognition_dir)
     finally:
         _release_lock(lock)
 
@@ -361,7 +384,7 @@ def ensure_git_hygiene(repo_path: Path, cognition_dir: Path) -> None:
 
     # v9: relocate BEFORE writing the ignore list, so the trimmed list never
     # exists while the files it no longer names are still at the legacy path.
-    _relocate_local_files(cognition_dir)
+    relocated = _relocate_local_files(cognition_dir)
 
     is_git = (repo_path / ".git").exists()
 
@@ -374,7 +397,7 @@ def ensure_git_hygiene(repo_path: Path, cognition_dir: Path) -> None:
 
     gi_ok = _write_gitignore(cognition_dir)
 
-    if ga_ok and gi_ok:
+    if ga_ok and gi_ok and relocated:
         try:
             _write_flag(cognition_dir)
         except OSError as exc:
@@ -399,7 +422,13 @@ def check_hygiene_state(repo_path: Path, cognition_dir: Path) -> dict:
     with contextlib.suppress(OSError):
         result["is_git"] = (repo_path / ".git").exists()
     with contextlib.suppress(OSError):
-        result["is_svn"] = (repo_path / ".svn").exists()
+        # .svn exists only at the working-copy root, which may be above the project.
+        for candidate in (repo_path, *repo_path.parents):
+            if (candidate / ".svn").exists():
+                result["is_svn"] = True
+                break
+            if (candidate / ".git").exists():
+                break
     try:
         gitattributes_path = repo_path / ".gitattributes"
         if gitattributes_path.exists():
@@ -430,7 +459,13 @@ def format_hygiene_announce(state: dict) -> str:
     parts = []
     if state.get("gitattr_configured"):
         parts.append("journal union-merge (.gitattributes)")
-    if state.get("gitignore_configured"):
+    if state.get("gitignore_configured") and state.get("is_svn") and not state.get("is_git"):
+        parts.append(
+            ".cognition/.gitignore written, but SVN does NOT read it -- mirror it once as "
+            "svn:global-ignores and run `svn add --force .cognition` before every commit, "
+            "or new profiles never reach teammates"
+        )
+    elif state.get("gitignore_configured"):
         parts.append("local-only files ignored (.cognition/.gitignore)")
     if not parts:
         return ""

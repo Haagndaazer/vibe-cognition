@@ -334,7 +334,10 @@ def require_identity(
           `error` -- what is missing and how to fix it, including the exact
               cognition_set_identity call to make.
           `identity_required` -- always True.
-          `resolved` -- the identity that DID resolve, with its `source`.
+          `resolved` -- the identity that DID resolve, with its `source`, plus
+              `identity_file: {status, name, email, machine, mismatch}` when an
+              identity file exists here but is not trusted (see
+              inspect_confirmed_identity).
           `suggestions` -- candidates from git config and cached SVN
               credentials; empty on the read-only branch.
           `confirmed` -- bool, whether the checkout is claimed at all. Absent on

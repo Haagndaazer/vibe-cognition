@@ -30,6 +30,7 @@ from .journal_io import append_journal_line
 from .jsonl_dir_registry import FileState, JsonlDirRegistry
 from .models import SENIORITY_LEVELS
 from .people_facts import PEOPLE_DIRNAME, email_slug, fold_email
+from .svn_hygiene import add_new_files_in_background
 
 logger = logging.getLogger(__name__)
 
@@ -356,6 +357,9 @@ class ProfileRegistry(JsonlDirRegistry):
     def _append(self, email: str, entry: dict[str, Any]) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
         name = profile_filename(email)
+        is_new = not (self._dir / name).exists()
         append_journal_line(self._dir / name, json.dumps(entry))
         # Our own writes must not depend on timestamp-racy dir discovery.
         self.register_own_write(name)
+        if is_new:
+            add_new_files_in_background(self._dir.parent)

@@ -22,8 +22,10 @@ from .models import CognitionEdgeType, CognitionNodeType
 from .people_facts import fold_email
 from .person_migration import consume_migration_report, format_migration_announce
 from .readme import ONBOARDING_BLOCK
+from .resolve_journal import resolve_journal_command
 from .roster import Person
 from .storage import REHYDRATE_FLAG_FILENAME, CognitionStorage
+from .svn_hygiene import ensure_svn_hygiene, format_svn_announce
 from .task_meta import _task_claimed_at
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "normal": 2, "low": 3}
@@ -1149,13 +1151,23 @@ def main(argv: list[str] | None = None):
     if identity_note:
         sections.append(identity_note)
 
-    try:
-        hygiene_state = check_hygiene_state(repo_path, cognition_dir)
-        hygiene_line = format_hygiene_announce(hygiene_state)
-        if hygiene_line:
-            sections.append(hygiene_line)
-    except Exception:  # noqa: BLE001
-        pass
+    # Constructed before the loss alert is consumed: when this process is the one
+    # that detects a between-session loss, the alert belongs to THIS session.
+    storage: CognitionStorage | None = None
+    if cognition_dir.exists():
+        storage = CognitionStorage(cognition_dir)
+
+    svn_report = ensure_svn_hygiene(cognition_dir) if storage is not None else None
+    if svn_report is not None:
+        sections.append(format_svn_announce(svn_report, resolve_journal_command(repo_path)))
+    else:
+        try:
+            hygiene_state = check_hygiene_state(repo_path, cognition_dir)
+            hygiene_line = format_hygiene_announce(hygiene_state)
+            if hygiene_line:
+                sections.append(hygiene_line)
+        except Exception:  # noqa: BLE001
+            pass
 
     # Journal-loss alert (WP-1): surfaced BEFORE the project context so it can't
     # be buried; consumed so it shows exactly once.
@@ -1163,9 +1175,7 @@ def main(argv: list[str] | None = None):
     if rehydrate_note:
         sections.append(rehydrate_note)
 
-    storage: CognitionStorage | None = None
-    if cognition_dir.exists():
-        storage = CognitionStorage(cognition_dir)
+    if storage is not None:
         # Announced because construction may have written committed files nobody
         # asked for, and the leftover person nodes need a human decision.
         # Its own report when THIS process migrated, else the one stashed by

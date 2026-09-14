@@ -1,6 +1,6 @@
 [project]
 name = "vibe-cognition"
-version = "0.39.0"
+version = "0.40.0"
 description = "MCP server for project knowledge graphs — decisions, failures, discoveries, patterns"
 authors = [{ name = "Colton Dyck" }]
 license = { text = "MIT" }
@@ -56,6 +56,7 @@ vibe-cognition-backfill = "vibe_cognition.cognition.backfill:main"
 vibe-cognition-dashboard = "vibe_cognition.dashboard.cli:main"
 vibe-cognition-snapshot = "vibe_cognition.cognition.snapshot_cli:main"
 vibe-cognition-remap-identity = "vibe_cognition.remap_identity:main"
+vibe-cognition-resolve-journal = "vibe_cognition.cognition.resolve_journal:main"
 
 [dependency-groups]
 dev = [
@@ -71,6 +72,10 @@ dev = [
 # WP-1 item 0: no single test may wedge an unattended run. Thread-based (the
 # default) is Windows-safe; individual tests can override with @pytest.mark.timeout.
 timeout = 60
+# Tests that run a real `svn` binary are LOCAL ONLY (ruling 2026-09-11): CI has no
+# svn, and the default suite spawns no real subprocesses. Run: uv run pytest -m svn
+addopts = "-m 'not svn'"
+markers = ["svn: runs the real svn command-line client against a local lab repository"]
 
 [tool.ruff]
 line-length = 100
