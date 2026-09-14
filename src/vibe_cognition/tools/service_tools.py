@@ -6,6 +6,7 @@ from typing import Any
 from fastmcp import Context
 
 from .. import harness
+from ..running_version import running_report
 from .dispatch import dispatch_tool
 from .project_registry import LoadedProjects
 from .utils import get_lifespan
@@ -30,6 +31,18 @@ def register_service_tools(mcp) -> None:
         Returns:
             {
               repo_name: str,
+              running_code: {version: str | None, path: str,
+                             installed_version: str | None,
+                             matches: bool | None}
+                            -- the code THIS server process is actually running,
+                            read from its own pyproject.toml, versus the version
+                            the host installed. `matches: false` means the server
+                            started on a previous version after a plugin update
+                            and none of the installed version's fixes apply until
+                            the session is restarted -- tell the user. `matches`
+                            is null when the installed version is unknown (a dev
+                            checkout, or a host that does not pass the plugin
+                            root).
               repo_path: str,
               chromadb_path: str,  # resolved vector-store persist directory
                                    # (WP-Chroma-Home: under the plugin data
@@ -201,6 +214,7 @@ def register_service_tools(mcp) -> None:
         # stub config with a SimpleNamespace that has no such property.
         chroma_path = getattr(config, "cognition_chromadb_path", None)
         result["chromadb_path"] = str(chroma_path) if chroma_path is not None else "unknown"
+        result["running_code"] = running_report()
 
         # Cognition graph stats
         if cognition_storage:

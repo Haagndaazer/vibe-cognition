@@ -1,4 +1,9 @@
 {
+  "0.39.0": [
+    "Your identity is now tied to your machine, account and project folder, so a copied or committed identity file can't make a teammate record as you. You may be asked to confirm once.",
+    "On Subversion, resolving a memory conflict with 'use mine' or 'use theirs' used to silently delete memories. Claude now warns you at the next session and explains how to recover them.",
+    "After a plugin update, the new version is now the one that actually runs, and Claude warns you if it ever isn't."
+  ],
   "0.38.3": [
     "Important for Subversion teams: the setup guide's ignore instructions could let your identity file (name and email) get committed. Re-read the 'Team setup (svn)' section if you use SVN.",
     "Claude's built-in guide was missing the tool for removing someone from the roster, and still pointed at an old file path."

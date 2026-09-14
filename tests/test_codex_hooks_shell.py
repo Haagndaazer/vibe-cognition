@@ -134,7 +134,9 @@ def test_first_run_creates_data_dir_registers_server_and_notes_restart(codex_env
     assert call.rstrip().endswith("python -m vibe_cognition.server")
 
     stamp = codex_env.plugin_data_ / "codex-mcp.stamp"
-    assert stamp.is_file() and stamp.read_text(encoding="utf-8").startswith("v1|uv run --no-sync --project")
+    # v2: the registration pins PYTHONPATH to the installed code, so a server launched
+    # before the hook's sync cannot import the previous version.
+    assert stamp.is_file() and stamp.read_text(encoding="utf-8").startswith("v2|uv run --no-sync --project")
     assert not (codex_env.plugin_data_ / "codex-mcp.lock").exists()
 
     blocks = _prime_blocks(codex_env.uv_log())
@@ -215,13 +217,14 @@ def test_re_register_preserves_user_env_keys(codex_env):
 
 def test_first_install_without_prior_entry_passes_only_managed_env(codex_env):
     """The lookup path runs (codex mcp get is called and fails, no prior entry)
-    and contributes nothing: exactly the three managed keys are passed."""
+    and contributes nothing: exactly the five managed keys are passed (the original
+    three plus PYTHONPATH and VIBE_PLUGIN_ROOT, which pin the installed code)."""
     result = codex_env.run("session-start.sh")
     assert result.returncode == 0, result.stderr
     log = codex_env.codex_log()
     assert "CODEX: mcp get vibe-cognition --json" in log
     [add] = [ln for ln in log.splitlines() if ln.startswith("CODEX: mcp add")]
-    assert add.count("--env ") == 3
+    assert add.count("--env ") == 5
     assert "preserved_env=0" in result.stderr
 
 
@@ -239,7 +242,7 @@ def test_compact_empty_env_does_not_leak_sibling_fields(codex_env):
     assert result.returncode == 0, result.stderr
     [add] = [ln for ln in codex_env.codex_log().splitlines() if ln.startswith("CODEX: mcp add")]
     assert "cwd=" not in add
-    assert add.count("--env ") == 3
+    assert add.count("--env ") == 5
 
 
 def test_plan_role_is_installed_and_kept_in_sync(codex_env):

@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.0]
+
+Found by deliberately misusing two-person SVN checkouts the way a hurried human
+would, then by an adversarial review of the fixes.
+
+### Fixed
+
+- **An identity file that travelled made its recipient write as its author, marked
+  confirmed.** `.cognition/local/identity.json` is machine-local only by ignore rule;
+  SVN never reads `.gitignore`, so `svn add --force` commits it, and copying a project
+  folder copies it. In the lab a teammate who ran `svn update` wrote a memory
+  attributed to the file's author with `confirmed: true`. The file now records the
+  machine, OS account and checkout folder it was written for and is trusted only
+  where all three match. A mismatch is refused with who the file names, where it was
+  written, and the exact `svn rm --keep-local` / `git rm --cached` command. Files from
+  before 0.39.0 carry no binding and ask for a one-time re-confirmation.
+  - The folder matches by path OR by file identity (volume serial + file index), so a
+    rename, a mapped network drive, a UNC path, a `subst` letter or a removable drive
+    returning under a new letter is still the same folder; a copy is not. A path-only
+    first draft locked the owner out on a mapped drive (review finding, reproduced).
+  - The OS account is included so a shared machine (RDS, VDI, a build box) does not
+    hand the first person's file to everyone else logged in to it. It is read from
+    the platform's own source (`USERNAME` on Windows, the password database
+    elsewhere), not `getpass`, which prefers `USER`/`LOGNAME` and so could name a
+    different account for the same person depending on the launching shell.
+  - Account and folder are stored as digests, not literally: this is the file most
+    likely to leak, and a checkout path usually embeds the OS username.
+- **"Use mine" or "use theirs" on a journal conflict silently deleted memories.**
+  SVN has no union merge, and those resolutions drop one side's lines while no server
+  is running to notice. Each SVN checkout now keeps a machine-local record of the
+  node ids it has seen; at session start any that vanished without a deletion record
+  raise a warning with the count and the `svn log` / `svn cat` recovery commands.
+  Clean syncs, deliberate deletions and correct keep-both resolutions stay silent.
+  - `svn switch` and `svn update -r <older>` are recognised from the working-copy
+    database (no `svn` CLI needed) and stay silent; alerting there would have handed
+    an agent a recipe to re-import another branch's lines (review finding, reproduced
+    on real SVN before the fix).
+  - The warning tells the agent not to recover without the user's go-ahead, and to
+    restore only the missing ids.
+  - A project checked out as a subfolder of a larger SVN checkout (`svn checkout
+    .../trunk` with the project at `trunk/proj`) is covered: `.svn` exists only at
+    the checkout root since SVN 1.7, and a first draft looked only in the project
+    folder, so the check silently never ran there (second review, reproduced on
+    real SVN). The search stops at a git repository boundary.
+  - A startup that cannot read `wc.db` keeps the last known source instead of
+    forgetting it, so the next deliberate switch is still recognised.
+- **After a plugin update the server could run the previous version for a whole
+  session, invisibly.** It launches without syncing from a shared virtualenv whose
+  editable install the SessionStart hook re-points; observed losing that race by
+  three seconds. The launch now pins `PYTHONPATH` to the installed code on both Claude
+  Code and Codex (Codex re-registers once to pick it up).
+- **`cognition_load_project` wrote into the project it loaded,** despite being
+  documented read-only: ignore-file hygiene, person migration, and — new this release
+  — the loss record, whose re-baselining could mask a loss that project's own next
+  session should report. Opening another project's graph is now genuinely read-only.
+
+### Added
+
+- `get_status` returns `running_code` — `{version, path, installed_version,
+  matches}` — for the code this server process is actually running. The
+  session-start digest warns when a recently started server for the project runs an
+  older version than the one installed; tracked per harness, so a Codex server does
+  not trigger it in a Claude Code session.
+
+### Known limits
+
+- A dev container rebuilt with a new random hostname counts as a new machine and
+  re-confirms identity after each rebuild.
+- Windows and WSL are different accounts and folder routes to the binding, so
+  alternating between them on one checkout re-confirms each time you switch.
+- A FAT/exFAT removable drive has no stable file identity, so one that comes back
+  under a different letter re-confirms once.
+- Ids a teammate's commit delivered during a session are recorded only at the next
+  startup, so their loss in between is caught by the teammate's checkout, not yours.
+
 ## [0.38.3]
 
 ### Fixed

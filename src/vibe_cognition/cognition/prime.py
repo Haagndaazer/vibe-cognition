@@ -12,8 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from ..config import Settings, resolve_repo_path_env
+from ..running_version import code_version, stale_server_warning
 from .git_hygiene import _acquire_lock, _release_lock, check_hygiene_state, format_hygiene_announce
 from .identity import identity_suggestions, resolve_identity
+from .journal_watch import LOSS_KIND_BETWEEN_SESSIONS
 from .local_paths import read_path as local_read_path
 from .local_paths import write_path as local_write_path
 from .models import CognitionEdgeType, CognitionNodeType
@@ -1062,6 +1064,20 @@ def _consume_rehydrate_flag(cognition_dir: Path) -> str:
         return ""
     sample = info.get("sample_missing_ids") or []
     sample_note = f" (e.g. {', '.join(sample)})" if sample else ""
+    if info.get("kind") == LOSS_KIND_BETWEEN_SESSIONS:
+        return (
+            f"WARNING (vibe-cognition): {lost} memor{'y' if lost == 1 else 'ies'} this "
+            f"checkout had before are GONE from the journal{sample_note}, with no "
+            "deletion record -- this happened between sessions, not during one. The "
+            "usual cause on Subversion is resolving a journal conflict with 'use mine' "
+            "or 'use theirs', which deletes one side. A branch switch or an update to "
+            "an older revision is recognised and does NOT raise this. TELL THE USER, "
+            "and do not attempt recovery without their go-ahead. They are "
+            "recoverable: `svn log .cognition/journal.jsonl` shows the revision that "
+            "dropped them, and `svn cat -r <earlier> .cognition/journal.jsonl` has "
+            "the lines to add back -- only the missing ids above, never the whole "
+            "older file."
+        )
     return (
         "WARNING (vibe-cognition): in a previous session the journal was replaced or "
         f"truncated under a live server ({at}); {lost} node(s) recorded in that "
@@ -1115,6 +1131,11 @@ def main(argv: list[str] | None = None):
     cognition_dir = repo_path / ".cognition"
 
     sections: list[str] = []
+    # First, above everything: if the server answering this session is not the
+    # installed version, nothing else in this digest describes the code in use.
+    stale = stale_server_warning(cognition_dir, code_version())
+    if stale:
+        sections.append(stale)
     if harness_note:
         sections.append(harness_note)
     if note:

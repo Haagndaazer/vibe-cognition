@@ -207,8 +207,12 @@ def test_write_confirmed_identity_casefolds_and_persists(repo):
     _, cognition = repo
     write_confirmed_identity(cognition, "  Ada  ", "  ADA@Example.com ")
     data = json.loads(local_read_path(cognition, IDENTITY_FILENAME).read_text(encoding="utf-8"))
-    assert data == {"name": "Ada", "email": "ada@example.com"}
-    assert read_confirmed_identity(cognition) == data
+    assert data["name"] == "Ada"
+    assert data["email"] == "ada@example.com"
+    # Bound to where it was written, so a copy that travels is not trusted.
+    assert data["machine"] and data["checkout"]
+    # The binding is on disk, but callers see only who the person is.
+    assert read_confirmed_identity(cognition) == {"name": "Ada", "email": "ada@example.com"}
 
 
 def test_corrupt_identity_file_is_ignored_not_fatal(repo):
@@ -680,3 +684,199 @@ def test_write_confirmed_identity_returns_what_landed_on_disk(repo):
     got = write_confirmed_identity(cognition, "  Ada  ", "ADA@Example.com")
     assert got == read_confirmed_identity(cognition)
     assert not list(local_write_path(cognition, "x").parent.glob("identity.json.*.tmp")), "temp file left behind"
+
+
+# ── an identity file that TRAVELS must not be trusted ────────────────────────
+#
+# Found in the SVN abuse lab: `svn add --force` committed Alice's
+# .cognition/local/identity.json (SVN never reads .gitignore), Bob ran
+# `svn update`, and Bob -- who had never onboarded -- wrote a node stamped
+# "Alice, source confirmed, confirmed true". Worse than having no gate at all,
+# because the misattribution looked verified.
+
+
+def _copy_checkout_identity(src_cognition, dst_cognition):
+    """What `svn update` or copying a project folder does to the file."""
+    import shutil
+
+    dst = local_write_path(dst_cognition, IDENTITY_FILENAME)
+    shutil.copyfile(local_read_path(src_cognition, IDENTITY_FILENAME), dst)
+
+
+def test_an_identity_file_copied_into_another_checkout_is_not_trusted(tmp_path, monkeypatch):
+    from vibe_cognition.cognition.identity import FILE_FOREIGN, inspect_confirmed_identity
+
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-gitconfig"))
+    alice = tmp_path / "wc-alice" / ".cognition"
+    bob = tmp_path / "wc-bob" / ".cognition"
+    alice.mkdir(parents=True)
+    bob.mkdir(parents=True)
+    write_confirmed_identity(alice, "Alice", "alice@example.com")
+
+    _copy_checkout_identity(alice, bob)
+
+    assert read_confirmed_identity(alice) == {"name": "Alice", "email": "alice@example.com"}
+    assert read_confirmed_identity(bob) is None
+    assert inspect_confirmed_identity(bob)["status"] == FILE_FOREIGN
+    ident = resolve_identity(bob.parent, bob)
+    assert ident["confirmed"] is False
+    assert ident["identity_file"]["email"] == "alice@example.com"
+
+
+def test_the_refusal_says_the_file_travelled_and_how_to_stop_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-gitconfig"))
+    alice = tmp_path / "wc-alice" / ".cognition"
+    bob = tmp_path / "wc-bob" / ".cognition"
+    alice.mkdir(parents=True)
+    bob.mkdir(parents=True)
+    (bob.parent / ".svn").mkdir()
+    write_confirmed_identity(alice, "Alice", "alice@example.com")
+    _copy_checkout_identity(alice, bob)
+
+    err = require_identity(bob.parent, bob)
+    assert err is not None and err["identity_required"] is True
+    msg = err["error"]
+    assert "alice@example.com" in msg
+    assert "NOT trusted" in msg
+    assert "svn rm --keep-local .cognition/local/identity.json" in msg
+    # It must not steer Bob into confirming as Alice.
+    assert "may or may not be" in msg
+
+
+def test_a_file_from_another_machine_is_not_trusted(tmp_path, monkeypatch):
+    from vibe_cognition.cognition import checkout_binding as identity_mod
+
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-gitconfig"))
+    cognition = tmp_path / "wc" / ".cognition"
+    cognition.mkdir(parents=True)
+    monkeypatch.setattr(identity_mod.platform, "node", lambda: "alices-laptop")
+    write_confirmed_identity(cognition, "Alice", "alice@example.com")
+
+    monkeypatch.setattr(identity_mod.platform, "node", lambda: "bobs-desktop")
+    assert read_confirmed_identity(cognition) is None
+    err = require_identity(cognition.parent, cognition)
+    assert err is not None
+    assert "DIFFERENT MACHINE (alices-laptop)" in err["error"]
+
+
+def test_hostname_case_is_not_a_different_machine(tmp_path, monkeypatch):
+    """Windows hostnames are case-insensitive; a re-imaged box or a DNS change can
+    flip the case, and that must not force a re-confirmation."""
+    from vibe_cognition.cognition import checkout_binding as identity_mod
+
+    cognition = tmp_path / ".cognition"
+    cognition.mkdir()
+    monkeypatch.setattr(identity_mod.platform, "node", lambda: "DESKTOP-ABC")
+    write_confirmed_identity(cognition, "Ada", "ada@example.com")
+    monkeypatch.setattr(identity_mod.platform, "node", lambda: "desktop-abc")
+    assert read_confirmed_identity(cognition) is not None
+
+
+def test_a_pre_binding_identity_file_must_be_re_confirmed_once(tmp_path, monkeypatch):
+    """Files written by 0.37/0.38 carry no binding, so they cannot be told apart from
+    one that already leaked. Re-confirming once is cheap -- and it heals every
+    checkout that has ALREADY received someone else's file."""
+    from vibe_cognition.cognition.identity import FILE_UNBOUND, inspect_confirmed_identity
+
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-gitconfig"))
+    cognition = tmp_path / ".cognition"
+    local = cognition / "local"
+    local.mkdir(parents=True)
+    (local / IDENTITY_FILENAME).write_text(
+        json.dumps({"name": "Ada", "email": "ada@example.com"}), encoding="utf-8",
+    )
+
+    assert inspect_confirmed_identity(cognition)["status"] == FILE_UNBOUND
+    assert read_confirmed_identity(cognition) is None
+    err = require_identity(cognition.parent, cognition)
+    assert err is not None
+    assert "RE-CONFIRMING" in err["error"]
+    assert "one-time" in err["error"]
+    # Offered first as a candidate, never assumed.
+    assert err["suggestions"][0]["email"] == "ada@example.com"
+    assert err["suggestions"][0]["source"] == "identity-file"
+
+    write_confirmed_identity(cognition, "Ada", "ada@example.com")
+    assert read_confirmed_identity(cognition) == {"name": "Ada", "email": "ada@example.com"}
+
+
+def test_the_same_folder_reached_through_a_different_spelling_is_the_same_checkout(
+    tmp_path,
+):
+    """A relative path, trailing separators or differing case on Windows must not
+    look like a different checkout, or every session re-asks."""
+    cognition = tmp_path / "Proj" / ".cognition"
+    cognition.mkdir(parents=True)
+    write_confirmed_identity(cognition, "Ada", "ada@example.com")
+
+    import os
+    respelled = Path(os.path.join(str(tmp_path), "Proj", ".", ".cognition"))
+    assert read_confirmed_identity(respelled) is not None
+
+
+def test_the_same_folder_through_a_mapped_drive_is_the_same_checkout(tmp_path, monkeypatch):
+    """Review finding, reproduced live: `W:\\proj` on a mapped drive resolves to
+    `\\\\server\\share\\proj` while the same folder by its local letter does not, so a
+    path-only key locked the owner out. The folder's file identity is the same."""
+    from vibe_cognition.cognition import checkout_binding
+
+    cognition = tmp_path / "Proj" / ".cognition"
+    cognition.mkdir(parents=True)
+    write_confirmed_identity(cognition, "Ada", "ada@example.com")
+
+    monkeypatch.setattr(checkout_binding, "_folder_path_key", lambda _d: "unc-spelling")
+    assert read_confirmed_identity(cognition) == {"name": "Ada", "email": "ada@example.com"}
+
+
+def test_renaming_the_project_folder_keeps_the_identity(tmp_path):
+    """A rename keeps the folder's file identity; only a COPY gets a new one."""
+    cognition = tmp_path / "Proj" / ".cognition"
+    cognition.mkdir(parents=True)
+    write_confirmed_identity(cognition, "Ada", "ada@example.com")
+    (tmp_path / "Proj").rename(tmp_path / "Renamed")
+    assert read_confirmed_identity(tmp_path / "Renamed" / ".cognition") is not None
+
+
+def test_another_os_account_on_the_same_machine_is_not_trusted(tmp_path, monkeypatch):
+    """Shared hosts (RDS, VDI, a build box): same hostname, same checkout path,
+    different person. Hostname and folder alone would hand them the first file."""
+    from vibe_cognition.cognition import checkout_binding
+
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-gitconfig"))
+    cognition = tmp_path / ".cognition"
+    cognition.mkdir()
+    monkeypatch.setattr(checkout_binding, "_account", lambda: "alice")
+    write_confirmed_identity(cognition, "Alice", "alice@example.com")
+
+    monkeypatch.setattr(checkout_binding, "_account", lambda: "bob")
+    assert read_confirmed_identity(cognition) is None
+    err = require_identity(cognition.parent, cognition)
+    assert err is not None
+    assert "DIFFERENT OS ACCOUNT" in err["error"]
+
+
+def test_the_account_does_not_depend_on_which_shell_set_which_variable(monkeypatch):
+    """Review finding: getpass.getuser() prefers USER/LOGNAME over USERNAME, so the
+    same person launched from a shell that exports USER got a different account
+    and was refused as someone else."""
+    from vibe_cognition.cognition.checkout_binding import _account
+
+    baseline = _account()
+    monkeypatch.setenv("USER", "someone-else")
+    monkeypatch.setenv("LOGNAME", "someone-else")
+    assert _account() == baseline
+
+
+def test_the_identity_file_does_not_spell_out_the_path_or_account(tmp_path):
+    """It is the file most likely to leak, and a checkout path usually embeds the
+    OS username. Digests keep the equality check without disclosing either."""
+    from vibe_cognition.cognition.checkout_binding import _account
+
+    cognition = tmp_path / "Proj" / ".cognition"
+    cognition.mkdir(parents=True)
+    write_confirmed_identity(cognition, "Ada", "ada@example.com")
+    raw = local_read_path(cognition, IDENTITY_FILENAME).read_text(encoding="utf-8")
+    assert "Proj" not in raw
+    assert tmp_path.name not in raw
+    if _account():
+        assert f'"{_account()}"' not in raw

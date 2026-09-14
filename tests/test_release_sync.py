@@ -155,6 +155,43 @@ def test_the_cognition_readme_guide_table_lists_every_registered_tool():
     )
 
 
+# ── SVN ignore guidance must cover every directory entry ─────────────────────
+
+
+def test_svn_guidance_names_every_directory_ignore_entry():
+    """SVN ignore globs have no directory-only meaning, so a trailing slash makes an
+    entry match NOTHING -- silently. The guidance therefore has to tell SVN users to
+    strip it from every directory entry, by name.
+
+    This has already gone wrong twice. The guide said to strip it only from
+    `chromadb/` after `local/` was added, and `local/` holds identity.json -- so a
+    team following it committed their name and email. 0.38.3 fixed the
+    cognition_readme guide and missed the README, which kept the same instruction
+    for another release. Pinning every directory entry to BOTH surfaces means adding
+    a new one fails here until the SVN guidance mentions it.
+    """
+    from vibe_cognition.cognition.git_hygiene import _GITIGNORE_ENTRIES
+    from vibe_cognition.cognition.readme import COGNITION_GUIDE
+
+    directories = [e for e in _GITIGNORE_ENTRIES if e.endswith("/")]
+    assert directories, "no directory entries -- this test would be vacuous"
+    surfaces = {
+        "README.md": (REPO / "README.md").read_text(encoding="utf-8"),
+        "cognition_readme guide": COGNITION_GUIDE,
+    }
+    for label, text in surfaces.items():
+        for entry in directories:
+            assert f"`{entry}`" in text, (
+                f"{label}'s SVN guidance never names `{entry}`. Its trailing slash must "
+                "be stripped for SVN or the entry silently ignores nothing."
+            )
+        flat = " ".join(text.split())
+        assert "strip the trailing slash from `chromadb/`" not in flat, (
+            f"{label} still tells SVN users to strip the slash from chromadb/ ONLY, "
+            "which leaves local/ -- and the identity file inside it -- unignored."
+        )
+
+
 # ── prose that named the pre-v0.38 model ─────────────────────────────────────
 
 

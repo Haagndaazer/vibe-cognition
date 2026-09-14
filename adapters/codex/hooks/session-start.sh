@@ -20,11 +20,11 @@ fi
 VENV_DIR="${DATA_NATIVE}/.venv"
 
 SERVER_NAME="vibe-cognition"
-MANAGED_ENV="UV_PROJECT_ENVIRONMENT VIBE_DATA_DIR VIBE_HARNESS"
-DESIRED="v1|uv run --no-sync --project ${ROOT_NATIVE} python -m vibe_cognition.server|UV_PROJECT_ENVIRONMENT=${VENV_DIR}|VIBE_DATA_DIR=${DATA_NATIVE}|VIBE_HARNESS=codex"
+MANAGED_ENV="UV_PROJECT_ENVIRONMENT VIBE_DATA_DIR VIBE_HARNESS PYTHONPATH VIBE_PLUGIN_ROOT"
+DESIRED="v2|uv run --no-sync --project ${ROOT_NATIVE} python -m vibe_cognition.server|UV_PROJECT_ENVIRONMENT=${VENV_DIR}|VIBE_DATA_DIR=${DATA_NATIVE}|VIBE_HARNESS=codex|PYTHONPATH=${ROOT_NATIVE}/src|VIBE_PLUGIN_ROOT=${ROOT_NATIVE}"
 STAMP="${PLUGIN_DATA}/codex-mcp.stamp"
 LOCK="${PLUGIN_DATA}/codex-mcp.lock"
-MANUAL_CMD="codex mcp add ${SERVER_NAME} --env UV_PROJECT_ENVIRONMENT=${VENV_DIR} --env VIBE_DATA_DIR=${DATA_NATIVE} --env VIBE_HARNESS=codex -- uv run --no-sync --project \"${ROOT_NATIVE}\" python -m vibe_cognition.server"
+MANUAL_CMD="codex mcp add ${SERVER_NAME} --env UV_PROJECT_ENVIRONMENT=${VENV_DIR} --env VIBE_DATA_DIR=${DATA_NATIVE} --env VIBE_HARNESS=codex --env PYTHONPATH=${ROOT_NATIVE}/src --env VIBE_PLUGIN_ROOT=${ROOT_NATIVE} -- uv run --no-sync --project \"${ROOT_NATIVE}\" python -m vibe_cognition.server"
 
 _bc() { echo "[vibe-cognition codex hook] pid=$$ $1 t=$(date +%s)" >&2; }
 
@@ -61,6 +61,8 @@ _register() {
         --env "UV_PROJECT_ENVIRONMENT=${VENV_DIR}" \
         --env "VIBE_DATA_DIR=${DATA_NATIVE}" \
         --env "VIBE_HARNESS=codex" \
+        --env "PYTHONPATH=${ROOT_NATIVE}/src" \
+        --env "VIBE_PLUGIN_ROOT=${ROOT_NATIVE}" \
         "${extra_args[@]+"${extra_args[@]}"}" \
         -- uv run --no-sync --project "$ROOT_NATIVE" python -m vibe_cognition.server >/dev/null 2>&1; then
         printf '%s' "$DESIRED" > "$STAMP"

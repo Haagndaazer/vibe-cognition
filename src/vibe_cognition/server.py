@@ -32,6 +32,7 @@ from .embeddings import ChromaDBStorage, EmbeddingGenerator
 from .embeddings import sidecar_client
 from .instructions import SERVER_INSTRUCTIONS
 from . import lifecycle
+from .running_version import stamp_running_server
 from .stale_sweep import run_stale_sweep
 from .tools import register_all_tools
 from .tools.dispatch import prewarm_dispatch_executor
@@ -555,6 +556,7 @@ async def lifespan(server: FastMCP):
 
     # Initialize cognition graph
     logger.info(f"Initializing cognition graph at {config.cognition_dir}...")
+    stamp_running_server(config.cognition_dir)
     try:
         cognition_storage = CognitionStorage(config.cognition_dir)
     except Exception as e:

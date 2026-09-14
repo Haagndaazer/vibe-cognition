@@ -2746,8 +2746,7 @@ def _load_project_core(lc: dict[str, Any], path: str) -> dict[str, Any]:
     if not journal_path.exists():
         return {"error": f"no cognition graph at {resolved} (missing .cognition/journal.jsonl)"}
 
-    # Build CognitionStorage (read-only: only reads/stat the journal)
-    b_storage = CognitionStorage(resolved / ".cognition")
+    b_storage = CognitionStorage(resolved / ".cognition", read_only=True)
     node_count = b_storage.get_statistics().get("nodes", 0)
 
     # Open B's chroma — read-only path (never creates). WP-Chroma-Home: keyed
@@ -3247,7 +3246,11 @@ def register_cognition_tools(mcp) -> None:
         allowed:
           * the pointer — `.cognition/local/identity.json`, MACHINE-LOCAL and
             ignored by git and SVN. It says who is driving THIS working copy, not
-            who exists on the project, so it is never committed.
+            who exists on the project, so it is never committed. It is bound to
+            the machine, OS account and checkout folder it was written in; a copy
+            found anywhere else (committed by mistake, or a copied project) is
+            refused as NOT trusted, and this call re-binds it for whoever is
+            ACTUALLY driving -- which may not be the person the old file named.
           * the profile — `.cognition/people/<email>.profile.jsonl`, COMMITTED and
             shared with the team. Name, role, seniority and reporting line live
             here; this is what makes search ranking, the manager chain and the
@@ -3288,7 +3291,8 @@ def register_cognition_tools(mcp) -> None:
             "profile_skipped": list[str], "missing_profile_fields": list[str],
             "write_ready": bool}`.
             `previous` is the identity in effect before this call (with its own
-            `source`); `registered_person` reports whether a legacy person node
+            `source`, plus `identity_file: {status, name, email, machine,
+            mismatch}` when an untrusted identity file was present); `registered_person` reports whether a legacy person node
             also exists for this email; `profile_written` lists the fields this
             call actually appended and `profile_skipped` those already at that
             value (re-confirming an unchanged profile writes nothing);

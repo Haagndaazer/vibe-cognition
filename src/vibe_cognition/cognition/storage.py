@@ -1,5 +1,6 @@
 """JSONL-backed graph storage for the Cognition History Graph."""
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -15,6 +16,7 @@ import networkx as nx
 from .documents import doc_ref
 from .git_hygiene import ensure_git_hygiene
 from .journal_io import append_journal_line
+from .journal_watch import check_between_sessions, note_created
 from .local_paths import write_path as local_write_path
 from .models import (
     CognitionEdge,
@@ -73,12 +75,18 @@ class CognitionStorage:
     concurrent sessions converged without a restart or a background watcher.
     """
 
-    def __init__(self, cognition_dir: Path):
+    def __init__(self, cognition_dir: Path, read_only: bool = False):
         """Initialize storage, hydrating from JSONL if it exists.
 
         Args:
             cognition_dir: Directory for .cognition/ files (Git-committed)
+            read_only: hydrate only. Skips every startup side effect that writes
+                into the project -- ignore-file hygiene, person migration, and the
+                between-session loss check with its snapshot. For opening ANOTHER
+                project's graph, where re-baselining its loss record would mask a
+                loss its own next session should have reported.
         """
+        self._read_only = read_only
         self._dir = cognition_dir
         self._journal_path = cognition_dir / JOURNAL_FILENAME
         self._graph = nx.MultiDiGraph()
@@ -135,6 +143,13 @@ class CognitionStorage:
         # Caught up under the lock in _synced, like the facts registry.
         self._profiles = ProfileRegistry(cognition_dir)
 
+        self.person_migration_report: dict[str, Any] | None = None
+        if read_only:
+            self._catch_up()
+            self._people_facts.catch_up()
+            self._profiles.catch_up()
+            return
+
         self._dir.mkdir(parents=True, exist_ok=True)
 
         try:
@@ -151,11 +166,38 @@ class CognitionStorage:
         # the write gate reads PROFILES, so an unmigrated person node would have
         # its owner re-answer all five onboarding questions. Report is stashed for
         # prime to announce, since this wrote committed files nobody asked for.
-        self.person_migration_report: dict[str, Any] | None = None
         try:
             self.person_migration_report = ensure_person_migration(self)
         except Exception as exc:  # noqa: BLE001
             logger.debug("person-migration: unexpected error (swallowed): %s", exc)
+
+        # Loss a live server cannot see: it happened while no session was running.
+        loss = check_between_sessions(self)
+        if loss is not None:
+            logger.warning(
+                "journal-watch: %d node(s) this checkout had seen are gone from the "
+                "journal without a deletion record since the last session",
+                loss["nodes_lost"],
+            )
+            self.last_rehydrate = loss
+            try:
+                flag = local_write_path(self._dir, REHYDRATE_FLAG_FILENAME)
+                # An alert nobody has read yet is ADDED to, not replaced: two losses
+                # before the next session start must report both, not the smaller.
+                with contextlib.suppress(OSError, ValueError):
+                    unread = json.loads(flag.read_text(encoding="utf-8"))
+                    if isinstance(unread, dict):
+                        loss = {
+                            **loss,
+                            "nodes_lost": int(unread.get("nodes_lost") or 0) + loss["nodes_lost"],
+                            "sample_missing_ids": list(dict.fromkeys(
+                                [*(unread.get("sample_missing_ids") or []),
+                                 *loss["sample_missing_ids"]]
+                            ))[:5],
+                        }
+                flag.write_text(json.dumps(loss), encoding="utf-8")
+            except OSError as exc:
+                logger.debug("journal-watch: could not write loss flag: %s", exc)
 
     @property
     def graph(self) -> nx.MultiDiGraph:
@@ -397,7 +439,9 @@ class CognitionStorage:
                 metadata=node.metadata,
             )
             self._index_node_refs(node.id, node.references)
-            return node.id
+        if not self._read_only:
+            note_created(self._dir, node.id)
+        return node.id
 
     def add_edge(self, edge: CognitionEdge) -> bool:
         """Add an edge between two existing nodes.
@@ -1118,7 +1162,7 @@ class CognitionStorage:
             "nodes_lost": len(missing),
             "sample_missing_ids": missing[:5],
         }
-        if missing:
+        if missing and not self._read_only:
             try:
                 (local_write_path(self._dir, REHYDRATE_FLAG_FILENAME)).write_text(
                     json.dumps(self.last_rehydrate), encoding="utf-8"

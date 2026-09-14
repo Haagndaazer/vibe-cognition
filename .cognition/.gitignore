@@ -7,3 +7,4 @@ onboard-declined
 last-seen.json*
 backfill-identity-map.skeleton.json
 identity.json*
+local/

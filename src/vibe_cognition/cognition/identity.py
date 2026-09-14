@@ -36,6 +36,13 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .checkout_binding import (
+    MISMATCH_ACCOUNT,
+    MISMATCH_FOLDER,
+    binding_mismatch,
+    current_binding,
+    is_bound,
+)
 from .git_identity import resolve_git_identity
 from .local_paths import local_dir, read_path, write_path
 from .people_facts import fold_email
@@ -50,6 +57,14 @@ SOURCE_CONFIRMED = "confirmed"
 SOURCE_GIT = "git"
 SOURCE_SVN = "svn"
 SOURCE_OS_USER = "os-user"
+SOURCE_IDENTITY_FILE = "identity-file"
+
+#: What an identity file on disk turned out to be. Only BOUND_OK is trusted.
+FILE_ABSENT = "absent"
+FILE_INVALID = "invalid"
+FILE_BOUND_OK = "ok"
+FILE_UNBOUND = "unbound"
+FILE_FOREIGN = "foreign"
 
 
 def _casefold_email(value: str) -> str:
@@ -76,24 +91,67 @@ def identity_write_path(cognition_dir: Path) -> Path:
     return write_path(cognition_dir, IDENTITY_FILENAME)
 
 
-def read_confirmed_identity(cognition_dir: Path) -> dict[str, str] | None:
-    """The confirmed identity for this checkout, or None. Never raises."""
+def inspect_confirmed_identity(cognition_dir: Path | str) -> dict[str, Any]:
+    """What the identity file on disk is, and whether it belongs to THIS checkout.
+
+    The file is machine-local only by ignore-rule convention, and conventions leak:
+    SVN never reads .gitignore, so `svn add --force` commits it, and anyone
+    copying a project folder copies it. A teammate who then updates would write AS
+    the file's author, stamped confirmed -- worse than the empty-address bug this
+    module exists to fix, because the misattribution looks verified.
+
+    So the file records the machine, OS account and checkout folder it was written
+    for (see checkout_binding), and is trusted only where all three still match.
+    Never raises.
+
+    Returns `{"status", "identity", "machine", "mismatch"}`: `status` is one of
+    FILE_ABSENT, FILE_INVALID, FILE_BOUND_OK (the only trusted state), FILE_UNBOUND
+    (written before binding existed, so unverifiable) or FILE_FOREIGN (written for
+    a different machine, account or folder); `identity` is the `{name, email}` it
+    names, when readable; `machine` is the machine it was written on, when
+    recorded; `mismatch` is which part differs, for FILE_FOREIGN.
+    """
+    result: dict[str, Any] = {
+        "status": FILE_ABSENT, "identity": None, "machine": None, "mismatch": None,
+    }
     try:
-        raw = identity_path(cognition_dir).read_text(encoding="utf-8")
+        raw = identity_path(Path(cognition_dir)).read_text(encoding="utf-8")
     except (OSError, ValueError):
-        return None
+        return result
     try:
         data = json.loads(raw.lstrip("﻿"))
     except (json.JSONDecodeError, ValueError):
         logger.debug("identity: %s is not valid JSON; ignoring", IDENTITY_FILENAME)
-        return None
+        result["status"] = FILE_INVALID
+        return result
     if not isinstance(data, dict):
-        return None
+        result["status"] = FILE_INVALID
+        return result
     email = _casefold_email(str(data.get("email", "")))
     name = str(data.get("name", "")).strip()
     if not email or not name:
-        return None
-    return {"name": name, "email": email}
+        result["status"] = FILE_INVALID
+        return result
+    result["identity"] = {"name": name, "email": email}
+
+    if not is_bound(data):
+        result["status"] = FILE_UNBOUND
+        return result
+    result["machine"] = data["machine"]
+    mismatch = binding_mismatch(data, cognition_dir)
+    result["status"] = FILE_BOUND_OK if mismatch is None else FILE_FOREIGN
+    result["mismatch"] = mismatch
+    return result
+
+
+def read_confirmed_identity(cognition_dir: Path) -> dict[str, str] | None:
+    """The confirmed identity for THIS checkout, or None. Never raises.
+
+    None also for a file that names someone but belongs to another machine or
+    folder, or predates binding -- see inspect_confirmed_identity.
+    """
+    info = inspect_confirmed_identity(cognition_dir)
+    return info["identity"] if info["status"] == FILE_BOUND_OK else None
 
 
 def write_confirmed_identity(cognition_dir: Path, name: str, email: str) -> dict[str, Any]:
@@ -105,7 +163,7 @@ def write_confirmed_identity(cognition_dir: Path, name: str, email: str) -> dict
     if not is_valid_email(email):
         return {"error": f"email must be a valid address, got {email!r}"}
     path = identity_write_path(cognition_dir)
-    payload = {"name": name, "email": email}
+    payload = {"name": name, "email": email, **current_binding(cognition_dir)}
     # Per-process temp name: a fixed one lets two concurrent callers clobber each
     # other's staged file, after which one reports success while the other's
     # content is what actually landed. Covered by the identity.json* ignore glob.
@@ -119,7 +177,7 @@ def write_confirmed_identity(cognition_dir: Path, name: str, email: str) -> dict
             tmp.unlink()
         return {"error": f"could not write {IDENTITY_FILENAME}: {exc}"}
     # Report what is actually on disk, not what we meant to write.
-    return read_confirmed_identity(cognition_dir) or payload
+    return read_confirmed_identity(cognition_dir) or {"name": name, "email": email}
 
 
 def resolve_identity(repo_path: Path | str, cognition_dir: Path | str) -> dict[str, Any]:
@@ -127,13 +185,20 @@ def resolve_identity(repo_path: Path | str, cognition_dir: Path | str) -> dict[s
 
     Returns ``{"name", "email", "source", "confirmed"}``. ``email`` may be "" when
     nothing resolvable was found -- callers that write MUST gate on that via
-    ``require_identity``.
+    ``require_identity``. When an identity file exists but is not trusted here, an
+    ``identity_file`` key says why (`status`, and who it names).
     """
     cognition_dir = Path(cognition_dir)
 
-    confirmed = read_confirmed_identity(cognition_dir)
-    if confirmed is not None:
-        return {**confirmed, "source": SOURCE_CONFIRMED, "confirmed": True}
+    info = inspect_confirmed_identity(cognition_dir)
+    if info["status"] == FILE_BOUND_OK:
+        return {**info["identity"], "source": SOURCE_CONFIRMED, "confirmed": True}
+    untrusted: dict[str, Any] = {}
+    if info["status"] in (FILE_UNBOUND, FILE_FOREIGN):
+        untrusted = {"identity_file": {
+            "status": info["status"], **info["identity"],
+            "machine": info["machine"], "mismatch": info["mismatch"],
+        }}
 
     git = resolve_git_identity(repo_path)
     git_email = _casefold_email(git.get("email", ""))
@@ -143,6 +208,7 @@ def resolve_identity(repo_path: Path | str, cognition_dir: Path | str) -> dict[s
             "email": git_email,
             "source": SOURCE_GIT,
             "confirmed": False,
+            **untrusted,
         }
 
     # SVN is deliberately SUGGESTION-ONLY and never stamps a write. Its auth cache
@@ -158,6 +224,7 @@ def resolve_identity(repo_path: Path | str, cognition_dir: Path | str) -> dict[s
         "email": "",
         "source": SOURCE_OS_USER,
         "confirmed": False,
+        **untrusted,
     }
 
 
@@ -173,9 +240,19 @@ def identity_suggestions(repo_path: Path | str, cognition_dir: Path | str) -> li
         seen.add(key)
         out.append({"name": name, "email": _casefold_email(email), "source": source})
 
+    info = inspect_confirmed_identity(Path(cognition_dir))
+    if info["status"] == FILE_UNBOUND and info["identity"]:
+        # Most likely the same person who confirmed before binding existed, so
+        # offered first -- but still only a candidate: it could also have leaked.
+        _add(info["identity"]["name"], info["identity"]["email"], SOURCE_IDENTITY_FILE)
+
     git = resolve_git_identity(repo_path)
     if git.get("email"):
         _add(git.get("name", ""), git["email"], SOURCE_GIT)
+    if info["status"] == FILE_FOREIGN and info["identity"]:
+        # Offered LAST: written for another machine or folder, so more likely a
+        # teammate's file that travelled than this person's own.
+        _add(info["identity"]["name"], info["identity"]["email"], SOURCE_IDENTITY_FILE)
     if is_svn_working_copy(repo_path):
         for cand in svn_username_candidates():
             username = cand["username"]
@@ -204,6 +281,24 @@ def can_persist_identity(cognition_dir: Path | str) -> bool:
         with contextlib.suppress(OSError):
             probe.unlink()
     return True
+
+
+def _stop_it_travelling(repo_path: Path | str) -> str:
+    """The exact command that takes the identity file out of version control."""
+    rel = ".cognition/local/identity.json"
+    svn = f"`svn rm --keep-local {rel}`"
+    git = f"`git rm --cached {rel}`"
+    root = Path(repo_path)
+    if is_svn_working_copy(root):
+        how = f"run {svn}"
+    elif (root / ".git").exists():
+        how = f"run {git}"
+    else:
+        how = f"run {svn} (SVN) or {git} (git)"
+    return (
+        f"If it is under version control, {how} so it stops travelling, and make sure "
+        ".cognition/local is ignored."
+    )
 
 
 def require_identity(
@@ -283,7 +378,42 @@ def require_identity(
         )
         hint = f" Candidates found on this machine (confirm, do not assume): {names}."
 
-    if not confirmed:
+    travelled = ident.get("identity_file") or {}
+    if not confirmed and travelled.get("status") == FILE_FOREIGN:
+        named = f"{travelled.get('name')} <{travelled.get('email')}>"
+        where = {
+            MISMATCH_FOLDER: (
+                "for a DIFFERENT FOLDER on this machine (the project was copied, or a "
+                "second checkout received it through version control)"
+            ),
+            MISMATCH_ACCOUNT: "by a DIFFERENT OS ACCOUNT on this machine",
+        }.get(
+            str(travelled.get("mismatch")),
+            f"on a DIFFERENT MACHINE ({travelled.get('machine')})",
+        )
+        what = (
+            "GRAPH IDENTITY NOT CONFIRMED -- refusing to write. This checkout has an "
+            f"identity file naming {named}, but it was written {where}, so it is NOT "
+            "trusted here: an identity file that arrived through version control or a "
+            "copied folder would otherwise make everyone who receives it write as that "
+            f"person. {_stop_it_travelling(repo_path)} Then confirm who is ACTUALLY "
+            f"driving this checkout -- which may or may not be {named}. If it is them "
+            "and their profile is already complete, name and email alone are enough."
+            f"{hint}"
+        )
+    elif not confirmed and travelled.get("status") == FILE_UNBOUND:
+        named = f"{travelled.get('name')} <{travelled.get('email')}>"
+        what = (
+            "GRAPH IDENTITY NEEDS RE-CONFIRMING -- refusing to write. This checkout's "
+            f"identity file names {named} but predates machine binding, so it cannot "
+            "be verified as belonging to this checkout rather than having arrived "
+            "through version control. This is a one-time step after upgrading. If "
+            f"{named} really is who is driving, confirm it once; when their profile "
+            "is already complete, name and email alone are enough and the result "
+            "says if anything is still missing."
+            f"{hint}"
+        )
+    elif not confirmed:
         what = (
             "GRAPH IDENTITY NOT CONFIRMED -- refusing to write. Every memory must be "
             "attributable to a real person, and this checkout has no confirmed "

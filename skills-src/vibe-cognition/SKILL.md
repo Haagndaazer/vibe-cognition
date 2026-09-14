@@ -151,8 +151,12 @@ false`); a manager's NAME is rejected, because the chain is resolved by email.
 
 **Nothing can be written to the graph until the person driving this checkout has a
 confirmed identity AND a complete profile.** The one call that fixes that is
-`cognition_set_identity(name, email, role, seniority, reports_to)` — see Graph
-Identity below. Every write tool refuses with `identity_required: true` until then.
+`cognition_set_identity(name, email, role, seniority, reports_to)` — see "Graph
+identity" in `cognition_readme`. Every write tool refuses with `identity_required:
+true` until then. The identity file is bound to the machine, OS account and folder it
+was written in: a refusal saying it is **NOT trusted** means it was copied or arrived
+through version control, so ask who is actually driving rather than confirming as the
+person it names.
 
 - **Add someone with `cognition_register_person`** (NOT `cognition_record` — that
   path is rejected for `person`). Omit `email` to target your own server-resolved

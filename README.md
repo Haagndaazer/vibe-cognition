@@ -121,7 +121,8 @@ The embedding model (~250MB) also downloads on first use from Hugging Face. Afte
 Claude Code doesn't auto-update third-party marketplace plugins, so there's normally no signal that a new version of Vibe Cognition exists. To fix that, the SessionStart hook makes a small, read-only check once every 24 hours:
 
 - **What's fetched**: two unauthenticated HTTPS GETs to `raw.githubusercontent.com` — the marketplace's `marketplace.json` (to find the released version's pin) and that version's `plugin.json`. Nothing about your project, your graph, or your machine is sent; these are plain GET requests with no request body.
-- **What happens with it**: the fetched version string is compared to your installed version. If a newer one is available, one line is added to your session-start context naming the new version and how to update — nothing is installed or changed automatically. Updating is always your call.
+- **What happens with it**: the fetched version string is compared to your installed version. If a newer one is available, an `## Update Available` section is added to your session-start context naming the new version, the update command, and the restart step — nothing is installed or changed automatically. Updating is always your call.
+- **After you update**: the new version is not active until the session restarts. If a server started for the project in the last few minutes is still running an older version than the one installed, the session-start context opens with a warning saying so, and `get_status` reports the code *that* session's server is running under `running_code` (`matches: false` confirms it). Claude Code and Codex are tracked separately, so updating one does not raise the warning in the other. Since 0.39.0 the server is also pinned to the installed code, so this should not happen — the warning exists so that if it ever does, you are told rather than silently running old code.
 - **Throttling**: at most once per 24 hours, tracked by a local timestamp file in the plugin's data directory (never committed, never synced). The network phase has a hard ~8 second wall-clock ceiling — a slow or stalled connection is treated as "couldn't check" and never blocks your session start beyond that.
 - **How to disable**: set `VIBE_UPDATE_NUDGE=off` (also accepts `0`/`false`/`no`) in your environment. This skips the check entirely — no network request, no nudge.
 - **Contributing to this repo**: a dev session on this repo makes the same daily check like any other project, unless you set `VIBE_UPDATE_NUDGE=off`.
@@ -310,7 +311,9 @@ Both writes are **idempotent** (existing files are appended, never clobbered) an
 - **Resolve by keeping BOTH sides.** The journal is append-only and replay order does not matter, so there is no case where one side should win. Concatenate `journal.jsonl.mine` and the highest-numbered `journal.jsonl.rNNN`, drop duplicate lines by node `id`, then `svn resolve --accept working`. Reload the graph afterwards.
 - **`svn update` before a session, commit the journal after one.** Most conflicts come from long uncommitted stretches rather than genuine simultaneous work.
 - **Never set `svn:eol-style` under `.cognition/`.** The journal is replayed by byte offset and the document store is content-addressed, so any line-ending rewrite is damaging. SVN does not translate unless the property is set — the safe state is the default. Watch for a repo-root `svn:auto-props` rule (e.g. `*.md = svn:eol-style=native`): it cannot be neutralized from `.cognition/`, because properties from different ancestors combine rather than override and no value means "do not translate". Exclude `.cognition/` at the root instead.
-- **Mirror the ignore list into SVN.** SVN does not read `.gitignore`, so set `svn:global-ignores` on `.cognition/` with the same globs — **take them from `.cognition/.gitignore` itself, not from documentation**, since that file gains entries across releases (`identity.json*` arrived in 0.37.0) and a transcribed list silently stops covering new machine-local files. **One edit while copying: strip the trailing slash from `chromadb/`** — SVN ignore globs have no directory-only meaning, so `chromadb/` matches nothing while bare `chromadb` works (verified in the lab; it fails silently).
+- **Mirror the ignore list into SVN.** SVN does not read `.gitignore`, so set `svn:global-ignores` on `.cognition/` with the same globs — **take them from `.cognition/.gitignore` itself, not from documentation**, since that file gains entries across releases (`local/` arrived in 0.38.0) and a transcribed list silently stops covering new machine-local files. **One edit while copying: strip the trailing slash from EVERY entry that has one** — SVN ignore globs have no directory-only meaning, so `local/` matches nothing while bare `local` works (verified in the lab; it fails silently). `local/` is the one that matters: it holds your identity file, so leaving its slash on means the next `svn add --force` commits your name and email.
+- **If an identity file gets committed anyway, it is not trusted.** Since 0.39.0 the file records the machine, OS account and checkout folder it was written for. A teammate who receives it through `svn update` is refused rather than silently writing as you, and is told the exact `svn rm --keep-local .cognition/local/identity.json` command to stop it travelling.
+- **Resolving a journal conflict with "use mine" or "use theirs" deletes memories** — one side's lines are simply dropped. Since 0.39.0 the next session start on an SVN checkout notices memories that vanished without a deletion record and says so, with the `svn log` / `svn cat` commands to recover them. Keep both sides and it never fires. `svn switch` to another branch and `svn update -r` to an older revision are recognised as deliberate and stay silent too. This works when the project is a subfolder of a larger checkout as well.
 - **On a `.cognition/` not yet in SVN, propset alone fails** (`E155010`). The order is `svn add --depth empty .cognition`, then the propset, then `svn add --force .cognition` — `--force` because plain `add` refuses an already-versioned directory, and the final add is filtered by the property set in step 2. Write the value file **without a UTF-8 BOM** — `svn propset -F` mis-decodes a BOM and silently kills the first rule while `svn propget` still displays it correctly. Set the property *before* adding the directory's contents, or machine-local files are swept in by the same `svn add`.
 
 Run `cognition_readme` for the full "Team setup (svn)" section.
@@ -400,7 +403,30 @@ Refusals are specific about what to do:
 |---|---|
 | checkout not claimed | asks for all five fields, listing candidates found on the machine |
 | claimed, profile incomplete | names *only* the missing fields |
+| identity file came from another machine, OS account or folder | says who it names, that it is not trusted here, and the command to take it out of version control |
+| identity file predates 0.39.0 | a one-time re-confirmation; name and email are enough when your profile is complete |
 | `.cognition/` not writable | says confirmation can never succeed here, and asks you nothing |
+
+**The identity file is bound to where it was written.** It records this machine's
+name, your OS account and this checkout's folder, and is trusted only where all
+three still match. It is meant to stay machine-local, but conventions leak — SVN
+never reads `.gitignore`, so `svn add --force` commits it, and copying a project
+folder copies it. Without the binding, a teammate who received your file would write
+every memory *as you*, marked confirmed; so would another person logged in to the
+same shared machine.
+
+- **The same folder is recognised however you reach it** — renamed, moved on the
+  same drive, opened through a mapped network drive or UNC path, or on a removable
+  drive that came back under a different letter. A *copy* is a different folder and
+  must be confirmed again.
+- **The account and folder are stored as short digests**, not literally, since a
+  checkout path usually contains your OS username and this is the file most likely
+  to leak.
+- **Known limits:** a dev container rebuilt with a new random hostname counts as a
+  new machine, so identity is confirmed again after each rebuild. Alternating
+  between Windows and WSL on one checkout re-confirms on each switch. A FAT/exFAT
+  removable drive that returns under a different letter re-confirms once (NTFS
+  drives do not).
 
 **SVN credentials are read but never used to attribute a write.** SVN's auth cache
 is machine-wide and realm-keyed, and no realm-to-working-copy correlation is

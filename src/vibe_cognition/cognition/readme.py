@@ -269,11 +269,26 @@ seniority=..., reports_to=...)`. **"nobody" is a valid and expected reports_to o
 solo project -- say so when asking**, or a solo user has no true answer to give. A
 manager's NAME is rejected; the chain is resolved by email.
 
-Three different refusals, because they need three different actions: not confirmed
-(asks for all five, listing candidates found on the machine), confirmed but
-incomplete (names ONLY the missing fields), and a read-only checkout (says
-confirmation can never succeed there and asks the human NOTHING -- do not prompt
-them for an answer that cannot be saved). Reads always keep working.
+Different refusals, because they need different actions: not confirmed (asks for
+all five, listing candidates found on the machine), confirmed but incomplete (names
+ONLY the missing fields), and a read-only checkout (says confirmation can never
+succeed there and asks the human NOTHING -- do not prompt them for an answer that
+cannot be saved). Reads always keep working.
+
+The identity file is BOUND to the machine, OS account and checkout folder it was
+written in, so a copy that travelled is not trusted. Two refusals follow from that:
+
+- **"NOT trusted"** -- the file names someone but was written on a different
+  machine, by a different OS account, or in a different folder (a copied project,
+  or a file that arrived through version control). Run the command the refusal
+  gives to take it out of version control, then ask who is ACTUALLY driving; it
+  may or may not be the person the file names. Never confirm as them just because
+  the file says so.
+- **"NEEDS RE-CONFIRMING"** -- the file predates the binding (before 0.39.0). A
+  one-time step: if the named person really is driving, confirm them once.
+
+The same folder reached through a mapped drive, a UNC path, a rename or a new drive
+letter is still the same folder and needs nothing.
 
 Never assume a candidate, never invent an address, and NEVER use your own agent
 name.
@@ -339,6 +354,13 @@ sides, drop duplicate lines by their node `id`, write the result back, then:
     svn resolve --accept working .cognition/journal.jsonl
 
 Reload the graph afterwards: union resolves the TEXT, not the replay order.
+
+**"Use mine" / "use theirs" deletes memories.** Those resolutions drop one side's
+lines. The next session start on an SVN checkout notices ids that vanished without a
+deletion record and raises a WARNING naming how many and the recovery commands.
+Tell the user and wait for their go-ahead before recovering, and add back only the
+missing ids, never a whole older journal. `svn switch` and `svn update -r <older>`
+are recognised as deliberate and do not raise it.
 
 **Sync discipline keeps the conflict window short.** `svn update` before starting a
 session and commit the journal at the end of one. Most conflicts come from long
