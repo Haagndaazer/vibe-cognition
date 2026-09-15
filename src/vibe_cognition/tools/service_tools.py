@@ -66,6 +66,9 @@ def register_service_tools(mcp) -> None:
                                 edges_outside_curation: int, edge_sources:
                                 dict[str, int]}
                                (or {"error": ...} if storage is not initialized).
+                               Counts cover only what this checkout's confirmed
+                               identity can see: teammates' personal constraints
+                               (and their edges) are left out.
                                edges_outside_curation (WP-TC15) is a
                                curation-containment smoke detector: only the
                                background curate-orchestrator agent (via

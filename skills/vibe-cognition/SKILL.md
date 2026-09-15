@@ -224,9 +224,30 @@ Entities are automatically linked to episodes via `PART_OF` edges when they shar
 - Something fails — a build, test, approach, or assumption
 - You discover something non-obvious about the codebase
 - You identify a reusable pattern or anti-pattern
-- You hit a constraint (technical, API, platform)
+- You hit a constraint (technical, API, platform) or learn a working preference — see
+  Personal vs project constraints below for the scope
 - A production incident occurs
 - An assumption is made that could later prove wrong
+
+### Personal vs project constraints
+A constraint is **personal by default**: it applies only to the person who recorded it,
+and teammates cannot find it through any tool (search, get_node, neighbors, prime,
+dashboard, curation). Pass `scope` on `cognition_record` to choose:
+
+- `personal` — how THIS person works or wants agents to behave for them: preferences,
+  "don't touch prefabs, I author those", "ask before committing", tool or style choices.
+- `project` — true for anyone in the repo regardless of who they are: a platform or API
+  limit, a build or ship rule, a client requirement, a "this breaks if you do X" fact, a
+  security rule.
+- **Unsure? Ask the human** before recording ("is this just how you like to work, or a
+  rule for everyone on the project?") and pass their answer. If you cannot ask, record it
+  personal.
+
+Getting it wrong either way is a bug: a project rule recorded personal is hidden from
+teammates who could break it; a preference recorded project makes every teammate's agent
+obey it. The owner can change it later with `cognition_update_node(node_id, scope=...)`.
+Constraints recorded before 0.42.0 have no scope and stay project. A personal constraint
+is still a line in the owner's committed journal file, so never put a secret in one.
 
 ### Create episodes when:
 - A Git push is done

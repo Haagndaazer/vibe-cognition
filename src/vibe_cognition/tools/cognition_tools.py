@@ -60,6 +60,7 @@ from ..cognition.people_facts import fold_email
 from ..cognition.prime import SEVERITY_ORDER, _node_email
 from ..cognition.profiles import NO_MANAGER, PROFILE_FIELDS
 from ..cognition.roster import Person, Roster
+from ..cognition.scope import SCOPE_KEY, SCOPE_PERSONAL, SCOPES, node_scope, recorded_by_email
 from ..cognition.svn_hygiene import add_new_files_in_background
 
 # WP-TC16 re-export: keeps tests/test_task.py:32-37's direct
@@ -294,8 +295,12 @@ def _record_node(
     severity: str | None = None,
     references: str | None = None,
     from_agent: bool = True,
+    scope: str | None = None,
 ) -> dict[str, Any]:
     """Shared logic for cognition_record tool."""
+    scope, scope_error = _resolve_record_scope(node_type, scope)
+    if scope_error is not None:
+        return scope_error
     lc = get_lifespan(ctx)
     storage: CognitionStorage = lc["cognition_storage"]
     embedding_storage: ChromaDBStorage = lc["cognition_embedding_storage"]
@@ -359,7 +364,11 @@ def _record_node(
         severity=severity,
         timestamp=timestamp,
         author=author,
-        metadata={"recorded_by": recorded_by, "from_agent": from_agent},
+        metadata={
+            "recorded_by": recorded_by,
+            "from_agent": from_agent,
+            **({SCOPE_KEY: scope} if scope else {}),
+        },
     )
     # WP-ID: mint a collision-free id under the lock (global fix). Rebind node_id to
     # the returned id BEFORE the embedding upsert + edges + result — else a salted node
@@ -396,11 +405,34 @@ def _record_node(
         "summary": summary,
         "timestamp": timestamp,
     }
+    if scope:
+        result["scope"] = scope
     if det_edges:
         result["deterministic_edges_created"] = det_edges
     if possible_duplicates:
         result["possible_duplicate_of"] = possible_duplicates
     return result
+
+
+_SCOPE_GUIDANCE = (
+    "personal = how THIS person works or wants agents to behave for them (their "
+    "preferences, who authors what, tool/style choices); visible only to them. "
+    "project = true for anyone in the repo (platform/API limits, build or ship "
+    "rules, client requirements, security rules); visible to everyone."
+)
+
+
+def _resolve_record_scope(
+    node_type: CognitionNodeType, scope: str | None
+) -> tuple[str | None, dict[str, Any] | None]:
+    if node_type != CognitionNodeType.CONSTRAINT:
+        if scope is not None:
+            return None, {"error": "scope applies only to constraint nodes; omit it for other types"}
+        return None, None
+    value = (scope or SCOPE_PERSONAL).strip().lower()
+    if value not in SCOPES:
+        return None, {"error": f"scope must be 'personal' or 'project', got {scope!r}. {_SCOPE_GUIDANCE}"}
+    return value, None
 
 
 #: The roster moved out of the graph into committed profiles, which carry no
@@ -909,6 +941,8 @@ def _format_search_results(
         # Only computed for conflicted hits (a clean hit never pays this cost).
         if conflicted:
             entry["conflicted_with"] = conflict_details(storage, node_id)
+        if node_type == CognitionNodeType.CONSTRAINT.value:
+            entry["scope"] = node_scope(node)
         if node_type == CognitionNodeType.DOCUMENT.value:
             staleness = cheap_staleness_signal(node.get("metadata", {}))
             if staleness:
@@ -1439,6 +1473,7 @@ def _update_node(
     detail: str | None = None,
     context: str | None = None,
     severity: str | None = None,
+    scope: str | None = None,
 ) -> dict[str, Any]:
     """Edit a node's narrative fields in place (testable core of cognition_update_node).
 
@@ -1474,9 +1509,14 @@ def _update_node(
         updates["context"] = [c.strip() for c in context.split(",") if c.strip()]
     if severity is not None:
         updates["severity"] = severity
+    if scope is not None:
+        scope_update = _scope_update(storage, existing, scope)
+        if "error" in scope_update:
+            return scope_update
+        updates.update(scope_update)
 
     if not updates:
-        return {"error": "No updatable fields provided (summary, detail, context, severity)"}
+        return {"error": "No updatable fields provided (summary, detail, context, severity, scope)"}
 
     storage.update_node(node_id, **updates)
 
@@ -1502,6 +1542,25 @@ def _update_node(
     result = _get_node(storage, node_id)
     result["reembed"] = reembed
     return result
+
+
+def _scope_update(
+    storage: CognitionStorage, existing: dict[str, Any] | None, scope: str
+) -> dict[str, Any]:
+    if not existing or existing.get("type") != CognitionNodeType.CONSTRAINT.value:
+        return {"error": "scope applies only to constraint nodes"}
+    value = scope.strip().lower()
+    if value not in SCOPES:
+        return {"error": f"scope must be 'personal' or 'project', got {scope!r}. {_SCOPE_GUIDANCE}"}
+    owner = recorded_by_email(existing)
+    if not owner:
+        return {
+            "error": "this constraint has no recorded owner (it predates identity "
+                     "stamping), so it stays project scope"
+        }
+    if owner != storage.viewer_email():
+        return {"error": "only the person who recorded this constraint can change its scope"}
+    return {"metadata": {**(existing.get("metadata") or {}), SCOPE_KEY: value}}
 
 
 # ── Task node core logic (cognition_add_task / _list_tasks / _update_task) ───
@@ -2865,6 +2924,7 @@ def register_cognition_tools(mcp) -> None:
         severity: str | None = None,
         references: str | None = None,
         from_agent: bool = True,
+        scope: str | None = None,
     ) -> dict[str, Any]:
         """Record a cognition node — a decision, failure, discovery, or other knowledge artifact.
 
@@ -2888,7 +2948,8 @@ def register_cognition_tools(mcp) -> None:
         - fail: Something that didn't work — a build, test, approach, or assumption.
         - discovery: A non-obvious finding about the codebase, library, API, or platform.
         - assumption: Something being assumed true without full verification.
-        - constraint: A hard limitation, scoping exclusion, or defensive rule.
+        - constraint: A hard limitation, scoping exclusion, or defensive rule. PERSONAL by
+          default — see CONSTRAINT SCOPE below.
         - incident: A production problem that affected users.
         - pattern: A reusable approach, convention, or anti-pattern.
         - workflow: A reusable multi-step procedure or runbook — record when you work
@@ -2909,6 +2970,20 @@ def register_cognition_tools(mcp) -> None:
           Good: "Double-filter bug: query filters by language after opening language-scoped box"
           Bad: "Found a bug in the data source that was causing data to be invisible"
         - detail: 1-3 sentences of rationale. NOT the full story — that goes in an episode.
+
+        CONSTRAINT SCOPE (constraint only):
+        - personal (the default): how THIS person works or wants agents to behave for
+          them — their preferences, "don't touch prefabs, I author those", "ask before
+          committing", tool and style choices. Visible ONLY to the person who recorded
+          it: teammates cannot find it through any tool.
+        - project: true for anyone working in the repo regardless of who they are — a
+          platform/API limit, a build or ship rule, a client or contract requirement, a
+          "this breaks if you do X" fact, a security rule. Visible to everyone.
+        - Unsure (e.g. "agents make no engine-side changes in this project" could be one
+          person's preference or a studio rule)? ASK the human before recording and pass
+          their answer. If the human cannot be asked, record it personal.
+        - A wrongly personal project rule hides it from teammates who could break it;
+          a wrongly project preference makes teammates' agents obey it. Both are bugs.
 
         WORKFLOW NODES (workflow):
         - A step-by-step procedure stored as ONE cohesive unit. Verbose detail (like episode).
@@ -2949,9 +3024,13 @@ def register_cognition_tools(mcp) -> None:
                         default. Stamped as metadata.from_agent; surfaced in search
                         results and get_node (missing on pre-existing nodes, never
                         coerced to true/false).
+            scope: constraint only — "personal" (default when omitted) or "project".
+                   See CONSTRAINT SCOPE above. Passing it for any other node type is
+                   an error.
 
         Returns:
-            {id, type, summary, timestamp} plus, when non-empty,
+            {id, type, summary, timestamp} plus, for constraints, scope
+            ("personal" | "project", as stored) and, when non-empty,
             deterministic_edges_created (int) and, for episode nodes only,
             possible_duplicate_of: [node_id, ...] — other EXISTING episodes
             sharing a reference with this one (e.g. two clones each minted an
@@ -2963,6 +3042,7 @@ def register_cognition_tools(mcp) -> None:
             no CONFIRMED identity, or its profile is missing role/seniority/
             reports_to — the payload names what to ask the human for and the
             `cognition_set_identity` call that fixes it. Nothing is written.
+            {"error": ...} for an invalid scope or a scope on a non-constraint.
         """
         try:
             nt = CognitionNodeType(node_type)
@@ -2994,7 +3074,7 @@ def register_cognition_tools(mcp) -> None:
 
         return _record_node(
             ctx, nt, summary, detail, context, author,
-            severity, references, from_agent,
+            severity, references, from_agent, scope,
         )
 
     @dispatch_tool(mcp)
@@ -3935,7 +4015,9 @@ def register_cognition_tools(mcp) -> None:
             node's kind is keyed "type" here (the raw graph attribute name) —
             NOTE cognition_search's results use "node_type" instead, not "type";
             the two are NOT interchangeable, check which tool you're reading from.
-            When project is not None, also includes "project": tag.
+            When project is not None, also includes "project": tag. A constraint's
+            metadata.scope is "personal" or "project" (absent means project); a
+            teammate's personal constraint is reported absent.
         """
         lc = get_lifespan(ctx)
         if project is None:
@@ -3958,12 +4040,13 @@ def register_cognition_tools(mcp) -> None:
         detail: str | None = None,
         context: str | None = None,
         severity: str | None = None,
+        scope: str | None = None,
     ) -> dict[str, Any]:
         """Edit a node's narrative in place — fix a typo or refine wording WITHOUT
         delete+re-record (which would lose the id, its edges, and its curation marker).
 
         Only these narrative fields are editable: `summary`, `detail`,
-        `context` (comma-separated), `severity`. Structural fields (id, type,
+        `context` (comma-separated), `severity`, plus a constraint's `scope`. Structural fields (id, type,
         references, metadata, timestamp) are intentionally NOT editable — changing
         them would corrupt invariants (a document node's sha/mode/`doc:` ref, the
         reference→part_of index, the minted id). To change those, the node should be
@@ -3990,11 +4073,16 @@ def register_cognition_tools(mcp) -> None:
             detail: New detail body, if changing.
             context: New comma-separated context tags, if changing.
             severity: New severity, if changing.
+            scope: Constraint only — "personal" or "project" (see cognition_record's
+                CONSTRAINT SCOPE). Only the person who recorded the constraint may
+                change it; a constraint with no recorded owner (pre-identity) stays
+                project.
 
         Returns:
             The updated node dict (as cognition_get_node) plus `reembed`, or
-            {"error": ...} if the node is absent, no editable field was given, or
-            the node is a workflow (workflows are versioned by supersession: record
+            {"error": ...} if the node is absent (a teammate's personal constraint
+            is absent to you), no editable field was given, the scope is invalid or
+            not yours to change, or the node is a workflow (workflows are versioned by supersession: record
             a new one instead). Refused with `{"identity_required": true, ...}` when this checkout has
             no CONFIRMED identity, or its profile is missing role/seniority/
             reports_to — the payload names what to ask the human for and the
@@ -4017,6 +4105,7 @@ def register_cognition_tools(mcp) -> None:
             detail=detail,
             context=context,
             severity=severity,
+            scope=scope,
         )
 
     @dispatch_tool(mcp)
@@ -4136,6 +4225,10 @@ def register_cognition_tools(mcp) -> None:
                                          # email when stamped, else its free-text author;
                                          # reason is the edge's own reason field, null if
                                          # the edge carries none (TC2, task 888a21f729dd).
+                                         # scope: "personal" | "project", present on
+                                         # constraint hits only. Teammates' personal
+                                         # constraints never appear, so a personal hit
+                                         # is always your own.
               ],
               count: int,                # len(results) — may be < total_found
               total_found: int,          # distinct live (post-exclusion) matches

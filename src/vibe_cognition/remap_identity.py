@@ -198,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     signature_before = journal_signature(cognition_dir)
-    storage = CognitionStorage(cognition_dir)
+    storage = CognitionStorage(cognition_dir, show_all_scopes=True)
     planned = plan_remap(storage, old, new)
     print(_report(planned, old, new))
 

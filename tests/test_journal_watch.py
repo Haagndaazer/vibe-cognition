@@ -353,3 +353,38 @@ def test_a_snapshot_that_travelled_from_another_checkout_is_ignored(svn_checkout
     )
     CognitionStorage(svn_checkout)
     assert _flag(svn_checkout) is None
+
+
+def _personal(node_id, email):
+    return CognitionNode(
+        id=node_id, type=CognitionNodeType.CONSTRAINT, summary="private", detail="d",
+        context=[], references=[], timestamp="2026-01-01T00:00:00+00:00", author="a",
+        metadata={"scope": "personal", "recorded_by": {"name": "Alice", "email": email}},
+    )
+
+
+def test_a_teammates_hidden_constraint_is_never_named_in_a_loss_alert(svn_checkout, graph_identity):
+    graph_identity.acting_as("Alice", "alice@corp.example")
+    s = CognitionStorage(svn_checkout)
+    s.add_node(_personal("alice-private", "alice@corp.example"))
+    del s
+
+    graph_identity.acting_as("Bob", "bob@corp.example")
+    CognitionStorage(svn_checkout)
+    assert _flag(svn_checkout) is None, "a hidden node that is still present is not lost"
+
+    _drop_lines_containing(svn_checkout, "alice-private")
+    CognitionStorage(svn_checkout)
+    flag = _flag(svn_checkout)
+    assert flag is None or "alice-private" not in json.dumps(flag)
+
+
+def test_losing_your_own_personal_constraint_is_still_reported(svn_checkout, graph_identity):
+    graph_identity.acting_as("Alice", "alice@corp.example")
+    s = CognitionStorage(svn_checkout)
+    s.add_node(_personal("alice-private", "alice@corp.example"))
+    del s
+    CognitionStorage(svn_checkout)
+    _drop_lines_containing(svn_checkout, "alice-private")
+    CognitionStorage(svn_checkout)
+    assert _lost(svn_checkout)["sample_missing_ids"] == ["alice-private"]

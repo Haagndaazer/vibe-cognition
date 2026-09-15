@@ -588,8 +588,8 @@ def test_cli_apply_aborts_on_journal_mtime_change(tmp_path, capsys, monkeypatch)
     real_storage_cls = bi.CognitionStorage
 
     class _RacingStorage(real_storage_cls):
-        def __init__(self, cognition_dir):
-            super().__init__(cognition_dir)
+        def __init__(self, cognition_dir, **kwargs):
+            super().__init__(cognition_dir, **kwargs)
             p = cognition_dir / "journal.jsonl"
             future = p.stat().st_mtime + 1000
             os.utime(p, (future, future))

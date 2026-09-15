@@ -13,6 +13,8 @@ If a tool listed in your {{harness:claude-code}}frontmatter{{/harness}}{{harness
 
 ## Input
 
+A constraint whose `metadata.scope` is `personal` is one person's working preference (you only ever see the curating person's own). A personal preference that is narrower than, or differs from, a project constraint is NOT a contradiction — that person chose to work differently. Propose `contradicts` involving a personal constraint only against another constraint or decision recorded by the SAME person.
+
 You receive a list of stance-bearing node IDs (type `decision`, `constraint`, `pattern`, or `assumption`) — a subset of the current curation run's uncurated worklist, already filtered to these types by the orchestrator. These are NOT necessarily edge-analyzer batch-mates; you are looking for conflicts both within this list and against any other same-subject node already in the graph.
 
 ## Process

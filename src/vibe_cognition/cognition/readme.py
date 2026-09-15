@@ -235,7 +235,18 @@ library use, tests) -- starting a session is what marks things "seen."
 - You discover something non-obvious that will matter again.
 - You identify a reusable pattern or anti-pattern.
 - You complete a body of work (record an episode to anchor the entities).
-- You observe a constraint that others must respect.
+- You observe a constraint that others must respect (scope="project"), or learn how
+  the person you work with wants things done (a constraint, personal by default).
+
+## Personal vs project constraints
+
+cognition_record(node_type="constraint") is personal unless scope="project".
+Personal = this person's preferences and how they want agents to behave for them;
+only they can find it (search, get_node, prime, dashboard, curation all hide it
+from teammates). Project = true for anyone in the repo (API/platform limits,
+build or ship rules, client requirements, security). Unsure: ask the human, and
+record personal if you cannot. Only the owner can change scope, via
+cognition_update_node(scope=...). Pre-0.42.0 constraints stay project.
 
 ## Cross-project reads
 

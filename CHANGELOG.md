@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.42.0] - 2026-09-15
+
+### Added
+- **Personal constraints.** A constraint now has a scope. New constraints are personal by default: they apply only to the person who recorded them, and teammates cannot find them through any tool (search, node lookups, neighbors, chains, history, session-start prime, dashboard, curation worklists, `get_status` counts). Pass `scope="project"` on `cognition_record` for rules everyone must follow. The tool docstring and skill tell agents how to judge, and to ask the human when unsure.
+- `cognition_update_node` accepts `scope`, owner only. A constraint with no recorded owner stays project.
+- Session-start prime shows your own personal constraints in a new `## Your Personal Constraints` section; `## Active Constraints` now lists project constraints only.
+- Search hits on constraints carry `scope`; the dashboard marks your personal constraints.
+
+### Unchanged on upgrade
+- Every constraint recorded before 0.42.0 has no scope and stays project, visible to everyone as before.
+- Visibility, not secrecy: a personal constraint is still in its owner's committed journal file.
+
 ## [0.41.0]
 
 The identity work in 0.37.0–0.40.0 was built as the prerequisite for this: every

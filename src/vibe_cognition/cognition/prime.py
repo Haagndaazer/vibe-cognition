@@ -25,6 +25,7 @@ from .person_migration import consume_migration_report, format_migration_announc
 from .readme import ONBOARDING_BLOCK
 from .resolve_journal import resolve_journal_command
 from .roster import Person
+from .scope import SCOPE_PERSONAL, SCOPE_PROJECT, node_scope
 from .storage import REHYDRATE_FLAG_FILENAME, CognitionStorage
 from .svn_hygiene import ensure_svn_hygiene, format_svn_announce
 from .task_meta import _task_claimed_at
@@ -344,6 +345,28 @@ def _format_your_activity(
     return "## Your Recent Activity\n" + "\n".join(lines)
 
 
+def _active_constraints(storage: CognitionStorage, scope: str) -> list[dict]:
+    nodes = [
+        n for n in storage.get_nodes_by_type(CognitionNodeType.CONSTRAINT)
+        if n.get("severity") != "low"
+        and node_scope(n) == scope
+        and not storage.get_predecessors(n["id"], CognitionEdgeType.SUPERSEDES)
+    ]
+    nodes.sort(key=lambda n: SEVERITY_ORDER.get(n.get("severity", "normal"), 2))
+    return nodes
+
+
+def _format_personal_constraints(storage: CognitionStorage, limit: int, maxlen: int = 0) -> str:
+    """The reader's own personal constraints; storage never returns anyone else's."""
+    nodes = _active_constraints(storage, SCOPE_PERSONAL)
+    if not nodes:
+        return ""
+    lines = [_format_node(n, maxlen) for n in nodes[:limit]]
+    if len(nodes) > limit:
+        lines.append(f"- +{len(nodes) - limit} more — use cognition_search")
+    return "## Your Personal Constraints\n" + "\n".join(lines)
+
+
 def _format_constraints(storage: CognitionStorage, limit: int, maxlen: int = 0) -> str:
     """Format active constraints, sorted by severity, dropping only `low` (C2).
 
@@ -351,16 +374,10 @@ def _format_constraints(storage: CognitionStorage, limit: int, maxlen: int = 0) 
     WP-P13n-2 per the personalized-prime scope decision): a constraint with an
     incoming SUPERSEDES edge is an old version and is excluded -- only the
     superseding HEAD is shown, so a revised constraint doesn't duplicate."""
-    nodes = storage.get_nodes_by_type(CognitionNodeType.CONSTRAINT)
-    nodes = [
-        n for n in nodes
-        if n.get("severity") != "low"
-        and not storage.get_predecessors(n["id"], CognitionEdgeType.SUPERSEDES)
-    ]
+    nodes = _active_constraints(storage, SCOPE_PROJECT)
     if not nodes:
         return ""
 
-    nodes.sort(key=lambda n: SEVERITY_ORDER.get(n.get("severity", "normal"), 2))
     shown = nodes[:limit]
     lines = [_format_node(n, maxlen) for n in shown]
     return "## Active Constraints\n" + "\n".join(lines)
@@ -999,6 +1016,7 @@ def generate_prime(
         _onboarding_notice(storage, config, current_email),
     ]
     sections.append(_format_constraints(storage, config.prime_constraint_limit, maxlen))
+    sections.append(_format_personal_constraints(storage, config.prime_constraint_limit, maxlen))
 
     if personalize:
         # WP-OnboardPayoff/TC16/TC14: pinned order Identity header -> Your Tasks

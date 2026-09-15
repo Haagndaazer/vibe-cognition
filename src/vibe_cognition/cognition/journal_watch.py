@@ -194,14 +194,15 @@ def check_between_sessions(storage: Any) -> dict[str, Any] | None:
     try:
         if not applies_to(cognition_dir):
             return None
-        current = set(storage.graph.nodes)
+        present = set(storage.graph.nodes)
+        current = storage.visible_node_ids()
         source = journal_source(cognition_dir)
         record = _read_known(cognition_dir)
         known, recorded_source = record if record else (set(), None)
         report = None
         if known and not _moved_deliberately(recorded_source, source):
             tombstoned = set(getattr(storage, "_removed_node_ids", set()))
-            missing = sorted(known - current - tombstoned)
+            missing = sorted(known - present - tombstoned)
             if missing:
                 report = {
                     "kind": LOSS_KIND_BETWEEN_SESSIONS,

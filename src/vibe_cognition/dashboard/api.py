@@ -24,6 +24,7 @@ from ..cognition import (
 from ..cognition.documents import documents_dir, freshness_by_rehash, text_sidecar_path
 from ..cognition.people_facts import fold_email
 from ..cognition.queries import conflict_flags, get_superseded_chain
+from ..cognition.scope import node_scope
 from ..cognition.task_meta import _task_claimed_at  # WP-TC16: relocated (was cognition_tools)
 from ..embeddings import adaptive_vector_search
 from ..tools.cognition_tools import _reembed_replayed_nodes
@@ -486,6 +487,8 @@ def _entity_row(n: dict[str, Any], storage: CognitionStorage | None = None) -> d
         "recorded_by": meta.get("recorded_by"),
         "from_agent": meta.get("from_agent"),
     }
+    if n.get("type") == CognitionNodeType.CONSTRAINT.value:
+        row["scope"] = node_scope(n)
     if storage is not None:
         row["conflicted"] = _is_conflicted(storage, n["id"])
     return row

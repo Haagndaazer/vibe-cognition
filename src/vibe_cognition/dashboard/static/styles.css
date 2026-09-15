@@ -144,6 +144,7 @@ ul.plain li.clickable:hover { background: var(--panel-2); }
 .chip.person.unverified { border-style: dashed; color: var(--muted); }
 .chip.agent { border-color: #3d4c5e; color: var(--muted); }
 .chip.agent::before { content: "\1F916 "; }
+.chip.personal { border-style: dashed; color: var(--muted); }
 .chip.type { text-transform: uppercase; letter-spacing: .04em; font-size: 10px; }
 .chip.crit { color: var(--sev-crit); border-color: var(--sev-crit); }
 .chip.high { color: var(--sev-high); border-color: var(--sev-high); }

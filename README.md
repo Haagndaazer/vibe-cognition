@@ -294,6 +294,29 @@ your-project/
 
 > **Important:** Never gitignore the entire `.cognition/` directory. The journal files must be committed for team sharing.
 
+### Personal vs project constraints
+
+People record their own working preferences as constraints ("agents never edit my
+prefabs", "ask before committing"). Since 0.42.0 a constraint has a scope:
+
+- **personal** (the default for new constraints) — applies only to the person who
+  recorded it, identified by the server-stamped `recorded_by` email. Nobody else can find
+  it through the plugin: it is left out of `cognition_search`, `cognition_get_node`
+  (reported as not found), neighbors/chains/history, the session-start prime, the
+  dashboard, curation worklists and `get_status` counts. The owner sees it in their own
+  `## Your Personal Constraints` prime section.
+- **project** — visible to everyone, shown in `## Active Constraints`.
+
+The agent decides with guidance in `cognition_record`'s docstring and the skill, and asks
+the human when unsure. Only the owner can change a constraint's scope
+(`cognition_update_node(node_id, scope=...)`); managers have no access to a report's
+personal constraints. Constraints recorded before 0.42.0 have no scope and stay project
+forever; one with no recorded owner cannot be made personal.
+
+This is visibility, not secrecy: a personal constraint is still a line in its owner's
+committed journal file, readable by anyone who opens `.cognition/journal/` directly. The
+`vibe_cognition.remap_identity` CLI sees every scope so a remap cannot orphan one.
+
 ### Per-person journal files
 
 Since 0.41.0, every person writes only to **their own file**, `.cognition/journal/<email>.jsonl`, named after the identity confirmed in that checkout. The graph everyone sees is rebuilt from all of those files plus the old shared `.cognition/journal.jsonl`.
@@ -400,7 +423,7 @@ The cognition graph captures project knowledge — decisions made, approaches th
 | `fail` | An approach that didn't work |
 | `discovery` | A non-obvious finding |
 | `assumption` | A premise being relied on |
-| `constraint` | A hard limitation or scoping exclusion |
+| `constraint` | A hard limitation or scoping exclusion. Personal by default (visible only to whoever recorded it); `scope="project"` for rules everyone must follow — see [Personal vs project constraints](#personal-vs-project-constraints) |
 | `incident` | A production problem |
 | `pattern` | A reusable lesson learned |
 | `episode` | Full narrative of completed work (Linear task, feature, debugging session) |

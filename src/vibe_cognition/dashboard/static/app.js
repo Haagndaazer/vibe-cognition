@@ -415,6 +415,7 @@ function renderOverviewConstraints(list) {
   el.innerHTML = list.map(c => `
     <li class="row clickable" data-id="${escapeHTML(c.id)}">
       <span class="chip ${severityChipClass(c.severity)}">${escapeHTML(c.severity || "normal")}</span>
+      ${c.scope === "personal" ? '<span class="chip personal" title="Only you can see this constraint">personal</span>' : ""}
       <span class="grow">${escapeHTML(c.summary || c.id)}</span>
       ${identityChipHTML(c.recorded_by, c.author)}
     </li>`).join("");

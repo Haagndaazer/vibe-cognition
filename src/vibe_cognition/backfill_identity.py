@@ -577,7 +577,7 @@ def main(argv: list[str] | None = None) -> int:
 
     signature_before = journal_signature(cognition_dir)
 
-    storage = CognitionStorage(cognition_dir)
+    storage = CognitionStorage(cognition_dir, show_all_scopes=True)
     plan = BackfillPlan(
         storage, recompute_backfilled=args.recompute_backfilled,
         confirmed=confirmed, repo_path=repo_path,

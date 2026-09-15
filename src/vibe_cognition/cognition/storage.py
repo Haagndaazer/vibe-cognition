@@ -7,6 +7,7 @@ import logging
 import threading
 import time
 from collections import defaultdict
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -18,7 +19,7 @@ import networkx as nx
 from ..running_version import code_version
 from .documents import doc_ref
 from .git_hygiene import ensure_git_hygiene
-from .identity import read_confirmed_identity
+from .identity import identity_path, read_confirmed_identity
 from .journal_io import append_journal_line
 from .journal_shards import (
     LEGACY_JOURNAL_FILENAME,
@@ -50,6 +51,7 @@ from .people_facts import DEFAULT_MACHINE_CAP, PeopleFactsRegistry
 from .person_migration import ensure_person_migration
 from .profiles import ProfileRegistry
 from .roster import Roster
+from .scope import visible_to
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +129,7 @@ class CognitionStorage:
     concurrent sessions converged without a restart or a background watcher.
     """
 
-    def __init__(self, cognition_dir: Path, read_only: bool = False):
+    def __init__(self, cognition_dir: Path, read_only: bool = False, *, show_all_scopes: bool = False):
         """Initialize storage, hydrating from JSONL if it exists.
 
         Args:
@@ -137,8 +139,11 @@ class CognitionStorage:
                 between-session loss check with its snapshot. For opening ANOTHER
                 project's graph, where re-baselining its loss record would mask a
                 loss its own next session should have reported.
+            show_all_scopes: expose every person's personal constraints. Only for
+                maintenance CLIs that rewrite attribution, never for a tool surface.
         """
         self._read_only = read_only
+        self._show_all_scopes = show_all_scopes
         self._dir = cognition_dir
         self._journal_path = cognition_dir / JOURNAL_FILENAME
         self._graph = nx.MultiDiGraph()
@@ -168,6 +173,8 @@ class CognitionStorage:
         self._last_at: str | None = None
         self._op_writer: str | None = None
         self._op_writer_resolved = False
+        self._viewer_key: tuple[str, int, int] | None = None
+        self._viewer_email_cached = ""
         # Re-entrancy depth for _synced(): catch-up runs once per outermost op.
         self._sync_depth = 0
         # Loss visibility (WP-1): process-lifetime record of rehydrate resets —
@@ -397,7 +404,7 @@ class CognitionStorage:
             out: list[str] = []
             for key in self._normalize_refs([ref]):
                 for nid in self._reference_index.get(key, []):
-                    if nid not in out:
+                    if nid not in out and self._visible(nid):
                         out.append(nid)
             return out
 
@@ -511,7 +518,7 @@ class CognitionStorage:
             True if both nodes exist and the edge was added
         """
         with self._synced():
-            if edge.from_id not in self._graph or edge.to_id not in self._graph:
+            if not self._visible(edge.from_id) or not self._visible(edge.to_id):
                 logger.warning(
                     f"Cannot add edge: node(s) missing "
                     f"(from={edge.from_id}, to={edge.to_id})"
@@ -533,7 +540,7 @@ class CognitionStorage:
             True if the node exists and was updated
         """
         with self._synced():
-            if node_id not in self._graph:
+            if not self._visible(node_id):
                 return False
 
             # C-4 journal-FIRST (see add_node): record before mutating the graph.
@@ -556,7 +563,7 @@ class CognitionStorage:
             True if the node existed and was removed
         """
         with self._synced():
-            if node_id not in self._graph:
+            if not self._visible(node_id):
                 return False
 
             # C-4 journal-FIRST (see add_node): record before mutating the graph.
@@ -587,7 +594,8 @@ class CognitionStorage:
             True if at least one edge was removed
         """
         with self._synced():
-            if not self._graph.has_edge(from_id, to_id):
+            if not (self._visible(from_id) and self._visible(to_id)
+                    and self._graph.has_edge(from_id, to_id)):
                 return False
 
             if edge_type is not None:
@@ -642,14 +650,14 @@ class CognitionStorage:
             Node data dict or None if not found
         """
         with self._synced():
-            if node_id in self._graph:
+            if self._visible(node_id):
                 return dict(self._graph.nodes[node_id])
             return None
 
     def has_node(self, node_id: str) -> bool:
         """Check if a node exists."""
         with self._synced():
-            return node_id in self._graph
+            return self._visible(node_id)
 
     def get_all_nodes(self) -> list[dict[str, Any]]:
         """Get all nodes in the graph.
@@ -660,7 +668,7 @@ class CognitionStorage:
         with self._synced():
             return [
                 {"id": node_id, **data}
-                for node_id, data in self._graph.nodes(data=True)
+                for node_id, data in self._visible_nodes()
             ]
 
     def get_nodes_by_type(self, node_type: CognitionNodeType) -> list[dict[str, Any]]:
@@ -675,7 +683,7 @@ class CognitionStorage:
         with self._synced():
             return [
                 {"id": node_id, **data}
-                for node_id, data in self._graph.nodes(data=True)
+                for node_id, data in self._visible_nodes()
                 if data.get("type") == node_type.value
             ]
 
@@ -721,7 +729,7 @@ class CognitionStorage:
         """
         with self._synced():
             nodes = []
-            for node_id, data in self._graph.nodes(data=True):
+            for node_id, data in self._visible_nodes():
                 if node_type and data.get("type") != node_type.value:
                     continue
                 nodes.append({"id": node_id, **data})
@@ -752,7 +760,7 @@ class CognitionStorage:
         """
         with self._synced():
             uncurated = []
-            for node_id, data in self._graph.nodes(data=True):
+            for node_id, data in self._visible_nodes():
                 if node_type and data.get("type") != node_type.value:
                     continue
                 if data.get("curated_by_skill_at") is not None:
@@ -772,7 +780,7 @@ class CognitionStorage:
         """
         with self._synced():
             count = 0
-            for _node_id, data in self._graph.nodes(data=True):
+            for _node_id, data in self._visible_nodes():
                 if node_type and data.get("type") != node_type.value:
                     continue
                 if data.get("curated_by_skill_at") is not None:
@@ -810,11 +818,13 @@ class CognitionStorage:
             List of (target_id, edge_data) tuples
         """
         with self._synced():
-            if node_id not in self._graph:
+            if not self._visible(node_id):
                 return []
 
             result = []
             for _, target_id, edge_data in self._graph.out_edges(node_id, data=True):
+                if not self._visible(target_id):
+                    continue
                 if edge_type is None or edge_data.get("type") == edge_type.value:
                     result.append((target_id, edge_data))
             return result
@@ -834,11 +844,13 @@ class CognitionStorage:
             List of (source_id, edge_data) tuples
         """
         with self._synced():
-            if node_id not in self._graph:
+            if not self._visible(node_id):
                 return []
 
             result = []
             for source_id, _, edge_data in self._graph.in_edges(node_id, data=True):
+                if not self._visible(source_id):
+                    continue
                 if edge_type is None or edge_data.get("type") == edge_type.value:
                     result.append((source_id, edge_data))
             return result
@@ -859,14 +871,20 @@ class CognitionStorage:
             # only at the return boundary (WP-TC15 peer-review HIGH: the
             # alternative, widening this dict's own annotation, ripples a
             # union type into every increment line above and below).
+            visible_nodes = list(self._visible_nodes())
+            visible_ids = {node_id for node_id, _ in visible_nodes}
+            visible_edges = [
+                edge_data for u, v, edge_data in self._graph.edges(data=True)
+                if u in visible_ids and v in visible_ids
+            ]
             stats: dict[str, int] = {
-                "nodes": self._graph.number_of_nodes(),
-                "edges": self._graph.number_of_edges(),
+                "nodes": len(visible_nodes),
+                "edges": len(visible_edges),
             }
             for node_type in CognitionNodeType:
                 stats[node_type.value] = 0
 
-            for _, data in self._graph.nodes(data=True):
+            for _, data in visible_nodes:
                 t = data.get("type", "")
                 if t in stats:
                     stats[t] += 1
@@ -878,7 +896,7 @@ class CognitionStorage:
                 stats[f"edge_{edge_type.value}"] = 0
             edge_sources: dict[str, int] = {}
             edges_outside_curation = 0
-            for _, _, edge_data in self._graph.edges(data=True):
+            for edge_data in visible_edges:
                 et = edge_data.get("type", "")
                 key = f"edge_{et}"
                 if key in stats:
@@ -892,7 +910,7 @@ class CognitionStorage:
             stats["edges_outside_curation"] = edges_outside_curation
 
             stats["uncurated"] = sum(
-                1 for _, data in self._graph.nodes(data=True)
+                1 for _, data in visible_nodes
                 if data.get("curated_by_skill_at") is None
             )
 
@@ -1092,6 +1110,41 @@ class CognitionStorage:
 
     # ── Internal ──────────────────────────────────────────────────────
 
+    def viewer_email(self) -> str:
+        """The confirmed email reads are shown to, or "" when this checkout has none."""
+        path = identity_path(self._dir)
+        try:
+            st = path.stat()
+        except OSError:
+            self._viewer_key = None
+            self._viewer_email_cached = ""
+            return ""
+        key = (str(path), st.st_mtime_ns, st.st_size)
+        racy = abs(time.time_ns() - st.st_mtime_ns) < DIR_MTIME_RACY_WINDOW_NS
+        if key != self._viewer_key or racy:
+            self._viewer_email_cached = (read_confirmed_identity(self._dir) or {}).get("email") or ""
+            self._viewer_key = None if racy else key
+        return self._viewer_email_cached
+
+    def visible_node_ids(self) -> set[str]:
+        """Ids this viewer may see, without a journal catch-up. For loss reporting,
+        whose ids surface in get_status and the session-start warning."""
+        with self._lock:
+            return {node_id for node_id, _ in self._visible_nodes()}
+
+    def _visible(self, node_id: str) -> bool:
+        if node_id not in self._graph:
+            return False
+        if self._show_all_scopes:
+            return True
+        return visible_to(self._graph.nodes[node_id], self.viewer_email())
+
+    def _visible_nodes(self) -> Iterator[tuple[str, dict[str, Any]]]:
+        viewer = self.viewer_email()
+        for node_id, data in self._graph.nodes(data=True):
+            if self._show_all_scopes or visible_to(data, viewer):
+                yield node_id, data
+
     def _current_writer(self) -> str:
         """The confirmed email this operation writes as, resolved once per outermost
         operation so a multi-line write cannot straddle an identity change."""
@@ -1226,8 +1279,8 @@ class CognitionStorage:
         Surfaces: a WARNING, ``last_rehydrate`` / ``rehydrate_count`` for get_status,
         and on real loss a sidecar flag the next session start shows once.
         """
-        after_ids = set(self._graph.nodes)
-        missing = sorted(before_ids - after_ids)
+        after_ids = self.visible_node_ids()
+        missing = sorted(before_ids - set(self._graph.nodes))
 
         if ambiguous_first_observation and not missing:
             logger.debug(
@@ -1441,7 +1494,7 @@ class CognitionStorage:
         return count
 
     def _rebuild(self, *, ambiguous: bool) -> int:
-        before_ids = set(self._graph.nodes)
+        before_ids = self.visible_node_ids()
         self._reset_replay_state()
         self._discover_shards()
         count = 0
@@ -1494,11 +1547,13 @@ class CognitionStorage:
         with self._synced():
             nodes = [
                 {"id": node_id, **data}
-                for node_id, data in self._graph.nodes(data=True)
+                for node_id, data in self._visible_nodes()
             ]
+            visible_ids = {n["id"] for n in nodes}
             edges = [
                 (u, v, key, dict(data))
                 for u, v, key, data in self._graph.edges(keys=True, data=True)
+                if u in visible_ids and v in visible_ids
             ]
             return {"nodes": nodes, "edges": edges}
 
