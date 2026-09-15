@@ -1,250 +1,251 @@
 # WP-Journal-Shards — retire the mono journal for per-user shards
 
-**Status:** rev 2 — adversarially peer-reviewed, two blockers found. **One of them
-requires a ruling from Colton before this WP can proceed** (§6 Q1).
-**Origin:** Colton's ruling 2026-09-11, following the WP-SVN-Hygiene lab which
-proved SVN cannot union-merge, so conflict *recovery* is the ceiling for SVN teams
-unless the conflict stops existing.
+**Status:** rev 4 — 2026-09-14. Rev 3 re-baselined against v0.40.0; its sonnet
+adversarial review (4 blockers, 4 majors, 3 minors) is folded in as §11, which
+OVERRIDES the sections it names. All rulings in hand; ready to implement.
+
+**Rulings in force**
+- 2026-09-11 (Colton): per-user journal shards replace `.cognition/journal.jsonl`; the
+  mono journal is retired; a migration tool ships; ONE shard per USER — no per-agent,
+  per-worktree or per-machine key. Worktree divergence between agents of the same user
+  is accepted; the shared-worktree manual flush protocol stays for that topology.
+- 2026-09-11 (discovery `b51f6e6c50bd`): confirmed identity is the prerequisite.
+  Shipped v0.37.0–v0.40.0 — every write already requires a confirmed identity with a
+  complete profile, bound to machine/account/folder. The empty-email blocker (rev 2
+  §2a) is therefore gone: there is no write without a confirmed email.
+- 2026-09-14 (decision `74a13e5998ed`): BOTH phases ship in ONE release. Projects
+  AUTO-ADOPT shards on their first write after upgrading. Legacy-journal growth after
+  adoption is ENFORCED with a loud warning on git AND SVN.
 
 ---
 
-## 0. Colton's ruling, and where review says it does not reach
+## 1. What changes on disk
 
-1. Per-user journal shards replace the single `.cognition/journal.jsonl`.
-2. The mono journal is **retired entirely**.
-3. A **migration tool ships** with it.
-4. **Shards are per USER, not per agent.** Agents in worktrees do not get their
-   own shards — "that gets too messy."
-
-Points 1–3 survive review intact. **Point 4, read as "no per-worktree shards
-either", leaves the most-used topology in this codebase unfixed** — see §6 Q1.
-The distinction that matters and was not drawn when the ruling was given:
-*per-agent* and *per-working-copy* are different axes.
-
----
-
-## 1. What sharding buys — corrected
-
-| | today (mono + `merge=union`) | sharded |
-|---|---|---|
-| git, separate clones | union-merge resolves silently | no conflict exists |
-| git, shared checkout + worktrees | manager-flush protocol, by hand | **UNCHANGED — see §6 Q1** |
-| **SVN, separate working copies** | **conflicts; manual resolver is the ceiling** | **no conflict exists** |
-| whole-file rewrite under byte-offset replay (C-3) | every merge touches it | rarer, not gone |
-
-**Rev 1 claimed the shared-worktree manager-flush constraint retires. It does
-not.** Review demonstrated why (§6 Q1). Two liabilities do retire: the
-`merge=union` dependency and most of the SVN story.
-
-**What sharding does NOT solve**, stated plainly so nothing is over-promised:
-
-- concurrent appends by several agents running as the same user **in one working
-  copy** — they share that shard file; `journal_io`'s `O_APPEND` + lock machinery
-  stays and does not become removable
-- divergence between **separate checkouts that resolve to the same shard name**
-  (the blocker, §6 Q1)
-
----
-
-## 2. The migration is NOT a split — confirmed sound by review
-
-Measured on this repo's journal (3,261 lines):
-
-| identity present | lines | share |
-|---|---|---|
-| `recorded_by` / `created_by` | **0** | 0% |
-| free-text `author` only | 722 | 22.1% |
-| **nothing at all** | **2,539** | **77.9%** |
-
-The 2,539 are exactly the non-node actions — `add_edge` 1511, `update_node` 1011,
-`remove_node` 16, `remove_edge` 1. Review verified this against the code:
-`CognitionEdge` carries no identity field at all, and `update_node`'s line is
-`{"id": node_id, **kwargs}` with identity only if a caller happens to pass it.
-
-The 722 `author` values are agent names, not people: `Colton Dyck` 429, `Vince`
-151, `Vorpid` 75, `Vince (manager, for Colton)` 18, `vince` 15, `curate-orchestrator`
-6, `Claude/Fable` 5.
-
-**Review explicitly checked whether this plan over-applies the `backfill_identity`
-no-auto-stamp ruling (2026-07-16, decision `833e9f67de4d`) and found it does
-not** — inferring identity for historical authors and stamping it onto node
-metadata (forbidden) is a different act from routing a *new* line to a file by the
-writing process's own resolved identity (proposed here).
-
-### The lawful migration: freeze, don't split
-
-`.cognition/journal.jsonl` becomes a **read-only legacy shard** — stops growing,
-never rewritten, never re-authored. New writes go to a per-identity shard file.
-Replay reads the legacy journal first, then every shard. A project that never
-migrates keeps working. The migration tool moves **no data**.
-
-### 2a. BLOCKER-adjacent: the empty-email case breaks the guarantee for SVN users
-
-`resolve_git_identity` reads only git config **files** and, finding none, degrades
-to `{"name": getpass.getuser(), "email": ""}`. And `email_slug("")` returns `""`.
-
-**A pure SVN working copy has no `.git` at all.** If the machine also lacks a
-`~/.gitconfig` with `user.email` — entirely normal for an SVN shop — every user on
-that machine collides into the same degenerate shard filename, silently defeating
-"no two people ever write the same file" for **exactly the population this WP
-exists to serve.**
-
-Not optional to resolve. Options: hard-require a configured email before shard
-writes are allowed (fail loud, name the fix); or fall back to an OS-user+machine
-key with loud disclosure. **Silent collision is not on the menu.**
-
----
-
-## 3. Reuse already on the shelf — confirmed
-
-- **`people_facts.email_slug(email)`** — shipped, deterministic, filesystem-safe.
-- **`.cognition/people/*.jsonl`** — the per-identity-file pattern, already
-  committed and union-merged since hygiene v6.
-- **`journal_io`** — append/lock machinery is path-parameterized and transfers
-  cleanly per review.
-- **`people_facts._FileState`** — and see §4, it already solves the trap the
-  replay engine is about to fall into.
-
----
-
-## 4. The replay engine — one blocker, one unnamed correctness class
-
-### 4a. BLOCKER: rehydrate detection does not generalize by duplication
-
-`_catch_up` contains:
-
-```python
-elif self._offset == 0 and self._graph.number_of_nodes() > 0:
-    rehydrate = True
+```
+.cognition/
+  journal.jsonl                  legacy: frozen, read-only for this plugin, never rewritten
+  journal/
+    <email_slug>.jsonl           one shard per person, committed; append-only
+  people/                        unchanged (profiles, env facts)
+  local/                         unchanged (machine-local)
 ```
 
-Sound today: `self._graph` is populated *entirely* by that one file, so "graph
-non-empty at offset 0" is real evidence that file was replaced.
+- Shards live in their own `journal/` directory, NOT in `people/`: both registries in
+  `people/` fold every `*.jsonl` they own, and sharing that directory would need a
+  third reserved suffix for no benefit.
+- File name: `people_facts.email_slug(confirmed_email) + ".jsonl"` — the same
+  deterministic, casefolded, percent-encoded slug the profiles use.
+- **The legacy journal moves no data and is never split** (discovery `f161c4063636`:
+  78% of its lines carry no identity). It stays a replay input forever.
 
-**Under sharding the graph is populated by every shard, so this becomes the normal
-case, not an anomaly.** The first time any process opens a *new* shard — a new
-contributor's first write, or simply a file this process has not seen — that
-file's offset is legitimately 0 while the shared graph is already non-empty from
-others. As written it fires `_rehydrate_reset()`, wiping **the entire graph,
-offset and hasher for the whole store**, and risks a spurious loss-visibility
-WARNING plus sidecar flag via `_record_rehydrate`.
+What does NOT change: `local/` contents, the search index location, local-only
+documents, profiles, env facts, the identity gate.
 
-**Rev 1's claim that "every one of these becomes per-shard state" is wrong for
-this check.** It needs a *semantic* rewrite, not a mechanical per-file copy —
-per-file prefix-hash detection plus an explicit "has this file ever contributed"
-record, which is exactly what `people_facts._FileState.emails` /
-`_drop_contribution` already do correctly. Required test: **discovering a
-brand-new shard must never reset another shard's state or the shared graph.**
+## 2. Shard line format
 
-### 4b. Dependency deferral: sound, and sufficient
+```json
+{"action": "update_node", "data": {...}, "at": "2026-09-14T22:55:03.348593+00:00"}
+```
 
-Review confirmed every dependent action (`add_edge`, `update_node`,
-`remove_node`, `remove_edge`) depends at most **one hop** on a prior unconditional
-`add_node`, so a single global deferred-retry pass genuinely covers the
-missing-target case. Rev 1 was right here.
+- Identical to a legacy line plus `at` — the write time, microseconds, UTC.
+- The writer is the file. No per-line `by`: the gate already stamps identity into
+  node metadata where it matters, and the shard name is authoritative for routing.
+- First line of every shard, written once when the file is created:
+  `{"action": "shard_start", "data": {"legacy_bytes": N, "legacy_sha256": H,
+  "plugin_version": V}, "at": ...}` — the adoption record (§6). Replay ignores it for
+  the graph.
 
-### 4c. NEW: concurrent same-field updates can diverge permanently
+## 3. Replay engine: a file set, ordered by stamps not by arrival
 
-One file gives every process an identical byte-order total order. **N files give
-no natural total order at all.** Two `update_node` calls on the same field of the
-same node arriving from different shards are last-write-wins *by replay
-application order* — and if two processes enumerate shards in different orders
-(directory listing order is not guaranteed stable or identical across processes or
-OSes), they converge to **different, self-consistent, permanently divergent**
-values, with neither detecting it.
+### 3a. File set and per-file state
 
-This is a correctness class the single-journal design structurally cannot have,
-and rev 1 did not name it.
+`CognitionStorage` replays `journal.jsonl` plus every `journal/*.jsonl`, each with its
+own `FileState` (offset, prefix hasher, mtime) — the mechanism
+`jsonl_dir_registry.FileState` already implements for `people/`. Directory discovery
+reuses its dir-mtime gate including the 2-second racy window, and a process calls
+`register_own_write` on its own shard so its first write never waits on discovery.
 
-**Required:** a deterministic canonical cross-shard application order (sorted
-shard filenames, applied in that fixed order on every pass in every process),
-stated as a hard requirement and tested. Plus an audit of which write paths can be
-mutated by more than one identity — curation, `cognition_mark_curated`, task
-status transitions, dashboard edits — since those are where this bites.
+### 3b. Rehydrate detection per file, rebuild globally (rev 2 §4a blocker)
 
----
+Detected per file, exactly today's three conditions, each scoped to ONE file:
 
-## 5. Surfaces this touches
+1. the file shrank below its offset;
+2. its prefix hash no longer matches what was replayed from it (C-3);
+3. its offset is 0, the file is non-empty, and this process has already applied or
+   appended something **from/to that file** (today's "offset 0, graph non-empty",
+   narrowed from "the graph" to "this file's contribution").
 
-- **`backfill_identity.py`** — hardcodes `cognition_dir / "journal.jsonl"` and
-  gates `--apply` on that one file's mtime being unchanged since the dry run.
-  Under sharding a concurrent write to any *shard* races `--apply` undetected —
-  the exact bug class the guard exists to prevent, silently reintroduced.
-- **`journal_io.snapshot_journal` / `snapshot_cli.py`** — locks-then-copies **one**
-  file. There is no defined semantics for "capture N shards at a mutually
-  consistent instant"; a snapshot can straddle shard A at T1 and shard B at T2.
-  Idempotent replay makes this survivable, but it is an unstated design gap.
-- **Test surface** — 16 existing test files reference `journal.jsonl` /
-  `JOURNAL_FILENAME` directly. Decide per file: degenerate N=1 shard set, or a
-  per-shard variant.
-- **Git hygiene** (`merge=union` for shards, `GIT_HYGIENE_VERSION` bump),
-  **SVN hygiene**, **`readme.py`** (its "Team setup (git)" premise changes),
-  **`get_status`** (tool-surface audit HARD RULE if the shape changes),
-  **dashboard**, **`prime.py`**, **hooks**, plus README / CHANGELOG /
-  whats-new / three-manifest bump.
+A brand-new shard — offset 0, nothing contributed — is ordinary discovery and never
+resets anything. When a condition fires, the store rebuilds from ALL files (graph,
+index, every file state) and runs today's identity-based loss check. A full rebuild is
+always correct because application is order-independent (§3c). With only the legacy
+file present, behaviour is byte-for-byte today's — the existing suite is the proof.
 
----
+### 3c. Deterministic application: last-writer-wins by stamp (rev 2 §4c blocker, widened)
 
-## 6. Open questions for Colton
+Rev 2 proposed sorting shard names. That only fixes a cold start: a running process
+catches up on whichever file changed first, so two processes still apply the same two
+`update_node` lines in different orders and diverge permanently. `update_node` lines
+today carry no time at all.
 
-### Q1 — BLOCKING. Does the shard key need a per-working-copy dimension?
+So every entry gets a **stamp**, and conflicting writes resolve by stamp, not arrival:
 
-**The problem.** A git worktree has its own physical copy of `.cognition/`,
-sharing only `.git/objects`. `resolve_git_identity` **cannot read local git config
-in a worktree** — `_local_config_path` returns `None` when `.git` is a file
-(gitlink), by explicit design — so it falls through to global config, which is
-identical across every worktree on the machine. `platform.node()` is identical
-too. So under "per user" (with or without a machine dimension), **manager and
-subordinate agents in different worktrees resolve to the same shard filename while
-holding separate physical files** — they diverge exactly as they diverge on
-`journal.jsonl` today, and reconciling them needs the identical manual flush
-protocol.
+- stamp = `(tier, at, file_name, byte_offset)`; legacy lines are tier 0 (`at` empty,
+  ordered by offset); shard lines are tier 1.
+- **Node attributes**: a per-node, per-attribute stamp map. `add_node` and
+  `update_node` set an attribute only when their stamp is ≥ the stored one (≥ keeps
+  re-reads idempotent). An `add_node` read after a newer `update_node` does not undo it.
+- **Node removal**: a tombstone stamp per node id. Entries for that id stamped below it
+  are ignored (not deferred, not warned); an `add_node` stamped above it re-creates.
+- **Edges**: a stamp per `(from, to, type)` for both presence and removal; add/remove
+  apply only when newer.
+- **Clock skew**: writers stamp `max(now, stored stamp for that attribute/edge + 1µs)`,
+  the same rule `profiles._winning_at` already uses, so a teammate with a fast clock
+  cannot make later edits silently lose.
+- Deferral (WP-5) runs once over the whole pass across all files, as today.
 
-**This is the manager/subordinate-in-worktree pattern this codebase runs on
-daily.** Not an edge case.
+Residual, stated: `metadata` is replaced as one attribute (today's semantics), so two
+people changing different metadata keys of one node at the same moment keep only the
+later write. The mono journal has this today; sharding does not worsen it.
 
-**The distinction not drawn when the ruling was given:** *per-agent* and
-*per-working-copy* are different axes. A per-clone key does **not** give each agent
-its own shard — several agents in one worktree still share one file. It gives each
-*checkout* its own file, which is where the divergence actually is.
+## 4. Write routing
 
-Options in §7.
+- Every journal write goes to the shard of the checkout's **confirmed identity**,
+  resolved from `identity.read_confirmed_identity` at append time (cached, re-read on
+  the identity file's mtime change so `cognition_set_identity` takes effect at once).
+- **No confirmed identity → no journal write.** `_append_journal` raises a typed error.
+  Tool paths are already gated, so users never see it. Internal writes with no human in
+  the loop (the startup deterministic-edge sweep in an unconfirmed checkout) catch it
+  and skip: deterministic edges are idempotent and the next confirmed session makes them.
+- The plugin **never appends to the legacy journal again.**
+- Writers per path (from the inventory): tool writes, curation edges and stamps,
+  task transitions, dashboard deletes, deterministic edges, and the remap/backfill CLIs
+  all run in a checkout and go to that checkout's confirmed person's shard. Nothing
+  needs a new identity parameter: routing is by file, and attribution inside node
+  metadata is unchanged.
 
-### Q2 — What happens to a project that never migrates?
-Proposal: nothing breaks; the legacy journal is still read and the pass starts
-writing shards on first run after upgrade. Confirm silent auto-adoption is wanted
-versus explicit opt-in via the migration CLI.
+## 5. Adoption and migration
 
-### Q3 — HARDENED. Stragglers on old plugin versions: accept, or enforce?
-Rev 1 treated this as a shrug. Review showed **the safety net is asymmetric**: for
-git, a teammate still appending to `journal.jsonl` is safe because `merge=union`
-stays on that file. **For SVN there is no backstop at all.** So on an SVN team, one
-teammate on an old plugin reproduces the original unsolved problem for as long as
-migration is incomplete — and completeness is entirely voluntary under Q2's silent
-auto-adoption. For the one VCS this WP cannot afford to be soft about, this should
-lean toward enforcement: detect an SVN project whose `journal.jsonl` mtime advanced
-*after* a sharded-project marker was stamped, and warn loudly or refuse.
+- **Auto-adopt:** the first journal write after upgrading creates the person's shard
+  with its `shard_start` line. No command needed; nothing is moved.
+- **Migration tool** `vibe-cognition-journal` (also `python -m
+  vibe_cognition.cognition.journal_shards`): `status` (shards, entries per shard,
+  legacy size, adoption time, stragglers), `adopt` (create your shard now, for teams
+  that want to switch before anyone writes). Moves no data, never rewrites the legacy
+  journal.
+- A project never touched by an upgraded plugin keeps working unchanged.
 
----
+## 6. Enforcement: legacy growth after adoption (Q3)
 
-## 7. Phasing — review's recommendation, and I endorse it
+- **Adoption time** = the earliest `shard_start.at` in the project; **adoption size** =
+  that line's `legacy_bytes`.
+- Legacy lines past the adoption size whose own timestamp (`add_node.timestamp`,
+  `add_edge.timestamp`, a tombstone's `removed_at`) is **after** adoption time were
+  written by a plugin that does not shard — a straggler. Lines without a timestamp, or
+  timestamped before adoption, are pre-upgrade work that merged in late: replayed
+  normally, not warned about.
+- Surfaces: a session-start warning naming the count, the latest time and the authors
+  found on those lines ("update vibe-cognition to vX"), and a `get_status` key.
+  Same on git and SVN.
+- Straggler lines are still replayed — nothing is lost — but rank below every shard
+  write (tier 0).
 
-**This should not ship as one WP.** The two blockers live in different places, and
-the point of no return is not "code shipped" but **"first committed multi-shard
-state"** — after that, un-sharding needs exactly the history rewrite §2 rules out.
+## 7. Version control
 
-- **Phase 1 — replay generalization only.** Refactor `_catch_up` / the append path
-  to operate over a *file set*, with the existing mono journal as the sole member.
-  Behavior-preserving, proven by the existing suite as the N=1 case, zero
-  user-visible change, cheaply revertible because no on-disk format changes. §4a
-  and §4c get fixed and tested here.
-- **Phase 2 — write-side fan-out.** Shard routing, the migration CLI, VCS hygiene,
-  docs. Only after Phase 1 has soaked and Q1 is ruled, including a
-  worktree-collision test and a cross-shard concurrent-update-ordering test.
+- **git:** hygiene v10 adds `.cognition/journal/*.jsonl merge=union` (one person in two
+  clones or worktrees still appends to one shard). The legacy rule stays.
+- **SVN:** the automatic setup already schedules new files; shard files are ordinary
+  committed files. A same-person conflict (two checkouts of one person) is resolved by
+  `resolve_journal`, which already covers every `.cognition/**/*.jsonl`.
+- Between-session loss detection (`journal_watch`) is graph-level and unchanged;
+  `journal_source` extends to report the shard directory too.
 
----
+## 8. Surfaces (from the 2026-09-14 inventory)
 
-## 8. Out of scope
+| surface | change |
+|---|---|
+| `storage.py` | file set, per-file state, stamps, routing (§3, §4) |
+| `jsonl_dir_registry.py` | reuse `FileState` + discovery; no behaviour change for `people/` |
+| `journal_io.py` | unchanged (already path-parameterised) |
+| `snapshot_cli.py`, `snapshot_journal` | snapshot the whole set into a directory, each file under its own lock |
+| `backfill_identity.py`, `remap_identity.py` | concurrency guard covers every journal file; blame covers shards |
+| `cognition_load_project` | accept a project with `journal.jsonl` OR any shard |
+| `journal_watch.py`, `svn_hygiene.py`, `prime.py` recovery text | name the shard directory |
+| `git_hygiene.py` | v10 rule |
+| `get_status` | new `journal` key (files, shards, writing_to, stragglers) — tool-surface audit |
+| `cognition_reload` docstring, `readme.py`, README, `docs/topology-guide.md`, `agents-src/plan.md`, SKILL.md | describe legacy + shards |
+| tests | shared helper reading all journal lines; 24 files touched |
 
-Re-authoring history, backfilling identity onto the 78%, rewriting the legacy
-journal, and removing `journal_io`'s local locking.
+## 9. Verification required before pin
+
+1. Existing suite green with the legacy file as the only member (behaviour preserved).
+2. New-shard discovery never resets another file's state or the graph.
+3. Two processes applying the same cross-shard writes in opposite arrival orders
+   converge to identical graphs (attributes, tombstones, edges), including a skewed
+   clock.
+4. A replaced or truncated shard triggers a rebuild and the identity-based loss alert.
+5. Routing: writes land in the confirmed person's shard; switching identity switches
+   shards; no identity writes nothing.
+6. Enforcement: straggler lines warn; late-merged pre-adoption lines do not.
+7. git merge of two clones of one person's shard; real-svn lab: two people, no
+   conflict; one person in two checkouts, conflict resolved by `resolve_journal`.
+8. End-to-end on real git and SVN with two teammates, one on the previous plugin.
+9. Sonnet adversarial review; tool-surface audit (`get_status`); `pytest -m svn`.
+
+## 11. Rev 4 — review findings folded in (overrides §3–§8 where named)
+
+**B1 dashboard deletes (§4).** The dashboard is identity-free by design, so in an
+unconfirmed checkout its delete would now raise. It returns a clean `{"error": ...}`
+naming `cognition_set_identity` instead — the same write rule as the tools; no
+identity-free pseudo-shard (that would break one-shard-per-user).
+
+**B2 startup deterministic-edge sweep (§4; `server.py:145-177`, `:472`).** Skipped
+entirely when the checkout has no confirmed identity; per-node guard so one failure
+cannot abort the rest. `server.py` joins the surfaces table.
+
+**B3 re-add past a tombstone (§3c).** The skew bump covers every stamped decision, not
+only attributes: a writer re-adding a tombstoned id stamps
+`max(now, tombstone + 1µs)`; same for edge re-add past an edge tombstone.
+
+**B4 own writes (§3c).** Local application goes through the same stamp comparison as
+replay — one code path. Because the writer stamps past everything its caught-up
+graph holds (`_synced()` catches up first), its write wins against all it has seen
+and can lose only to a genuinely concurrent write with a later stamp, which is correct
+last-writer-wins. Tool results keep reporting success for the write they made; the
+docstrings of `cognition_update_node` / `cognition_update_task` state the rule.
+
+**M1 union merges must not rebuild the world (§3b).** Each file state also keeps the
+set of line hashes applied from it. On a prefix-hash mismatch the file is re-read: if
+every previously applied line is still present, the merge only INSERTED lines, so
+only the new lines are applied (stamps make this order-free) — no reset. A global
+rebuild plus loss check happens only when lines vanished, or for the legacy file
+(tier-0 lines are ordered by position, so an insertion there still rebuilds, as
+today). Consequence for §3c: the tie-breaker is the **line's content hash**, not its
+byte offset, so a merge that shifts offsets cannot reorder decisions:
+stamp = `(tier, at, file_name, line_sha256)` for shards, `(0, line_index)` for legacy.
+
+**M2 cross-shard deferral (§3c).** Deferred entries stay in a pending queue across
+catch-up passes instead of being dropped after one retry; each pass retries them. A
+full hydration enumerates every file, so anything still pending after one is genuinely
+missing: warned once, counted in `get_status`.
+
+**M3 CLIs (§8).** The remap/backfill concurrency guard compares a signature over every
+journal file (legacy + all shards: name, size, mtime), before planning and right
+before applying. Both catch the no-identity error and print "confirm your identity in
+this checkout first".
+
+**M4 id collision (§3c).** An `add_node` for a LIVE id whose `type`, `timestamp` or
+`author` differ from the stored node is a collision, not a re-add: the earlier-stamped
+node is kept whole (no field-by-field merge), the collision is logged and counted in
+`get_status`. Residual, stated: later `update_node` lines for that id apply to the
+surviving node.
+
+**m1** `svn_hygiene` exclusion check covers `journal/` and each shard. **m2**
+`journal_watch.journal_source` keys on the `journal/` directory once shards exist;
+covered by a real-svn lab test after months-frozen legacy is simulated. **m3** the
+writer identity is resolved once per `_synced()` operation, not per appended line.
+
+## 10. Out of scope
+
+Re-authoring history, backfilling identity onto the legacy 78%, splitting or rewriting
+the legacy journal, per-worktree shard keys, per-key metadata merge.

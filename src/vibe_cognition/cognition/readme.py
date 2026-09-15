@@ -297,12 +297,34 @@ name.
 recorded (a personal address used before a work one), the graph owner runs the
 `vibe-cognition-remap-identity` CLI, which is dry-run by default and infers nothing.
 
+## Journal files (since 0.41.0)
+
+Each person writes only to their own file, `.cognition/journal/<email>.jsonl`, named
+after the identity confirmed in this checkout. The graph is rebuilt from all of them
+plus the legacy `.cognition/journal.jsonl`, which is read but never written again and
+is never split. Switching is automatic on the first write; nothing is moved.
+
+- **No confirmed identity, no write** -- there is no file to write to.
+- **Conflicting edits resolve by write time, not sync order:** when two people change
+  the same field, edge or deletion, the later change wins for everyone, and a fast
+  teammate clock cannot make a later edit lose. Two different people never touch the
+  same file, so their appends never conflict in version control.
+- **A teammate on an older plugin** still writes the legacy journal; the session start
+  names them. Tell the user they need to update. Their entries are still read.
+- **The same person in two clones or worktrees** shares one file: git union-merges it,
+  and SVN conflicts on it resolve with the keep-both resolver below.
+- `get_status` -> `journal` shows the files, where this checkout writes, stragglers,
+  unresolved entries, id collisions and glued lines. `vibe-cognition-journal status`
+  prints the same; `adopt` creates this person's file before any write.
+
 ## Team setup (git)
 
 If multiple people or agents share this repo as **separate clones**, add the following
-line to your **repo-root** `.gitattributes`:
+lines to your **repo-root** `.gitattributes`:
 
     .cognition/journal.jsonl merge=union
+    .cognition/journal/*.jsonl merge=union
+    .cognition/people/*.jsonl merge=union
 
 `union` is a built-in git merge driver (git >= 1.7.x) -- no `[merge "union"]` stanza
 or extra git config is needed. This makes the append-only journal union-merge so
@@ -314,7 +336,7 @@ it **early**, before the journal grows; retrofitting it onto a large committed j
 can duplicate entries across the rewrite boundary.
 
 **Auto-configuration:** On first startup in a separate-clones repo, the server
-automatically adds the union-merge line to `.gitattributes` and adds `chromadb/` to
+automatically adds the union-merge lines to `.gitattributes` and adds `chromadb/` to
 `.cognition/.gitignore` (one-time-ever, idempotent). The vector store itself lives
 OUTSIDE the repo since v0.32.0 (under the plugin data dir -- see `chromadb_path` in
 `get_status`); the ignore line still protects repos where teammates run older
@@ -326,7 +348,7 @@ For existing projects or non-standard topologies, use the manual line above.
 **Residual risk (Windows / autocrlf):** the journal is replayed by byte offset, so
 its on-disk bytes must never be rewritten by line-ending normalization. With
 `core.autocrlf`-style setups this currently holds only by coincidence of git config,
-not by guarantee. If your team sees `.cognition/journal.jsonl` permanently "modified"
+not by guarantee. If your team sees a journal file permanently "modified"
 in git status, or "re-hydrated from top" replay resets after merges/pulls, add EOL
 protection alongside union-merge:
 
@@ -357,9 +379,10 @@ user's call; never commit on their behalf. Opt out with
 `VIBE_COGNITION_NO_VCS_HYGIENE=1` (also turns off the git pass).
 
 **Subversion has no equivalent of `merge=union`, and cannot be given one.** There is
-no per-path merge configuration in SVN at any version. Two people appending to
-`.cognition/journal.jsonl` between syncs WILL conflict on `svn update`. This is
-verified behaviour, not a caution.
+no per-path merge configuration in SVN at any version. Since 0.41.0 each person writes
+only their own journal file, so two different people no longer conflict. A conflict
+still happens when the same person commits from two checkouts, or on the legacy
+journal while a teammate is on an older plugin.
 
 **The conflict rule: keep BOTH sides.** Every journal line is an independent
 operation, so there is no case where one side should win. The session start names the
@@ -400,8 +423,9 @@ neutralized from `.cognition/` -- properties from different ancestors combine ra
 than override, and there is no property value meaning "do not translate". If your
 repo has such a rule, exclude `.cognition/` from it at the root.
 
-**Commit:** `.cognition/.gitignore`, `.cognition/journal.jsonl`, every
-`.cognition/people/*.jsonl`, and `.cognition/documents/` except local-only documents.
+**Commit:** `.cognition/.gitignore`, every `.cognition/journal/*.jsonl`,
+`.cognition/journal.jsonl`, every `.cognition/people/*.jsonl`, and
+`.cognition/documents/` except local-only documents.
 **Never commit:** anything under `.cognition/local/` (identity file, last-seen, alert
 flags), `*.lock`, `chromadb/`, local-only documents, `documents/.gitignore`.
 

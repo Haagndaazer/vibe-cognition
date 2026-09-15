@@ -11,6 +11,7 @@ import json
 
 import pytest
 
+from tests.conftest import seed_legacy_node
 from vibe_cognition.cognition import CognitionStorage
 from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
 from vibe_cognition.cognition.person_migration import (
@@ -55,7 +56,7 @@ def legacy(tmp_path, graph_identity):
 
 
 def test_a_legacy_person_node_becomes_a_complete_profile(legacy):
-    legacy.add_node(_person_node("p1", "old@example.com", detail="joined in 2019"))
+    seed_legacy_node(legacy, _person_node("p1", "old@example.com", detail="joined in 2019"))
 
     report = migrate_person_nodes(legacy)
     assert report["migrated"] == ["old@example.com"]
@@ -74,7 +75,7 @@ def test_an_empty_reports_to_becomes_nobody_not_an_unanswered_field(legacy):
     """A node stored "" for top-of-chain. Carried across verbatim it reads as
     "never answered", and every migrated solo owner fails the gate the moment they
     upgrade — the case the ruling calls the expected answer."""
-    legacy.add_node(_person_node("p1", "solo@example.com", reports_to_email=""))
+    seed_legacy_node(legacy, _person_node("p1", "solo@example.com", reports_to_email=""))
 
     migrate_person_nodes(legacy)
     assert legacy.get_profile("solo@example.com")["reports_to"] == NO_MANAGER
@@ -82,7 +83,7 @@ def test_an_empty_reports_to_becomes_nobody_not_an_unanswered_field(legacy):
 
 
 def test_a_real_manager_email_is_carried_across(legacy):
-    legacy.add_node(_person_node("p1", "ic@example.com", reports_to_email="mgr@example.com"))
+    seed_legacy_node(legacy, _person_node("p1", "ic@example.com", reports_to_email="mgr@example.com"))
     migrate_person_nodes(legacy)
     assert legacy.get_profile("ic@example.com")["reports_to"] == "mgr@example.com"
 
@@ -90,7 +91,7 @@ def test_a_real_manager_email_is_carried_across(legacy):
 def test_migration_is_idempotent_and_never_overwrites_a_profile(legacy):
     """Run twice, and re-run with a node still present after an interrupted phase
     2: neither may resurrect the node's older values over the live profile."""
-    legacy.add_node(_person_node("p1", "x@example.com", role="old role"))
+    seed_legacy_node(legacy, _person_node("p1", "x@example.com", role="old role"))
     assert migrate_person_nodes(legacy)["migrated"] == ["x@example.com"]
 
     legacy.set_profile_fields(
@@ -106,7 +107,7 @@ def test_migration_is_idempotent_and_never_overwrites_a_profile(legacy):
 def test_a_node_with_no_email_is_reported_not_invented(legacy):
     """Email IS the identity key. Inventing one would attribute someone's history
     to an address they never used, so this needs a human."""
-    legacy.add_node(_person_node("pnoemail", ""))
+    seed_legacy_node(legacy, _person_node("pnoemail", ""))
 
     report = migrate_person_nodes(legacy)
     assert report["migrated"] == []
@@ -119,7 +120,7 @@ def test_a_node_with_no_email_is_reported_not_invented(legacy):
 def test_an_unknown_seniority_is_dropped_rather_than_stored(legacy):
     """seniority is a closed set. A hand-edited value must not become a stored
     one, or it reaches search ranking as an unknown weight."""
-    legacy.add_node(_person_node("p1", "x@example.com", seniority="archmage"))
+    seed_legacy_node(legacy, _person_node("p1", "x@example.com", seniority="archmage"))
 
     migrate_person_nodes(legacy)
     profile = legacy.get_profile("x@example.com")
@@ -131,7 +132,7 @@ def test_an_unknown_seniority_is_dropped_rather_than_stored(legacy):
 def test_the_migrated_profile_is_attributed_to_the_person_themselves(legacy):
     """Not to whoever happened to start the session — that would put a stranger in
     someone else's audit trail for a change they did not make."""
-    legacy.add_node(_person_node("p1", "old@example.com"))
+    seed_legacy_node(legacy, _person_node("p1", "old@example.com"))
     migrate_person_nodes(legacy)
 
     records = legacy.profile_history("old@example.com")
@@ -149,7 +150,7 @@ def test_legacy_profile_history_is_preserved_but_never_folded(legacy):
         "at": "2026-02-01T00:00:00+00:00",
         "by": {"name": "A Manager", "email": "mgr@example.com"},
     }
-    legacy.add_node(_person_node("p1", "old@example.com", history=[entry]))
+    seed_legacy_node(legacy, _person_node("p1", "old@example.com", history=[entry]))
     migrate_person_nodes(legacy)
 
     records = legacy.profile_history("old@example.com")
@@ -168,7 +169,7 @@ def test_storage_construction_migrates_and_then_reports_nothing_to_do(tmp_path, 
     graph_identity.unonboarded()
     cognition = tmp_path / ".cognition"
     seed = CognitionStorage(cognition)
-    seed.add_node(_person_node("p1", "old@example.com"))
+    seed_legacy_node(seed, _person_node("p1", "old@example.com"))
 
     first = CognitionStorage(cognition)
     assert (first.person_migration_report or {}).get("migrated") == ["old@example.com"]
@@ -191,14 +192,14 @@ def test_a_person_node_arriving_after_a_completed_migration_is_still_migrated(
     graph_identity.unonboarded()
     cognition = tmp_path / ".cognition"
     storage = CognitionStorage(cognition)
-    storage.add_node(_person_node("p1", "first@example.com"))
+    seed_legacy_node(storage, _person_node("p1", "first@example.com"))
     assert (CognitionStorage(cognition).person_migration_report or {})["migrated"] == [
         "first@example.com"
     ]
 
     # Arrives later, from a teammate who had not upgraded yet.
     storage = CognitionStorage(cognition)
-    storage.add_node(_person_node("p2", "later@example.com", name="Later"))
+    seed_legacy_node(storage, _person_node("p2", "later@example.com", name="Later"))
 
     report = CognitionStorage(cognition).person_migration_report or {}
     assert report.get("migrated") == ["later@example.com"]
@@ -216,7 +217,7 @@ def test_errors_do_not_stop_the_next_session_from_retrying(tmp_path, graph_ident
     graph_identity.unonboarded()
     cognition = tmp_path / ".cognition"
     storage = CognitionStorage(cognition)
-    storage.add_node(_person_node("p1", "old@example.com"))
+    seed_legacy_node(storage, _person_node("p1", "old@example.com"))
 
     monkeypatch.setattr(
         type(storage), "set_profile_fields",
@@ -236,7 +237,7 @@ def test_prime_announces_the_migration_loudly(tmp_path, graph_identity):
     graph_identity.unonboarded()
     cognition = tmp_path / ".cognition"
     seed = CognitionStorage(cognition)
-    seed.add_node(_person_node("p1", "old@example.com"))
+    seed_legacy_node(seed, _person_node("p1", "old@example.com"))
 
     storage = CognitionStorage(cognition)
     note = format_migration_announce(storage.person_migration_report or {})
@@ -252,7 +253,7 @@ def test_the_announce_says_which_migrated_people_are_still_incomplete(tmp_path, 
     graph_identity.unonboarded()
     cognition = tmp_path / ".cognition"
     seed = CognitionStorage(cognition)
-    seed.add_node(_person_node("p1", "odd@example.com", seniority="archmage"))
+    seed_legacy_node(seed, _person_node("p1", "odd@example.com", seniority="archmage"))
 
     storage = CognitionStorage(cognition)
     report = storage.person_migration_report or {}
@@ -271,8 +272,8 @@ def test_the_announce_flags_two_nodes_sharing_one_email(tmp_path, graph_identity
     graph_identity.unonboarded()
     cognition = tmp_path / ".cognition"
     seed = CognitionStorage(cognition)
-    seed.add_node(_person_node("p1", "dupe@example.com", name="First", role="a"))
-    seed.add_node(_person_node("p2", "dupe@example.com", name="Second", role="b"))
+    seed_legacy_node(seed, _person_node("p1", "dupe@example.com", name="First", role="a"))
+    seed_legacy_node(seed, _person_node("p2", "dupe@example.com", name="Second", role="b"))
 
     storage = CognitionStorage(cognition)
     note = format_migration_announce(storage.person_migration_report or {})
@@ -298,7 +299,7 @@ def test_the_announce_survives_the_server_migrating_before_prime_runs(
     graph_identity.unonboarded()
     cognition = tmp_path / ".cognition"
     seed = CognitionStorage(cognition)
-    seed.add_node(_person_node("p1", "old@example.com"))
+    seed_legacy_node(seed, _person_node("p1", "old@example.com"))
 
     server = CognitionStorage(cognition)          # the MCP server gets there first
     assert (server.person_migration_report or {})["migrated"] == ["old@example.com"]
@@ -324,7 +325,7 @@ def test_the_announce_is_silent_when_nothing_happened():
 
 
 def test_the_roster_prefers_the_profile_while_the_node_is_still_there(legacy):
-    legacy.add_node(_person_node("p1", "old@example.com", role="old role"))
+    seed_legacy_node(legacy, _person_node("p1", "old@example.com", role="old role"))
     migrate_person_nodes(legacy)
     legacy.set_profile_fields(
         "old@example.com", {"role": "current role"},
@@ -429,7 +430,7 @@ def test_the_alert_is_the_first_thing_in_the_digest(tmp_path, graph_identity):
     cognition = tmp_path / ".cognition"
     storage = CognitionStorage(cognition)
     me = "me@example.com"
-    storage.add_node(CognitionNode(
+    seed_legacy_node(storage, CognitionNode(
         id="d1", type=CognitionNodeType.DECISION, summary="a decision", detail="d",
         context=[], references=[], timestamp="2026-01-01T00:00:00+00:00", author="a",
     ))

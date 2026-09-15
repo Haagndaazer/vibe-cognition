@@ -5,6 +5,7 @@ import logging
 
 import pytest
 
+from tests.conftest import own_shard
 from vibe_cognition.cognition import (
     CognitionEdge,
     CognitionEdgeType,
@@ -314,9 +315,12 @@ class TestJSONLPersistence:
             timestamp="2026-03-07T23:07:14Z", author="colton",
         ))
 
-        journal = (cog_dir / "journal.jsonl").read_text(encoding="utf-8")
-        lines = [line for line in journal.strip().split("\n") if line]
+        lines = [
+            line for line in own_shard(cog_dir).read_text(encoding="utf-8").splitlines()
+            if line and json.loads(line)["action"] != "shard_start"
+        ]
         assert len(lines) == 1
+        assert "at" in json.loads(lines[0]), "shard lines carry their write time"
 
         entry = json.loads(lines[0])
         assert entry["action"] == "add_node"
@@ -445,7 +449,7 @@ class TestJournalCatchUp:
         assert store.has_node("n1") and store.has_node("n2")
 
         # Wipe the journal entirely (e.g. a .cognition reset by another process).
-        (cog_dir / "journal.jsonl").write_bytes(b"")
+        own_shard(cog_dir).write_bytes(b"")
 
         # Any op detects the shrink and re-hydrates from the (now empty) top.
         assert store.get_statistics()["nodes"] == 0
@@ -463,7 +467,7 @@ class TestJournalCatchUp:
         assert store.rehydrate_count == 0
         assert store.last_rehydrate is None
 
-        (cog_dir / "journal.jsonl").write_bytes(b"")
+        own_shard(cog_dir).write_bytes(b"")
 
         with caplog.at_level(logging.WARNING, logger="vibe_cognition.cognition.storage"):
             stats = store.get_statistics()
@@ -502,8 +506,9 @@ class TestJournalCatchUp:
         store.get_statistics()  # settle into steady state (offset > 0)
         assert store.rehydrate_count == 0, "own-write catch-up must stay quiet"
 
-        journal = cog_dir / "journal.jsonl"
-        first_line = journal.read_bytes().split(b"\n", 1)[0]
+        journal = own_shard(cog_dir)
+        start_line, first_line = journal.read_bytes().split(b"\n")[:2]
+        first_line = start_line + b"\n" + first_line
 
         def _line(node_id):
             data = self._node(node_id).model_dump(mode="json")
@@ -629,8 +634,13 @@ class TestJournalCatchUp:
         }).encode()
         journal.write_bytes(a1_line + b"\n" + edge_line + b"\n")
 
+        assert store.has_node("a1")
+        assert store.unresolved_entries == 1, "a missing dependency stays pending, not dropped"
+
+        # A shard holding the dependency may simply not be discovered yet, so the drop
+        # is reported once every file has been read -- a full hydration.
         with caplog.at_level(logging.WARNING, logger="vibe_cognition.cognition.storage"):
-            assert store.has_node("a1")
+            store.reload()
 
         assert "ghost-node" not in store._graph
         assert store.get_successors("a1", CognitionEdgeType.RELATES_TO) == []
@@ -705,7 +715,7 @@ class TestJournalCatchUp:
         store = CognitionStorage(cog_dir)  # __init__ catches up
         assert store.has_node("n1")
         assert not store.has_node("n2")          # torn line not applied
-        assert store._offset == len(complete)    # offset parked before the torn tail
+        assert store._files["journal.jsonl"].offset == len(complete)
 
         # Writer finishes the line.
         rest = (
@@ -716,7 +726,7 @@ class TestJournalCatchUp:
             f.write(rest)
 
         assert store.has_node("n2")              # now ingested on next op
-        assert store._offset == len(complete) + len(partial) + len(rest)
+        assert store._files["journal.jsonl"].offset == len(complete) + len(partial) + len(rest)
 
     def test_corrupt_complete_line_is_skipped(self, tmp_path):
         """A fully-written garbage line is skipped; surrounding valid lines load
@@ -736,7 +746,7 @@ class TestJournalCatchUp:
         store = CognitionStorage(cog_dir)
         assert store.has_node("n1")
         assert store.has_node("n2")
-        assert store._offset == (cog_dir / "journal.jsonl").stat().st_size
+        assert store._files["journal.jsonl"].offset == (cog_dir / "journal.jsonl").stat().st_size
 
     def test_get_history_reflects_other_process(self, tmp_path):
         """get_history_for_context (queries.py) goes through a synced accessor,

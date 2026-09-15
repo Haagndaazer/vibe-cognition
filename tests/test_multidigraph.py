@@ -1,9 +1,9 @@
 """Tests for Phase 2: MultiDiGraph migration, remove_edge, and related changes."""
 
-import json
 
 import pytest
 
+from tests.conftest import journal_lines
 from vibe_cognition.cognition import (
     CognitionEdge,
     CognitionEdgeType,
@@ -286,8 +286,7 @@ class TestRemoveEdge:
         ))
         storage.remove_edge("a", "b", CognitionEdgeType.LED_TO)
 
-        journal = (cog_dir / "journal.jsonl").read_text(encoding="utf-8")
-        lines = [json.loads(line) for line in journal.strip().split("\n") if line]
+        lines = journal_lines(cog_dir)
         remove_entries = [entry for entry in lines if entry["action"] == "remove_edge"]
         assert len(remove_entries) == 1
         assert remove_entries[0]["data"]["from_id"] == "a"

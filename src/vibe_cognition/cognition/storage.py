@@ -5,18 +5,39 @@ import hashlib
 import json
 import logging
 import threading
+import time
 from collections import defaultdict
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal, overload
 
 import networkx as nx
 
+from ..running_version import code_version
 from .documents import doc_ref
 from .git_hygiene import ensure_git_hygiene
+from .identity import read_confirmed_identity
 from .journal_io import append_journal_line
+from .journal_shards import (
+    LEGACY_JOURNAL_FILENAME,
+    SHARD_START_ACTION,
+    Stamp,
+    adoption,
+    encode_entry,
+    legacy_stamp,
+    line_hash,
+    next_at,
+    shard_dir,
+    shard_filename,
+    shard_stamp,
+    shard_start_line,
+    split_entries,
+    straggler_report,
+)
 from .journal_watch import check_between_sessions, note_created
+from .jsonl_dir_registry import DIR_MTIME_RACY_WINDOW_NS
 from .local_paths import write_path as local_write_path
 from .models import (
     CognitionEdge,
@@ -35,7 +56,38 @@ logger = logging.getLogger(__name__)
 # Minimum prefix length for commit SHA short-form matching
 _COMMIT_SHORT_PREFIX_LEN = 7
 
-JOURNAL_FILENAME = "journal.jsonl"
+JOURNAL_FILENAME = LEGACY_JOURNAL_FILENAME
+
+_NODE_ADD_FIELDS = (
+    "type", "summary", "detail", "context", "references", "severity",
+    "timestamp", "author", "metadata",
+)
+_NODE_IDENTITY_FIELDS = ("type", "timestamp", "author")
+
+
+class JournalWriterUnavailableError(RuntimeError):
+    """No confirmed identity in this checkout, so there is no shard to write to."""
+
+
+@dataclass
+class _JournalFile:
+    """Replay state for one journal file (the legacy journal, or one shard)."""
+
+    path: Path
+    legacy: bool
+    offset: int = 0
+    hasher: "hashlib._Hash" = field(default_factory=hashlib.sha256)
+    mtime_ns: int | None = None
+    line_hashes: set[str] = field(default_factory=set)
+    entries_read: int = 0
+    own_unread: set[str] = field(default_factory=set)
+
+    def reset(self) -> None:
+        self.offset = 0
+        self.hasher = hashlib.sha256()
+        self.mtime_ns = None
+        self.line_hashes = set()
+        self.entries_read = 0
 
 # Sidecar flag written on a LOSSY rehydrate-reset (nodes vanished from memory) so
 # the next session-start prime — a separate process — can surface the loss. Consumed
@@ -92,18 +144,30 @@ class CognitionStorage:
         self._graph = nx.MultiDiGraph()
         self._reference_index: dict[str, list[str]] = defaultdict(list)
         self._lock = threading.RLock()
-        # Byte offset into the journal up to which we've replayed. Only ever
-        # advanced past complete, newline-terminated lines (see _catch_up).
-        self._offset = 0
-        # Journal identity (C-3): a running sha256 of every byte we've replayed
-        # (i.e. of journal bytes[0:offset]) plus the last-seen mtime. Before
-        # replaying from the stored offset after the file changes, we re-hash the
-        # on-disk prefix and compare: if it differs, the journal was REPLACED or
-        # divergently MERGED under us (git pull/merge — which preserves line 1, so
-        # a first-line check would miss it) and we re-hydrate from the top rather
-        # than replay from a now-meaningless offset.
-        self._journal_hasher = hashlib.sha256()
-        self._journal_mtime_ns: int | None = None
+        # One replay state per journal file: the legacy journal plus every shard
+        # under journal/. Offsets only advance past complete lines; a prefix hash
+        # per file detects a replaced or merged file (C-3). See _catch_up.
+        self._files: dict[str, _JournalFile] = {
+            LEGACY_JOURNAL_FILENAME: _JournalFile(self._journal_path, legacy=True),
+        }
+        self._shard_dir_mtime_ns: int | None = None
+        self._shard_dir_racy = False
+        # Last-writer-wins state (docs/wp-journal-shards-plan.md §3c): the stamp
+        # behind every node attribute, node add, node removal and edge, so the
+        # graph is the same whatever order files are read in.
+        self._attr_stamps: dict[str, dict[str, Stamp]] = {}
+        self._add_stamps: dict[str, tuple[Stamp, str]] = {}
+        self._node_tombstones: dict[str, Stamp] = {}
+        self._edge_stamps: dict[tuple[str, str, str], tuple[Stamp, bool]] = {}
+        # Entries whose target is not in the graph yet, kept across passes: with
+        # several files a dependency can live in a shard not discovered until later.
+        self._pending: dict[Stamp, dict[str, Any]] = {}
+        self.unresolved_entries = 0
+        self.id_collisions = 0
+        self.glued_lines = 0
+        self._last_at: str | None = None
+        self._op_writer: str | None = None
+        self._op_writer_resolved = False
         # Re-entrancy depth for _synced(): catch-up runs once per outermost op.
         self._sync_depth = 0
         # Loss visibility (WP-1): process-lifetime record of rehydrate resets —
@@ -125,7 +189,7 @@ class CognitionStorage:
         # already-APPLIED replay of someone else's). Distinguishes "target
         # absent because it was validly deleted and we already know it" from
         # "target absent because it hasn't been replayed yet" in
-        # _replay_entry's remove_node branch — without this, a process's own
+        # _apply's remove_node branch — without this, a process's own
         # remove_node tombstone read back on its NEXT catch-up (C-6: appends
         # don't advance the offset, so a process re-reads its own just-
         # appended lines) always found the target already gone and defer-
@@ -146,6 +210,7 @@ class CognitionStorage:
         self.person_migration_report: dict[str, Any] | None = None
         if read_only:
             self._catch_up()
+            self._warn_unresolved()
             self._people_facts.catch_up()
             self._profiles.catch_up()
             return
@@ -159,6 +224,7 @@ class CognitionStorage:
 
         # Initial hydrate is just a catch-up from offset 0.
         self._catch_up()
+        self._warn_unresolved()
         self._people_facts.catch_up()
         self._profiles.catch_up()
 
@@ -379,6 +445,7 @@ class CognitionStorage:
         """
         with self._lock:
             if self._sync_depth == 0:
+                self._op_writer_resolved = False
                 self._catch_up()
                 self._people_facts.catch_up()
                 self._profiles.catch_up()
@@ -402,7 +469,7 @@ class CognitionStorage:
         DISTINCT ids instead of one silently overwriting the other (data loss).
 
         THE MINT FIRES ONLY HERE, at the generation/journaling boundary — NEVER during
-        replay (``_replay_entry`` writes ``self._graph.add_node`` directly and never
+        replay (``_apply`` writes ``self._graph.add_node`` directly and never
         calls this method), so a replayed id that already exists is idempotent
         cross-process convergence, not a collision to salt around. Do NOT hoist this
         into the replay path. Running under ``_synced`` (which catches up the journal
@@ -424,21 +491,8 @@ class CognitionStorage:
             # mutated — no phantom node the journal never recorded (invisible to other
             # processes, lost on the next re-hydrate). The mint above stays first: it
             # needs the caught-up in-memory graph to detect collisions, and it never
-            # runs on replay (_replay_entry writes self._graph directly).
+            # runs on replay (_apply writes self._graph directly).
             self._append_journal("add_node", node.model_dump(mode="json"))
-            self._graph.add_node(
-                node.id,
-                type=node.type.value,
-                summary=node.summary,
-                detail=node.detail,
-                context=node.context,
-                references=node.references,
-                severity=node.severity,
-                timestamp=node.timestamp,
-                author=node.author,
-                metadata=node.metadata,
-            )
-            self._index_node_refs(node.id, node.references)
         if not self._read_only:
             note_created(self._dir, node.id)
         return node.id
@@ -466,16 +520,6 @@ class CognitionStorage:
 
             # C-4 journal-FIRST (see add_node): record before mutating the graph.
             self._append_journal("add_edge", edge.model_dump(mode="json"))
-            self._graph.add_edge(
-                edge.from_id,
-                edge.to_id,
-                key=edge.edge_type.value,
-                type=edge.edge_type.value,
-                timestamp=edge.timestamp,
-                source=edge.source,
-                reason=edge.reason,
-                curation_session=edge.curation_session,
-            )
             return True
 
     def update_node(self, node_id: str, **kwargs: Any) -> bool:
@@ -493,10 +537,7 @@ class CognitionStorage:
                 return False
 
             # C-4 journal-FIRST (see add_node): record before mutating the graph.
-            data = {"id": node_id, **kwargs}
-            self._append_journal("update_node", data)
-            for key, value in kwargs.items():
-                self._graph.nodes[node_id][key] = value
+            self._append_journal("update_node", {"id": node_id, **kwargs})
             return True
 
     def remove_node(
@@ -523,13 +564,6 @@ class CognitionStorage:
             if removed_by is not None:
                 tombstone["removed_by"] = removed_by
             self._append_journal("remove_node", tombstone)
-            self._unindex_node_refs(node_id)
-            self._graph.remove_node(node_id)
-            # WP-5 gate redirect: remember this was a real removal so our OWN
-            # tombstone read-back on the next catch-up (C-6) doesn't defer-
-            # then-warn about a target that's "missing" only because we just
-            # validly deleted it ourselves.
-            self._removed_node_ids.add(node_id)
             return True
 
     def remove_edge(
@@ -566,7 +600,6 @@ class CognitionStorage:
                     "to_id": to_id,
                     "edge_type": edge_type.value,
                 })
-                self._graph.remove_edge(from_id, to_id, key=key)
                 return True
             else:
                 # Remove all edges between the pair
@@ -579,7 +612,6 @@ class CognitionStorage:
                         "to_id": to_id,
                         "edge_type": key,
                     })
-                    self._graph.remove_edge(from_id, to_id, key=key)
                 return len(keys) > 0
 
     def pop_replayed_node_ids(self) -> list[str]:
@@ -591,7 +623,7 @@ class CognitionStorage:
 
         Does NOT itself trigger a catch-up; callers already do via a preceding
         public storage call (e.g. cognition_search reads the graph first).
-        Thread-safe under the storage lock against a concurrent _replay_entry.
+        Thread-safe under the storage lock against a concurrent _apply.
         """
         with self._lock:
             ids = list(self._replayed_node_ids)
@@ -1060,89 +1092,147 @@ class CognitionStorage:
 
     # ── Internal ──────────────────────────────────────────────────────
 
-    def _append_journal(self, action: str, data: dict[str, Any]) -> None:
-        """Append a single JSON line to the journal file.
+    def _current_writer(self) -> str:
+        """The confirmed email this operation writes as, resolved once per outermost
+        operation so a multi-line write cannot straddle an identity change."""
+        if self._read_only:
+            raise JournalWriterUnavailableError("read-only storage never writes")
+        if not self._op_writer_resolved or self._sync_depth == 0:
+            confirmed = read_confirmed_identity(self._dir)
+            self._op_writer = (confirmed or {}).get("email") or None
+            self._op_writer_resolved = self._sync_depth > 0
+        if not self._op_writer:
+            raise JournalWriterUnavailableError(
+                "no confirmed identity in this checkout -- confirm it with "
+                "cognition_set_identity before writing to the graph"
+            )
+        return self._op_writer
 
-        C-6 — DELIBERATELY does NOT advance ``self._offset`` / ``self._journal_hasher``
-        for the bytes it writes. This process re-reads its own appended line on the
-        next ``_catch_up`` and replays it idempotently. That self-replay is the source
-        of the "+N entries" catch-up log (reworded to not imply a remote write), but
-        re-reading from disk is what keeps the byte-offset/prefix-hash invariant (C-3)
-        correct WITHOUT this process having to know where its bytes landed — and it
-        cannot know: the in-process RLock and the journal_io append lock are DIFFERENT
-        locks, so another process can append between this op's ``_catch_up`` and this
-        ``append_journal_line``. Our bytes therefore need not land at ``self._offset``
-        (un-replayed remote bytes may sit in front), so advancing the offset by
-        ``len(our_blob)`` would point it into the wrong place and corrupt the prefix
-        hash → a spurious full re-hydrate. (A ``_pending_self_appends`` counter to
-        suppress the log was considered and rejected: it would mis-attribute under the
-        very same interleave, so it is no safer.) Idempotent replay makes the re-read a
-        no-op convergence either way.
+    def can_write(self) -> bool:
+        """Whether a journal write would have a shard to land in."""
+        if self._read_only:
+            return False
+        confirmed = read_confirmed_identity(self._dir)
+        return bool((confirmed or {}).get("email"))
 
-        Args:
-            action: The action type (add_node, add_edge, update_node)
-            data: The action payload
+    def journal_status(self) -> dict[str, Any]:
+        """Which journal files feed the graph, where writes go, and what needs attention."""
+        with self._synced():
+            confirmed = read_confirmed_identity(self._dir)
+            email = (confirmed or {}).get("email")
+            start = adoption(self._dir)
+            return {
+                "legacy_journal_bytes": _size(self._journal_path) if self._journal_path.exists() else None,
+                "shards": [
+                    {"file": state.path.name, "bytes": _size(state.path)}
+                    for _, state in self._ordered_files()
+                    if not state.legacy and state.path.exists()
+                ],
+                "writing_to": f"{shard_dir(self._dir).name}/{shard_filename(email)}" if email else None,
+                "adopted_at": start["at"] if start else None,
+                "stragglers": straggler_report(self._dir),
+                "unresolved_entries": self.unresolved_entries,
+                "id_collisions": self.id_collisions,
+                "glued_lines": self.glued_lines,
+            }
+
+    def _floor_for(self, action: str, data: dict[str, Any]) -> str | None:
+        """The newest write time this write must beat (skew protection)."""
+        candidates: list[Stamp] = []
+        if action in ("add_node", "update_node", "remove_node"):
+            node_id = data.get("id", "")
+            if node_id in self._node_tombstones:
+                candidates.append(self._node_tombstones[node_id])
+            if node_id in self._add_stamps:
+                candidates.append(self._add_stamps[node_id][0])
+            stamps = self._attr_stamps.get(node_id, {})
+            keys = stamps.keys() if action != "update_node" else [k for k in data if k != "id"]
+            candidates.extend(stamps[k] for k in keys if k in stamps)
+        elif action in ("add_edge", "remove_edge"):
+            key = (data.get("from_id", ""), data.get("to_id", ""), data.get("edge_type", ""))
+            if key in self._edge_stamps:
+                candidates.append(self._edge_stamps[key][0])
+        ats = [s[1] for s in candidates if s[1]]
+        return max(ats) if ats else None
+
+    def _shard_state(self, name: str) -> _JournalFile:
+        key = f"{shard_dir(self._dir).name}/{name}"
+        if key not in self._files:
+            self._files[key] = _JournalFile(shard_dir(self._dir) / name, legacy=False)
+        return self._files[key]
+
+    def _own_shard(self) -> tuple[str, _JournalFile]:
+        """This checkout's person's shard, created with its adoption record if new."""
+        name = shard_filename(self._current_writer())
+        state = self._shard_state(name)
+        if not state.path.exists():
+            state.path.parent.mkdir(parents=True, exist_ok=True)
+            start_at = next_at(None, self._last_at)
+            self._last_at = start_at
+            start = shard_start_line(self._dir, _plugin_version(), start_at)
+            append_journal_line(state.path, start)
+            state.own_unread.add(line_hash(start))
+        return name, state
+
+    def adopt_shards(self) -> Path:
+        """Create this person's shard now, before any write. Moves no data."""
+        with self._synced():
+            return self._own_shard()[1].path
+
+    def _append_journal(self, action: str, data: dict[str, Any]) -> str:
+        """Append one entry to this checkout's person's shard, then apply it.
+
+        Journal-FIRST (C-4): the line is durable before the graph changes, so a
+        failing append mutates nothing. The line is applied through the same stamp
+        comparison replay uses -- one code path, so this process's view always equals
+        a rebuild from the same bytes.
+
+        C-6 still holds: appends never advance the file's offset. The line is re-read
+        on the next catch-up and re-applied idempotently (same stamp).
         """
-        line = json.dumps({"action": action, "data": data}, ensure_ascii=False)
-        append_journal_line(self._journal_path, line)
+        name, state = self._own_shard()
+        path = state.path
+        at = next_at(self._floor_for(action, data), self._last_at)
+        self._last_at = at
+        line = encode_entry(action, data, at)
+        append_journal_line(path, line)
+        state.own_unread.add(line_hash(line))
+        return self._apply({"action": action, "data": data}, shard_stamp(at, name, line))
 
-    def _rehydrate_reset(self) -> None:
-        """Wipe in-memory state for a full re-hydrate from the top of the journal."""
+    # ── Replay ────────────────────────────────────────────────────────
+
+    def _reset_replay_state(self) -> None:
+        """Wipe the graph and every file's replay state for a full rebuild."""
         self._graph = nx.MultiDiGraph()
         self._reference_index = defaultdict(list)
-        self._offset = 0
-        self._journal_hasher = hashlib.sha256()
+        self._attr_stamps = {}
+        self._add_stamps = {}
+        self._node_tombstones = {}
+        self._edge_stamps = {}
+        self._pending = {}
+        self.glued_lines = 0
+        self.id_collisions = 0
+        for state in self._files.values():
+            state.reset()
+
+    def _rehydrate_reset(self) -> None:
+        self._reset_replay_state()
 
     def _record_rehydrate(self, before_ids: set[str], *, ambiguous_first_observation: bool) -> None:
-        """Make a rehydrate-reset LOUD and durable (WP-1 loss visibility) — unless
-        it's a known-benign false trigger, in which case stay quiet.
+        """Make a rebuild LOUD and durable (WP-1 loss visibility) — unless it is a
+        known-benign trigger with nothing lost, in which case stay quiet.
 
-        Called by ``_catch_up`` after the reset AND the replay-from-top, so
-        ``self._graph`` reflects what actually survived on disk.
-
-        IDENTITY, not count, is the loss signal: ``missing = before_ids -
-        after_ids``. A replacement journal can have MORE total nodes than we had
-        in memory (a divergent branch with its own unrelated history) while still
-        having silently dropped one of OUR nodes — a pure count comparison misses
-        exactly that case (the incident that motivated this task: a branch-switch
-        clobbered 2 live nodes). Before/after COUNTS are still recorded for
-        context, but they never drive the warn/quiet or flag-write decision.
-
-        ``ambiguous_first_observation``: True when the reset was detected via the
-        "offset==0, graph already non-empty" branch on this instance's FIRST-EVER
-        stat of the journal — which is indistinguishable from, and in the
-        overwhelming common case simply IS, this process reading its own recent
-        writes back for the first time (see ``_catch_up``). That is expected,
-        constant, harmless behavior, not a "reset" a human needs to see — so
-        UNLESS ``missing`` is non-empty (an external actor really did
-        truncate/replace the journal in that exact narrow window), skip all loud
-        surfacing and log a quiet DEBUG line instead of a WARNING.
-
-        Loud path (the common shrink/hash-mismatch case, or any case with an
-        actual identity loss) has three surfaces:
-          1. WARNING log naming the lost-node count (was a silent logger.info);
-          2. ``self.last_rehydrate`` / ``self.rehydrate_count`` for get_status;
-          3. on ``missing``, a best-effort sidecar flag file so the next
-             session-start prime — a separate process — can alert once (prime
-             consumes/deletes it). Benign rehydrates (a divergent merge that only
-             ADDED remote nodes, none of ours missing) don't spam prime.
-        Never raises: the flag write is best-effort (the reset itself already
-        succeeded; visibility must not break convergence).
-
-        NOTE: ``cognition_reload`` deliberately does NOT hit this path — it calls
-        ``_rehydrate_reset`` itself before ``_catch_up``, so the graph is already
-        empty at offset 0 and the rehydrate detection stays False.
+        IDENTITY, not count, is the loss signal: ``missing = before_ids - after_ids``.
+        Surfaces: a WARNING, ``last_rehydrate`` / ``rehydrate_count`` for get_status,
+        and on real loss a sidecar flag the next session start shows once.
         """
         after_ids = set(self._graph.nodes)
         missing = sorted(before_ids - after_ids)
 
         if ambiguous_first_observation and not missing:
             logger.debug(
-                "Journal first observed non-empty while reading back this "
-                "process's own recent writes (nodes before=%d, after=%d) — "
-                "not a loss event, staying quiet",
-                len(before_ids),
-                len(after_ids),
+                "Journal rebuild with nothing lost (nodes before=%d, after=%d)",
+                len(before_ids), len(after_ids),
             )
             return
 
@@ -1150,9 +1240,7 @@ class CognitionStorage:
             "Journal changed under our replay offset; re-hydrated from top "
             "(nodes before=%d, after=%d; %d node(s) recorded this session are no "
             "longer on disk)",
-            len(before_ids),
-            len(after_ids),
-            len(missing),
+            len(before_ids), len(after_ids), len(missing),
         )
         self.rehydrate_count += 1
         self.last_rehydrate = {
@@ -1170,174 +1258,221 @@ class CognitionStorage:
             except OSError as exc:
                 logger.debug("could not write rehydrate flag file: %s", exc)
 
-    def _catch_up(self) -> int:
-        """Replay journal lines appended since we last read; return entry count.
+    def _discover_shards(self) -> None:
+        """Track every shard file. One dir stat gates the listing; while the dir was
+        modified within the racy window every pass re-lists (the Windows CI catch)."""
+        directory = shard_dir(self._dir)
+        try:
+            st = directory.stat()
+        except OSError:
+            return
+        if st.st_mtime_ns == self._shard_dir_mtime_ns and not self._shard_dir_racy:
+            return
+        self._shard_dir_mtime_ns = st.st_mtime_ns
+        self._shard_dir_racy = abs(time.time_ns() - st.st_mtime_ns) < DIR_MTIME_RACY_WINDOW_NS
+        try:
+            names = sorted(p.name for p in directory.iterdir() if p.name.endswith(".jsonl"))
+        except OSError:
+            return
+        for name in names:
+            self._shard_state(name)
 
-        Caller MUST hold ``self._lock`` (``_synced`` and ``reload`` do). This is
-        the single mechanism that keeps a running process converged with writes
-        made by other processes sharing the same journal.
+    def _ordered_files(self) -> list[tuple[str, _JournalFile]]:
+        legacy = [(k, v) for k, v in self._files.items() if v.legacy]
+        shards = sorted((k, v) for k, v in self._files.items() if not v.legacy)
+        return legacy + shards
 
-        Safety:
-          - Reads in BINARY so the byte offset matches ``stat().st_size`` exactly
-            (the journal is written CRLF on Windows; binary read + ``splitlines()``
-            handles ``\\r\\n`` and keeps byte accounting consistent).
-          - Advances the offset ONLY past complete, newline-terminated lines. A
-            concurrent writer's half-written final line leaves the offset before
-            it; we re-read it next pass once complete — never losing the entry.
-          - C-3 — REPLACEMENT / divergent MERGE detection. We keep a running hash
-            of every byte we've replayed (journal ``bytes[0:offset]``). When the
-            file changes, we re-hash the on-disk prefix and compare before
-            replaying; a mismatch means the journal was replaced or divergently
-            merged under our offset, so we re-hydrate from the top. A first-line-
-            only check would MISS the real case — a git pull/merge preserves line
-            1 (append-only journal, shared first line) — so only the full-prefix
-            check catches a divergent merge that left our offset pointing into
-            freshly-inserted remote content. Cost: one O(offset) read+hash, and
-            ONLY when the file actually changed (the cheap ``size==offset & mtime``
-            path skips it) — sub-millisecond at journal scale (KB–low-MB).
-            Residual: a replacement that coincidentally matches BOTH size and
-            ``st_mtime_ns`` evades the cheap path (vanishing at ns granularity).
+    def _scan_file(self, state: _JournalFile) -> tuple[str, bytes]:
+        """Decide what one file needs: "none", "append", "insert" or "rebuild".
 
-        Rebuild-vs-append safety (INVARIANT — do not "tighten" by assuming a
-        lock): this read is NOT under the cross-process append lock (that lock,
-        in journal_io, serializes APPENDS only). A rebuild reading while another
-        process appends at EOF is safe purely because of torn-tail parking +
-        idempotent replay + the per-process prefix check — never mutual exclusion.
-        Convergence after a replacement relies on EVERY live process independently
-        detecting it; correct only because replay is idempotent.
+        Rebuild only when something this process already applied from the file can
+        no longer be there: the file vanished, shrank, or a line it held is gone. A
+        merge that only INSERTED lines into a shard applies just the new lines --
+        stamps make that order-free (§11 M1). The legacy journal orders by position,
+        so any rewrite of it still rebuilds, as before.
         """
         try:
-            st = self._journal_path.stat()
-        except FileNotFoundError:
-            return 0
-        size = st.st_size
-        mtime = st.st_mtime_ns
-        # First time this instance has ever stat'd the file with content (WP-1):
-        # distinguishes the ambiguous "offset==0, graph already non-empty" case
-        # below from a genuine replacement — see that branch's comment.
-        first_observation = self._journal_mtime_ns is None
+            st = state.path.stat()
+        except OSError:
+            return ("rebuild" if state.line_hashes else "none"), b""
+        if st.st_size == state.offset and st.st_mtime_ns == state.mtime_ns:
+            return "none", b""
+        try:
+            data = state.path.read_bytes()
+        except OSError:
+            return "none", b""
+        state.mtime_ns = st.st_mtime_ns
+        if st.st_size < state.offset:
+            return "rebuild", data
+        if state.offset > 0 and hashlib.sha256(data[: state.offset]).digest() != state.hasher.digest():
+            if state.legacy:
+                return "rebuild", data
+            present = {line_hash(raw.strip()) for raw in _complete_lines(data) if raw.strip()}
+            return ("insert" if state.line_hashes <= present else "rebuild"), data
+        return "append", data
 
-        # Cheap path: size AND mtime unchanged → nothing happened (one stat, no
-        # read). mtime also catches an equal-byte-size replacement.
-        if size == self._offset and mtime == self._journal_mtime_ns:
-            return 0
-        self._journal_mtime_ns = mtime
-
-        with open(self._journal_path, "rb") as f:
-            data = f.read()
-
-        rehydrate = False
-        ambiguous_first_observation = False
-        if size < self._offset:
-            rehydrate = True  # shrank: truncated / rotated / reset
-        elif self._offset == 0 and self._graph.number_of_nodes() > 0:
-            # Reading from the TOP with a non-empty graph = a re-hydrate: the
-            # journal was replaced before this store advanced its offset past its
-            # own first appends (appends don't move the offset — see C-6).
-            #
-            # WP-1 refinement: when this is ALSO this instance's first-ever stat
-            # of the file (first_observation), the graph's only possible source
-            # is this process's OWN prior writes (nothing else could have landed
-            # in self._graph before any replay ran) — so this is indistinguishable
-            # from, and in practice almost always IS, catch-up simply reading its
-            # own just-appended lines back (see _append_journal's C-6 note), not a
-            # real external reset. _record_rehydrate downgrades this specific
-            # combination to quiet unless it turns out nodes were actually lost.
-            rehydrate = True
-            ambiguous_first_observation = first_observation
-        elif (
-            self._offset > 0
-            # C-3: the replayed prefix must still be byte-identical.
-            and hashlib.sha256(data[: self._offset]).digest() != self._journal_hasher.digest()
-        ):
-            rehydrate = True
-
-        before_ids: set[str] = set()
-        if rehydrate:
-            before_ids = set(self._graph.nodes)
-            self._rehydrate_reset()
-
-        raw = data[self._offset :]
+    def _consume(self, name: str, state: _JournalFile, data: bytes, *, whole: bool) -> int:
+        """Apply the complete lines of `data` not yet applied from this file."""
+        start = 0 if whole else state.offset
+        raw = data[start:]
         last_nl = raw.rfind(b"\n")
         if last_nl == -1:
-            # No complete line yet — do not advance past a torn append. Still
-            # record the reset (the replaced journal may simply be empty/torn).
-            if rehydrate:
-                self._record_rehydrate(
-                    before_ids, ambiguous_first_observation=ambiguous_first_observation
-                )
+            if whole:
+                state.offset = 0
+                state.hasher = hashlib.sha256()
             return 0
-
         complete = raw[: last_nl + 1]
-        self._offset += len(complete)
-        self._journal_hasher.update(complete)
+        if whole:
+            state.offset = len(complete)
+            state.hasher = hashlib.sha256(complete)
+        else:
+            state.offset += len(complete)
+            state.hasher.update(complete)
 
+        shard_name = state.path.name
         count = 0
-        # WP-5 (d6cd1495b23a — merge-shaped replay defense): a merge=union
-        # merge (the supported separate-clones mechanism) can interleave
-        # divergent journal tails so an edge/update/remove line lands BEFORE
-        # its target node's add_node line within this same batch. Collect
-        # entries _replay_entry defers (target not in the graph yet) and
-        # retry them ONCE more after every line in this batch has had its
-        # first pass — by then any add_node from later in the batch has
-        # landed, so ordinary within-batch reordering self-heals instead of
-        # silently and permanently dropping the edge.
-        deferred: list[dict[str, Any]] = []
-        for line in complete.decode("utf-8", errors="replace").splitlines():
-            line = line.strip()
+        for text in complete.decode("utf-8", errors="replace").splitlines():
+            line = text.strip()
             if not line:
                 continue
-            try:
-                parsed = json.loads(line)
-                if self._replay_entry(parsed) == "deferred":
-                    deferred.append(parsed)
-                count += 1
-            except (json.JSONDecodeError, KeyError, ValueError) as e:
-                logger.warning(f"Skipping malformed journal line: {e}")
-
-        for parsed in deferred:
-            if self._replay_entry(parsed) == "deferred":
+            digest = line_hash(line)
+            if digest in state.line_hashes and not state.legacy:
+                continue
+            state.line_hashes.add(digest)
+            state.own_unread.discard(digest)
+            entries, remainder = split_entries(line)
+            if remainder:
+                logger.warning("Skipping unreadable journal text in %s: %.80s", name, remainder)
+            if len(entries) > 1:
+                self.glued_lines += 1
                 logger.warning(
-                    "Dropped journal entry during replay (dependency never "
-                    "appeared in this batch — merge-interleaved or genuinely "
-                    "missing): action=%s data=%s",
-                    parsed.get("action"), parsed.get("data"),
+                    "Journal line in %s holds %d entries with no line break between them; "
+                    "all were read -- repair the file by splitting the line", name, len(entries),
                 )
+            for index, entry in enumerate(entries):
+                if entry.get("action") == SHARD_START_ACTION:
+                    continue
+                if state.legacy:
+                    stamp = legacy_stamp(state.entries_read)
+                    state.entries_read += 1
+                else:
+                    salted = line if index == 0 else f"{line}#{index}"
+                    stamp = shard_stamp(str(entry.get("at") or ""), shard_name, salted)
+                try:
+                    if self._apply(entry, stamp) == "deferred":
+                        self._pending[stamp] = entry
+                    count += 1
+                except (KeyError, ValueError, TypeError) as exc:
+                    logger.warning("Skipping malformed journal entry in %s: %s", name, exc)
+        return count
 
-        if rehydrate:
-            # Record AFTER the replay-from-top so the identity comparison sees
-            # what actually survived on disk.
-            self._record_rehydrate(
-                before_ids, ambiguous_first_observation=ambiguous_first_observation
+    def _retry_pending(self) -> None:
+        for _ in range(3):
+            progressed = False
+            for stamp in sorted(self._pending):
+                if self._apply(self._pending[stamp], stamp) != "deferred":
+                    del self._pending[stamp]
+                    progressed = True
+            if not progressed or not self._pending:
+                break
+
+    def _unresolved(self) -> list[Stamp]:
+        """Pending entries that are genuinely unresolved: an edit waiting on a node
+        that was deleted is expected to wait, possibly forever."""
+        return [
+            stamp for stamp, entry in sorted(self._pending.items())
+            if (entry.get("data") or {}).get("id") not in self._node_tombstones
+        ]
+
+    def _warn_unresolved(self) -> None:
+        """After a full hydration every file has been read, so anything still pending
+        refers to something that genuinely is not in any journal file."""
+        unresolved = self._unresolved()
+        self.unresolved_entries = len(unresolved)
+        for stamp in unresolved[:5]:
+            entry = self._pending[stamp]
+            logger.warning(
+                "Dropped journal entry during replay (dependency never appeared in "
+                "any journal file): action=%s data=%s",
+                entry.get("action"), entry.get("data"),
             )
 
+    def _catch_up(self) -> int:
+        """Replay what changed in any journal file since the last pass; return count.
+
+        Caller MUST hold ``self._lock``. Reads are not under the cross-process append
+        lock; torn tails are parked (offsets only pass complete lines), replay is
+        idempotent, and every live process detects a replaced file independently.
+        """
+        self._discover_shards()
+        scans = []
+        rebuild = False
+        for name, state in self._ordered_files():
+            verdict, data = self._scan_file(state)
+            if verdict == "rebuild":
+                rebuild = True
+            scans.append((name, state, verdict, data))
+
+        if rebuild:
+            return self._rebuild(ambiguous=False)
+
+        count = 0
+        for name, state, verdict, data in scans:
+            if verdict == "append":
+                count += self._consume(name, state, data, whole=False)
+            elif verdict == "insert":
+                count += self._consume(name, state, data, whole=True)
+
+        lost_own = any(
+            state.own_unread and state.offset >= _size(state.path)
+            for state in self._files.values()
+        )
+        if lost_own:
+            return self._rebuild(ambiguous=False)
+        if count and self._pending:
+            self._retry_pending()
+            self.unresolved_entries = len(self._unresolved())
         if count:
-            # C-6: +N includes THIS process's own just-appended lines re-read from
-            # disk (appends don't advance the offset — see _append_journal), not only
-            # other processes' writes. Worded neutrally so it doesn't imply remote origin.
             logger.info(
-                f"Cognition graph replayed +{count} journal entries "
-                f"(includes this process's own appends): "
-                f"{self._graph.number_of_nodes()} nodes, "
-                f"{self._graph.number_of_edges()} edges"
+                "Cognition graph replayed +%d journal entries "
+                "(includes this process's own appends): %d nodes, %d edges",
+                count, self._graph.number_of_nodes(), self._graph.number_of_edges(),
             )
         return count
 
-    def reload(self) -> dict[str, int]:
-        """Force a full re-hydrate from the journal; return before/after stats.
+    def _rebuild(self, *, ambiguous: bool) -> int:
+        before_ids = set(self._graph.nodes)
+        self._reset_replay_state()
+        self._discover_shards()
+        count = 0
+        for name, state in self._ordered_files():
+            try:
+                data = state.path.read_bytes()
+                state.mtime_ns = state.path.stat().st_mtime_ns
+            except OSError:
+                continue
+            count += self._consume(name, state, data, whole=True)
+        self._retry_pending()
+        self.unresolved_entries = len(self._unresolved())
+        lost = any(state.own_unread for state in self._files.values())
+        for key, state in list(self._files.items()):
+            state.own_unread = set()
+            if not state.legacy and not state.path.exists():
+                del self._files[key]
+        self._record_rehydrate(before_ids, ambiguous_first_observation=ambiguous and not lost)
+        return count
 
-        Auto catch-up makes this unnecessary for correctness, but it's an
-        explicit lever (and a "am I converged?" diagnostic) exposed via the
-        ``cognition_reload`` MCP tool.
-        """
+    def reload(self) -> dict[str, int]:
+        """Force a full re-hydrate from every journal file; return before/after stats."""
         with self._lock:
             before = {
                 "nodes": self._graph.number_of_nodes(),
                 "edges": self._graph.number_of_edges(),
             }
-            self._rehydrate_reset()
-            self._journal_mtime_ns = None
+            self._reset_replay_state()
+            self._shard_dir_mtime_ns = None
             self._catch_up()
+            self._warn_unresolved()
             after = {
                 "nodes": self._graph.number_of_nodes(),
                 "edges": self._graph.number_of_edges(),
@@ -1367,58 +1502,142 @@ class CognitionStorage:
             ]
             return {"nodes": nodes, "edges": edges}
 
-    def _replay_entry(self, entry: dict[str, Any]) -> str:
-        """Replay a single journal entry into the graph (no journal write).
+    def _apply(self, entry: dict[str, Any], stamp: Stamp) -> str:
+        """Apply one journal entry under last-writer-wins by stamp.
 
-        Args:
-            entry: Journal entry with 'action' and 'data' keys
-
-        Returns one of (WP-5, d6cd1495b23a — merge-shaped replay defense):
-          - "applied": the entry mutated the graph as intended.
-          - "deferred": the entry's target node(s) aren't in the graph YET.
-            ``merge=union`` (the supported separate-clones mechanism) can
-            interleave divergent journal tails so an edge/update/remove line
-            precedes its endpoint's ``add_node`` line within the SAME batch —
-            the caller (``_catch_up``) retries deferred entries once more
-            after the full batch's ``add_node`` lines have all been applied,
-            so ordinary within-batch reordering self-heals instead of
-            silently and permanently losing the edge.
-          - "skipped": a genuine no-op (e.g. removing an edge that's already
-            gone, given both endpoint nodes DO exist) — never worth a retry
-            or a warning.
+        Returns "applied", "deferred" (its target is not in the graph yet -- kept
+        pending and retried) or "skipped" (older than what is already known, or a
+        no-op). Whatever order entries arrive in, the result is the same.
         """
         action = entry["action"]
         data = entry["data"]
-
         if action == "add_node":
-            node_id = data["id"]
-            references = data.get("references", [])
-            self._graph.add_node(
-                node_id,
-                type=data["type"],
-                summary=data["summary"],
-                detail=data["detail"],
-                context=data.get("context", []),
-                references=references,
-                severity=data.get("severity"),
-                timestamp=data["timestamp"],
-                author=data["author"],
-                metadata=data.get("metadata", {}),
+            return self._apply_add_node(data, stamp)
+        if action == "update_node":
+            return self._apply_update_node(data, stamp)
+        if action == "remove_node":
+            return self._apply_remove_node(data, stamp)
+        if action == "add_edge":
+            return self._apply_edge(data, stamp, present=True)
+        if action == "remove_edge":
+            return self._apply_edge(data, stamp, present=False)
+        return "skipped"
+
+    def _apply_add_node(self, data: dict[str, Any], stamp: Stamp) -> str:
+        node_id = data["id"]
+        tomb = self._node_tombstones.get(node_id)
+        if tomb is not None and stamp <= tomb:
+            return "skipped"
+        values = {
+            "type": data["type"],
+            "summary": data["summary"],
+            "detail": data["detail"],
+            "context": data.get("context", []),
+            "references": data.get("references", []),
+            "severity": data.get("severity"),
+            "timestamp": data["timestamp"],
+            "author": data["author"],
+            "metadata": data.get("metadata", {}),
+        }
+        existing = self._add_stamps.get(node_id)
+        if node_id in self._graph and existing is not None:
+            prior_stamp, prior_file = existing
+            identity_changed = any(
+                self._graph.nodes[node_id].get(k) != values[k] for k in _NODE_IDENTITY_FIELDS
             )
-            self._index_node_refs(node_id, references)
-            # WP-3 (8606d59905a5): queue for the tools-layer re-embed-on-replay
-            # reconciliation. Queuing unconditionally (even for this process's
-            # own writes read back during catch-up) is deliberate — the
-            # consumer does one batched Chroma existence check before
-            # embedding anything, so an already-embedded id costs nothing.
-            self._replayed_node_ids.add(node_id)
-            return "applied"
-        elif action == "add_edge":
-            from_id = data["from_id"]
-            to_id = data["to_id"]
-            edge_type = data["edge_type"]
-            if from_id not in self._graph or to_id not in self._graph:
+            different_file = stamp[2] != prior_file
+            if identity_changed and different_file:
+                # Two different nodes share an id (§11 M4): the earlier one is kept
+                # whole rather than merged field by field.
+                self.id_collisions += 1
+                logger.warning("Node id collision on %s between %s and %s", node_id, prior_file, stamp[2])
+                if stamp >= prior_stamp:
+                    return "skipped"
+                self._unindex_node_refs(node_id)
+                self._graph.nodes[node_id].clear()
+                self._graph.nodes[node_id].update(values)
+                self._attr_stamps[node_id] = dict.fromkeys(_NODE_ADD_FIELDS, stamp)
+                self._add_stamps[node_id] = (stamp, stamp[2])
+                self._index_node_refs(node_id, values["references"])
+                return "applied"
+
+        if node_id not in self._graph:
+            self._graph.add_node(node_id, **values)
+            self._attr_stamps[node_id] = dict.fromkeys(_NODE_ADD_FIELDS, stamp)
+            self._index_node_refs(node_id, values["references"])
+        else:
+            stamps = self._attr_stamps.setdefault(node_id, {})
+            self._unindex_node_refs(node_id)
+            for key in _NODE_ADD_FIELDS:
+                if key not in stamps or stamp >= stamps[key]:
+                    self._graph.nodes[node_id][key] = values[key]
+                    stamps[key] = stamp
+            self._index_node_refs(node_id, self._graph.nodes[node_id].get("references", []))
+        if existing is None or stamp >= existing[0]:
+            self._add_stamps[node_id] = (stamp, stamp[2])
+        if tomb is not None:
+            del self._node_tombstones[node_id]
+            self._removed_node_ids.discard(node_id)
+        self._replayed_node_ids.add(node_id)
+        return "applied"
+
+    def _apply_update_node(self, data: dict[str, Any], stamp: Stamp) -> str:
+        node_id = data["id"]
+        if node_id not in self._graph:
+            tomb = self._node_tombstones.get(node_id)
+            if tomb is not None and stamp <= tomb:
+                return "skipped"
+            # Newer than the deletion: the node may be re-added with an older stamp
+            # than this edit, so wait for it rather than dropping the edit.
+            return "deferred"
+        stamps = self._attr_stamps.setdefault(node_id, {})
+        for key, value in data.items():
+            if key == "id":
+                continue
+            if key not in stamps or stamp >= stamps[key]:
+                self._graph.nodes[node_id][key] = value
+                stamps[key] = stamp
+        return "applied"
+
+    def _apply_remove_node(self, data: dict[str, Any], stamp: Stamp) -> str:
+        node_id = data["id"]
+        tomb = self._node_tombstones.get(node_id)
+        if tomb is not None and stamp <= tomb:
+            return "skipped"
+        added = self._add_stamps.get(node_id)
+        if stamp[0] == 0:
+            # Legacy lines keep their pre-shard meaning: a merge can place a removal
+            # before its node's add, and the removal still wins once the node appears.
+            if node_id not in self._graph:
+                if node_id in self._removed_node_ids or added is not None:
+                    return "skipped"
                 return "deferred"
+        elif added is not None and stamp < added[0] and node_id in self._graph:
+            return "skipped"
+        self._node_tombstones[node_id] = stamp
+        self._removed_node_ids.add(node_id)
+        if node_id not in self._graph:
+            return "applied"
+        self._unindex_node_refs(node_id)
+        self._graph.remove_node(node_id)
+        self._attr_stamps.pop(node_id, None)
+        self._add_stamps.pop(node_id, None)
+        return "applied"
+
+    def _apply_edge(self, data: dict[str, Any], stamp: Stamp, *, present: bool) -> str:
+        from_id = data["from_id"]
+        to_id = data["to_id"]
+        edge_type = data.get("edge_type")
+        if not edge_type:
+            return "skipped"
+        key = (from_id, to_id, edge_type)
+        known = self._edge_stamps.get(key)
+        if known is not None and stamp <= known[0]:
+            return "skipped"
+        if present and (from_id not in self._graph or to_id not in self._graph):
+            return "deferred"
+        self._edge_stamps[key] = (stamp, present)
+        if present:
             self._graph.add_edge(
                 from_id,
                 to_id,
@@ -1426,46 +1645,36 @@ class CognitionStorage:
                 type=edge_type,
                 timestamp=data.get("timestamp", ""),
                 # Historical provenance tag, NOT an active curator. Old journals
-                # contain many edges sourced "curator"; the background curator
-                # feature was removed, but the stored tag is left intact.
+                # contain many edges sourced "curator"; the tag is left intact.
                 source=data.get("source", "curator"),
-                # Graceful for pre-WP-Cap journals (no reason field) — like the
-                # D1a metadata round-trip: absent -> None, never a KeyError.
                 reason=data.get("reason"),
                 curation_session=data.get("curation_session"),
             )
             return "applied"
-        elif action == "remove_edge":
-            from_id = data["from_id"]
-            to_id = data["to_id"]
-            edge_type = data.get("edge_type")
-            if from_id not in self._graph or to_id not in self._graph:
-                return "deferred"
-            if edge_type and self._graph.has_edge(from_id, to_id, key=edge_type):
-                self._graph.remove_edge(from_id, to_id, key=edge_type)
-                return "applied"
-            return "skipped"  # both nodes exist; edge is simply already gone
-        elif action == "remove_node":
-            node_id = data["id"]
-            if node_id not in self._graph:
-                # WP-5 gate redirect (d6cd1495b23a): a target already known
-                # removed (our own live remove_node, or an already-applied
-                # replay) is a BENIGN own-tombstone/duplicate read-back, not
-                # a loss — only a never-before-seen missing target is worth
-                # deferring/retrying/warning about.
-                if node_id in self._removed_node_ids:
-                    return "skipped"
-                return "deferred"
-            self._unindex_node_refs(node_id)
-            self._graph.remove_node(node_id)
-            self._removed_node_ids.add(node_id)
+        if (
+            from_id in self._graph and to_id in self._graph
+            and self._graph.has_edge(from_id, to_id, key=edge_type)
+        ):
+            self._graph.remove_edge(from_id, to_id, key=edge_type)
             return "applied"
-        elif action == "update_node":
-            node_id = data["id"]
-            if node_id not in self._graph:
-                return "deferred"
-            for key, value in data.items():
-                if key != "id":
-                    self._graph.nodes[node_id][key] = value
-            return "applied"
-        return "skipped"  # unrecognized action — nothing to apply or retry
+        return "skipped"
+
+
+def _complete_lines(data: bytes) -> list[str]:
+    last_nl = data.rfind(b"\n")
+    if last_nl == -1:
+        return []
+    return data[: last_nl + 1].decode("utf-8", errors="replace").splitlines()
+
+
+def _size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return -1
+
+
+def _plugin_version() -> str | None:
+    with contextlib.suppress(Exception):
+        return code_version()
+    return None

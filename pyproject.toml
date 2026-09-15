@@ -1,6 +1,6 @@
 [project]
 name = "vibe-cognition"
-version = "0.40.0"
+version = "0.41.0"
 description = "MCP server for project knowledge graphs — decisions, failures, discoveries, patterns"
 authors = [{ name = "Colton Dyck" }]
 license = { text = "MIT" }
@@ -57,6 +57,7 @@ vibe-cognition-dashboard = "vibe_cognition.dashboard.cli:main"
 vibe-cognition-snapshot = "vibe_cognition.cognition.snapshot_cli:main"
 vibe-cognition-remap-identity = "vibe_cognition.remap_identity:main"
 vibe-cognition-resolve-journal = "vibe_cognition.cognition.resolve_journal:main"
+vibe-cognition-journal = "vibe_cognition.cognition.journal_cli:main"
 
 [dependency-groups]
 dev = [

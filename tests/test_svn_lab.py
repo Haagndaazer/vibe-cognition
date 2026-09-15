@@ -11,6 +11,7 @@ import subprocess
 
 import pytest
 
+from vibe_cognition.cognition import CognitionStorage
 from vibe_cognition.cognition.resolve_journal import find_conflicts, resolve
 from vibe_cognition.cognition.svn_hygiene import (
     STATUS_OK,
@@ -330,3 +331,71 @@ def test_a_real_journal_conflict_is_reported_and_resolved_keeping_both_sides(lab
     assert edit_a in lines and edit_b in lines and edge_b in lines
     assert "C" not in (_status_of(lab, bob, ".cognition/journal.jsonl") or "")
     lab.svn("commit", "-m", "bob resolves", cwd=bob)
+
+
+# ── per-person journal files on real SVN ─────────────────────────────────────
+
+
+def _as_person(cognition, name, email):
+    from vibe_cognition.cognition.identity import write_confirmed_identity
+
+    write_confirmed_identity(cognition, name, email)
+    return CognitionStorage(cognition)
+
+
+def _decision(node_id):
+    from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
+
+    return CognitionNode(
+        id=node_id, type=CognitionNodeType.DECISION, summary=node_id, detail="d",
+        context=[], references=[], timestamp="2026-01-01T00:00:00+00:00", author=node_id,
+    )
+
+
+def test_two_people_recording_between_syncs_do_not_conflict(lab, graph_identity):
+    """The point of sharding: before, both appended to journal.jsonl and SVN conflicted."""
+    graph_identity.unonboarded()
+    alice = lab.checkout("alice")
+    (alice / ".cognition").mkdir()
+    _as_person(alice / ".cognition", "Alice", "alice@x.com").add_node(_decision("a-setup"))
+    ensure_svn_hygiene(alice / ".cognition")
+    lab.svn("commit", "-m", "setup", cwd=alice)
+    bob = lab.checkout("bob")
+
+    _as_person(alice / ".cognition", "Alice", "alice@x.com").add_node(_decision("a-work"))
+    ensure_svn_hygiene(alice / ".cognition")
+    lab.svn("commit", "-m", "alice", cwd=alice)
+    _as_person(bob / ".cognition", "Bob", "bob@x.com").add_node(_decision("b-work"))
+    ensure_svn_hygiene(bob / ".cognition")
+
+    update = lab.svn("update", "--accept", "postpone", cwd=bob, check=False)
+    assert "Text conflicts" not in update.stdout, update.stdout
+    lab.svn("commit", "-m", "bob", cwd=bob)
+    lab.svn("update", cwd=alice)
+
+    for wc in (alice, bob):
+        ids = {n["id"] for n in CognitionStorage(wc / ".cognition", read_only=True).get_all_nodes()}
+        assert {"a-setup", "a-work", "b-work"} <= ids
+
+
+def test_the_same_person_in_two_checkouts_conflicts_on_their_shard_and_the_resolver_fixes_it(
+    lab, graph_identity
+):
+    graph_identity.unonboarded()
+    home = lab.checkout("home")
+    (home / ".cognition").mkdir()
+    _as_person(home / ".cognition", "Alice", "alice@x.com").add_node(_decision("base"))
+    ensure_svn_hygiene(home / ".cognition")
+    lab.svn("commit", "-m", "base", cwd=home)
+    laptop = lab.checkout("laptop")
+
+    _as_person(home / ".cognition", "Alice", "alice@x.com").add_node(_decision("from-home"))
+    lab.svn("commit", "-m", "home", cwd=home)
+    _as_person(laptop / ".cognition", "Alice", "alice@x.com").add_node(_decision("from-laptop"))
+    lab.svn("update", "--accept", "postpone", cwd=laptop, check=False)
+
+    conflicts = find_conflicts(laptop / ".cognition")
+    assert [c.parent.name for c in conflicts] == ["journal"], conflicts
+    assert resolve(conflicts[0])["resolved"]
+    ids = {n["id"] for n in CognitionStorage(laptop / ".cognition", read_only=True).get_all_nodes()}
+    assert {"base", "from-home", "from-laptop"} <= ids

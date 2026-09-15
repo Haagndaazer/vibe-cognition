@@ -27,6 +27,7 @@ from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 
 from .cognition import CognitionNodeType, CognitionStorage
 from .cognition.documents import find_orphaned_document_artifacts, read_text_sidecar
+from .cognition.storage import JournalWriterUnavailableError
 from .config import Settings, setup_logging
 from .embeddings import ChromaDBStorage, EmbeddingGenerator
 from .embeddings import sidecar_client
@@ -156,6 +157,10 @@ def _create_deterministic_edges_for_edgeless(
     old has-ANY-edge predicate skipped those permanently, since this sweep
     only runs once per server startup and there's no other repair path.
     """
+    if not cognition_storage.can_write():
+        # No confirmed identity: no shard to record the edges in. Deterministic edges
+        # are idempotent, so the next confirmed session creates them.
+        return
     all_nodes = cognition_storage.get_all_nodes()
     if not all_nodes:
         return
@@ -169,7 +174,12 @@ def _create_deterministic_edges_for_edgeless(
             continue
         if not _missing_deterministic_edge(cognition_storage, node_id, references):
             continue
-        total_created += cognition_storage.create_deterministic_edges(node_id)
+        try:
+            total_created += cognition_storage.create_deterministic_edges(node_id)
+        except JournalWriterUnavailableError:
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Startup deterministic matching skipped %s: %s", node_id, exc)
 
     if total_created:
         logger.info(

@@ -8,6 +8,7 @@ is written to fail before its fix exists.
 
 import json
 
+from tests.conftest import own_shard
 from vibe_cognition.cognition import (
     CognitionEdge,
     CognitionEdgeType,
@@ -132,7 +133,7 @@ def test_missing_source_in_replayed_journal_falls_back_to_curator_not_counted(tm
     # simulating a genuinely pre-source-field legacy journal, not merely the
     # "curator" default VALUE (which the model already writes and would not
     # exercise the missing-key fallback at all).
-    journal_path = cog_dir / "journal.jsonl"
+    journal_path = own_shard(cog_dir)
     rewritten = []
     for line in journal_path.read_text(encoding="utf-8").splitlines():
         entry = json.loads(line)

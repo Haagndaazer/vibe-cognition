@@ -360,6 +360,21 @@ class TestGraphAPI:
         r = c.delete(f"/api/node/{node_id}", headers=_hdr())
         assert r.status_code == 404
 
+    def test_delete_without_a_confirmed_identity_is_a_clean_refusal(self, client, storage):
+        """Review finding B1: deletions are journal writes, and a checkout with no
+        confirmed identity has no shard to record them in. The dashboard must say so
+        plainly rather than crash."""
+        from vibe_cognition.cognition.identity import identity_write_path
+
+        c, _ = client
+        node_id = next(iter(storage.graph.nodes))
+        identity_write_path(storage.cognition_dir).unlink()
+
+        r = c.delete(f"/api/node/{node_id}", headers=_hdr())
+        assert r.status_code == 409
+        assert "cognition_set_identity" in r.json()["error"]
+        assert storage.has_node(node_id)
+
     def test_delete_node_requires_token(self, client, storage):
         """WP-1 item 2c: missing/wrong token must be rejected by middleware
         BEFORE the handler runs — the node must survive both attempts."""

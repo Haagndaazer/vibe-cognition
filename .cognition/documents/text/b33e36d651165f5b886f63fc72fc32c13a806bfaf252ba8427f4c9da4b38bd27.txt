@@ -1,0 +1,27 @@
+# Vibe Cognition
+
+MCP server plugin for Claude Code and OpenAI Codex CLI that maintains a project knowledge graph. Harness-specific facts live in src/vibe_cognition/harness.py (selected by VIBE_HARNESS); skills and agents are rendered per harness from skills-src/ and agents-src/ by tools/render_harness.py — never edit a rendered file under skills/, agents/, or adapters/codex/. PARITY.md (generated from parity.json) is the per-harness feature registry; docs/HARNESSES.md is the add-a-harness checklist.
+
+## MCP Setup
+The MCP server is declared by the plugin in .claude-plugin/plugin.json (mcpServers), launched via uv run --directory ${CLAUDE_PLUGIN_ROOT}. There is no per-project .mcp.json — the server learns the project root from ${CLAUDE_PROJECT_DIR} (REPO_PATH also set; config.py falls back to it). The uv virtualenv lives in ${CLAUDE_PLUGIN_DATA}/.venv so a running server doesn't lock the cache during /plugin update.
+On Codex the plugin ships skills + hooks only; adapters/codex/hooks/session-start.sh registers the server at user level with codex mcp add, installs the Plan role into ~/.codex/agents/, and preserves user-added env keys across re-registration. Codex fires SessionStart hooks on the first turn, not at launch.
+The SessionStart hook (hooks/session-start.sh) syncs deps and injects context. It does not write .mcp.json; for users upgrading it surgically removes the stale vibe-cognition entry from any project .mcp.json (vibe_cognition.migrate_mcp), surfacing a one-line note via prime. python -m vibe_cognition.migrate_mcp <path> --dry-run previews.
+
+## Plugin Release Procedure
+Marketplace lives in Haagndaazer/colton-claude-plugins (marketplace coltondyck), maintained by Loki. This repo ships code only, no Claude Code marketplace.json; it carries a Codex dev marketplace at .agents/plugins/marketplace.json (vibe-cognition-dev, ref main); the Codex release path is the sha-pinned coltondyck Codex marketplace maintained by Loki.
+1. Code changes. Prose in skills-src/ / agents-src/; run uv run python tools/render_harness.py and commit sources and renders together. New tools/skills/hooks/agents need parity.json rows (tools/render_parity.py).
+2. User-facing: bump version in pyproject.toml, .claude-plugin/plugin.json, .codex-plugin/plugin.json (test_codex_plugin fails if they disagree), then uv lock. Add CHANGELOG.md section and .claude-plugin/whats-new.json bullets. The bump is a HARD GATE: tests/test_release_sync.py fails if the pyproject version has no CHANGELOG section, no bullets, no whats-new entry, manifests disagree, or README MCP tools table misses/lists a stale tool.
+3. Gates: uv run ruff check ., render_harness.py --check, render_parity.py --check, full pytest (includes release-sync gate), sonnet review, and the tool-surface audit when a tool changed. When a release touches svn_hygiene.py, resolve_journal.py, journal_watch.py or anything they call, ALSO run uv run pytest -m svn — the real-svn suite is deselected by default and CI has no svn, so a green CI run says nothing about SVN.
+4. Commit and push to main (the code commit; Codex installs pull from git).
+5. Ping Loki with the code-commit SHA and version, saying the audit was run. Loki re-pins that SHA in colton-claude-plugins .claude-plugin/marketplace.json AND .agents/plugins/marketplace.json in one commit, and pushes.
+6. Human gates on Colton's machine: Claude Code /plugin update; Codex codex plugin marketplace upgrade coltondyck + codex plugin add vibe-cognition@coltondyck, start Codex in a project, send one message, restart, run relevant phases of docs/codex-test-brief.md. Full procedure: cognition workflow "vibe-cognition plugin release procedure" (v6).
+The marketplace sha always points to the code commit on this repo's main.
+
+## HARD RULE — tool-surface audit before every release
+If a release adds or changes ANY MCP tool (new tool, new/renamed parameter, changed return shape, changed error semantics), it is NOT ready to pin until the tool-surface self-sufficiency audit (workflow 67751ebc39bd) has run and findings are fixed in the same release:
+1. Each affected tool's docstring, read in isolation, documents every Args parameter, the full Returns shape, and error semantics.
+2. get_status's documented return shape lists every key it returns.
+3. SKILL.md tool table and README.md MCP tools table carry a row for every registered tool.
+4. parity.json has a row for the tool on every harness.
+5. The cognition_readme guide text still describes the current record -> curate loop.
+Say in the pin request to Loki that the audit was run. Exists because v0.36.0 shipped curation_token undocumented in Args and get_status returning two undocumented keys.

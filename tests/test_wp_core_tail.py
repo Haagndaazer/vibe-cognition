@@ -190,9 +190,13 @@ def test_c6_steady_state_self_replay_no_false_rehydrate(tmp_path):
     s.get_all_nodes()  # STEADY-STATE self-replay (offset > 0, prefix-hash path)
 
     assert s.graph is graph_obj, "steady-state self-replay triggered a spurious re-hydrate"
-    data = s._journal_path.read_bytes()
-    assert s._offset == len(data), "offset did not reach EOF after steady-state self-replay"
-    assert s._journal_hasher.digest() == hashlib.sha256(data).digest(), "C-3 prefix-hash diverged"
+    from tests.conftest import own_shard
+
+    shard = own_shard(cog)
+    state = s._files[f"journal/{shard.name}"]
+    data = shard.read_bytes()
+    assert state.offset == len(data), "offset did not reach EOF after steady-state self-replay"
+    assert state.hasher.digest() == hashlib.sha256(data).digest(), "C-3 prefix-hash diverged"
     assert s.graph.number_of_nodes() == 2, "self-replay duplicated or dropped a node"
 
 

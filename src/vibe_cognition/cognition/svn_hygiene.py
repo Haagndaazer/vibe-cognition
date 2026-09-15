@@ -342,11 +342,13 @@ def _run_pass(svn: str, root: Path, cognition_dir: Path) -> SvnHygieneReport:
     report.conflicted = sorted(
         p for p, e in final.items() if e["item"] == "conflicted" or e["tree_conflicted"] == "true"
     )
-    journal = cognition_dir / "journal.jsonl"
-    if journal.is_file():
+    for journal, depth in ((cognition_dir / "journal.jsonl", "empty"), (cognition_dir / "journal", "files")):
+        if not journal.exists():
+            continue
         journal_rel = _rel(root, journal)
-        seen = _status(svn, root, journal_rel, depth="empty", no_ignore=True) or {}
-        report.journal_excluded = seen.get(journal_rel, {}).get("item") == "ignored"
+        seen = _status(svn, root, journal_rel, depth=depth, no_ignore=True) or {}
+        if any(e.get("item") == "ignored" for e in seen.values()):
+            report.journal_excluded = True
     return report
 
 
@@ -403,9 +405,10 @@ def format_svn_announce(report: SvnHygieneReport, resolve_command: str) -> str:
     """The session-start line for an SVN working copy. Deliberately not reassuring:
     it says what was changed, what is still uncommitted, and what is wrong."""
     no_union = (
-        "SVN has no union merge, so concurrent journal appends CONFLICT: resolve by "
-        f"keeping BOTH sides with `{resolve_command}` -- never 'use mine' or 'use "
-        "theirs', which delete memories."
+        "SVN has no union merge. Each person writes their own journal file, so teammates "
+        "do not conflict; the same person in two checkouts, or the legacy journal, still "
+        f"can. Resolve by keeping BOTH sides with `{resolve_command}` -- never 'use mine' "
+        "or 'use theirs', which delete memories."
     )
     manual = "follow 'Team setup (svn)' in cognition_readme by hand"
     if report.status == STATUS_NO_CLI:
@@ -440,12 +443,13 @@ def format_svn_announce(report: SvnHygieneReport, resolve_command: str) -> str:
             "which keeps both sides, then reload. TELL THE USER."
         )
         no_union = (
-            "SVN has no union merge, so concurrent journal appends conflict -- never "
-            "'use mine' or 'use theirs', which delete memories."
+            "SVN has no union merge -- never 'use mine' or 'use theirs', which delete "
+            "memories."
         )
     if report.journal_excluded:
         parts.append(
-            "WARNING: .cognition/journal.jsonl is excluded by an inherited ignore rule, so "
+            "WARNING: the journal (.cognition/journal/ or .cognition/journal.jsonl) is "
+            "excluded by an inherited ignore rule, so "
             "memories are never shared. Remove the rule that matches it. TELL THE USER."
         )
     changed = []

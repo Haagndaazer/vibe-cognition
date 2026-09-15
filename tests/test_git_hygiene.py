@@ -111,7 +111,24 @@ def test_gitattributes_skip_when_merge_token_already_present(tmp_path):
 
 
 def test_gitattributes_skip_when_both_rules_present(tmp_path):
-    """Nothing appended (not even the marker) when BOTH managed rules are covered."""
+    """Nothing appended (not even the marker) when EVERY managed rule is covered."""
+    repo, cognition = _make_git_repo(tmp_path)
+    existing = (
+        ".cognition/journal.jsonl merge=union\n"
+        ".cognition/people/*.jsonl merge=union\n"
+        ".cognition/journal/*.jsonl merge=union\n"
+    )
+    (repo / ".gitattributes").write_text(existing, encoding="utf-8")
+
+    _run(repo, cognition)
+
+    ga = (repo / ".gitattributes").read_text(encoding="utf-8")
+    assert ga == existing  # byte-identical: fully covered, no append at all
+
+
+def test_an_upgraded_repo_gains_the_shard_rule_once(tmp_path):
+    """A repo configured before shards has the journal and people rules; v10 adds the
+    shard rule without duplicating the others."""
     repo, cognition = _make_git_repo(tmp_path)
     existing = (
         ".cognition/journal.jsonl merge=union\n"
@@ -120,9 +137,11 @@ def test_gitattributes_skip_when_both_rules_present(tmp_path):
     (repo / ".gitattributes").write_text(existing, encoding="utf-8")
 
     _run(repo, cognition)
+    _run(repo, cognition)
 
     ga = (repo / ".gitattributes").read_text(encoding="utf-8")
-    assert ga == existing  # byte-identical: fully covered, no append at all
+    assert ga.count(".cognition/journal/*.jsonl merge=union") == 1
+    assert ga.count(".cognition/journal.jsonl merge=union") == 1
 
 
 def test_gitattributes_append_when_journal_line_has_no_merge(tmp_path):

@@ -912,7 +912,7 @@ def test_solo_prime_byte_identical_with_and_without_a_roster(tmp_path, graph_ide
     from vibe_cognition.cognition import CognitionStorage
     from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
 
-    graph_identity.unonboarded()
+    graph_identity.confirmed_without_profile()
 
     def _make_storage(path):
         storage = CognitionStorage(path / ".cognition")

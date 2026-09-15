@@ -239,6 +239,14 @@ def delete_node(request):
     lc = _ctx(request)
     node_id = request.path_params["node_id"]
 
+    if not lc["cognition_storage"].can_write():
+        return JSONResponse(
+            {"error": (
+                "no confirmed identity in this checkout, so the deletion has no journal "
+                "file to be recorded in -- confirm it with cognition_set_identity first"
+            )},
+            status_code=409,
+        )
     result = delete_cognition_node(
         lc["cognition_storage"],
         lc["cognition_embedding_storage"],

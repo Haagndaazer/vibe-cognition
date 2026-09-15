@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.0]
+
+The identity work in 0.37.0–0.40.0 was built as the prerequisite for this: every
+person now writes only to their own journal file, and the graph is rebuilt from all of
+them (ruled 2026-09-11; `docs/wp-journal-shards-plan.md` rev 4).
+
+### Added
+
+- **Per-person journal files.** Each write goes to `.cognition/journal/<email>.jsonl`
+  for the identity confirmed in that checkout. The graph is replayed from every such
+  file plus the legacy `.cognition/journal.jsonl`, which is read but never written again
+  and never split or rewritten. Two different people no longer append to the same file,
+  so their work no longer collides — silently merged on git, a real conflict on
+  Subversion. Projects switch on their own at the first write after upgrading; nothing
+  is moved.
+- **Last-writer-wins by write time.** Every new journal line carries when it was
+  written, and conflicting changes to the same node field, edge or deletion resolve by
+  that time rather than by the order a process happened to read the files in, so every
+  session converges on the same graph. A writer always stamps past the newest change it
+  has seen, so a teammate with a fast clock cannot make a later edit — or re-adding a
+  node they deleted — silently lose.
+- **Straggler warning.** A teammate still on an older plugin keeps writing the legacy
+  journal; the session start names them and says to update. Their entries are still read.
+- `get_status` returns `journal`: the journal files, where this checkout writes, when
+  the project switched, stragglers, unresolved entries, node-id collisions, and glued
+  lines.
+- `vibe-cognition-journal status|adopt` (also `python -m
+  vibe_cognition.cognition.journal_cli`): see the files, or create your own before the
+  first write. Never moves data.
+- `vibe-cognition-snapshot` given a `.cognition/` folder copies every journal and people
+  file, each under its lock, for the shared-checkout flush.
+- git setup (hygiene v10) adds `.cognition/journal/*.jsonl merge=union`.
+
+### Fixed
+
+- **Two entries glued onto one line are both read.** A missing line break between two
+  appends used to drop everything on the line and every later entry that depended on it
+  — one project lost an episode and 13 entries for 25 days. Every complete entry on a
+  line is now read, the line is counted in `get_status`, and a warning says to repair
+  the file.
+- An edge or edit whose target node lives in a journal file not read yet is kept pending
+  across catch-ups instead of being dropped after one retry; it is reported only if it is
+  still unresolved after every file has been read.
+- Two different nodes that end up with the same id in two people's files keep the
+  earlier node whole instead of mixing their fields, and are counted.
+- A git merge that inserts lines into a journal file (the same person's two clones)
+  applies just the new lines instead of rebuilding the whole graph.
+- `cognition_load_project` accepts a project that has only per-person journal files.
+- The remap and backfill tools' "a session is writing right now" guard watched only
+  `journal.jsonl`, which no longer changes; it now covers every journal file. Both say
+  plainly when the checkout has no confirmed identity.
+- `vibe-cognition-remap-identity` told you the new address had no profile and every write
+  would be refused, without checking; it now reports the profile's actual state.
+- Dashboard deletes in a checkout with no confirmed identity return a clear error
+  instead of failing, and the startup deterministic-edge sweep skips quietly there.
+- Conflict details skipped a dangling edge target only by luck of the old engine's
+  rebuild; they now skip it explicitly.
+
+### Changed
+
+- Writing to the graph requires a confirmed identity in the checkout at the storage
+  level too, not only in the tools: with none there is no file to write to.
+
 ## [0.40.0]
 
 A post-release audit found that SVN setup, designed and approved in

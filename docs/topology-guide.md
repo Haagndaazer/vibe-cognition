@@ -1,7 +1,8 @@
 # Choosing a Team Topology
 
-Vibe Cognition's `.cognition/journal.jsonl` is a single append-only file that every
-teammate's server reads and writes. How your team gets that file onto each machine —
+Vibe Cognition's graph lives in append-only journal files every teammate's server reads:
+since 0.41.0 one file per person under `.cognition/journal/` (each person's server writes
+only its own), plus the legacy `.cognition/journal.jsonl`. How your team gets those files onto each machine —
 **shared checkout** or **separate clones** — changes which protocol you need to follow.
 Get this wrong and you can lose recorded nodes (see the incidents below); get it right
 and both modes are safe.
@@ -56,38 +57,39 @@ reach the actual merge base:
 **The protocol:**
 
 > **Scope — this protocol covers the whole live `.cognition/` write set, not just one
-> file.** That is `journal.jsonl` AND every per-person env-fact file under
-> `.cognition/people/` (`<slug>.jsonl`, one per identity — the set GROWS at runtime as
-> teammates store facts or new people onboard). A checklist that names only
-> `journal.jsonl` silently clobbers a fact file the same way incident #1 clobbered the
-> journal.
+> file.** Since 0.41.0 that is every per-person journal file under `.cognition/journal/`,
+> the legacy `journal.jsonl`, AND every per-person file under `.cognition/people/` — the
+> set GROWS at runtime as teammates onboard or store facts. A checklist that names only
+> some of them silently clobbers the rest the same way incident #1 clobbered the
+> journal. Per-person journal files do NOT retire this protocol: every agent in one
+> checkout writes as the same confirmed person, so they share one journal file.
 
-1. **Nobody commits `.cognition/journal.jsonl` or `.cognition/people/*.jsonl` on a
-   work branch.** Only the manager flushes them, and only onto `main` (never a
-   WP/feature branch — see incident #2 above: a flush that never reaches the branch
-   that gets merged doesn't count).
+1. **Nobody commits `.cognition/journal.jsonl`, `.cognition/journal/` or
+   `.cognition/people/*.jsonl` on a work branch.** Only the manager flushes them, and
+   only onto `main` (never a WP/feature branch — see incident #2 above: a flush that
+   never reaches the branch that gets merged doesn't count).
 2. **The manager flushes via a temporary worktree**, not by touching the live tree:
    ```bash
    git worktree add /tmp/flush-wt main
-   vibe-cognition-snapshot .cognition/journal.jsonl /tmp/flush-wt/.cognition/journal.jsonl
-   # Repeat for EVERY live people file (list .cognition/people/ — the set changes):
-   #   vibe-cognition-snapshot .cognition/people/<slug>.jsonl /tmp/flush-wt/.cognition/people/<slug>.jsonl
-   git -C /tmp/flush-wt add .cognition/journal.jsonl .cognition/people
+   vibe-cognition-snapshot .cognition /tmp/flush-wt/.cognition
+   git -C /tmp/flush-wt add .cognition/journal.jsonl .cognition/journal .cognition/people
    git -C /tmp/flush-wt commit -m "journal flush: <what changed>"
    git -C /tmp/flush-wt push origin main   # <- do this every time; see incident #2
    git worktree remove /tmp/flush-wt
    ```
-   `vibe-cognition-snapshot` (installed with the plugin) copies a journal-format file
-   while holding the same append lock a live writer would, so the copy can never land
-   on a torn mid-append line — a plain `cp`/`copy` doesn't have this guarantee. It
-   works per-file: run it once for the journal and once per live people file (create
-   `/tmp/flush-wt/.cognition/people/` first if the worktree predates the people dir).
+   `vibe-cognition-snapshot` (installed with the plugin) copies journal-format files
+   while holding the same append lock a live writer would, so a copy can never land on
+   a torn mid-append line — a plain `cp`/`copy` doesn't have this guarantee. Given the
+   `.cognition` directory it copies every append-only file (the legacy journal, each
+   journal shard, each people file), each under its own lock; given one file it copies
+   just that file.
    Flush at natural checkpoints (a work package lands, before any risky git operation,
    before end of session) rather than letting live appends sit unflushed for long
    stretches.
 3. **Destructive-op ban near the journal**, for anyone working in the shared tree:
    no `git reset --hard`, `checkout -- .`, `stash`, or `clean` that could touch
-   `.cognition/journal.jsonl` or anything under `.cognition/people/` without first
+   `.cognition/journal.jsonl`, anything under `.cognition/journal/`, or anything under
+   `.cognition/people/` without first
    confirming the manager has flushed. Regular `git add`/`commit` on your own files is
    fine — the ban is specifically about operations that rewrite files you didn't
    stage, since those can silently include the journal or a fact file.

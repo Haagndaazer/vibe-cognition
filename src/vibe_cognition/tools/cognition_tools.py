@@ -55,6 +55,7 @@ from ..cognition.identity import (
     resolve_identity,
     write_confirmed_identity,
 )
+from ..cognition.journal_shards import has_journal
 from ..cognition.people_facts import fold_email
 from ..cognition.prime import SEVERITY_ORDER, _node_email
 from ..cognition.profiles import NO_MANAGER, PROFILE_FIELDS
@@ -2744,10 +2745,13 @@ def _load_project_core(lc: dict[str, Any], path: str) -> dict[str, Any]:
     if existing is not None:
         return {"error": f"already loaded as '{existing.tag}'", "tag": existing.tag}
 
-    # Validate .cognition/journal.jsonl exists
-    journal_path = resolved / ".cognition" / "journal.jsonl"
-    if not journal_path.exists():
-        return {"error": f"no cognition graph at {resolved} (missing .cognition/journal.jsonl)"}
+    if not has_journal(resolved / ".cognition"):
+        return {
+            "error": (
+                f"no cognition graph at {resolved} (no .cognition/journal.jsonl and "
+                "no .cognition/journal/ shards)"
+            )
+        }
 
     b_storage = CognitionStorage(resolved / ".cognition", read_only=True)
     node_count = b_storage.get_statistics().get("nodes", 0)
@@ -5281,12 +5285,13 @@ def register_cognition_tools(mcp) -> None:
 
     @dispatch_tool(mcp)
     def cognition_reload(ctx: Context) -> dict[str, Any]:
-        """Force-reload the cognition graph from the on-disk journal.
+        """Force-reload the cognition graph from the on-disk journal files.
 
-        The store auto-catches-up on the shared journal before every operation,
+        The store auto-catches-up on every journal file before every operation,
         so concurrent sessions normally converge on their own. This tool is an
-        explicit lever / diagnostic: it fully re-replays journal.jsonl and
-        reports node/edge counts before and after, so you can confirm the
+        explicit lever / diagnostic: it fully re-replays the legacy
+        .cognition/journal.jsonl and every per-person file under
+        .cognition/journal/, and reports node/edge counts before and after, so you can confirm the
         in-memory graph matches what's on disk (e.g. after another agent on the
         same project recorded nodes).
 
@@ -5329,14 +5334,16 @@ def register_cognition_tools(mcp) -> None:
 
         Args:
             path: Absolute or relative path to the foreign project root (must contain
-                  a .cognition/journal.jsonl).
+                  a .cognition/journal.jsonl or per-person journal files under
+                  .cognition/journal/).
 
         Returns:
             On success: {tag, path, node_count, vector_count, model_guard, warning?}
             vector_count is "n/a" when no chroma index exists for the project.
 
             On failure: {"error": "..."} — invalid path, path is already loaded
-            as home, no .cognition/journal.jsonl found at path, or path is
+            as home, no journal file (.cognition/journal.jsonl or
+            .cognition/journal/*.jsonl) found at path, or path is
             already loaded as a foreign project (in which case the error dict
             ALSO carries "tag": <existing tag> — the already-loaded project's
             tag, not confirmation of a new load; check for "error" first).

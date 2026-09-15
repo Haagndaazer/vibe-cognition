@@ -244,7 +244,7 @@ def conflict_details(
             continue
         seen.add(other_id)
         other = storage.get_node(other_id)
-        if other is None:
+        if not other:
             continue
         meta = other.get("metadata", {}) or {}
         recorded_by = meta.get("recorded_by")

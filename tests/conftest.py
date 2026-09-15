@@ -191,11 +191,20 @@ class GraphIdentity:
     def unonboarded(self):
         """Seed nothing: a checkout nobody has confirmed an identity in."""
         self._enabled = False
+        self._identity_only = False
+
+    def confirmed_without_profile(self):
+        """Confirm the checkout (so the journal has a shard to write to) but put no
+        one on the roster -- for tests about a graph whose roster must stay empty."""
+        self._enabled = False
+        self._identity_only = True
 
     def seed(self, cognition_dir):
         self._dirs.append(Path(cognition_dir))
         if self._enabled:
             self._write(Path(cognition_dir))
+        elif getattr(self, "_identity_only", False):
+            write_confirmed_identity(Path(cognition_dir), self._identity["name"], self._identity["email"])
 
     def _write(self, cognition_dir):
         from vibe_cognition.cognition.profiles import ProfileRegistry
@@ -216,6 +225,56 @@ class GraphIdentity:
             {"name": name, "email": folded},
             from_agent=False,
         )
+
+
+def journal_paths(cognition_dir):
+    """Every journal file: the legacy journal, then each person's shard."""
+    from vibe_cognition.cognition.journal_shards import journal_files
+
+    return journal_files(Path(cognition_dir))
+
+
+def journal_lines(cognition_dir):
+    """Every non-blank journal line across all files, as parsed dicts."""
+    import json
+
+    out = []
+    for path in journal_paths(cognition_dir):
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            if raw.strip():
+                record = json.loads(raw)
+                if record.get("action") != "shard_start":
+                    out.append(record)
+    return out
+
+
+def journal_text(cognition_dir):
+    return "".join(p.read_text(encoding="utf-8") for p in journal_paths(cognition_dir))
+
+
+def own_shard(cognition_dir, email=None):
+    from vibe_cognition.cognition.journal_shards import shard_path
+
+    return shard_path(Path(cognition_dir), email or TEST_IDENTITY["email"])
+
+
+def append_legacy(cognition_dir, action, data):
+    """Write a line straight into the legacy journal, as a pre-shard plugin did."""
+    import json
+
+    from vibe_cognition.cognition.journal_io import append_journal_line
+
+    path = Path(cognition_dir) / "journal.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    append_journal_line(path, json.dumps({"action": action, "data": data}, ensure_ascii=False))
+
+
+def seed_legacy_node(storage, node):
+    """Put a node into the LEGACY journal and let the store pick it up -- how
+    person nodes and other pre-shard data actually exist in upgraded projects."""
+    append_legacy(storage.cognition_dir, "add_node", node.model_dump(mode="json"))
+    storage.get_node(node.id)
+    return node.id
 
 
 def identity_stamp(name, email, source="confirmed", confirmed=True):

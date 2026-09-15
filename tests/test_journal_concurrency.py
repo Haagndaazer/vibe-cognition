@@ -20,6 +20,7 @@ import pathlib
 import subprocess
 import sys
 
+from tests.conftest import own_shard
 from vibe_cognition.cognition import journal_io
 from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
 from vibe_cognition.cognition.storage import CognitionStorage
@@ -96,7 +97,7 @@ def _build_journal_for(tmp_path, summaries):
                 timestamp="2026-06-11T00:00:00+00:00", author="t",
             )
         )
-    return (src / "journal.jsonl").read_bytes()
+    return own_shard(src).read_bytes()
 
 
 def test_identity_check_detects_same_or_larger_replacement(tmp_path):
@@ -114,8 +115,8 @@ def test_identity_check_detects_same_or_larger_replacement(tmp_path):
 
     # Replace the journal with unrelated, larger content (different first line).
     replacement = _build_journal_for(tmp_path, [f"replacement-{i}" for i in range(5)])
-    assert len(replacement) >= (tmp_path / "journal.jsonl").stat().st_size
-    (tmp_path / "journal.jsonl").write_bytes(replacement)
+    assert len(replacement) >= own_shard(tmp_path).stat().st_size
+    own_shard(tmp_path).write_bytes(replacement)
 
     ids = _ids(store)  # triggers catch-up -> identity mismatch -> rebuild
     assert "orig0001" not in ids, "stale-offset replay: original survived a replacement"
@@ -135,7 +136,7 @@ def test_append_after_replacement_converges(tmp_path):
         )
     )
     # Replace the journal (C-3) ...
-    (tmp_path / "journal.jsonl").write_bytes(_build_journal_for(tmp_path, ["r0", "r1", "r2"]))
+    own_shard(tmp_path).write_bytes(_build_journal_for(tmp_path, ["r0", "r1", "r2"]))
     # ... then a new write: add_node catches up (rebuild) THEN appends (C-1).
     store.add_node(
         CognitionNode(
@@ -167,20 +168,20 @@ def test_identity_detects_same_first_line_divergent_replacement(tmp_path):
     store.add_node(_node("localonly", "local", "local-only tail"))
     assert _ids(store) == {"common00", "localonly"}  # offset now past both lines
 
-    journal = tmp_path / "journal.jsonl"
-    original_first_line = journal.read_bytes().split(b"\n", 1)[0]
+    journal = own_shard(tmp_path)
+    shared_prefix = b"".join(journal.read_bytes().splitlines(keepends=True)[:2])
 
-    # Build a divergent replacement that begins with the IDENTICAL first line
-    # (common00) but then carries unrelated, larger remote content.
+    # Build a divergent replacement that begins with the IDENTICAL leading lines
+    # (the shard start and common00) but then carries unrelated, larger remote content.
     repl_dir = tmp_path / "repl"
     s2 = CognitionStorage(repl_dir)
-    s2.add_node(common)  # byte-identical first line
     s2.add_node(_node("remoteAA", "remoteA", "remote detail A" * 50))
     s2.add_node(_node("remoteBB", "remoteB", "remote detail B" * 50))
-    replacement = (repl_dir / "journal.jsonl").read_bytes()
+    remote_lines = own_shard(repl_dir).read_bytes().splitlines(keepends=True)[1:]
+    replacement = shared_prefix + b"".join(remote_lines)
 
-    # The first line really is identical (so a first-line check WOULD pass).
-    assert replacement.split(b"\n", 1)[0] == original_first_line
+    # The leading lines really are identical (so a first-line check WOULD pass).
+    assert replacement.startswith(shared_prefix)
     journal.write_bytes(replacement)
 
     ids = _ids(store)  # catch-up -> prefix mismatch -> rehydrate

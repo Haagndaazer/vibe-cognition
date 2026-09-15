@@ -52,6 +52,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .cognition.journal_shards import journal_signature
 from .cognition.people_facts import fold_email
 from .cognition.storage import CognitionStorage
 
@@ -196,6 +197,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"No .cognition/ directory under {args.project_path}", file=sys.stderr)
         return 2
 
+    signature_before = journal_signature(cognition_dir)
     storage = CognitionStorage(cognition_dir)
     planned = plan_remap(storage, old, new)
     print(_report(planned, old, new))
@@ -206,25 +208,51 @@ def main(argv: list[str] | None = None) -> int:
         print("\nDRY RUN -- nothing written. Re-run with --apply to write.")
         return 0
 
-    # Same concurrency guard as backfill_identity: a live session appending
-    # between the plan and the write would make the plan stale.
-    journal_path = cognition_dir / "journal.jsonl"
-    mtime_before = journal_path.stat().st_mtime if journal_path.exists() else None
-    changed = apply_remap(storage, old, new, args.name)
-    if journal_path.exists() and journal_path.stat().st_mtime != mtime_before and changed == 0:
-        print("Journal changed during the run and nothing was written; re-run.", file=sys.stderr)
+    # Same concurrency guard as backfill_identity: a live session appending to ANY
+    # journal file between the plan and the write would make the plan stale.
+    if journal_signature(cognition_dir) != signature_before:
+        print(
+            "Journal changed since the plan was made (a live session may be writing); "
+            "nothing written -- re-run.",
+            file=sys.stderr,
+        )
         return 1
+    if not storage.can_write():
+        print(
+            "No confirmed identity in this checkout, so there is no journal file to "
+            "write to -- confirm it with cognition_set_identity first.",
+            file=sys.stderr,
+        )
+        return 3
+    changed = apply_remap(storage, old, new, args.name)
     print(f"\nRemapped {changed} node(s). Original addresses preserved as remapped_from.")
-    print(
-        f"\nYOUR PROFILE DID NOT MOVE. The roster profile for {old} stays where it is,\n"
-        f"and {new} has none -- so every write will be REFUSED until you run:\n"
-        f"\n    cognition_set_identity(name=..., email={new}, role=...,\n"
-        f"                           seniority=..., reports_to=...)\n"
-        f"\nAll five values: nothing carries across. Then take the old address off the\n"
-        f"roster with cognition_remove_person({old}), or the team list shows you twice.\n"
-        f"Environment facts under {old} are not remapped either."
-    )
+    print(_profile_follow_up(storage, old, new))
     return 0
+
+
+def _profile_follow_up(storage: CognitionStorage, old: str, new: str) -> str:
+    """What the person still has to do about their roster profile -- checked, not
+    assumed: the new address may already have a complete profile."""
+    remove = (
+        f"Take the old address off the roster with cognition_remove_person({old}), "
+        "or the team list shows you twice."
+    )
+    facts = f"Environment facts under {old} are not remapped."
+    if storage.get_profile(new) is None:
+        return (
+            f"\nYOUR PROFILE DID NOT MOVE. {new} has no roster profile, so every write "
+            "will be REFUSED until you run:\n"
+            f"\n    cognition_set_identity(name=..., email={new}, role=...,\n"
+            "                           seniority=..., reports_to=...)\n"
+            f"\nAll five values: nothing carries across. {remove} {facts}"
+        )
+    missing = storage.profile_missing_required(new)
+    if missing:
+        return (
+            f"\n{new} has a roster profile but it is missing: {', '.join(missing)}. "
+            f"Fill those with cognition_set_identity. {remove} {facts}"
+        )
+    return f"\n{new} already has a complete roster profile. {remove} {facts}"
 
 
 if __name__ == "__main__":

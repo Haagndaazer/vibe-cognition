@@ -794,7 +794,7 @@ def test_onboarding_notice_byte_identical_delta_when_registered(tmp_path, graph_
 
     Onboarding is off: the default onboarded checkout puts a SECOND person on the
     roster, which legitimately trips the multi-user auto-detect and personalizes."""
-    graph_identity.unonboarded()
+    graph_identity.confirmed_without_profile()
     storage = CognitionStorage(tmp_path / ".cognition")
     _person(storage, "p-me", ME["email"])
     _add(storage, "d1", CognitionNodeType.DECISION, "some decision")
@@ -870,7 +870,7 @@ def test_auto_duplicate_person_nodes_one_email_stays_global_fails_before(
     Onboarding is off so the seeded checkout identity is not a genuine second
     person on the roster, which would flip this for the RIGHT reason and hide the
     duplicate-collapsing behaviour under test."""
-    graph_identity.unonboarded()
+    graph_identity.confirmed_without_profile()
     storage = CognitionStorage(tmp_path / ".cognition")
     _task(storage, "t1", "solo task", created_by=ME)
     _person(storage, "p-me-1", ME["email"], name="Alice")

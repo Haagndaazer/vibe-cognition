@@ -11,6 +11,7 @@ import json
 
 import pytest
 
+from tests.conftest import journal_paths
 from vibe_cognition.cognition import CognitionStorage
 from vibe_cognition.cognition.journal_watch import (
     KNOWN_IDS_FILENAME,
@@ -32,19 +33,19 @@ def _node(node_id, summary):
 
 @pytest.fixture
 def svn_checkout(tmp_path, graph_identity):
-    graph_identity.unonboarded()
     root = tmp_path / "wc"
     (root / ".svn").mkdir(parents=True)
     return root / ".cognition"
 
 
-def _drop_lines_containing(journal, *needles):
+def _drop_lines_containing(cognition, *needles):
     """What 'resolve using theirs' does to your own unpushed lines."""
-    kept = [
-        line for line in journal.read_text(encoding="utf-8").splitlines(keepends=True)
-        if not any(n in line for n in needles)
-    ]
-    journal.write_text("".join(kept), encoding="utf-8")
+    for journal in journal_paths(cognition):
+        kept = [
+            line for line in journal.read_text(encoding="utf-8").splitlines(keepends=True)
+            if not any(n in line for n in needles)
+        ]
+        journal.write_text("".join(kept), encoding="utf-8")
 
 
 def _flag(cognition):
@@ -65,7 +66,7 @@ def test_losing_your_own_work_between_sessions_raises_the_alert(svn_checkout):
     s.add_node(_node("gone2", "also lost"))
     del s  # session ends
 
-    _drop_lines_containing(svn_checkout / "journal.jsonl", "gone1", "gone2")
+    _drop_lines_containing(svn_checkout, "gone1", "gone2")
 
     CognitionStorage(svn_checkout)  # next session start
     flag = _flag(svn_checkout)
@@ -79,13 +80,13 @@ def test_the_alert_names_the_cause_and_the_recovery_commands(svn_checkout):
     s = CognitionStorage(svn_checkout)
     s.add_node(_node("gone1", "x"))
     del s
-    _drop_lines_containing(svn_checkout / "journal.jsonl", "gone1")
+    _drop_lines_containing(svn_checkout, "gone1")
     CognitionStorage(svn_checkout)
 
     message = _consume_rehydrate_flag(svn_checkout)
     assert "between sessions" in message
     assert "use mine" in message and "use theirs" in message
-    assert "svn log .cognition/journal.jsonl" in message
+    assert "svn log .cognition/journal .cognition/journal.jsonl" in message
     assert "svn cat" in message
     # A recovery recipe handed to an agent must not be run on its own say-so.
     assert "without their go-ahead" in message
@@ -97,7 +98,7 @@ def test_a_lost_id_is_reported_once_not_on_every_later_startup(svn_checkout):
     s = CognitionStorage(svn_checkout)
     s.add_node(_node("gone1", "x"))
     del s
-    _drop_lines_containing(svn_checkout / "journal.jsonl", "gone1")
+    _drop_lines_containing(svn_checkout, "gone1")
 
     CognitionStorage(svn_checkout)
     assert _lost(svn_checkout)["nodes_lost"] == 1
@@ -113,9 +114,9 @@ def test_two_separate_losses_before_anyone_reads_the_alert_are_both_reported(svn
     s.add_node(_node("first", "x"))
     s.add_node(_node("second", "y"))
     del s
-    _drop_lines_containing(svn_checkout / "journal.jsonl", "first")
+    _drop_lines_containing(svn_checkout, "first")
     CognitionStorage(svn_checkout)
-    _drop_lines_containing(svn_checkout / "journal.jsonl", "second")
+    _drop_lines_containing(svn_checkout, "second")
     CognitionStorage(svn_checkout)
 
     assert _lost(svn_checkout)["nodes_lost"] == 2
@@ -141,7 +142,7 @@ def test_nodes_created_mid_session_are_covered(svn_checkout):
     log = svn_checkout / "local" / KNOWN_IDS_LOG_FILENAME
     assert "mid-session" in log.read_text(encoding="utf-8")
     del s
-    _drop_lines_containing(svn_checkout / "journal.jsonl", "mid-session")
+    _drop_lines_containing(svn_checkout, "mid-session")
 
     CognitionStorage(svn_checkout)
     assert _lost(svn_checkout)["sample_missing_ids"] == ["mid-session"]
@@ -156,14 +157,13 @@ def test_a_first_session_has_no_baseline_and_says_nothing(svn_checkout):
 def test_git_checkouts_are_left_alone(tmp_path, graph_identity):
     """On git, switching branches legitimately removes ids that live only on the other
     branch; alerting there would fire on every checkout."""
-    graph_identity.unonboarded()
     root = tmp_path / "gitwc"
     (root / ".git").mkdir(parents=True)
     cognition = root / ".cognition"
     s = CognitionStorage(cognition)
     s.add_node(_node("on-branch", "x"))
     del s
-    _drop_lines_containing(cognition / "journal.jsonl", "on-branch")
+    _drop_lines_containing(cognition, "on-branch")
 
     CognitionStorage(cognition)
     assert _flag(cognition) is None
@@ -210,7 +210,7 @@ def test_svn_switch_to_another_branch_is_not_a_loss(svn_checkout):
     del s
     CognitionStorage(svn_checkout)
 
-    _drop_lines_containing(svn_checkout / "journal.jsonl", "trunk-only")
+    _drop_lines_containing(svn_checkout, "trunk-only")
     _fake_wc_db(svn_checkout.parent, "file:///repo", "branches/feature", 6)
     CognitionStorage(svn_checkout)
     assert _flag(svn_checkout) is None
@@ -224,7 +224,7 @@ def test_updating_back_to_an_older_revision_is_not_a_loss(svn_checkout):
     del s
     CognitionStorage(svn_checkout)
 
-    _drop_lines_containing(svn_checkout / "journal.jsonl", "newer")
+    _drop_lines_containing(svn_checkout, "newer")
     _fake_wc_db(svn_checkout.parent, "file:///repo", "trunk", 4)
     CognitionStorage(svn_checkout)
     assert _flag(svn_checkout) is None
@@ -239,7 +239,7 @@ def test_a_conflict_resolved_during_an_ordinary_update_still_alerts(svn_checkout
     del s
     CognitionStorage(svn_checkout)
 
-    _drop_lines_containing(svn_checkout / "journal.jsonl", "mine")
+    _drop_lines_containing(svn_checkout, "mine")
     _fake_wc_db(svn_checkout.parent, "file:///repo", "trunk", 8)
     CognitionStorage(svn_checkout)
     assert _lost(svn_checkout)["sample_missing_ids"] == ["mine"]
@@ -249,14 +249,13 @@ def test_a_project_inside_a_larger_svn_checkout_is_watched(tmp_path, graph_ident
     """Review finding, reproduced on real SVN: since 1.7 `.svn` exists only at the
     checkout root, so checking out `trunk` with the project at `trunk/proj` left
     the loss check switched off and a 'use theirs' resolution went unreported."""
-    graph_identity.unonboarded()
     wc = tmp_path / "trunk"
     (wc / ".svn").mkdir(parents=True)
     cognition = wc / "proj" / ".cognition"
     s = CognitionStorage(cognition)
     s.add_node(_node("nested-gone", "x"))
     del s
-    _drop_lines_containing(cognition / "journal.jsonl", "nested-gone")
+    _drop_lines_containing(cognition, "nested-gone")
 
     CognitionStorage(cognition)
     assert _lost(cognition)["sample_missing_ids"] == ["nested-gone"]
@@ -267,7 +266,6 @@ def test_the_nested_journal_source_is_found_relative_to_the_checkout_root(tmp_pa
 
     from vibe_cognition.cognition.journal_watch import journal_source
 
-    graph_identity.unonboarded()
     wc = tmp_path / "trunk"
     (wc / ".svn").mkdir(parents=True)
     cognition = wc / "proj" / ".cognition"
@@ -291,7 +289,6 @@ def test_the_nested_journal_source_is_found_relative_to_the_checkout_root(tmp_pa
 
 
 def test_a_git_project_nested_in_an_svn_checkout_is_left_alone(tmp_path, graph_identity):
-    graph_identity.unonboarded()
     outer = tmp_path / "svnwc"
     (outer / ".svn").mkdir(parents=True)
     (outer / "gitproj" / ".git").mkdir(parents=True)
@@ -316,7 +313,7 @@ def test_an_unreadable_wc_db_does_not_forget_the_last_source(svn_checkout, monke
         m.setattr(journal_watch, "journal_source", lambda _d: None)
         CognitionStorage(svn_checkout)
 
-    _drop_lines_containing(svn_checkout / "journal.jsonl", "trunk-only")
+    _drop_lines_containing(svn_checkout, "trunk-only")
     _fake_wc_db(svn_checkout.parent, "file:///repo", "branches/feature", 6)
     CognitionStorage(svn_checkout)
     assert _flag(svn_checkout) is None
@@ -329,7 +326,7 @@ def test_a_read_only_open_writes_nothing_into_the_project(svn_checkout):
     s = CognitionStorage(svn_checkout)
     s.add_node(_node("gone1", "x"))
     del s
-    _drop_lines_containing(svn_checkout / "journal.jsonl", "gone1")
+    _drop_lines_containing(svn_checkout, "gone1")
     local = svn_checkout / "local"
     before = {p.name: p.read_bytes() for p in local.iterdir()}
 

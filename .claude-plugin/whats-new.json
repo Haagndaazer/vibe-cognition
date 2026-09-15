@@ -1,4 +1,9 @@
 {
+  "0.41.0": [
+    "Each person's memories now go into their own file, so teammates stop colliding when they sync, on git and Subversion alike. It switches on its own; nothing is moved.",
+    "When two people change the same memory, the later change now wins everywhere, even if someone's clock is off.",
+    "Claude warns you if a teammate is still on an older version, and a memory journal line with two entries glued together is no longer lost."
+  ],
   "0.40.0": [
     "Subversion teams: memory files are now added to SVN for you, with the right ignore rules. Nothing is committed; each session tells you what to review and commit.",
     "SVN memory conflicts now have a one-command fix that keeps both sides. Claude gives you the exact command when it happens.",

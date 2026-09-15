@@ -39,7 +39,7 @@ description: You MUST use this skill any time you need to retrieve information a
 | `cognition_remove_node` | Delete a node and all its attached edges (destructive — for junk/test/duplicate nodes) |
 | `cognition_get_uncurated_nodes` | List nodes not yet processed by `/vibe-curate` |
 | `cognition_mark_curated` | Mark nodes as curated (used by `/vibe-curate`) |
-| `cognition_reload` | Force a full re-hydrate of the graph from the journal |
+| `cognition_reload` | Force a full re-hydrate of the graph from every journal file |
 | `cognition_store_document` | Store a document as a first-class node (see `/vibe-document`) |
 | `cognition_get_document` | Retrieve a stored document: metadata + text + freshness |
 | `cognition_load_project` | Attach a foreign project for cross-project structural reads |

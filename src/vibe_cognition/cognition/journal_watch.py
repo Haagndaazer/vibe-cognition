@@ -95,13 +95,17 @@ def journal_source(cognition_dir: Path) -> dict[str, Any] | None:
         return None
     try:
         project = rel_cognition.rpartition("/")[0]
-        candidates = list(dict.fromkeys([relpath, rel_cognition, project, ""]))
+        shards = f"{rel_cognition}/journal"
+        with_revision = {relpath, shards}
+        candidates = list(dict.fromkeys([relpath, shards, rel_cognition, project, ""]))
         for candidate in candidates:
             row = conn.execute(query, (candidate,)).fetchone()
             if row and row[0] is not None:
                 return {
                     "url": f"{str(row[0]).rstrip('/')}/{row[1]}",
-                    "revision": int(row[2]) if candidate == relpath and row[2] is not None else None,
+                    "revision": (
+                        int(row[2]) if candidate in with_revision and row[2] is not None else None
+                    ),
                 }
         return None
     except (sqlite3.Error, ValueError, TypeError):

@@ -15,6 +15,7 @@ from ..config import Settings, resolve_repo_path_env
 from ..running_version import code_version, stale_server_warning
 from .git_hygiene import _acquire_lock, _release_lock, check_hygiene_state, format_hygiene_announce
 from .identity import identity_suggestions, resolve_identity
+from .journal_shards import format_straggler_warning, straggler_report
 from .journal_watch import LOSS_KIND_BETWEEN_SESSIONS
 from .local_paths import read_path as local_read_path
 from .local_paths import write_path as local_write_path
@@ -1075,18 +1076,40 @@ def _consume_rehydrate_flag(cognition_dir: Path) -> str:
             "or 'use theirs', which deletes one side. A branch switch or an update to "
             "an older revision is recognised and does NOT raise this. TELL THE USER, "
             "and do not attempt recovery without their go-ahead. They are "
-            "recoverable: `svn log .cognition/journal.jsonl` shows the revision that "
-            "dropped them, and `svn cat -r <earlier> .cognition/journal.jsonl` has "
-            "the lines to add back -- only the missing ids above, never the whole "
-            "older file."
+            "recoverable: `svn log .cognition/journal .cognition/journal.jsonl` shows "
+            "the revision that dropped them, and `svn cat -r <earlier> <file>` on the "
+            "person's shard under .cognition/journal/ (or the legacy "
+            ".cognition/journal.jsonl) has the lines to add back -- only the missing "
+            "ids above, never the whole older file."
         )
     return (
-        "WARNING (vibe-cognition): in a previous session the journal was replaced or "
+        "WARNING (vibe-cognition): in a previous session a journal file was replaced or "
         f"truncated under a live server ({at}); {lost} node(s) recorded in that "
         f"session are no longer on disk{sample_note} — "
-        "check `git log -- .cognition/journal.jsonl` or a teammate's clone to recover, "
-        "and alert the user."
+        "check `git log -- .cognition/journal .cognition/journal.jsonl` or a teammate's "
+        "clone to recover, and alert the user."
     )
+
+
+STRAGGLER_SEEN_FILENAME = "straggler-seen.json"
+
+
+def _straggler_seen(cognition_dir: Path) -> str:
+    """The newest straggler entry this checkout has already been told about. The
+    legacy entries stay forever, so without this the warning would repeat every
+    session long after the teammate upgraded."""
+    try:
+        data = json.loads(local_read_path(cognition_dir, STRAGGLER_SEEN_FILENAME).read_text(encoding="utf-8"))
+        return str(data.get("latest_at") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def _mark_straggler_seen(cognition_dir: Path, latest_at: str) -> None:
+    with contextlib.suppress(OSError):
+        local_write_path(cognition_dir, STRAGGLER_SEEN_FILENAME).write_text(
+            json.dumps({"latest_at": latest_at}), encoding="utf-8",
+        )
 
 
 def main(argv: list[str] | None = None):
@@ -1168,6 +1191,12 @@ def main(argv: list[str] | None = None):
                 sections.append(hygiene_line)
         except Exception:  # noqa: BLE001
             pass
+
+    with contextlib.suppress(Exception):
+        stragglers = straggler_report(cognition_dir)
+        if stragglers and stragglers["latest_at"] > _straggler_seen(cognition_dir):
+            sections.append(format_straggler_warning(stragglers))
+            _mark_straggler_seen(cognition_dir, stragglers["latest_at"])
 
     # Journal-loss alert (WP-1): surfaced BEFORE the project context so it can't
     # be buried; consumed so it shows exactly once.

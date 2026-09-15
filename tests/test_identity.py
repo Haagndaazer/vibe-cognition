@@ -416,12 +416,14 @@ def test_remap_cli_dry_run_writes_nothing(repo, capsys):
         id="n1", author="t", detail="", timestamp="2026-01-01T00:00:00Z", type=CognitionNodeType.DISCOVERY, summary="d",
         metadata={"recorded_by": {"name": "X", "email": "old@example.com"}},
     ))
-    before = (cognition / "journal.jsonl").read_bytes()
+    from tests.conftest import journal_text
+
+    before = journal_text(cognition)
 
     rc = main([str(root), "--from", "old@example.com", "--to", "new@example.com"])
     assert rc == 0
     assert "DRY RUN" in capsys.readouterr().out
-    assert (cognition / "journal.jsonl").read_bytes() == before
+    assert journal_text(cognition) == before
 
 
 def test_remap_cli_rejects_identical_addresses(repo):

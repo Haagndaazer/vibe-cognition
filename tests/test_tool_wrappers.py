@@ -247,7 +247,9 @@ def test_get_status_surfaces_rehydrate_event(tmp_path, mock_mcp, build_lc, make_
     storage.add_node(_node("n1"))
     storage.add_node(_node("n2"))
 
-    (storage.cognition_dir / "journal.jsonl").write_bytes(b"")
+    from tests.conftest import own_shard
+
+    own_shard(storage.cognition_dir).write_bytes(b"")
     storage.get_statistics()  # forces catch-up, detecting the shrink
 
     result = mock_mcp.tools["get_status"](ctx)  # type: ignore[arg-type]

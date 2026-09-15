@@ -135,6 +135,27 @@ def register_service_tools(mcp) -> None:
                                 total nodes while still having dropped one of
                                 ours. sample_missing_ids is up to 5 of the lost
                                 node ids, for diagnosis,
+              journal: {legacy_journal_bytes: int | None,
+                        shards: [{file: str, bytes: int}],
+                        writing_to: str | None,
+                        adopted_at: str | None,
+                        stragglers: {adopted_at, entries_after_adoption, latest_at,
+                                     authors: list[str]} | None,
+                        unresolved_entries: int, id_collisions: int,
+                        glued_lines: int}
+                       -- where the graph comes from. Since v0.41.0 each person
+                       appends only to their own file under .cognition/journal/;
+                       the legacy .cognition/journal.jsonl is read but never
+                       written. `writing_to` is this checkout's shard (null with no
+                       confirmed identity: writes are refused). `stragglers` is
+                       non-null when someone on an older plugin version wrote to the
+                       legacy journal after the project switched -- tell the user
+                       who needs to update. `unresolved_entries` counts entries
+                       whose target node is in no journal file; `id_collisions`
+                       counts two different nodes sharing an id (the earlier is
+                       kept); `glued_lines` counts lines holding several entries
+                       with no line break between them (all read; the file should
+                       be repaired). {"error": ...} when storage is not initialized.
               cognition_embeddings: {nodes, chunks, total}
                                     (or {"error": ...}; 0 if uninitialized),
               embedding_status: "spawning" | "loading" | "waiting-for-load-lock" |
@@ -253,6 +274,14 @@ def register_service_tools(mcp) -> None:
             }
         else:
             result["rehydrate_events"] = None
+
+        if cognition_storage:
+            try:
+                result["journal"] = cognition_storage.journal_status()
+            except Exception as e:  # noqa: BLE001
+                result["journal"] = {"error": str(e)}
+        else:
+            result["journal"] = {"error": "not initialized"}
 
         # Cognition embedding count — split node vectors vs document chunk vectors
         # (WP-D2: chunks carry is_chunk=True; don't let them silently inflate the

@@ -81,7 +81,10 @@ logger = logging.getLogger(__name__)
 #     confirmed graph identity (identity.IDENTITY_FILENAME). Says who is
 #     driving THIS checkout, never shared; the .tmp sibling of its atomic
 #     write is covered by the same glob.
-GIT_HYGIENE_VERSION = 9
+# v10: .cognition/journal/*.jsonl merge=union -- per-person journal shards. One person
+#     in two clones or worktrees still appends to the same shard, so it needs the same
+#     union merge the legacy journal has.
+GIT_HYGIENE_VERSION = 10
 
 _GITATTRIBUTES_MARKER = "# vibe-cognition: append-only journal union-merge (safe to remove)"
 _GITATTRIBUTES_RULE = ".cognition/journal.jsonl merge=union"
@@ -89,12 +92,14 @@ _GITATTRIBUTES_RULE = ".cognition/journal.jsonl merge=union"
 # posture as the journal. Committed files (NOT gitignored); the glob covers
 # every identity's file, present and future.
 _GITATTRIBUTES_PEOPLE_RULE = ".cognition/people/*.jsonl merge=union"
+_GITATTRIBUTES_SHARD_RULE = ".cognition/journal/*.jsonl merge=union"
 # Every (path-token, full-rule) pair the writer manages. A rule is "covered"
 # when a non-comment line for its exact path token already carries ANY merge=
 # attribute (user overrides are respected, same as the original journal rule).
 _GITATTRIBUTES_RULES: tuple[tuple[str, str], ...] = (
     (".cognition/journal.jsonl", _GITATTRIBUTES_RULE),
     (".cognition/people/*.jsonl", _GITATTRIBUTES_PEOPLE_RULE),
+    (".cognition/journal/*.jsonl", _GITATTRIBUTES_SHARD_RULE),
 )
 # v9: ONE entry covers every machine-local file, present and future. Each used to
 # need its own line, so the list only ever covered names someone remembered -- an

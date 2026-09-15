@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from tests.conftest import journal_lines
 from vibe_cognition.cognition import (
     CognitionEdge,
     CognitionEdgeType,
@@ -294,9 +295,7 @@ class TestProvenanceField:
         )
         storage.add_edge(edge)
 
-        journal = (cog_dir / "journal.jsonl").read_text(encoding="utf-8")
-        for line in journal.strip().split("\n"):
-            entry = json.loads(line)
+        for entry in journal_lines(cog_dir):
             if entry["action"] == "add_edge":
                 assert entry["data"]["source"] == "manual"
 

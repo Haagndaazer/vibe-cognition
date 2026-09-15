@@ -35,6 +35,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from .cognition.journal_shards import journal_signature
 from .cognition.local_paths import write_path as local_write_path
 from .cognition.models import CognitionNodeType
 from .cognition.people_facts import fold_email
@@ -574,8 +575,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
-    journal_path = cognition_dir / "journal.jsonl"
-    mtime_before = journal_path.stat().st_mtime if journal_path.exists() else None
+    signature_before = journal_signature(cognition_dir)
 
     storage = CognitionStorage(cognition_dir)
     plan = BackfillPlan(
@@ -584,13 +584,20 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     if args.apply:
-        if journal_path.exists() and journal_path.stat().st_mtime != mtime_before:
+        if journal_signature(cognition_dir) != signature_before:
             print(
                 "error: journal changed since this run started (a live session "
                 "may be writing) -- aborting without writing; re-run",
                 file=sys.stderr,
             )
             return 3
+        if not storage.can_write():
+            print(
+                "error: no confirmed identity in this checkout, so there is no journal "
+                "file to write to -- confirm it with cognition_set_identity first",
+                file=sys.stderr,
+            )
+            return 4
         written = apply_plan(plan)
         print(f"Stamped {written} node(s).")
         return 0

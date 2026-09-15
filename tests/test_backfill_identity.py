@@ -1,9 +1,9 @@
 """Tests for legacy identity backfill (task 962ab7b442d5, design doc rev 2).
 
 Fixture corpus mirrors the design doc's own test-plan sketch: a real git repo
-with controlled per-commit authorship, built via the ACTUAL storage.add_node
-write path (never hand-crafted JSONL) so blame sees exactly the bytes
-production code would have written.
+with controlled per-commit authorship. Nodes are written to the LEGACY journal
+through the same append the pre-shard plugin used, so blame sees exactly the
+bytes old plugins wrote -- the only data this backfill exists for.
 """
 
 import json
@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import journal_lines, journal_text, seed_legacy_node
 from vibe_cognition.backfill_identity import (
     BackfillPlan,
     _run_git,
@@ -68,7 +69,7 @@ def _node(node_id: str, author: str, node_type: CognitionNodeType = CognitionNod
 
 
 def _person(storage: CognitionStorage, node_id: str, name: str, email: str) -> None:
-    storage.add_node(CognitionNode(
+    seed_legacy_node(storage, CognitionNode(
         id=node_id, type=CognitionNodeType.PERSON, summary=f"Person: {name}", detail="",
         context=[], references=[], timestamp="2026-01-01T00:00:00+00:00", author=name,
         metadata={"person": {"name": name, "email": email}},
@@ -201,7 +202,7 @@ def test_blame_single_consistent_email_suggested(tmp_path):
     repo = tmp_path / "repo"
     cognition = _init_repo(repo)
     storage = CognitionStorage(cognition)
-    storage.add_node(_node("n1", "Vince"))
+    seed_legacy_node(storage, _node("n1", "Vince"))
     _commit_journal(repo, "Vince", "vince@x.com", "1700000000 +0000")
 
     suggestions, drift = blame_suggestions(repo, cognition, {"n1": "Vince"})
@@ -216,7 +217,7 @@ def test_blame_name_disagreement_gate_excludes_flusher_attribution(tmp_path):
     repo = tmp_path / "repo"
     cognition = _init_repo(repo)
     storage = CognitionStorage(cognition)
-    storage.add_node(_node("n1", "Someone Else"))
+    seed_legacy_node(storage, _node("n1", "Someone Else"))
     _commit_journal(repo, "The Flusher", "flusher@x.com", "1700000000 +0000")
 
     suggestions, _drift = blame_suggestions(repo, cognition, {"n1": "Someone Else"})
@@ -230,9 +231,9 @@ def test_blame_email_drift_suggests_most_recent(tmp_path):
     repo = tmp_path / "repo"
     cognition = _init_repo(repo)
     storage = CognitionStorage(cognition)
-    storage.add_node(_node("n1", "Colton Dyck"))
+    seed_legacy_node(storage, _node("n1", "Colton Dyck"))
     _commit_journal(repo, "Colton Dyck", "colton.dyck@studiomonsoon.net", "1600000000 +0000")
-    storage.add_node(_node("n2", "Colton Dyck"))
+    seed_legacy_node(storage, _node("n2", "Colton Dyck"))
     _commit_journal(repo, "Colton Dyck", "colton.dyck@acryliccode.com", "1700000000 +0000")
 
     suggestions, drift = blame_suggestions(
@@ -253,7 +254,7 @@ def test_blame_bulk_rewrite_commit_excluded(tmp_path):
     node_authors = {}
     for i in range(25):
         nid = f"bulk{i}"
-        storage.add_node(_node(nid, "Bulk Author"))
+        seed_legacy_node(storage, _node(nid, "Bulk Author"))
         node_authors[nid] = "Bulk Author"
     _commit_journal(repo, "The Flusher", "flusher@x.com", "1700000000 +0000")
 
@@ -296,14 +297,14 @@ def test_dry_run_never_writes_journal_byte_identical(tmp_path):
     repo = tmp_path / "repo"
     cognition = _init_repo(repo)
     storage = CognitionStorage(cognition)
-    storage.add_node(_node("n1", "Vince"))
+    seed_legacy_node(storage, _node("n1", "Vince"))
     _commit_journal(repo, "Vince", "vince@x.com", "1700000000 +0000")
-    before = (cognition / "journal.jsonl").read_bytes()
+    before = journal_text(cognition)
 
     plan = BackfillPlan(storage, recompute_backfilled=False, confirmed={}, repo_path=repo)
     assert plan.to_write == []  # nothing confirmed yet -- dry run only
 
-    after = (cognition / "journal.jsonl").read_bytes()
+    after = journal_text(cognition)
     assert after == before
 
 
@@ -311,7 +312,7 @@ def test_apply_writes_confirmed_mapping_and_marks_backfilled(tmp_path):
     repo = tmp_path / "repo"
     cognition = _init_repo(repo)
     storage = CognitionStorage(cognition)
-    storage.add_node(_node("n1", "Vince"))
+    seed_legacy_node(storage, _node("n1", "Vince"))
     _commit_journal(repo, "Vince", "vince@x.com", "1700000000 +0000")
 
     confirmed = {"vince": ("vince@x.com", "git-history")}
@@ -335,7 +336,7 @@ def test_kept_suggested_email_preserves_declared_source(tmp_path):
     repo = tmp_path / "repo"
     cognition = _init_repo(repo)
     storage = CognitionStorage(cognition)
-    storage.add_node(_node("n1", "Vince"))
+    seed_legacy_node(storage, _node("n1", "Vince"))
     _commit_journal(repo, "Vince", "vince@x.com", "1700000000 +0000")
 
     plan = BackfillPlan(
@@ -355,7 +356,7 @@ def test_edited_suggested_email_downgrades_source_to_manual(tmp_path):
     repo = tmp_path / "repo"
     cognition = _init_repo(repo)
     storage = CognitionStorage(cognition)
-    storage.add_node(_node("n1", "Vince"))
+    seed_legacy_node(storage, _node("n1", "Vince"))
     _commit_journal(repo, "Vince", "vince@x.com", "1700000000 +0000")
 
     # Map file still claims source="git-history", but the email was hand-
@@ -376,7 +377,7 @@ def test_no_suggestion_downgrades_source_to_manual_regardless_of_file_claim(tmp_
     repo = tmp_path / "repo"
     cognition = _init_repo(repo)
     storage = CognitionStorage(cognition)
-    storage.add_node(_node("n1", "curate-orchestrator"))
+    seed_legacy_node(storage, _node("n1", "curate-orchestrator"))
     _commit_journal(repo, "The Flusher", "flusher@x.com", "1700000000 +0000")
 
     plan = BackfillPlan(
@@ -392,11 +393,11 @@ def test_apply_appends_exactly_n_update_node_events_and_replay_reproduces(tmp_pa
     repo = tmp_path / "repo"
     cognition = _init_repo(repo)
     storage = CognitionStorage(cognition)
-    storage.add_node(_node("n1", "Vince"))
-    storage.add_node(_node("n2", "Vince"))
+    seed_legacy_node(storage, _node("n1", "Vince"))
+    seed_legacy_node(storage, _node("n2", "Vince"))
     _commit_journal(repo, "Vince", "vince@x.com", "1700000000 +0000")
 
-    lines_before = (cognition / "journal.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    lines_before = journal_lines(cognition)
     plan = BackfillPlan(
         storage, recompute_backfilled=False,
         confirmed={"vince": ("vince@x.com", "manual")}, repo_path=repo,
@@ -404,9 +405,9 @@ def test_apply_appends_exactly_n_update_node_events_and_replay_reproduces(tmp_pa
     written = apply_plan(plan)
     assert written == 2
 
-    lines_after = (cognition / "journal.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    lines_after = journal_lines(cognition)
     assert len(lines_after) - len(lines_before) == 2
-    assert all(json.loads(line)["action"] == "update_node" for line in lines_after[len(lines_before):])
+    assert all(entry["action"] == "update_node" for entry in lines_after[len(lines_before):])
 
     replayed = CognitionStorage(cognition)
     for nid in ("n1", "n2"):
@@ -419,7 +420,7 @@ def test_apply_is_idempotent_second_run_writes_nothing(tmp_path):
     repo = tmp_path / "repo"
     cognition = _init_repo(repo)
     storage = CognitionStorage(cognition)
-    storage.add_node(_node("n1", "Vince"))
+    seed_legacy_node(storage, _node("n1", "Vince"))
     _commit_journal(repo, "Vince", "vince@x.com", "1700000000 +0000")
     confirmed = {"vince": ("vince@x.com", "manual")}
 
@@ -435,10 +436,10 @@ def test_recompute_backfilled_only_overwrites_marker_carrying_stamps(tmp_path):
     repo = tmp_path / "repo"
     cognition = _init_repo(repo)
     storage = CognitionStorage(cognition)
-    storage.add_node(_node("backfilled", "Vince", metadata={
+    seed_legacy_node(storage, _node("backfilled", "Vince", metadata={
         "recorded_by": {"name": "Vince", "email": "old@x.com", "backfilled": True, "backfill_source": "roster"},
     }))
-    storage.add_node(_node("server_stamped", "Vince", metadata={
+    seed_legacy_node(storage, _node("server_stamped", "Vince", metadata={
         "recorded_by": {"name": "Vince", "email": "server@x.com"},  # no marker -- server-resolved
     }))
     _commit_journal(repo, "Vince", "vince@x.com", "1700000000 +0000")
@@ -460,7 +461,7 @@ def test_no_author_row_left_unstamped(tmp_path):
     repo = tmp_path / "repo"
     cognition = _init_repo(repo)
     storage = CognitionStorage(cognition)
-    storage.add_node(_node("n1", ""))
+    seed_legacy_node(storage, _node("n1", ""))
     _commit_journal(repo, "Someone", "someone@x.com", "1700000000 +0000")
 
     plan = BackfillPlan(storage, recompute_backfilled=False, confirmed={}, repo_path=repo)
@@ -473,10 +474,10 @@ def test_auto_flip_forecast_flips_on_confirmed_backfill(tmp_path):
     repo = tmp_path / "repo"
     cognition = _init_repo(repo)
     storage = CognitionStorage(cognition)
-    storage.add_node(_node("solo", "Solo Writer", metadata={
+    seed_legacy_node(storage, _node("solo", "Solo Writer", metadata={
         "recorded_by": {"name": "Solo Writer", "email": "solo@x.com"},
     }))
-    storage.add_node(_node("legacy", "Legacy Writer"))
+    seed_legacy_node(storage, _node("legacy", "Legacy Writer"))
     _commit_journal(repo, "Solo Writer", "solo@x.com", "1700000000 +0000")
 
     plan = BackfillPlan(storage, recompute_backfilled=False, confirmed={}, repo_path=repo)
@@ -500,7 +501,7 @@ def test_cli_map_arg_wins_over_map_file_on_alias_collision(tmp_path, capsys):
     repo = tmp_path / "repo"
     cognition = _init_repo(repo)
     storage = CognitionStorage(cognition)
-    storage.add_node(_node("n1", "Vince"))
+    seed_legacy_node(storage, _node("n1", "Vince"))
     _commit_journal(repo, "Vince", "vince@x.com", "1700000000 +0000")
 
     map_file = tmp_path / "map.json"
@@ -521,9 +522,9 @@ def test_cli_dry_run_writes_skeleton_and_no_journal_change(tmp_path, capsys):
     repo = tmp_path / "repo"
     cognition = _init_repo(repo)
     storage = CognitionStorage(cognition)
-    storage.add_node(_node("n1", "Vince"))
+    seed_legacy_node(storage, _node("n1", "Vince"))
     _commit_journal(repo, "Vince", "vince@x.com", "1700000000 +0000")
-    before = (cognition / "journal.jsonl").read_bytes()
+    before = journal_text(cognition)
 
     rc = main([str(repo)])
     assert rc == 0
@@ -538,14 +539,14 @@ def test_cli_dry_run_writes_skeleton_and_no_journal_change(tmp_path, capsys):
     assert skeleton[0]["email"] == "vince@x.com"  # git-history suggestion pre-filled
     assert skeleton[0]["source"] == "git-history"
 
-    assert (cognition / "journal.jsonl").read_bytes() == before
+    assert journal_text(cognition) == before
 
 
 def test_cli_apply_with_map_file_stamps_and_reports_count(tmp_path, capsys):
     repo = tmp_path / "repo"
     cognition = _init_repo(repo)
     storage = CognitionStorage(cognition)
-    storage.add_node(_node("n1", "Vince"))
+    seed_legacy_node(storage, _node("n1", "Vince"))
     _commit_journal(repo, "Vince", "vince@x.com", "1700000000 +0000")
 
     map_file = tmp_path / "map.json"
@@ -575,7 +576,7 @@ def test_cli_apply_aborts_on_journal_mtime_change(tmp_path, capsys, monkeypatch)
     repo = tmp_path / "repo"
     cognition = _init_repo(repo)
     storage = CognitionStorage(cognition)
-    storage.add_node(_node("n1", "Vince"))
+    seed_legacy_node(storage, _node("n1", "Vince"))
     _commit_journal(repo, "Vince", "vince@x.com", "1700000000 +0000")
 
     map_file = tmp_path / "map.json"

@@ -178,7 +178,7 @@ The nudge above tells you a new version exists; this is the other half — after
 | `cognition_get_neighbors` | Get all connections to a node (all edge types) |
 | `cognition_remove_edge` | Remove a specific edge between two nodes |
 | `cognition_remove_node` | Delete a node and all its attached edges (destructive; also purges its embedding) |
-| `cognition_reload` | Force-reload the graph from the on-disk journal (diagnostic; a running server DOES pick up teammates' new nodes automatically on its normal catch-up path — this tool is for confirming that, not the only way it happens) |
+| `cognition_reload` | Force-reload the graph from the on-disk journal files (diagnostic; a running server DOES pick up teammates' new nodes automatically on its normal catch-up path — this tool is for confirming that, not the only way it happens) |
 
 ### Service Tools
 
@@ -265,7 +265,7 @@ The CLI runs uvicorn in the foreground; press Ctrl-C to stop.
 - **Toggle Board** between kanban columns and a tree view of the epic/subtask hierarchy; a checkbox reveals cancelled tasks.
 - **Pan / zoom** the Graph tab's canvas to explore connections; nodes are colored by type (decision, fail, discovery, pattern, episode, task, person, …).
 - **Search** with natural language → matching nodes get a yellow border in the Graph tab if it's loaded, and results open directly in the detail drawer either way.
-- **Delete a node** from the drawer (it's removed from `journal.jsonl` and the embedding index — irreversible).
+- **Delete a node** from the drawer (the deletion is recorded in your journal file and the node leaves the embedding index — irreversible; needs a confirmed identity).
 
 ## Storage
 
@@ -274,7 +274,12 @@ Vibe Cognition keeps the shared graph in a `.cognition/` directory within your p
 ```
 your-project/
 ├── .cognition/
-│   └── journal.jsonl       # Cognition graph (Git-committed, team-shared)
+│   ├── journal/
+│   │   └── <email>.jsonl   # One journal file per person (committed, team-shared)
+│   ├── journal.jsonl       # Legacy shared journal: read, never written (committed)
+│   ├── people/             # Roster profiles and environment facts (committed)
+│   ├── documents/          # Stored documents (committed, except local-only ones)
+│   └── local/              # Machine-local state, e.g. your identity (never committed)
 └── ... your code
 
 ~/.claude/plugins/data/vibe-cognition-<marketplace>/
@@ -284,16 +289,28 @@ your-project/
 
 `.cognition/` is the **only** thing the plugin writes into your project. The MCP server is declared by the plugin itself and resolves your project directory automatically (via `CLAUDE_PROJECT_DIR`), so there is no per-project `.mcp.json` to manage. Python dependencies live in the plugin's own data directory, not in your repo. (If you installed an earlier version that wrote a `vibe-cognition` entry into your project's `.mcp.json`, the plugin removes just that entry on next start — other servers are left untouched.)
 
-- **`.cognition/journal.jsonl`** should be **committed to Git** — it's the shared project knowledge base
+- **`.cognition/journal/` and `.cognition/journal.jsonl`** should be **committed** — together they are the shared project knowledge base
 - **The chromadb vector store** lives per-project under the plugin data dir since v0.32.0 — it can never end up in source control, and it's a regenerable cache (rebuilt automatically from the journal if deleted). The resolved path is surfaced in `get_status` as `chromadb_path`. A leftover `.cognition/chromadb/` from earlier versions is unused and **safe to delete**.
 
-> **Important:** Never gitignore the entire `.cognition/` directory. The journal file must be committed to Git for team sharing.
+> **Important:** Never gitignore the entire `.cognition/` directory. The journal files must be committed for team sharing.
+
+### Per-person journal files
+
+Since 0.41.0, every person writes only to **their own file**, `.cognition/journal/<email>.jsonl`, named after the identity confirmed in that checkout. The graph everyone sees is rebuilt from all of those files plus the old shared `.cognition/journal.jsonl`.
+
+- **Why:** when several people appended to one file between syncs, their changes collided — silently merged on git, a real conflict on Subversion. With one writer per file, two teammates never touch the same file.
+- **Switching is automatic.** The first write after upgrading creates your file. Nothing is moved: the old journal is never split or rewritten, and stays part of the graph.
+- **Writing needs a confirmed identity.** With none, there is no file to write to, so writes are refused (they already were, since 0.37.0).
+- **Conflicting edits resolve by time, not by who synced first.** Each entry records when it was written; when two people change the same thing, the later change wins for everyone. A teammate whose clock runs fast cannot make your later edit lose.
+- **Teammates on an older version** still write to the old shared file. The session start names them and says to update; their entries are still read.
+- **The same person in two clones or worktrees** still shares one file; git merges it by keeping both sides, and on SVN the resolver below handles it.
+- Check the state with `get_status` (`journal`) or `vibe-cognition-journal status` (also `python -m vibe_cognition.cognition.journal_cli status`). `adopt` creates your file before your first write. Neither moves data.
 
 ### Automatic Git Hygiene
 
 On first startup in a new project, vibe-cognition automatically configures two git hygiene rules for `.cognition/`:
 
-1. **`.gitattributes`** — adds `.cognition/journal.jsonl merge=union` so concurrent journal appends from different branches/clones union-merge cleanly instead of conflicting. (`merge=union` is a built-in git merge driver; it only affects 3-way merge resolution and never rewrites the journal blob.)
+1. **`.gitattributes`** — adds `merge=union` for `.cognition/journal.jsonl`, `.cognition/journal/*.jsonl` and `.cognition/people/*.jsonl`, so concurrent appends from different branches/clones union-merge cleanly instead of conflicting. (`merge=union` is a built-in git merge driver; it only affects 3-way merge resolution and never rewrites the journal blob.)
 2. **`.cognition/.gitignore`** — keeps machine-local and per-user files out of version control: `local/` (since 0.38.0 every machine-local file lives there — the identity file, `last-seen.json`, alert flags, the hygiene flag), `*.lock`, and `chromadb/`. Repos upgraded from older versions keep their earlier per-file entries too; they are harmless. (Since v0.32.0 the vector store lives outside the repo, but the `chromadb/` line is still written: teammates on older plugin versions sharing the repo still create an in-repo cache.) A committed `last-seen.json` conflicts on every teammate's session, so this write matters more than it looks.
 
 Both writes are **idempotent** (existing files are appended, never clobbered) and happen exactly once per working copy, tracked by a local flag file `.cognition/local/.git-hygiene-managed`. The committed rules (`.gitattributes`, `.cognition/.gitignore`) travel to teammates via git; the flag is git-ignored so every fresh clone self-heals with one pass on first startup.
@@ -320,9 +337,9 @@ Since 0.40.0, **setting up `.cognition/` for SVN is automatic** — you review a
 
 **Opt out** with `VIBE_COGNITION_NO_VCS_HYGIENE=1` (the older name `VIBE_COGNITION_NO_GIT_HYGIENE` also works). It turns off the git setup too.
 
-**What gets committed:** `.cognition/.gitignore`, `.cognition/journal.jsonl`, every `.cognition/people/*.jsonl`, and `.cognition/documents/` except local-only documents. **What never gets committed:** `.cognition/local/`, `*.lock`, `chromadb/`, local-only documents and `documents/.gitignore`.
+**What gets committed:** `.cognition/.gitignore`, every `.cognition/journal/*.jsonl`, `.cognition/journal.jsonl`, every `.cognition/people/*.jsonl`, and `.cognition/documents/` except local-only documents. **What never gets committed:** `.cognition/local/`, `*.lock`, `chromadb/`, local-only documents and `documents/.gitignore`.
 
-**SVN has no equivalent of `merge=union`, and cannot be given one** — there is no per-path merge configuration in Subversion at any version. Two people appending to the journal between syncs **will** conflict on `svn update`.
+**SVN has no equivalent of `merge=union`, and cannot be given one** — there is no per-path merge configuration in Subversion at any version. Since 0.41.0 each person writes only to their own journal file, so **two different people no longer conflict**. A conflict can still happen when the same person works in two checkouts, or on the old shared journal while a teammate is on an older plugin.
 
 - **Resolve with the resolver, which keeps BOTH sides.** The session start names the conflicted file and gives the exact command, which runs with the plugin's own Python:
 
@@ -837,7 +854,7 @@ This avoids the ~2GB sentence-transformers/PyTorch dependency.
 Claude Code sessions against one project (multiple agents, or you + a teammate on
 separate clones) is a normal, supported mode — this is NOT single-instance software.
 The real caveat: each session's MCP server hydrates its in-memory graph from
-`journal.jsonl` once at its own startup, so a session doesn't automatically see nodes a
+the journal files once at its own startup, so a session doesn't automatically see nodes a
 DIFFERENT session recorded after it started — it picks them up on its normal catch-up
 path as it makes calls, and `get_status`'s `embedding_status` reports `syncing` (rather
 than `ready`) while a just-started session's embedding index is still catching up on
@@ -851,7 +868,7 @@ shared working directory specifically (not just multiple independent sessions), 
 versions `.cognition/chromadb/`) from a process that didn't shut down cleanly, or
 antivirus/backup software holding a file open.
 
-**Journal permanently shows as modified, or replay resets after merges (Windows / autocrlf)** — The journal is replayed by byte offset, so line-ending normalization must never rewrite its bytes; on `core.autocrlf` setups this holds only by convention. If `git status` permanently shows `.cognition/journal.jsonl` as modified, or logs show "re-hydrated from top" after merges/pulls, add `.cognition/*.jsonl merge=union -text` to your repo-root `.gitattributes` — EARLY in the graph's life. Do not retrofit `-text` onto a grown shared-checkout journal without a planned cut-over: the first commit after adding it re-normalizes the file once, which live sessions see as a replaced journal. (Auto-configuration writes only `merge=union`, never `-text`.)
+**Journal permanently shows as modified, or replay resets after merges (Windows / autocrlf)** — The journal files are replayed by byte offset, so line-ending normalization must never rewrite their bytes; on `core.autocrlf` setups this holds only by convention. If `git status` permanently shows `.cognition/journal.jsonl` or a file under `.cognition/journal/` as modified, or logs show "re-hydrated from top" after merges/pulls, add `.cognition/*.jsonl merge=union -text` to your repo-root `.gitattributes` — EARLY in the graph's life. Do not retrofit `-text` onto a grown shared-checkout journal without a planned cut-over: the first commit after adding it re-normalizes the file once, which live sessions see as a replaced journal. (Auto-configuration writes only `merge=union`, never `-text`.)
 
 **Semantic edges not appearing** — Curation is agent-driven: after recording nodes, run the `/vibe-curate` skill to launch the background curator, which creates semantic edges. Only `part_of` edges (from shared references) are automatic. Nodes are stored and searchable regardless.
 
