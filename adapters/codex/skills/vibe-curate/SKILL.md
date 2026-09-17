@@ -21,10 +21,19 @@ Launches the curate-orchestrator (its instructions are `references/curate-orches
 3. Read `references/curate-orchestrator.md` from this skill's directory. Launch the orchestrator with `spawn_agent`: `task_name: "vibe_curate"`, `fork_turns: "none"` (required with a model override), `model: "gpt-5.6-sol"` — always pass the model explicitly, never let it inherit this session's model (fail f09e770da046 precedent) — and `message` = the full reference text followed by one line: `Uncurated nodes at launch: {N}.` Do NOT pass `agent_type`. Do NOT `wait_agent` on it: the orchestrator's final counts arrive later as a FINAL_ANSWER message from `/root/vibe_curate`; carry on with other work meanwhile. If `spawn_agent` rejects the model name, relay Codex's "Unknown model … Available models" error verbatim and tell the user to set `VIBE_MODEL_MID` on the `vibe-cognition` MCP entry (`codex mcp get vibe-cognition --json` shows the current env); never retry with a guessed name.
 4. Tell the user: "Curation launched in background — {N} uncurated nodes. Completion will be reported when it finishes; ground truth in the meantime is `get_status`'s uncurated count."
 
+## When curation reports scope flags
+
+The orchestrator may end its report with `flagged for your ruling: <id> -> <scope>, ...`. Those are constraints recorded by the human you are working with that curation thinks have the wrong scope (personal vs project). They never block anything:
+
+- Do NOT stop or derail the current task. Mention the flags in one line and carry on.
+- At the next natural pause (the task is done, or you are waiting on the human anyway), take each flag in turn: show the constraint's summary (`cognition_get_node`) and the suggested scope, ask the human which scope it should have, then call `cognition_update_node(node_id, scope=<their answer>)`. Passing its current scope keeps it and clears the flag.
+- If you are not the one talking to the human (you work for another agent), pass the flags to that agent instead of asking.
+- If the session ends before you ask, nothing is lost: the human's next session start lists them under "Constraints to Review".
+
 ## Concurrency
 
 If two agents/sessions launch curation on the same graph around the same time, both orchestrators will see overlapping uncurated worklists and do duplicate subagent analysis (wasted tokens) — the `(from, to, edge_type)` idempotency key on edge creation prevents the waste from becoming duplicate edges, but not the redundant analysis itself. If you know a teammate is also curating, check their status via teammate-comms (if available) before launching, or accept the waste knowingly rather than being surprised by it.
 
 ## What NOT to do
 
-Do not attempt any of the orchestrator's work yourself. `cognition_add_edge`, `cognition_add_edges_batch`, and `cognition_mark_curated` are reserved for the curate-orchestrator agent this skill launches — if you need edges created, launch this skill; don't hand-author them.
+Do not attempt any of the orchestrator's work yourself. `cognition_add_edge`, `cognition_add_edges_batch`, `cognition_mark_curated`, and `cognition_flag_constraint_scope` are reserved for the curate-orchestrator agent this skill launches — if you need edges created, launch this skill; don't hand-author them.

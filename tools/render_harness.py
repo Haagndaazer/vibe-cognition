@@ -20,7 +20,7 @@ from vibe_cognition import harness  # noqa: E402
 SKILLS_SRC = REPO / "skills-src"
 AGENTS_SRC = REPO / "agents-src"
 CODEX_SKILLS = ("vibe-cognition", "vibe-document", "vibe-workflow", "vibe-dashboard", "vibe-curate", "vibe-backfill")
-CODEX_REFERENCES = {"vibe-curate": ("curate-orchestrator", "curate-edge-analyzer", "curate-conflict-analyzer", "curate-cluster-analyzer")}
+CODEX_REFERENCES = {"vibe-curate": ("curate-orchestrator", "curate-edge-analyzer", "curate-conflict-analyzer", "curate-scope-analyzer", "curate-cluster-analyzer")}
 CODEX_ROLES = {"plan": "vibe-plan"}
 _FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
 

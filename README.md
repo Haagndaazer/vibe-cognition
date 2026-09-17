@@ -175,6 +175,7 @@ The nudge above tells you a new version exists; this is the other half — after
 | `cognition_get_edgeless_nodes` | Find nodes with no edges (need curation) |
 | `cognition_get_uncurated_nodes` | Find nodes not yet reviewed by the curation skill |
 | `cognition_mark_curated` | Mark a node as reviewed by the curation skill |
+| `cognition_flag_constraint_scope` | Curation only: flag a constraint whose personal/project scope looks wrong, for its owner to rule on |
 | `cognition_get_neighbors` | Get all connections to a node (all edge types) |
 | `cognition_remove_edge` | Remove a specific edge between two nodes |
 | `cognition_remove_node` | Delete a node and all its attached edges (destructive; also purges its embedding) |
@@ -317,6 +318,13 @@ This is visibility, not secrecy: a personal constraint is still a line in its ow
 committed journal file, readable by anyone who opens `.cognition/journal/` directly. The
 `vibe_cognition.remap_identity` CLI sees every scope so a remap cannot orphan one.
 
+Since 0.43.0 curation reviews new constraints and flags any that look mis-scoped. A flag is
+stored on the constraint as `scope_review` and only its owner can see it. The owner's session
+start lists it under `## Constraints to Review` until they rule with
+`cognition_update_node(node_id, scope=...)` — passing the current scope keeps it and clears the
+flag. The curator's completion message also names flags on the launching person's own
+constraints, and the agent asks at a natural pause without stopping work.
+
 ### Per-person journal files
 
 Since 0.41.0, every person writes only to **their own file**, `.cognition/journal/<email>.jsonl`, named after the identity confirmed in that checkout. The graph everyone sees is rebuilt from all of those files plus the old shared `.cognition/journal.jsonl`.
@@ -452,6 +460,8 @@ Edges are created through two mechanisms:
 2. **`/vibe-curate` skill** (launches a background curator): Triggering curation is the agent's responsibility — after recording any nodes, the agent runs the `/vibe-curate` skill to launch a background curate-orchestrator agent, which creates semantic edges (led_to, resolved_by, supersedes) and identifies clusters via Haiku subagents. The main agent never authors these edges itself. Since 0.36.0 this is enforced server-side: the edge-writing tools require a curation-session token from `cognition_begin_curation`, so a write outside a curation run is refused and every accepted edge records its `curation_session`. `get_status`'s `cognition_graph.edges_outside_curation` (WP-TC15) remains the smoke detector for legacy sources: it counts semantic-edge writes whose `source` isn't one of the curator's own values (a `cognition_add_edge`/`cognition_add_edges_batch` call outside a curation run), so accidental misuse of the exclusive-write convention surfaces instead of silently degrading edge provenance. `edge_sources` alongside it is the full per-source histogram.
 
 **Conflict pass**: a dedicated `curate-conflict-analyzer` subagent runs between edge curation and clustering, hunting deliberately for `contradicts`/`supersedes` on stance-bearing nodes (decisions, constraints, patterns, assumptions) — the general edge-analyzer treats `contradicts` as genuinely rare and never actively looks for it. Every proposal carries verbatim quoted stances from both nodes; a whole-run cap discards the entire pass if more than 20% of examined candidates (once at least 15 have been examined) come back `contradicts`, guarding against a systematic false-positive run.
+
+**Scope review**: after the conflict pass, a `curate-scope-analyzer` subagent (pinned to the mid model, Sonnet on Claude Code) reads the run's new constraints and proposes ones that clearly read as the other scope — a personal constraint stating a rule a teammate could break, or a project constraint that is really one person's preference. Each proposal quotes the words that drove it. Surviving proposals become a flag on the node (`cognition_flag_constraint_scope`); nothing about the constraint changes. If more than 40% of 10 or more examined constraints come back flagged, the whole pass is discarded as a misread.
 
 ## Working as a Team
 

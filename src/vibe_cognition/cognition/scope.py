@@ -14,6 +14,7 @@ SCOPE_KEY = "scope"
 SCOPE_PERSONAL = "personal"
 SCOPE_PROJECT = "project"
 SCOPES = (SCOPE_PERSONAL, SCOPE_PROJECT)
+SCOPE_REVIEW_KEY = "scope_review"
 
 
 def node_scope(data: dict[str, Any]) -> str:

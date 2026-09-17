@@ -1,4 +1,9 @@
 {
+  "0.43.0": [
+    "Curation now double-checks new constraints: if one looks like it should be shared with the team, or like a personal preference that was shared by mistake, it's flagged for you.",
+    "Flags never stop your work. Claude asks you at a good moment, and they wait at your session start until you decide.",
+    "Only you see flags on your own constraints."
+  ],
   "0.42.0": [
     "Constraints can now be personal. A preference you give Claude (like 'don't touch my prefabs') applies only to you, and teammates never see it. Rules for everyone are marked project.",
     "New constraints are personal unless they are true for anyone in the project; Claude asks you when it can't tell. You can switch one either way later.",

@@ -260,6 +260,7 @@ _TOOL_ARGS: dict[str, dict] = {
     "cognition_get_edgeless_nodes": {},
     "cognition_get_uncurated_nodes": {},
     "cognition_mark_curated": {"node_ids": "a,b"},
+    "cognition_flag_constraint_scope": {"node_id": "a", "suggested_scope": "project", "reason": "r"},
     "cognition_get_neighbors": {"node_id": "nonexistent"},
     "cognition_remove_edge": {"from_id": "a", "to_id": "b", "edge_type": "led_to"},
     "cognition_remove_node": {"node_id": "nonexistent"},
@@ -310,7 +311,7 @@ def test_tool_dispatch_completes_while_an_unrelated_import_is_blocked_midflight(
     from unittest.mock import patch
 
     register_all_tools(mock_mcp)
-    assert len(mock_mcp.tools) == 40, "tool count drifted -- update _TOOL_ARGS to match"
+    assert len(mock_mcp.tools) == 41, "tool count drifted -- update _TOOL_ARGS to match"
     assert set(_TOOL_ARGS) == set(mock_mcp.tools), (
         f"missing args entries: {set(mock_mcp.tools) - set(_TOOL_ARGS)}"
     )

@@ -20,8 +20,8 @@ context. In brief: record with cognition_record as you work, then run /vibe-cura
 launch the background curate-orchestrator agent, which adds semantic edges (led_to,
 resolved_by, supersedes, contradicts, relates_to) -- never author them yourself.
 Deterministic part_of edges are created automatically. This exclusivity is
-enforced server-side: cognition_add_edge, cognition_add_edges_batch, and
-cognition_mark_curated require a curation_token minted by cognition_begin_curation
+enforced server-side: cognition_add_edge, cognition_add_edges_batch,
+cognition_mark_curated and cognition_flag_constraint_scope require a curation_token minted by cognition_begin_curation
 (the curate-orchestrator calls it at the start of a run) and refuse without one;
 every accepted edge records its curation_session. get_status's cognition_graph.
 edges_outside_curation (WP-TC15) still counts semantic-edge writes whose source
@@ -61,7 +61,8 @@ commands and .claude/agents have no Codex equivalent.
 |         | cognition_get_neighbors |
 | Curate | cognition_begin_curation, cognition_add_edge, cognition_add_edges_batch, |
 |        | cognition_remove_edge, cognition_get_edgeless_nodes, |
-|        | cognition_get_uncurated_nodes, cognition_mark_curated |
+|        | cognition_get_uncurated_nodes, cognition_mark_curated, |
+|        | cognition_flag_constraint_scope |
 | Document | cognition_store_document, cognition_get_document |
 | Workflow | cognition_get_workflow (find by topic; resolves to current HEAD) |
 | Cross-project | cognition_load_project, cognition_unload_project, |
@@ -247,6 +248,10 @@ from teammates). Project = true for anyone in the repo (API/platform limits,
 build or ship rules, client requirements, security). Unsure: ask the human, and
 record personal if you cannot. Only the owner can change scope, via
 cognition_update_node(scope=...). Pre-0.42.0 constraints stay project.
+Curation flags new constraints that look mis-scoped; the owner's session start lists
+them under Constraints to Review. Do not stop work for them: ask the human at a
+natural pause and rule with cognition_update_node(scope=...) (the current scope
+keeps it and clears the flag).
 
 ## Cross-project reads
 

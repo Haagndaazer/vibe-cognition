@@ -350,6 +350,7 @@ def test_write_tools_have_no_project_param():
         "cognition_reload",
         "cognition_store_document",
         "cognition_mark_curated",
+        "cognition_flag_constraint_scope",
     ]
     for name in write_tools:
         assert name in mock.tools, f"{name} not registered — name mismatch?"

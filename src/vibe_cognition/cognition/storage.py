@@ -51,7 +51,7 @@ from .people_facts import DEFAULT_MACHINE_CAP, PeopleFactsRegistry
 from .person_migration import ensure_person_migration
 from .profiles import ProfileRegistry
 from .roster import Roster
-from .scope import visible_to
+from .scope import SCOPE_REVIEW_KEY, recorded_by_email, visible_to
 
 logger = logging.getLogger(__name__)
 
@@ -651,7 +651,7 @@ class CognitionStorage:
         """
         with self._synced():
             if self._visible(node_id):
-                return dict(self._graph.nodes[node_id])
+                return self._present(self._graph.nodes[node_id])
             return None
 
     def has_node(self, node_id: str) -> bool:
@@ -667,7 +667,7 @@ class CognitionStorage:
         """
         with self._synced():
             return [
-                {"id": node_id, **data}
+                {"id": node_id, **self._present(data)}
                 for node_id, data in self._visible_nodes()
             ]
 
@@ -682,7 +682,7 @@ class CognitionStorage:
         """
         with self._synced():
             return [
-                {"id": node_id, **data}
+                {"id": node_id, **self._present(data)}
                 for node_id, data in self._visible_nodes()
                 if data.get("type") == node_type.value
             ]
@@ -732,7 +732,7 @@ class CognitionStorage:
             for node_id, data in self._visible_nodes():
                 if node_type and data.get("type") != node_type.value:
                     continue
-                nodes.append({"id": node_id, **data})
+                nodes.append({"id": node_id, **self._present(data)})
 
         nodes.sort(key=lambda n: n.get("timestamp", ""), reverse=True)
         sliced = nodes[:limit]
@@ -765,7 +765,7 @@ class CognitionStorage:
                     continue
                 if data.get("curated_by_skill_at") is not None:
                     continue
-                uncurated.append({"id": node_id, **data})
+                uncurated.append({"id": node_id, **self._present(data)})
 
         uncurated.sort(key=lambda n: n.get("timestamp", ""))
         return uncurated[:min(limit, 500)]
@@ -1131,6 +1131,17 @@ class CognitionStorage:
         whose ids surface in get_status and the session-start warning."""
         with self._lock:
             return {node_id for node_id, _ in self._visible_nodes()}
+
+    def _present(self, data: dict[str, Any]) -> dict[str, Any]:
+        """A copy of a node for this viewer: a scope-review flag is the owner's alone."""
+        out = dict(data)
+        if (
+            out.get(SCOPE_REVIEW_KEY) is not None
+            and not self._show_all_scopes
+            and recorded_by_email(out) != self.viewer_email()
+        ):
+            del out[SCOPE_REVIEW_KEY]
+        return out
 
     def _visible(self, node_id: str) -> bool:
         if node_id not in self._graph:
@@ -1546,7 +1557,7 @@ class CognitionStorage:
         """
         with self._synced():
             nodes = [
-                {"id": node_id, **data}
+                {"id": node_id, **self._present(data)}
                 for node_id, data in self._visible_nodes()
             ]
             visible_ids = {n["id"] for n in nodes}

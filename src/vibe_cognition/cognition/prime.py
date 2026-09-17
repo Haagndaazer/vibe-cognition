@@ -25,7 +25,7 @@ from .person_migration import consume_migration_report, format_migration_announc
 from .readme import ONBOARDING_BLOCK
 from .resolve_journal import resolve_journal_command
 from .roster import Person
-from .scope import SCOPE_PERSONAL, SCOPE_PROJECT, node_scope
+from .scope import SCOPE_PERSONAL, SCOPE_PROJECT, SCOPE_REVIEW_KEY, node_scope, recorded_by_email
 from .storage import REHYDRATE_FLAG_FILENAME, CognitionStorage
 from .svn_hygiene import ensure_svn_hygiene, format_svn_announce
 from .task_meta import _task_claimed_at
@@ -365,6 +365,41 @@ def _format_personal_constraints(storage: CognitionStorage, limit: int, maxlen: 
     if len(nodes) > limit:
         lines.append(f"- +{len(nodes) - limit} more — use cognition_search")
     return "## Your Personal Constraints\n" + "\n".join(lines)
+
+
+def _format_scope_reviews(storage: CognitionStorage, current_email: str, limit: int, maxlen: int = 0) -> str:
+    """Constraints the curator suggests re-scoping, shown only to their owner."""
+    if not current_email:
+        return ""
+    flagged = [
+        n for n in storage.get_nodes_by_type(CognitionNodeType.CONSTRAINT)
+        if isinstance(n.get(SCOPE_REVIEW_KEY), dict)
+        and recorded_by_email(n) == current_email
+        and not storage.get_predecessors(n["id"], CognitionEdgeType.SUPERSEDES)
+    ]
+    if not flagged:
+        return ""
+    flagged.sort(key=lambda n: n[SCOPE_REVIEW_KEY].get("flagged_at", ""))
+    lines = []
+    for n in flagged[:limit]:
+        review = n[SCOPE_REVIEW_KEY]
+        summary = _truncate(n.get("summary", ""), maxlen)
+        reason = _truncate(str(review.get("reason", "")), maxlen)
+        lines.append(
+            f"- {n['id']} [{node_scope(n)} -> {review.get('suggested')}] {summary} — {reason}"
+        )
+    if len(flagged) > limit:
+        lines.append(
+            f"- +{len(flagged) - limit} more waiting — rule on these first; "
+            "the rest are listed next session"
+        )
+    return (
+        "## Constraints to Review\n"
+        "Curation thinks these may have the wrong scope. Do not stop work for them: at a "
+        "natural pause, ask the human for each, then call cognition_update_node(node_id, "
+        "scope=...) with their answer (passing the current scope keeps it and clears the flag).\n"
+        + "\n".join(lines)
+    )
 
 
 def _format_constraints(storage: CognitionStorage, limit: int, maxlen: int = 0) -> str:
@@ -1017,6 +1052,7 @@ def generate_prime(
     ]
     sections.append(_format_constraints(storage, config.prime_constraint_limit, maxlen))
     sections.append(_format_personal_constraints(storage, config.prime_constraint_limit, maxlen))
+    sections.append(_format_scope_reviews(storage, current_email, config.prime_constraint_limit, maxlen))
 
     if personalize:
         # WP-OnboardPayoff/TC16/TC14: pinned order Identity header -> Your Tasks

@@ -60,7 +60,14 @@ from ..cognition.people_facts import fold_email
 from ..cognition.prime import SEVERITY_ORDER, _node_email
 from ..cognition.profiles import NO_MANAGER, PROFILE_FIELDS
 from ..cognition.roster import Person, Roster
-from ..cognition.scope import SCOPE_KEY, SCOPE_PERSONAL, SCOPES, node_scope, recorded_by_email
+from ..cognition.scope import (
+    SCOPE_KEY,
+    SCOPE_PERSONAL,
+    SCOPE_REVIEW_KEY,
+    SCOPES,
+    node_scope,
+    recorded_by_email,
+)
 from ..cognition.svn_hygiene import add_new_files_in_background
 
 # WP-TC16 re-export: keeps tests/test_task.py:32-37's direct
@@ -1560,7 +1567,55 @@ def _scope_update(
         }
     if owner != storage.viewer_email():
         return {"error": "only the person who recorded this constraint can change its scope"}
-    return {"metadata": {**(existing.get("metadata") or {}), SCOPE_KEY: value}}
+    return {
+        "metadata": {**(existing.get("metadata") or {}), SCOPE_KEY: value},
+        SCOPE_REVIEW_KEY: None,
+    }
+
+
+_SCOPE_REVIEW_REASON_MAX = 300
+
+
+def _flag_constraint_scope(
+    storage: CognitionStorage,
+    node_id: str,
+    suggested_scope: str,
+    reason: str,
+    curation_session: str,
+) -> dict[str, Any]:
+    node = storage.get_node(node_id)
+    if node is None:
+        return {"error": f"Node '{node_id}' does not exist"}
+    if node.get("type") != CognitionNodeType.CONSTRAINT.value:
+        return {"error": "only constraint nodes can be flagged for a scope review"}
+    suggested = (suggested_scope or "").strip().lower()
+    if suggested not in SCOPES:
+        return {"error": f"suggested_scope must be 'personal' or 'project', got {suggested_scope!r}"}
+    current = node_scope(node)
+    if suggested == current:
+        return {"error": f"this constraint is already {current}; flag only a suggested change"}
+    owner = recorded_by_email(node)
+    if not owner:
+        return {"error": "this constraint has no recorded owner, so its scope cannot change; do not flag it"}
+    if storage.get_predecessors(node_id, CognitionEdgeType.SUPERSEDES):
+        return {"error": "this constraint has been superseded; review its current version instead"}
+    reason = " ".join((reason or "").split())
+    if not reason:
+        return {"error": "reason is required: one sentence on why the other scope fits better"}
+    review = {
+        "suggested": suggested,
+        "reason": reason[:_SCOPE_REVIEW_REASON_MAX],
+        "flagged_at": datetime.now(UTC).isoformat(),
+        "curation_session": curation_session,
+    }
+    storage.update_node(node_id, **{SCOPE_REVIEW_KEY: review})
+    return {
+        "flagged": True,
+        "node_id": node_id,
+        "current_scope": current,
+        "suggested_scope": suggested,
+        "owner_is_you": owner == storage.viewer_email(),
+    }
 
 
 # ── Task node core logic (cognition_add_task / _list_tasks / _update_task) ───
@@ -4017,7 +4072,12 @@ def register_cognition_tools(mcp) -> None:
             the two are NOT interchangeable, check which tool you're reading from.
             When project is not None, also includes "project": tag. A constraint's
             metadata.scope is "personal" or "project" (absent means project); a
-            teammate's personal constraint is reported absent.
+            teammate's personal constraint is reported absent. A constraint may also
+            carry scope_review: {suggested, reason, flagged_at, curation_session} —
+            curation's suggestion that its scope is wrong, awaiting the owner's
+            ruling via cognition_update_node(node_id, scope=...). Only the owner
+            ever sees that key: it is absent for everyone else, and null once a
+            ruling cleared it.
         """
         lc = get_lifespan(ctx)
         if project is None:
@@ -4076,11 +4136,14 @@ def register_cognition_tools(mcp) -> None:
             scope: Constraint only — "personal" or "project" (see cognition_record's
                 CONSTRAINT SCOPE). Only the person who recorded the constraint may
                 change it; a constraint with no recorded owner (pre-identity) stays
-                project.
+                project. Any scope value clears a pending curation scope-review
+                flag, so passing the CURRENT scope is how the owner rules "keep
+                it as is".
 
         Returns:
-            The updated node dict (as cognition_get_node) plus `reembed`, or
-            {"error": ...} if the node is absent (a teammate's personal constraint
+            The updated node dict (as cognition_get_node) plus `reembed` — after a
+            `scope` edit that dict carries scope_review: null, the cleared curation
+            flag — or {"error": ...} if the node is absent (a teammate's personal constraint
             is absent to you), no editable field was given, the scope is invalid or
             not yours to change, or the node is a workflow (workflows are versioned by supersession: record
             a new one instead). Refused with `{"identity_required": true, ...}` when this checkout has
@@ -5168,6 +5231,69 @@ def register_cognition_tools(mcp) -> None:
 
         session["writes"] += marked
         return {"marked": marked, "not_found": not_found}
+
+    @dispatch_tool(mcp)
+    def cognition_flag_constraint_scope(
+        ctx: Context,
+        node_id: str,
+        suggested_scope: str,
+        reason: str,
+        curation_token: str | None = None,
+    ) -> dict[str, Any]:
+        """Flag a constraint whose scope looks wrong, for its owner to rule on.
+
+        Called ONLY by the curate-orchestrator agent (launched via /vibe-curate)
+        after its scope review. Nothing about the constraint's visibility changes:
+        the flag is stored on the node and listed under "Constraints to Review" in
+        the OWNER's session-start context until the owner rules with
+        cognition_update_node(node_id, scope=...) (passing the current scope keeps
+        it and clears the flag). If you are any other agent — including the main
+        instance — do NOT call it. Requires ``curation_token`` from
+        cognition_begin_curation; refused without it.
+
+        Args:
+            node_id: The constraint to flag.
+            suggested_scope: "personal" or "project" — the scope it should probably
+                have. Must differ from its current scope.
+            reason: One sentence on why the suggested scope fits better (trimmed to
+                300 characters).
+            curation_token: Token from cognition_begin_curation for this server
+                process. Required -- absent or unknown tokens are refused with
+                {"error": "curation token required: ..."} and nothing is written.
+
+        Returns:
+            {"flagged": true, "node_id", "current_scope", "suggested_scope",
+             "owner_is_you": bool} — owner_is_you is true when the constraint
+            belongs to this checkout's confirmed identity, so its ruling belongs to
+            the human in this session. {"error": ...} when the node is absent
+            (including a teammate's personal constraint), not a constraint, the
+            suggestion equals the current scope, it has no recorded owner, it has
+            been superseded, or the reason is blank. Nothing is written on error.
+            The flag is stored as the node's top-level `scope_review` attribute
+            ({suggested, reason, flagged_at, curation_session}) and only the
+            constraint's owner can read it.
+            Refused with `{"identity_required": true, ...}` when this checkout has
+            no CONFIRMED identity, or its profile is missing role/seniority/
+            reports_to — the payload names what to ask the human for and the
+            `cognition_set_identity` call that fixes it. Nothing is written.
+            A valid token is checked FIRST, so a caller with no token is told that
+            rather than told to onboard.
+        """
+        lc = get_lifespan(ctx)
+        session, refusal = _require_curation(lc, curation_token)
+        if refusal:
+            return refusal
+        assert session is not None
+        storage: CognitionStorage = lc["cognition_storage"]
+        gate, _ = _gated_identity(storage)
+        if gate is not None:
+            return gate
+        result = _flag_constraint_scope(
+            storage, node_id, suggested_scope, reason, session["session_id"],
+        )
+        if result.get("flagged"):
+            session["writes"] += 1
+        return result
 
     @dispatch_tool(mcp)
     def cognition_get_neighbors(

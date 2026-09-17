@@ -44,6 +44,16 @@
         "evidence": "gate:97d97da257c3"
       }
     },
+    "agent:curate-scope-analyzer": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_harness_render.py::test_rendered_outputs_match_sources"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "rendered as a vibe-curate reference and spawned by the Codex orchestrator branch; a scope-review run has not been exercised live on Codex"
+      }
+    },
     "agent:plan": {
       "claude-code": {
         "status": "full",
@@ -175,6 +185,16 @@
       }
     },
     "tool:cognition_dashboard": {
+      "claude-code": {
+        "status": "full",
+        "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"
+      },
+      "codex": {
+        "status": "partial",
+        "note": "same server on both harnesses; not individually exercised on Codex (Gate C1 covered get_status, cognition_record, cognition_search, cognition_get_workflow)"
+      }
+    },
+    "tool:cognition_flag_constraint_scope": {
       "claude-code": {
         "status": "full",
         "evidence": "tests/test_doc_drift.py::test_skill_tool_table_documents_every_registered_tool"

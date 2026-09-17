@@ -1290,7 +1290,7 @@ def test_all_39_tools_registered(mock_mcp):
         "cognition_get_incident_resolution", "cognition_get_history",
         "cognition_add_edge", "cognition_add_edges_batch",
         "cognition_get_edgeless_nodes", "cognition_get_uncurated_nodes",
-        "cognition_mark_curated", "cognition_get_neighbors",
+        "cognition_mark_curated", "cognition_flag_constraint_scope", "cognition_get_neighbors",
         "cognition_remove_edge", "cognition_remove_node", "cognition_reload",
         "cognition_load_project", "cognition_unload_project", "cognition_list_projects",
         # task tools (WP-Task-Node, +3)
@@ -1311,6 +1311,6 @@ def test_all_39_tools_registered(mock_mcp):
 
     missing = expected - set(mock_mcp.tools.keys())
     assert not missing, f"Tools not registered: {missing}"
-    assert len(mock_mcp.tools) == 40, (
-        f"Expected 40 tools, got {len(mock_mcp.tools)}: {set(mock_mcp.tools.keys())}"
+    assert len(mock_mcp.tools) == 41, (
+        f"Expected 41 tools, got {len(mock_mcp.tools)}: {set(mock_mcp.tools.keys())}"
     )

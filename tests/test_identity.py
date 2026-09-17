@@ -461,6 +461,8 @@ CURATION_WRITE_TOOLS = [
     ("cognition_add_edges_batch",
      {"edges": '[{"from_id": "a", "to_id": "b", "edge_type": "led_to"}]'}),
     ("cognition_mark_curated", {"node_ids": "a,b"}),
+    ("cognition_flag_constraint_scope",
+     {"node_id": "a", "suggested_scope": "project", "reason": "r"}),
 ]
 
 #: Every registered tool that does NOT write to the graph, with why. Paired with

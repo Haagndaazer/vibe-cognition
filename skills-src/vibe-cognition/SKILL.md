@@ -39,6 +39,7 @@ description: You MUST use this skill any time you need to retrieve information a
 | `cognition_remove_node` | Delete a node and all its attached edges (destructive — for junk/test/duplicate nodes) |
 | `cognition_get_uncurated_nodes` | List nodes not yet processed by `{{invoke:vibe-curate}}` |
 | `cognition_mark_curated` | Mark nodes as curated (used by `{{invoke:vibe-curate}}`) |
+| `cognition_flag_constraint_scope` | Flag a constraint whose scope looks wrong for its owner to rule on (used by `{{invoke:vibe-curate}}` only) |
 | `cognition_reload` | Force a full re-hydrate of the graph from every journal file |
 | `cognition_store_document` | Store a document as a first-class node (see `{{invoke:vibe-document}}`) |
 | `cognition_get_document` | Retrieve a stored document: metadata + text + freshness |
@@ -246,7 +247,10 @@ dashboard, curation). Pass `scope` on `cognition_record` to choose:
 Getting it wrong either way is a bug: a project rule recorded personal is hidden from
 teammates who could break it; a preference recorded project makes every teammate's agent
 obey it. The owner can change it later with `cognition_update_node(node_id, scope=...)`.
-Constraints recorded before 0.42.0 have no scope and stay project. A personal constraint
+Constraints recorded before 0.42.0 have no scope and stay project. Curation also reviews new
+constraints and flags ones that look mis-scoped; a flag lists under "Constraints to Review" at the
+owner's session start until they rule. Never stop work for one: ask at a natural pause, then
+`cognition_update_node(node_id, scope=...)` (the current scope keeps it and clears the flag). A personal constraint
 is still a line in the owner's committed journal file, so never put a secret in one.
 
 ### Create episodes when:

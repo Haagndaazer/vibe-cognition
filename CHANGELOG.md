@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.0] - 2026-09-17
+
+### Added
+- **Scope review in curation.** After the conflict pass, a new `curate-scope-analyzer` (pinned to the mid model) reads the run's new constraints and proposes any that clearly read as the other scope: a personal constraint that states a rule teammates could break, or a project constraint that is really one person's preference. Proposals must quote the words behind them, and a run that flags more than 40% of 10+ constraints is discarded as a misread.
+- New curation-only tool `cognition_flag_constraint_scope` stores a flag on the constraint (`scope_review`, its own attribute, so it can never overwrite a concurrent scope change). Nothing about the constraint's scope or visibility changes.
+- The owner's session start lists flags under `## Constraints to Review` until they rule with `cognition_update_node(node_id, scope=...)`; passing the current scope keeps it and clears the flag. Only the owner can see a flag.
+- The curator's completion message names flags on the launching person's own constraints (ids and suggested scope only), and the curate skill tells the agent to ask at a natural pause without stopping work.
+
 ## [0.42.0] - 2026-09-15
 
 ### Added
