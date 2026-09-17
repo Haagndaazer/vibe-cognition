@@ -214,3 +214,22 @@ def test_orchestrator_pins_the_scope_analyzer_to_the_mid_model():
     assert 'model: "sonnet"' in step
     analyzer = (_REPO / "agents" / "curate-scope-analyzer.md").read_text(encoding="utf-8")
     assert '"quote"' in analyzer and "model: sonnet" in analyzer
+
+
+def test_analyzers_are_told_never_to_use_teammate_comms():
+    """Codex gate 2026-09-17: an analyzer registered itself and mailed its proposals
+    to four addresses, one outside the curation run."""
+    for name in ("curate-edge-analyzer", "curate-conflict-analyzer",
+                 "curate-cluster-analyzer", "curate-scope-analyzer"):
+        text = (_REPO / "agents" / f"{name}.md").read_text(encoding="utf-8")
+        assert "Never register with teammate-comms" in text, name
+        assert "never message another agent" in text, name
+        assert "task's final answer" in text, name
+
+
+def test_orchestrator_handles_the_codex_thread_limit_refusal():
+    """Codex-only prose: check the Codex render, where the harness block survives."""
+    text = (_REPO / "adapters" / "codex" / "skills" / "vibe-curate" / "references"
+            / "curate-orchestrator.md").read_text(encoding="utf-8")
+    assert "agent thread limit reached" in text
+    assert "retry that spawn ONCE" in text

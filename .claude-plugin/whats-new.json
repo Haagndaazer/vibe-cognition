@@ -1,4 +1,8 @@
 {
+  "0.43.1": [
+    "Codex fixes from a live test: curation helpers no longer message other agents, and a busy-Codex hiccup that could skip the new constraint check is now retried.",
+    "Everything from the last three updates has now been checked end to end on Codex as well as Claude Code."
+  ],
   "0.43.0": [
     "Curation now double-checks new constraints: if one looks like it should be shared with the team, or like a personal preference that was shared by mistake, it's flagged for you.",
     "Flags never stop your work. Claude asks you at a good moment, and they wait at your session start until you decide.",

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.43.1] - 2026-09-17
+
+### Fixed
+- Curation analyzers are now told plainly never to register with teammate-comms or message anyone: results leave only as the task's final answer. A live Codex gate caught an analyzer registering itself and mailing its proposals to four addresses, including an agent outside the curation run (the orchestrator had already received the same JSON normally, so nothing was lost).
+- The orchestrator now handles Codex's `agent thread limit reached` spawn refusal — wait for in-flight analyzers, retry once, then treat the pass as unavailable — instead of only naming the structural `Agent depth limit reached`.
+
+### Verified
+- v0.41.0-v0.43.0 exercised live on Codex for the first time: per-person journal files, personal-by-default constraints, the curation scope review, its flag surviving into session-start context, and the owner's ruling clearing it. Model pins held (analyzers small, scope analyzer mid). Report: docs/codex-test-report-0.43.md.
+
 ## [0.43.0] - 2026-09-17
 
 ### Added
