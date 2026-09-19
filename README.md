@@ -325,6 +325,44 @@ start lists it under `## Constraints to Review` until they rule with
 flag. The curator's completion message also names flags on the launching person's own
 constraints, and the agent asks at a natural pause without stopping work.
 
+### A rolled-back journal cannot destroy memories
+
+Replay is APPEND-ONLY. A node leaves the graph only through an appended `remove_node`
+tombstone, never because a journal file got shorter. This closes a real data-loss class:
+an ordinary `git checkout -- .cognition` (or `git restore`, `git stash`, `svn revert`, or
+checking out a commit whose journal predates the live graph) puts an OLDER copy of a
+journal file on disk, and replay used to converge the graph down to it. Five recorded
+incidents, 1 to 93 nodes each, two unrecoverable.
+
+- **Your own file is repaired.** Every line this checkout appends is also recorded in a
+  machine-local, checkout-bound ledger (`.cognition/local/own-appends.jsonl`, ignored by
+  git and SVN) at the moment it is written. If the file later loses those lines they are
+  appended back verbatim, so the entries survive a restart — the case the incident hit.
+  COMMIT the repaired file so teammates get them back too.
+- **A teammate's shard and the legacy journal are never written by this checkout.** Their
+  lost entries stay readable in the running session and are reported, but they are only
+  safe again once that file's owner restores it. A rollback of a file this machine never
+  read is not recoverable here: the ledger holds what this checkout wrote, not what it
+  never saw.
+- **It is never silent.** One session-start alert covers all of this, READ WITHOUT BEING
+  DELETED so it stands until the condition is resolved — the reported incident went
+  unnoticed for 90 minutes because the old alert showed once. It says whose file is at
+  fault, including when it is your own (a merge conflict or a read-only file blocks the
+  repair). `get_status`'s `journal.repair` carries the same facts.
+- **Deliberate moves are left alone.** An `svn switch`, an update to an older revision, or
+  a git branch switch legitimately brings another line of history, so the repair stands
+  down and re-baselines instead of re-appending the branch you left.
+- **Loss between sessions is watched on git too** (it used to be Subversion-only, for the
+  branch-switch reason above), and the ids it compares are refreshed during a session, so
+  a teammate's rollback landing between sessions is noticed.
+
+For a deliberate rollback, `vibe-cognition-journal accept-disk [project]` accepts the files
+as they are and drops what this checkout was holding. It is not gated technically — an
+agent can run it, and a token echoed from the session-start text would only look like a
+gate, since the agent reads that text too — so every run writes an audit record into the
+graph naming what was dropped and who ran it, and a run whose audit cannot be written does
+not happen at all. An agent must ask the human first.
+
 ### Per-person journal files
 
 Since 0.41.0, every person writes only to **their own file**, `.cognition/journal/<email>.jsonl`, named after the identity confirmed in that checkout. The graph everyone sees is rebuilt from all of those files plus the old shared `.cognition/journal.jsonl`.

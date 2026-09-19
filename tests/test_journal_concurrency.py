@@ -119,8 +119,11 @@ def test_identity_check_detects_same_or_larger_replacement(tmp_path):
     own_shard(tmp_path).write_bytes(replacement)
 
     ids = _ids(store)  # triggers catch-up -> identity mismatch -> rebuild
-    assert "orig0001" not in ids, "stale-offset replay: original survived a replacement"
     assert "node0000" in ids and "node0004" in ids, "replacement content not hydrated"
+    # WP-Append-Only-Replay: the original used to be DROPPED here. A replacement is a
+    # file-level event, so it no longer destroys what we already knew; the C-3 check
+    # this test guards is still what detects the replacement and hydrates its content.
+    assert "orig0001" in ids, "a replacement destroyed a live node"
 
 
 def test_append_after_replacement_converges(tmp_path):
@@ -146,8 +149,9 @@ def test_append_after_replacement_converges(tmp_path):
         )
     )
     ids = _ids(store)
-    assert "before01" not in ids, "replaced-away node survived"
     assert {"node0000", "node0002", "after001"} <= ids, "replacement + post-rebuild append lost"
+    # WP-Append-Only-Replay: previously asserted the replaced-away node was gone.
+    assert "before01" in ids, "a replacement destroyed a live node"
 
 
 def _node(node_id, summary, detail):
@@ -185,8 +189,12 @@ def test_identity_detects_same_first_line_divergent_replacement(tmp_path):
     journal.write_bytes(replacement)
 
     ids = _ids(store)  # catch-up -> prefix mismatch -> rehydrate
-    assert "localonly" not in ids, "same-first-line replacement evaded detection (stale tail survived)"
     assert {"common00", "remoteAA", "remoteBB"} <= ids, "divergent replacement not hydrated"
+    # WP-Append-Only-Replay: the point of this test is that the prefix hash DETECTS a
+    # same-first-line replacement (a first-line-only check would miss it) and hydrates
+    # the divergent content. It used to also assert the local-only node was dropped;
+    # that half was the destroy-on-shrink behaviour, and the node now survives.
+    assert "localonly" in ids, "a divergent replacement destroyed a live node"
 
 
 def test_journal_io_imports_only_stdlib():

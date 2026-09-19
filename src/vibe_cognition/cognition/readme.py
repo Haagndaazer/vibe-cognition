@@ -239,6 +239,20 @@ library use, tests) -- starting a session is what marks things "seen."
 - You observe a constraint that others must respect (scope="project"), or learn how
   the person you work with wants things done (a constraint, personal by default).
 
+## A rolled-back journal cannot destroy memories
+
+Replay is append-only: a node leaves the graph only via an appended remove_node
+tombstone, never because a journal file got shorter (a `git checkout`/`restore`/
+`stash` or `svn revert` putting an older copy on disk). Lines THIS checkout wrote
+are appended back automatically from a machine-local ledger, so they survive a
+restart; a teammate's shard and the legacy journal are kept in memory and reported
+instead, and are only safe again once their owner restores the file. The session-start notice
+stays up until it is resolved -- tell the human, and ask them to COMMIT a repaired
+journal file so teammates get the entries too. get_status.journal.repair carries the
+same facts. A deliberate rollback is settled with
+`vibe-cognition-journal accept-disk`, which drops what is held and writes an audit
+record; ask the human before running it.
+
 ## Personal vs project constraints
 
 cognition_record(node_type="constraint") is personal unless scope="project".

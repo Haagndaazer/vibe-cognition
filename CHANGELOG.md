@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-09-18
+
+### Fixed
+- **A shorter journal can no longer destroy memories.** Replay is append-only: a node leaves the graph only through an appended `remove_node` tombstone, never because a journal file got shorter. An ordinary `git checkout -- .cognition` (or `restore`, `stash`, `svn revert`, or a commit whose journal predates the live graph) used to converge the graph down to the older file — five recorded incidents, 1 to 93 nodes each, two unrecoverable. Reported from the vibe-memory project.
+- **Your own journal file repairs itself.** Every line this checkout appends is recorded in a machine-local, checkout-bound ledger as it is written, and appended back verbatim if the file later loses it — so the repair survives a restart, which is the case the incident actually hit. Commit the repaired file so teammates get the entries too.
+- A teammate's shard and the frozen legacy journal are never written: their lost entries are kept in memory and reported.
+- The session-start notice is now read WITHOUT being deleted and stays until the condition is resolved; the reported incident went unnoticed for 90 minutes because the old alert showed once. `get_status` gains `journal.repair`.
+- Deliberate moves are recognised and left alone: an `svn switch`, an update to an older revision, or a git branch switch re-baselines instead of re-appending the branch you left.
+- The between-sessions loss check now runs on git as well as Subversion (it was SVN-only because branch switches looked like loss; a deliberate move is now recognised directly), and the ids it compares are refreshed during a session, so a teammate's rollback landing between sessions is noticed.
+- The session-start alert file holds a list of notices, so a repair notice and a loss report can no longer overwrite each other.
+
+### Added
+- `vibe-cognition-journal accept-disk [project]` accepts the journal files as they are for a deliberate rollback, dropping what this checkout held. Not gated technically (an agent can run it), so every run writes an audit record naming what was dropped and who ran it; agents must ask the human first.
+
 ## [0.43.1] - 2026-09-17
 
 ### Fixed

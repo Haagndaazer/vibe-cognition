@@ -16,9 +16,9 @@ from vibe_cognition.cognition import CognitionStorage
 from vibe_cognition.cognition.journal_watch import (
     KNOWN_IDS_FILENAME,
     KNOWN_IDS_LOG_FILENAME,
-    LOSS_KIND_BETWEEN_SESSIONS,
     check_between_sessions,
 )
+from vibe_cognition.cognition.loss_notices import read_notices
 from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
 from vibe_cognition.cognition.prime import _consume_rehydrate_flag
 from vibe_cognition.cognition.storage import REHYDRATE_FLAG_FILENAME
@@ -49,8 +49,9 @@ def _drop_lines_containing(cognition, *needles):
 
 
 def _flag(cognition):
-    path = cognition / "local" / REHYDRATE_FLAG_FILENAME
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+    """The outstanding notice, if any (the flag holds a LIST of them since 0.44.0)."""
+    notices = read_notices(cognition / "local" / REHYDRATE_FLAG_FILENAME)
+    return notices[0] if notices else None
 
 
 def _lost(cognition) -> dict:
@@ -59,7 +60,21 @@ def _lost(cognition) -> dict:
     return flag
 
 
-def test_losing_your_own_work_between_sessions_raises_the_alert(svn_checkout):
+def _healed(cognition) -> dict:
+    """WP-Append-Only-Replay: a loss from the reader's OWN shard is repaired from
+    this checkout's own-append ledger, so the alert reports a repair, not a loss."""
+    flag = _flag(cognition)
+    assert flag is not None, "the rollback went unnoticed"
+    assert flag["kind"] == "own_shard_healed", flag
+    return flag
+
+
+def test_losing_your_own_work_between_sessions_is_repaired_not_lost(svn_checkout):
+    """WP-Append-Only-Replay: this used to assert the memories were GONE.
+
+    A 'resolve using theirs' still deletes this checkout's lines from the file, but
+    they were written by this checkout, so they come back from its own ledger and the
+    alert tells the reader to commit the repaired file."""
     s = CognitionStorage(svn_checkout)
     s.add_node(_node("keep1", "stays"))
     s.add_node(_node("gone1", "lost to use-theirs"))
@@ -68,15 +83,17 @@ def test_losing_your_own_work_between_sessions_raises_the_alert(svn_checkout):
 
     _drop_lines_containing(svn_checkout, "gone1", "gone2")
 
-    CognitionStorage(svn_checkout)  # next session start
-    flag = _flag(svn_checkout)
-    assert flag is not None, "the loss went unnoticed"
-    assert flag["kind"] == LOSS_KIND_BETWEEN_SESSIONS
-    assert flag["nodes_lost"] == 2
-    assert set(flag["sample_missing_ids"]) == {"gone1", "gone2"}
+    store = CognitionStorage(svn_checkout)  # next session start
+    assert store.has_node("gone1") and store.has_node("gone2"), "a rollback destroyed memories"
+    assert _healed(svn_checkout)["healed_lines"] == 2
+    restored = "".join(j.read_text(encoding="utf-8") for j in journal_paths(svn_checkout))
+    assert "gone1" in restored and "gone2" in restored, "the lines were not put back on disk"
 
 
-def test_the_alert_names_the_cause_and_the_recovery_commands(svn_checkout):
+def test_the_repair_notice_names_the_cause_and_what_to_do(svn_checkout):
+    """WP-Append-Only-Replay: the old text sent the reader hunting `svn cat` for data
+    that is no longer lost. A repaired rollback says what happened and asks for a
+    commit, because the fix is local until the file is pushed."""
     s = CognitionStorage(svn_checkout)
     s.add_node(_node("gone1", "x"))
     del s
@@ -84,15 +101,42 @@ def test_the_alert_names_the_cause_and_the_recovery_commands(svn_checkout):
     CognitionStorage(svn_checkout)
 
     message = _consume_rehydrate_flag(svn_checkout)
-    assert "between sessions" in message
-    assert "use mine" in message and "use theirs" in message
-    assert "svn log .cognition/journal .cognition/journal.jsonl" in message
-    assert "svn cat" in message
-    # A recovery recipe handed to an agent must not be run on its own say-so.
-    assert "without their go-ahead" in message
+    assert "appended back automatically" in message
+    assert "COMMIT" in message
+    assert "tell the user" in message.lower()
 
 
-def test_a_lost_id_is_reported_once_not_on_every_later_startup(svn_checkout):
+def test_a_teammates_lost_lines_are_retained_and_reported_not_repaired(svn_checkout):
+    """The reader may not write someone else's shard, so their loss is held in memory
+    and reported -- and the notice stays up, because the condition is still true."""
+    store = CognitionStorage(svn_checkout)
+    store.add_node(_node("mine", "x"))
+    mate = svn_checkout / "journal" / "mate%40corp.example.jsonl"
+    mate.write_text(json.dumps({
+        "action": "add_node",
+        "at": "2026-01-02T00:00:00.000001+00:00",
+        "data": {
+            "id": "theirs", "type": "decision", "summary": "theirs", "detail": "d",
+            "context": [], "references": [], "severity": None,
+            "timestamp": "2026-01-02T00:00:00+00:00", "author": "Mate",
+            "metadata": {"recorded_by": {"name": "Mate", "email": "mate@corp.example"}},
+        },
+    }) + "\n", encoding="utf-8")
+    assert store.has_node("theirs")
+
+    mate.write_text("", encoding="utf-8")
+    assert store.has_node("theirs"), "a teammate's truncated shard destroyed a live node"
+    flag = _flag(svn_checkout)
+    assert flag is not None and flag["kind"] == "retained_only"
+    assert any("mate" in f for f in flag["retained_files"])
+    assert mate.read_text(encoding="utf-8") == "", "we must never write a teammate's shard"
+
+    message = _consume_rehydrate_flag(svn_checkout)
+    assert "readable in THIS session" in message
+    assert _flag(svn_checkout) is not None, "the retained notice must survive being read"
+
+
+def test_a_repaired_rollback_is_reported_once_not_on_every_later_startup(svn_checkout):
     """A first draft kept lost ids in the log, so every later startup re-reported
     them as newly lost -- a permanent false alarm that trains people to ignore it."""
     s = CognitionStorage(svn_checkout)
@@ -101,14 +145,14 @@ def test_a_lost_id_is_reported_once_not_on_every_later_startup(svn_checkout):
     _drop_lines_containing(svn_checkout, "gone1")
 
     CognitionStorage(svn_checkout)
-    assert _lost(svn_checkout)["nodes_lost"] == 1
+    assert _healed(svn_checkout)["healed_lines"] == 1
     CognitionStorage(svn_checkout)
     CognitionStorage(svn_checkout)
-    assert _lost(svn_checkout)["nodes_lost"] == 1, "the same loss was counted again"
+    assert _healed(svn_checkout)["healed_lines"] == 1, "the same repair was counted again"
 
 
-def test_two_separate_losses_before_anyone_reads_the_alert_are_both_reported(svn_checkout):
-    """The flag is added to, not overwritten: a later, smaller loss must not replace
+def test_two_separate_repairs_before_anyone_reads_the_alert_are_both_reported(svn_checkout):
+    """The flag is added to, not overwritten: a later, smaller event must not replace
     an unread earlier one."""
     s = CognitionStorage(svn_checkout)
     s.add_node(_node("first", "x"))
@@ -119,7 +163,7 @@ def test_two_separate_losses_before_anyone_reads_the_alert_are_both_reported(svn
     _drop_lines_containing(svn_checkout, "second")
     CognitionStorage(svn_checkout)
 
-    assert _lost(svn_checkout)["nodes_lost"] == 2
+    assert _healed(svn_checkout)["healed_lines"] == 2
 
 
 def test_a_deliberate_deletion_is_not_a_loss(svn_checkout):
@@ -144,8 +188,9 @@ def test_nodes_created_mid_session_are_covered(svn_checkout):
     del s
     _drop_lines_containing(svn_checkout, "mid-session")
 
-    CognitionStorage(svn_checkout)
-    assert _lost(svn_checkout)["sample_missing_ids"] == ["mid-session"]
+    store = CognitionStorage(svn_checkout)
+    assert store.has_node("mid-session"), "work recorded mid-session was destroyed"
+    assert _healed(svn_checkout)["healed_lines"] == 1
 
 
 def test_a_first_session_has_no_baseline_and_says_nothing(svn_checkout):
@@ -154,20 +199,47 @@ def test_a_first_session_has_no_baseline_and_says_nothing(svn_checkout):
     assert (svn_checkout / "local" / KNOWN_IDS_FILENAME).exists()
 
 
-def test_git_checkouts_are_left_alone(tmp_path, graph_identity):
-    """On git, switching branches legitimately removes ids that live only on the other
-    branch; alerting there would fire on every checkout."""
+def test_a_git_rollback_is_repaired_not_ignored(tmp_path, graph_identity):
+    """WP-Append-Only-Replay: this used to assert git got NOTHING, on the reasoning
+    that branch switches remove ids legitimately. That left the reported incident --
+    `git checkout -- .cognition` on the SAME branch -- destroying live memories. A
+    real branch switch is still left alone (see the test below); a rollback in place
+    is now repaired."""
     root = tmp_path / "gitwc"
     (root / ".git").mkdir(parents=True)
+    (root / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
     cognition = root / ".cognition"
     s = CognitionStorage(cognition)
     s.add_node(_node("on-branch", "x"))
     del s
     _drop_lines_containing(cognition, "on-branch")
 
+    store = CognitionStorage(cognition)
+    assert store.has_node("on-branch")
+    assert _healed(cognition)["healed_lines"] == 1
+    assert (cognition / "local" / KNOWN_IDS_FILENAME).exists(), (
+        "since 0.44.0 the id snapshot is kept on git too, so a teammate's rollback "
+        "between sessions is noticed there as well"
+    )
+
+
+def test_a_git_branch_switch_is_left_alone(tmp_path, graph_identity):
+    """The other half: moving to another branch legitimately brings another line of
+    history, so the repair stands down instead of re-appending this branch's lines."""
+    root = tmp_path / "gitwc2"
+    (root / ".git").mkdir(parents=True)
+    (root / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    cognition = root / ".cognition"
+    s = CognitionStorage(cognition)
+    s.add_node(_node("main-only", "x"))
+    del s
     CognitionStorage(cognition)
-    assert _flag(cognition) is None
-    assert not (cognition / "local" / KNOWN_IDS_FILENAME).exists()
+
+    _drop_lines_containing(cognition, "main-only")
+    (root / ".git" / "HEAD").write_text("ref: refs/heads/feature\n", encoding="utf-8")
+
+    CognitionStorage(cognition)
+    assert _flag(cognition) is None, "a branch switch must not look like a rollback"
 
 
 def _fake_wc_db(root, url_root, repos_path, revision):
@@ -241,8 +313,9 @@ def test_a_conflict_resolved_during_an_ordinary_update_still_alerts(svn_checkout
 
     _drop_lines_containing(svn_checkout, "mine")
     _fake_wc_db(svn_checkout.parent, "file:///repo", "trunk", 8)
-    CognitionStorage(svn_checkout)
-    assert _lost(svn_checkout)["sample_missing_ids"] == ["mine"]
+    store = CognitionStorage(svn_checkout)
+    assert store.has_node("mine"), "a conflict resolution destroyed this checkout's work"
+    assert _healed(svn_checkout)["healed_lines"] == 1
 
 
 def test_a_project_inside_a_larger_svn_checkout_is_watched(tmp_path, graph_identity):
@@ -257,8 +330,9 @@ def test_a_project_inside_a_larger_svn_checkout_is_watched(tmp_path, graph_ident
     del s
     _drop_lines_containing(cognition, "nested-gone")
 
-    CognitionStorage(cognition)
-    assert _lost(cognition)["sample_missing_ids"] == ["nested-gone"]
+    store = CognitionStorage(cognition)
+    assert store.has_node("nested-gone")
+    assert _healed(cognition)["healed_lines"] == 1
 
 
 def test_the_nested_journal_source_is_found_relative_to_the_checkout_root(tmp_path, graph_identity):
@@ -288,14 +362,15 @@ def test_the_nested_journal_source_is_found_relative_to_the_checkout_root(tmp_pa
     }
 
 
-def test_a_git_project_nested_in_an_svn_checkout_is_left_alone(tmp_path, graph_identity):
+def test_a_git_project_nested_in_an_svn_checkout_is_watched_like_any_other(tmp_path, graph_identity):
+    """Used to assert the check stayed OFF here (it keyed on the outer .svn). Since
+    0.44.0 every project is watched, and a deliberate move is recognised instead."""
     outer = tmp_path / "svnwc"
     (outer / ".svn").mkdir(parents=True)
     (outer / "gitproj" / ".git").mkdir(parents=True)
     cognition = outer / "gitproj" / ".cognition"
     CognitionStorage(cognition)
-    assert not (cognition / "local" / KNOWN_IDS_FILENAME).exists()
-
+    assert (cognition / "local" / KNOWN_IDS_FILENAME).exists()
 
 def test_an_unreadable_wc_db_does_not_forget_the_last_source(svn_checkout, monkeypatch):
     """Review finding: a startup that could not read wc.db recorded no source, so the
@@ -333,8 +408,9 @@ def test_a_read_only_open_writes_nothing_into_the_project(svn_checkout):
     CognitionStorage(svn_checkout, read_only=True)
     assert {p.name: p.read_bytes() for p in local.iterdir()} == before
 
-    CognitionStorage(svn_checkout)
-    assert _lost(svn_checkout)["sample_missing_ids"] == ["gone1"]
+    store = CognitionStorage(svn_checkout)
+    assert store.has_node("gone1")
+    assert _healed(svn_checkout)["healed_lines"] == 1
 
 
 def test_a_snapshot_that_travelled_from_another_checkout_is_ignored(svn_checkout, tmp_path):
@@ -379,12 +455,18 @@ def test_a_teammates_hidden_constraint_is_never_named_in_a_loss_alert(svn_checko
     assert flag is None or "alice-private" not in json.dumps(flag)
 
 
-def test_losing_your_own_personal_constraint_is_still_reported(svn_checkout, graph_identity):
+def test_losing_your_own_personal_constraint_is_repaired_like_any_other_line(svn_checkout, graph_identity):
+    """WP-Append-Only-Replay: used to assert the loss. A personal constraint is an
+    ordinary line in its owner's shard, so it is repaired the same way -- and the
+    repair notice never names it, keeping the owner-only visibility rule intact."""
     graph_identity.acting_as("Alice", "alice@corp.example")
     s = CognitionStorage(svn_checkout)
     s.add_node(_personal("alice-private", "alice@corp.example"))
     del s
     CognitionStorage(svn_checkout)
     _drop_lines_containing(svn_checkout, "alice-private")
-    CognitionStorage(svn_checkout)
-    assert _lost(svn_checkout)["sample_missing_ids"] == ["alice-private"]
+    store = CognitionStorage(svn_checkout)
+    assert store.has_node("alice-private")
+    flag = _healed(svn_checkout)
+    assert flag["healed_lines"] == 1
+    assert "alice-private" not in json.dumps(flag), "the alert must not name a personal constraint"

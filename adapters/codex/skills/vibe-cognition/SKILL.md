@@ -230,6 +230,16 @@ Entities are automatically linked to episodes via `PART_OF` edges when they shar
 - A production incident occurs
 - An assumption is made that could later prove wrong
 
+### A rolled-back journal repairs itself
+
+If a session-start notice says a journal file lost entries: memories are NOT lost, and
+you must not try to recover them by hand. Lines this checkout wrote were appended back
+automatically — tell the human and ask them to COMMIT the journal file. If the notice
+names a teammate's shard or the legacy journal, this checkout may not repair it: the
+entries are still readable here, and their owner has to restore that file from version
+control. The notice stays until it is resolved. `vibe-cognition-journal accept-disk`
+DISCARDS held entries for a deliberate rollback — never run it without asking the human.
+
 ### Personal vs project constraints
 A constraint is **personal by default**: it applies only to the person who recorded it,
 and teammates cannot find it through any tool (search, get_node, neighbors, prime,

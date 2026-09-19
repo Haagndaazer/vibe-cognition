@@ -439,9 +439,12 @@ class TestJournalCatchUp:
         assert s1["nodes"] == s2["nodes"] == 2
         assert s1["edges"] == s2["edges"]
 
-    def test_truncation_triggers_full_rehydrate(self, tmp_path):
-        """If the journal shrinks below the offset, the graph is rebuilt and the
-        reference index is reset (no phantom refs survive)."""
+    def test_truncation_rebuilds_without_destroying_what_we_know(self, tmp_path):
+        """WP-Append-Only-Replay: this used to assert the nodes were GONE and the
+        reference index emptied. A wiped journal is a file-level accident (a rollback,
+        a stray reset), never a deletion -- deletions are APPENDED tombstones -- so the
+        graph keeps its nodes, the file is repaired from this checkout's own ledger,
+        and refs still resolve."""
         cog_dir = tmp_path / ".cognition"
         store = CognitionStorage(cog_dir)
         store.add_node(self._node("n1", refs=["commit:abcdef0"]))
@@ -451,46 +454,33 @@ class TestJournalCatchUp:
         # Wipe the journal entirely (e.g. a .cognition reset by another process).
         own_shard(cog_dir).write_bytes(b"")
 
-        # Any op detects the shrink and re-hydrates from the (now empty) top.
-        assert store.get_statistics()["nodes"] == 0
-        assert "n1" not in store._graph
-        assert store._reference_index.get("commit:abcdef0") in (None, [])
+        assert store.get_statistics()["nodes"] == 2, "a wiped journal destroyed live nodes"
+        assert store.has_node("n1") and store.has_node("n2")
+        assert set(store._reference_index.get("commit:abcdef0") or []) == {"n1", "n2"}
+        assert store.healed_lines == 2, "the wiped lines were not written back"
 
-    def test_rehydrate_reset_warns_and_is_tracked(self, tmp_path, caplog):
-        """WP-1 item 1 (critical): a lossy rehydrate-reset must not be silent.
-        Fails-before: the old code only logged at INFO with no node-count delta
-        and never recorded anything queryable — this asserts both surfaces."""
+    def test_a_wiped_journal_is_repaired_loudly_not_silently(self, tmp_path, caplog):
+        """WP-Append-Only-Replay: this used to assert a LOSS was reported. The loss no
+        longer happens, but the event must stay loud -- a WARNING naming the repair and
+        a flag the next session start shows."""
         cog_dir = tmp_path / ".cognition"
         store = CognitionStorage(cog_dir)
         store.add_node(self._node("n1"))
         store.add_node(self._node("n2"))
-        assert store.rehydrate_count == 0
-        assert store.last_rehydrate is None
-
         own_shard(cog_dir).write_bytes(b"")
 
         with caplog.at_level(logging.WARNING, logger="vibe_cognition.cognition.storage"):
             stats = store.get_statistics()
-        assert stats["nodes"] == 0
+        assert stats["nodes"] == 2
 
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert any("re-hydrated" in r.message.lower() for r in warnings), (
-            "expected a WARNING-level rehydrate log, got: "
-            f"{[r.message for r in caplog.records]}"
+        assert any("repair" in r.message.lower() for r in warnings), (
+            f"expected a WARNING naming the repair, got: {[r.message for r in caplog.records]}"
         )
-        assert any("2" in r.message and "0" in r.message for r in warnings), (
-            "WARNING must include the node-count delta (before=2, after=0)"
-        )
-
-        assert store.rehydrate_count == 1
-        assert store.last_rehydrate is not None
-        assert store.last_rehydrate["nodes_before"] == 2
-        assert store.last_rehydrate["nodes_after"] == 0
-        assert store.last_rehydrate["nodes_lost"] == 2
-        assert set(store.last_rehydrate["sample_missing_ids"]) == {"n1", "n2"}
+        assert store.healed_lines == 2
         assert local_read_path(cog_dir, REHYDRATE_FLAG_FILENAME).exists()
 
-    def test_replacement_with_more_nodes_still_warns_on_missing_one(self, tmp_path, caplog):
+    def test_a_divergent_replacement_keeps_our_nodes_and_hydrates_theirs(self, tmp_path, caplog):
         """WP-1 redirect: loss must be detected by NODE IDENTITY, not count. A
         replacement journal can have MORE total nodes than we had in memory (a
         divergent branch's own unrelated history) while still having silently
@@ -504,7 +494,6 @@ class TestJournalCatchUp:
         store.add_node(self._node("n1"))
         store.add_node(self._node("n2"))
         store.get_statistics()  # settle into steady state (offset > 0)
-        assert store.rehydrate_count == 0, "own-write catch-up must stay quiet"
 
         journal = own_shard(cog_dir)
         start_line, first_line = journal.read_bytes().split(b"\n")[:2]
@@ -522,18 +511,14 @@ class TestJournalCatchUp:
         journal.write_bytes(replacement)
 
         with caplog.at_level(logging.WARNING, logger="vibe_cognition.cognition.storage"):
-            stats = store.get_statistics()
+            ids = {n["id"] for n in store.get_all_nodes()}
 
-        assert stats["nodes"] == 4, "replacement has MORE nodes than we had in memory"
-        assert "n2" not in store._graph, "n2 is the real loss this test guards"
-
-        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert warnings, "a replacement dropping a known node must WARN even though total count grew"
-        assert store.rehydrate_count == 1
-        assert store.last_rehydrate is not None
-        assert store.last_rehydrate["nodes_lost"] == 1
-        assert store.last_rehydrate["sample_missing_ids"] == ["n2"]
-        assert local_read_path(cog_dir, REHYDRATE_FLAG_FILENAME).exists(), "flag must be written on identity loss"
+        assert {"n3", "n4", "n5"} <= ids, "the replacement's content was not hydrated"
+        assert {"n1", "n2"} <= ids, "a divergent replacement destroyed our nodes"
+        assert any(
+            "repair" in r.message.lower()
+            for r in caplog.records if r.levelno == logging.WARNING
+        ), "the repair must be loud"
 
     def test_own_first_writes_do_not_count_as_rehydrate(self, tmp_path, caplog):
         """WP-1 regression: catch-up reading back THIS process's own first

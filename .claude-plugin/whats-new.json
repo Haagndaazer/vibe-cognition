@@ -1,4 +1,9 @@
 {
+  "0.44.0": [
+    "Fixed a data-loss bug: git checkout, restore or stash over .cognition used to wipe memories recorded since that commit. Your own journal file now repairs itself.",
+    "If it happens, Claude tells you at session start and the notice stays until it's sorted. Commit the repaired file so teammates get the entries too.",
+    "Switching branches still works normally: that's recognised as deliberate and left alone."
+  ],
   "0.43.1": [
     "Codex fixes from a live test: curation helpers no longer message other agents, and a busy-Codex hiccup that could skip the new constraint check is now retried.",
     "Everything from the last three updates has now been checked end to end on Codex as well as Claude Code."

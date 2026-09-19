@@ -43,6 +43,7 @@ journal is itself a whole-file rewrite under byte-offset replay (ledger 5).
 import logging
 import os
 import sys
+from contextlib import contextmanager
 
 # Direct `sys.platform == "win32"` checks (here and in _acquire/_release) let the
 # type checker narrow per-platform: on Windows it ignores the unreachable fcntl
@@ -141,6 +142,32 @@ def append_journal_line(path, line: str) -> None:
             os.write(fd, blob)
     finally:
         os.close(fd)
+
+
+@contextmanager
+def journal_lock(path):
+    """Hold the same cross-process lock `append_journal_line` takes, for the whole block.
+
+    For read-modify-write on a journal-shaped file (the own-append ledger's prune), where
+    a concurrent append between the read and the replace would otherwise be lost. Yields
+    even when the lock cannot be taken -- the caller's work must still happen, exactly as
+    the append's fallback does -- and says so loudly.
+    """
+    fd = os.open(os.fspath(path), os.O_RDONLY | os.O_CREAT | _O_BINARY, 0o644)
+    locked = any(_acquire(fd) for _ in range(_LOCK_ATTEMPTS))
+    if not locked:
+        logger.warning(
+            "journal lock: unavailable after %d attempts, proceeding unlocked (path=%s)",
+            _LOCK_ATTEMPTS, path,
+        )
+    try:
+        yield
+    finally:
+        try:
+            if locked:
+                _release(fd)
+        finally:
+            os.close(fd)
 
 
 def snapshot_journal(src, dst) -> None:

@@ -126,6 +126,17 @@ def register_service_tools(mcp) -> None:
                                  cognition_graph.uncurated, edge_sources, and the
                                  edge's ``curation_session`` as the cross-process
                                  evidence,
+              journal.repair: {healed_lines, retained_files} (WP-Append-Only-Replay).
+                              healed_lines counts entries this checkout wrote that a
+                              rolled-back journal file had lost and that were appended
+                              back from this machine's own record -- tell the human and
+                              ask them to COMMIT the file. retained_files names files
+                              this checkout may NOT repair (a teammate's shard, the
+                              frozen legacy journal) that no longer hold entries already
+                              replayed here: those entries are still in the graph but not
+                              on disk, and their owner has to restore the file. Both are
+                              from the latest rebuild; an untouched project reports 0
+                              and [].
               rehydrate_events: null when no journal rehydrate-reset has occurred
                                 in this server process; otherwise
                                 {count: int, last: {at, nodes_before, nodes_after,

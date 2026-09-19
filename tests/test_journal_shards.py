@@ -253,10 +253,12 @@ def test_a_merge_that_only_inserts_lines_applies_them_without_a_rebuild(tmp_path
     assert store.rehydrate_count == 0
 
 
-def test_my_own_unread_lines_vanishing_before_i_read_them_back_is_a_loss(tmp_path):
-    """Appends never advance the offset (C-6), so a brand-new shard is read from the
-    top on the next operation. If it was replaced in between, the only evidence is
-    that lines this process wrote are not there."""
+def test_my_own_unread_lines_vanishing_before_i_read_them_back_are_put_back(tmp_path):
+    """INVERTED for WP-Append-Only-Replay: this used to assert the node was LOST.
+
+    Appends never advance the offset (C-6), so a brand-new shard is read from the top
+    on the next operation. A shard replaced in between used to take the graph down
+    with it; now the line this checkout wrote is put back from its own ledger."""
     cognition = tmp_path / ".cognition"
     store = CognitionStorage(cognition)
     store.add_node(_node("written-then-clobbered"))
@@ -265,12 +267,13 @@ def test_my_own_unread_lines_vanishing_before_i_read_them_back_is_a_loss(tmp_pat
     first = shard.read_text(encoding="utf-8").splitlines(keepends=True)[0]
     shard.write_text(first, encoding="utf-8")
 
-    assert not store.has_node("written-then-clobbered")
-    assert store.rehydrate_count == 1
-    assert store.last_rehydrate["sample_missing_ids"] == ["written-then-clobbered"]
+    assert store.has_node("written-then-clobbered")
+    assert store.healed_lines == 1
+    assert "written-then-clobbered" in shard.read_text(encoding="utf-8")
 
 
-def test_lines_vanishing_from_a_shard_rebuild_and_raise_the_loss_alert(tmp_path):
+def test_lines_vanishing_from_a_shard_are_restored_not_dropped(tmp_path):
+    """INVERTED for WP-Append-Only-Replay: this used to assert the node was LOST."""
     cognition = tmp_path / ".cognition"
     store = CognitionStorage(cognition)
     store.add_node(_node("keep"))
@@ -281,9 +284,10 @@ def test_lines_vanishing_from_a_shard_rebuild_and_raise_the_loss_alert(tmp_path)
     kept = [line for line in shard.read_text(encoding="utf-8").splitlines(keepends=True) if '"lost"' not in line]
     shard.write_text("".join(kept), encoding="utf-8")
 
-    assert not store.has_node("lost")
-    assert store.rehydrate_count == 1
-    assert store.last_rehydrate["sample_missing_ids"] == ["lost"]
+    assert store.has_node("lost"), "a truncated shard must not destroy a live node"
+    assert store.has_node("keep")
+    assert store.healed_lines == 1
+    assert '"lost"' in shard.read_text(encoding="utf-8"), "the line was not put back on disk"
 
 
 # ── collisions, dependencies, glued lines ────────────────────────────────────

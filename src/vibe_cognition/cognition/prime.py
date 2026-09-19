@@ -16,9 +16,10 @@ from ..running_version import code_version, stale_server_warning
 from .git_hygiene import _acquire_lock, _release_lock, check_hygiene_state, format_hygiene_announce
 from .identity import identity_suggestions, resolve_identity
 from .journal_shards import format_straggler_warning, straggler_report
-from .journal_watch import LOSS_KIND_BETWEEN_SESSIONS
+from .journal_watch import LOSS_KIND_BETWEEN_SESSIONS, LOSS_KIND_HEALED, LOSS_KIND_RETAINED
 from .local_paths import read_path as local_read_path
 from .local_paths import write_path as local_write_path
+from .loss_notices import notices_lock, read_notices, write_notices
 from .models import CognitionEdgeType, CognitionNodeType
 from .people_facts import fold_email
 from .person_migration import consume_migration_report, format_migration_announce
@@ -1095,6 +1096,62 @@ def generate_prime(
     )
 
 
+#: How many session starts show the full repair notice before it collapses to one
+#: line. A retained loss can outlive many sessions (a teammate may never restore
+#: their file), and an unbounded banner is what teaches people to ignore banners.
+REPAIR_NOTICE_FULL_RENDERS = 3
+
+
+def _repair_notice(info: dict) -> tuple[str, dict | None]:
+    """The WP-Append-Only-Replay notice, and the notice to keep for next time.
+
+    Unlike a loss report, this one is READ WITHOUT BEING CLEARED while its condition
+    holds: a file on disk is still missing entries. The incident this was built for
+    went unnoticed for 90 minutes precisely because the old flag showed once. Storage
+    clears it when the entries come back, or `accept-disk` does.
+    """
+    shown = int(info.get("shown") or 0) + 1
+    kept = {**info, "shown": shown}
+
+    if info.get("kind") == LOSS_KIND_HEALED:
+        healed = int(info.get("healed_lines") or 0)
+        if shown > REPAIR_NOTICE_FULL_RENDERS:
+            return "", None  # the data is safe and the point has been made
+        return (
+            f"NOTE (vibe-cognition): this checkout's journal file had lost {healed} "
+            "entr(y/ies) it had written -- the usual cause is `git checkout`, `git "
+            "restore`, `git stash` or `svn revert` putting an older copy of "
+            ".cognition on disk. They were appended back automatically from this "
+            "machine's own record, so nothing was lost. COMMIT the journal file so "
+            "teammates get them too, and tell the user this happened."
+        ), kept
+
+    files = [str(f) for f in (info.get("retained_files") or [])]
+    named = ", ".join(files) or "a journal file"
+    # The reader's OWN shard can end up here too (mid-conflict, read-only, missing
+    # shard_start). Telling them to wait for a teammate then is worse than useless, so
+    # the notice says whose file it actually is -- storage records the own shard's key.
+    own_unrepairable = bool(info.get("own_unrepairable")) and info.get("own_shard") in files
+    whose = (
+        "this checkout's OWN file could not be repaired -- resolve the conflict, or fix "
+        "the file's permissions, and the entries go back automatically"
+        if own_unrepairable
+        else "it belongs to a teammate, or it is the frozen legacy journal, so its "
+             "owner has to restore it from version control"
+    )
+    if shown > REPAIR_NOTICE_FULL_RENDERS:
+        return (
+            f"NOTE (vibe-cognition): {named} is still missing entries this checkout "
+            "has seen; they remain readable here. (Repeat notice.)"
+        ), kept
+    return (
+        f"WARNING (vibe-cognition): {named} no longer holds entries this checkout had "
+        f"already seen, and {whose}. The memories are still readable in THIS session but "
+        "they are not on disk, so they will not survive a restart here. TELL THE USER. "
+        "This notice stays until the file is restored."
+    ), kept
+
+
 def _consume_rehydrate_flag(cognition_dir: Path) -> str:
     """One-shot journal-loss alert for the next session start (WP-1 item 1.4).
 
@@ -1107,14 +1164,46 @@ def _consume_rehydrate_flag(cognition_dir: Path) -> str:
     unreadable flag is consumed silently so it cannot wedge every future prime.
     """
     flag = local_read_path(cognition_dir, REHYDRATE_FLAG_FILENAME)
-    try:
-        raw = flag.read_text(encoding="utf-8")
-    except OSError:
+    if not flag.parent.is_dir():
+        # No .cognition/local yet: nothing to read, and prime must never CREATE files in
+        # a project that has none (taking the lock would make one).
         return ""
-    with contextlib.suppress(OSError):
-        flag.unlink()
+    # Under the same lock every storage-side writer takes: prime runs in its own
+    # process, and an unlocked read-modify-write here can overwrite a repair notice a
+    # live server wrote in between -- losing it before anyone reads it (peer review).
+    with notices_lock(flag):
+        return _render_notices(cognition_dir, flag)
+
+
+def _render_notices(cognition_dir: Path, flag: Path) -> str:
+    notices = read_notices(flag)
+    if not notices:
+        return ""
+
+    # Every outstanding notice is rendered, and each one decides for itself whether it
+    # has been dealt with. A repair notice stands until the file is sorted out; a loss
+    # report is shown once. Rendering only the first would hide the others (review).
+    rendered: list[str] = []
+    keep: list[dict] = []
+    for info in notices:
+        if info.get("kind") in (LOSS_KIND_HEALED, LOSS_KIND_RETAINED):
+            text, still = _repair_notice(info)
+            if text:
+                rendered.append(text)
+            if still is not None:
+                keep.append(still)
+            continue
+        text = _loss_notice(info)
+        if text:
+            rendered.append(text)
+    write_notices(local_write_path(cognition_dir, REHYDRATE_FLAG_FILENAME), keep)
+    return "\n\n".join(rendered)
+
+
+def _loss_notice(info: dict) -> str:
+    """The one-shot loss report: a rehydrate that dropped nodes, or a between-sessions
+    loss. Shown once, then gone -- the condition it describes is already over."""
     try:
-        info = json.loads(raw)
         lost = int(info["nodes_lost"])
         at = str(info.get("at", "unknown time"))
     except (ValueError, TypeError, KeyError):

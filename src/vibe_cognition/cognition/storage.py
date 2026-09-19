@@ -37,9 +37,20 @@ from .journal_shards import (
     split_entries,
     straggler_report,
 )
-from .journal_watch import check_between_sessions, note_created
+from .journal_watch import (
+    LOSS_KIND_BETWEEN_SESSIONS,
+    LOSS_KIND_HEALED,
+    LOSS_KIND_REHYDRATE,
+    LOSS_KIND_RETAINED,
+    check_between_sessions,
+    git_dir,
+    note_created,
+    refresh_known,
+    source_moved,
+)
 from .jsonl_dir_registry import DIR_MTIME_RACY_WINDOW_NS
 from .local_paths import write_path as local_write_path
+from .loss_notices import notices_lock, read_notices, replace_kind, write_notices
 from .models import (
     CognitionEdge,
     CognitionEdgeType,
@@ -47,6 +58,9 @@ from .models import (
     CognitionNodeType,
     generate_node_id,
 )
+from .own_ledger import lines_for as own_ledger_lines
+from .own_ledger import prune as own_ledger_prune
+from .own_ledger import record as own_ledger_record
 from .people_facts import DEFAULT_MACHINE_CAP, PeopleFactsRegistry
 from .person_migration import ensure_person_migration
 from .profiles import ProfileRegistry
@@ -129,7 +143,14 @@ class CognitionStorage:
     concurrent sessions converged without a restart or a background watcher.
     """
 
-    def __init__(self, cognition_dir: Path, read_only: bool = False, *, show_all_scopes: bool = False):
+    def __init__(
+        self,
+        cognition_dir: Path,
+        read_only: bool = False,
+        *,
+        show_all_scopes: bool = False,
+        repair: bool = True,
+    ):
         """Initialize storage, hydrating from JSONL if it exists.
 
         Args:
@@ -141,8 +162,13 @@ class CognitionStorage:
                 loss its own next session should have reported.
             show_all_scopes: expose every person's personal constraints. Only for
                 maintenance CLIs that rewrite attribution, never for a tool surface.
+            repair: put back entries this checkout wrote that a rolled-back journal
+                file lost (WP-Append-Only-Replay). Only `accept-disk` passes False:
+                opening the store would otherwise repair the very file the human is
+                about to accept as it stands, and the command could never take effect.
         """
         self._read_only = read_only
+        self._repair = repair
         self._show_all_scopes = show_all_scopes
         self._dir = cognition_dir
         self._journal_path = cognition_dir / JOURNAL_FILENAME
@@ -170,6 +196,27 @@ class CognitionStorage:
         self.unresolved_entries = 0
         self.id_collisions = 0
         self.glued_lines = 0
+        #: Set by the last rebuild: lines put back into this checkout's own shard, and
+        #: files whose lost lines this process holds in memory only (WP-Append-Only).
+        self.healed_lines = 0
+        self.retained_files: list[str] = []
+        #: file -> line hashes it lost and has not got back. Sticky across rebuilds and
+        #: rehydrated from the alert flag, so a still-broken file keeps being reported.
+        self._retained_missing: dict[str, set[str]] = {}
+        #: True when the file we could not repair is THIS checkout's own shard (mid
+        #: conflict, read-only, missing shard_start) -- the notice then tells the reader
+        #: to fix it themselves rather than to wait on a teammate.
+        self._own_unrepairable = False
+        #: The very first catch-up always runs the repair pass: a fresh process opening
+        #: an already-rolled-back file sees no "change" to react to, and that is exactly
+        #: the reported incident.
+        self._first_catch_up = True
+        #: Monotonic stamp of the last id-snapshot refresh (throttled; see _catch_up).
+        self._last_known_refresh = 0.0
+        #: The startup loss check compares the last session's ids against what is on
+        #: disk NOW, so nothing may refresh that snapshot until it has run -- doing it
+        #: during the first catch-up erased the very evidence it needed.
+        self._watch_ready = False
         self._last_at: str | None = None
         self._op_writer: str | None = None
         self._op_writer_resolved = False
@@ -244,7 +291,20 @@ class CognitionStorage:
         except Exception as exc:  # noqa: BLE001
             logger.debug("person-migration: unexpected error (swallowed): %s", exc)
 
+        # A file that was still missing entries when the last session ended is still
+        # missing them now: pick that up from the alert so the notice keeps standing.
+        with contextlib.suppress(Exception):
+            for notice in read_notices(local_write_path(self._dir, REHYDRATE_FLAG_FILENAME)):
+                stored = notice.get("retained_missing")
+                if isinstance(stored, dict):
+                    for name, hashes in stored.items():
+                        if isinstance(hashes, list):
+                            self._retained_missing.setdefault(name, set()).update(
+                                str(h) for h in hashes
+                            )
+
         # Loss a live server cannot see: it happened while no session was running.
+        self._watch_ready = True
         loss = check_between_sessions(self)
         if loss is not None:
             logger.warning(
@@ -255,20 +315,25 @@ class CognitionStorage:
             self.last_rehydrate = loss
             try:
                 flag = local_write_path(self._dir, REHYDRATE_FLAG_FILENAME)
+                existing_between = next(
+                    (n for n in read_notices(flag) if n.get("kind") == LOSS_KIND_BETWEEN_SESSIONS),
+                    None,
+                )
                 # An alert nobody has read yet is ADDED to, not replaced: two losses
                 # before the next session start must report both, not the smaller.
-                with contextlib.suppress(OSError, ValueError):
-                    unread = json.loads(flag.read_text(encoding="utf-8"))
-                    if isinstance(unread, dict):
-                        loss = {
-                            **loss,
-                            "nodes_lost": int(unread.get("nodes_lost") or 0) + loss["nodes_lost"],
-                            "sample_missing_ids": list(dict.fromkeys(
-                                [*(unread.get("sample_missing_ids") or []),
-                                 *loss["sample_missing_ids"]]
-                            ))[:5],
-                        }
-                flag.write_text(json.dumps(loss), encoding="utf-8")
+                unread = existing_between
+                if isinstance(unread, dict):
+                    loss = {
+                        **loss,
+                        "nodes_lost": int(unread.get("nodes_lost") or 0) + loss["nodes_lost"],
+                        "sample_missing_ids": list(dict.fromkeys(
+                            [*(unread.get("sample_missing_ids") or []),
+                             *loss["sample_missing_ids"]]
+                        ))[:5],
+                    }
+                # Only this writer's slot: a repair notice naming the file to commit,
+                # or a rehydrate notice, must not be erased by a loss report.
+                replace_kind(flag, (LOSS_KIND_BETWEEN_SESSIONS,), loss)
             except OSError as exc:
                 logger.debug("journal-watch: could not write loss flag: %s", exc)
 
@@ -1195,6 +1260,10 @@ class CognitionStorage:
                 "writing_to": f"{shard_dir(self._dir).name}/{shard_filename(email)}" if email else None,
                 "adopted_at": start["at"] if start else None,
                 "stragglers": straggler_report(self._dir),
+                "repair": {
+                    "healed_lines": self.healed_lines,
+                    "retained_files": list(self.retained_files),
+                },
                 "unresolved_entries": self.unresolved_entries,
                 "id_collisions": self.id_collisions,
                 "glued_lines": self.glued_lines,
@@ -1260,24 +1329,46 @@ class CognitionStorage:
         self._last_at = at
         line = encode_entry(action, data, at)
         append_journal_line(path, line)
+        if not self._read_only:
+            own_ledger_record(self._dir, name, line)
         state.own_unread.add(line_hash(line))
         return self._apply({"action": action, "data": data}, shard_stamp(at, name, line))
 
     # ── Replay ────────────────────────────────────────────────────────
 
     def _reset_replay_state(self) -> None:
-        """Wipe the graph and every file's replay state for a full rebuild."""
+        """Reset every FILE's replay state, keeping what the graph already knows.
+
+        Replay is APPEND-ONLY (docs/wp-append-only-replay-plan.md): a rebuild re-reads
+        every file from the top and re-applies it onto the graph that is already here.
+        It never wipes the graph, because a node can only vanish from a file's contents
+        if the file was replaced, truncated or rolled back -- a deliberate deletion is an
+        APPENDED remove_node tombstone, which replay still honours. Wiping made an
+        ordinary `git checkout -- .cognition` destroy live memories (five recorded
+        incidents, up to 93 nodes, two unrecoverable).
+
+        Stamps, tombstones and the reference index are KEPT: they are what makes
+        re-applying a line a no-op, and dropping them would let an old line win a
+        comparison it previously lost. The per-rebuild counters reset, so
+        `journal_status` keeps describing the latest pass.
+        """
+        self._pending = {}
+        self.glued_lines = 0
+        self.id_collisions = 0
+        for state in self._files.values():
+            state.reset()
+
+    def _hard_reset(self) -> None:
+        """Forget everything and replay from disk alone -- the ONLY path that may drop
+        what the journal files no longer hold. Used by `accept-disk`, never by replay."""
         self._graph = nx.MultiDiGraph()
         self._reference_index = defaultdict(list)
         self._attr_stamps = {}
         self._add_stamps = {}
         self._node_tombstones = {}
         self._edge_stamps = {}
-        self._pending = {}
-        self.glued_lines = 0
-        self.id_collisions = 0
-        for state in self._files.values():
-            state.reset()
+        self._removed_node_ids = set()
+        self._reset_replay_state()
 
     def _rehydrate_reset(self) -> None:
         self._reset_replay_state()
@@ -1316,8 +1407,10 @@ class CognitionStorage:
         }
         if missing and not self._read_only:
             try:
-                (local_write_path(self._dir, REHYDRATE_FLAG_FILENAME)).write_text(
-                    json.dumps(self.last_rehydrate), encoding="utf-8"
+                replace_kind(
+                    local_write_path(self._dir, REHYDRATE_FLAG_FILENAME),
+                    (LOSS_KIND_REHYDRATE,),
+                    {"kind": LOSS_KIND_REHYDRATE, **self.last_rehydrate},
                 )
             except OSError as exc:
                 logger.debug("could not write rehydrate flag file: %s", exc)
@@ -1493,10 +1586,46 @@ class CognitionStorage:
         )
         if lost_own:
             return self._rebuild(ambiguous=False)
+
+        # A rolled-back shard does not always reach _rebuild: a FRESH process has no
+        # prior offset to shrink, so its first pass reads the short file as ordinary
+        # content (verdict "append" from 0). That is the reported incident -- write,
+        # session ends, the file is rolled back, a new session starts -- so the repair
+        # runs here too, on the evidence of this checkout's own ledger.
+        #
+        # ONLY when something actually changed, or while something is still outstanding.
+        # This path runs on nearly every tool call, and reading the (never-pruned)
+        # ledger and the source file each time was pure per-call IO that did not exist
+        # before this work (peer review).
+        if not (count or self._retained_missing or self._first_catch_up):
+            return count
+        self._first_catch_up = False
+        healed, unrepairable = self._heal_own_shard()
+        # The STICKY set, not just what this pass found: a file a previous pass reported
+        # is still broken, and flagging only this pass's findings dropped its notice.
+        self.retained_files = self._track_retained({}, unrepairable)
+        self._flag_repair(healed, self.retained_files)
+        if healed:
+            self.healed_lines += healed
+            name, state = self._own_shard()
+            verdict, data = self._scan_file(state)
+            if verdict in ("append", "insert"):
+                count += self._consume(
+                    f"{shard_dir(self._dir).name}/{name}", state, data, whole=verdict == "insert",
+                )
         if count and self._pending:
             self._retry_pending()
             self.unresolved_entries = len(self._unresolved())
         if count:
+            # Teammates' entries arrive mid-session; recording them now is what lets the
+            # NEXT session notice if their file is rolled back in between. Throttled:
+            # this serialises every visible id, which is O(graph) and was running after
+            # every write (peer review). A minute's granularity is plenty -- the check
+            # it feeds compares whole sessions.
+            now = time.monotonic()
+            if self._watch_ready and now - self._last_known_refresh >= _KNOWN_REFRESH_SECONDS:
+                self._last_known_refresh = now
+                refresh_known(self)
             logger.info(
                 "Cognition graph replayed +%d journal entries "
                 "(includes this process's own appends): %d nodes, %d edges",
@@ -1506,6 +1635,11 @@ class CognitionStorage:
 
     def _rebuild(self, *, ambiguous: bool) -> int:
         before_ids = self.visible_node_ids()
+        # Which lines each file was known to hold, captured BEFORE the per-file reset
+        # wipes it: comparing this with what the files hold afterwards is the only way
+        # to see that a file LOST lines, and it is what distinguishes "a teammate's
+        # shard was rolled back" from "a teammate simply has not written anything".
+        known_lines = {name: set(state.line_hashes) for name, state in self._files.items()}
         self._reset_replay_state()
         self._discover_shards()
         count = 0
@@ -1523,8 +1657,334 @@ class CognitionStorage:
             state.own_unread = set()
             if not state.legacy and not state.path.exists():
                 del self._files[key]
+        healed, unrepairable = self._heal_own_shard()
+        # ACCUMULATE: get_status reports repairs for this process's lifetime, and
+        # overwriting here made an earlier repair vanish from the count on the next
+        # unrelated rebuild (peer review).
+        self.healed_lines += healed
+        self.retained_files = self._track_retained(known_lines, unrepairable)
+        self._flag_repair(healed, self.retained_files)
+        # A rebuild is rare and means the files changed under us: always re-record the
+        # ids, so the next session compares against what this one actually ended with.
+        if self._watch_ready:
+            self._last_known_refresh = time.monotonic()
+            refresh_known(self)
         self._record_rehydrate(before_ids, ambiguous_first_observation=ambiguous and not lost)
         return count
+
+    def _own_shard_name(self) -> str | None:
+        """This checkout's shard key, or None when no identity is confirmed."""
+        with contextlib.suppress(Exception):
+            confirmed = read_confirmed_identity(self._dir)
+            email = (confirmed or {}).get("email")
+            if email:
+                return f"{shard_dir(self._dir).name}/{shard_filename(email)}"
+        return None
+
+    def _track_retained(
+        self, known_lines: dict[str, set[str]], unrepairable: list[str]
+    ) -> list[str]:
+        """Which files are STILL missing lines this checkout had already replayed.
+
+        Sticky, and self-verifying: the missing line hashes are remembered (in the alert
+        flag, so they survive a restart) and a file drops off the list only when its
+        lines are actually back. Recomputing the delta per rebuild instead reported a
+        file once and then silently forgot it -- the file stayed broken on disk while
+        the notice vanished on the next ordinary tool call (peer review BLOCKER).
+        """
+        outstanding = dict(self._retained_missing)
+        for name in unrepairable:
+            outstanding.setdefault(name, set())
+        for name, missing in self._files_that_lost_lines(known_lines).items():
+            outstanding[name] = outstanding.get(name, set()) | missing
+        still: dict[str, set[str]] = {}
+        for name, missing in outstanding.items():
+            state = self._files.get(name)
+            present = set(state.line_hashes) if state is not None else set()
+            remaining = {h for h in missing if h not in present}
+            if remaining or (name in unrepairable):
+                still[name] = remaining
+        self._retained_missing = still
+        return sorted(still)
+
+    def _files_that_lost_lines(self, known_lines: dict[str, set[str]]) -> dict[str, set[str]]:
+        """Files that no longer hold lines this process had already applied.
+
+        These are the ones this checkout may NOT repair -- a teammate's shard, or the
+        frozen legacy journal. Their entries stay in the graph (replay is append-only)
+        but they are not on disk, so the reader is told and the owner has to restore
+        the file. The own shard is excluded: healing handles it.
+        """
+        own = None
+        with contextlib.suppress(Exception):
+            confirmed = read_confirmed_identity(self._dir)
+            email = (confirmed or {}).get("email")
+            if email:
+                own = f"{shard_dir(self._dir).name}/{shard_filename(email)}"
+        lost: dict[str, set[str]] = {}
+        for name, before in known_lines.items():
+            if not before or name == own:
+                continue
+            state = self._files.get(name)
+            current = set(state.line_hashes) if state is not None else set()
+            missing = before - current
+            if missing:
+                lost[name] = missing
+        return lost
+
+    def _flag_repair(self, healed: int, retained: list[str]) -> None:
+        """Raise (or clear) the session-start alert for a repaired or retained loss.
+
+        Shares the one flag file and one prime slot the other loss alerts use, so a
+        single event never produces two contradictory warnings. Cleared when nothing
+        is outstanding any more: the repair worked and there is nothing retained.
+        """
+        if self._read_only:
+            return
+        flag = local_write_path(self._dir, REHYDRATE_FLAG_FILENAME)
+        try:
+          with notices_lock(flag):
+            notices = read_notices(flag)
+            others = [
+                n for n in notices
+                if n.get("kind") not in (LOSS_KIND_HEALED, LOSS_KIND_RETAINED)
+            ]
+            was_healed = next((n for n in notices if n.get("kind") == LOSS_KIND_HEALED), None)
+            now = datetime.now(UTC).isoformat()
+            keep: list[dict[str, Any]] = list(others)
+
+            # A HEALED notice is only cleared by prime, once it has been shown. Clearing
+            # it here would erase it before any session start read it -- which is the
+            # 90-minutes-unnoticed failure this alert exists to prevent. Repairs nobody
+            # has read yet ADD UP.
+            healed_total = healed + (int(was_healed.get("healed_lines") or 0) if was_healed else 0)
+            if healed_total:
+                keep.append({
+                    "kind": LOSS_KIND_HEALED,
+                    "at": now,
+                    "healed_lines": healed_total,
+                    "shown": int(was_healed.get("shown") or 0) if was_healed else 0,
+                })
+
+            # A RETAINED notice describes a condition that CAN resolve on its own: the
+            # file got its entries back. It is sticky until then -- recomputing it per
+            # rebuild dropped it on the next tool call while the file stayed broken.
+            if retained:
+                keep.append({
+                    "kind": LOSS_KIND_RETAINED,
+                    "at": now,
+                    "retained_files": retained,
+                    "retained_missing": {k: sorted(v) for k, v in self._retained_missing.items()},
+                    "own_unrepairable": self._own_unrepairable,
+                    "own_shard": self._own_shard_name(),
+                    # A notice that has collapsed to one line re-expands when the set
+                    # of broken files CHANGES: a newly broken file is news, and folding
+                    # it into an old "(Repeat notice.)" would bury it (peer review).
+                    "shown": next(
+                        (int(n.get("shown") or 0) for n in notices
+                         if n.get("kind") == LOSS_KIND_RETAINED
+                         and sorted(str(f) for f in (n.get("retained_files") or []))
+                         == sorted(retained)),
+                        0,
+                    ),
+                })
+            write_notices(flag, keep)
+        except OSError as exc:
+            logger.debug("could not update the journal-repair flag: %s", exc)
+
+    def _heal_own_shard(self) -> tuple[int, list[str]]:
+        """Put back lines this checkout wrote that are no longer in its own shard.
+
+        Returns (lines re-appended, files whose lost lines could not be repaired).
+        Appends only, so a wrong diagnosis costs a duplicate line, which replay
+        already ignores -- never a deletion. Degrades on any error: this runs inside
+        every rebuild, so raising here would break every tool call.
+        """
+        self._own_unrepairable = False
+        if self._read_only or not self._repair:
+            return 0, []
+        try:
+            confirmed = read_confirmed_identity(self._dir)
+            email = (confirmed or {}).get("email")
+            if not email:
+                return 0, []
+            # Same key the ledger recorded under: the shard's own filename.
+            name = shard_filename(email)
+            full_name = f"{shard_dir(self._dir).name}/{name}"
+            state = self._files.get(full_name)
+            if state is None or not state.path.exists():
+                return 0, []
+            recorded = own_ledger_lines(self._dir, name)
+            if not recorded:
+                return 0, []
+            if source_moved(self._dir):
+                # A branch switch, an `svn switch` or an update to an older revision
+                # legitimately replaces the journal with another line of history.
+                # Repairing then would re-append the OTHER branch's entries, so stand
+                # down and re-baseline: what this checkout wrote on the branch it left
+                # is still committed there, not lost.
+                own_ledger_prune(self._dir, {
+                    raw.strip() for raw in
+                    state.path.read_text(encoding="utf-8").splitlines() if raw.strip()
+                })
+                return 0, []
+            present = state.line_hashes
+            missing = [line for line in recorded if line_hash(line) not in present]
+            if not missing:
+                # NEVER prune here. The ledger's whole purpose is to still hold this
+                # checkout's lines when a rollback happens later; emptying it whenever
+                # disk currently agrees would leave nothing to repair from. Only
+                # `accept-disk` prunes, because that is the human accepting the loss.
+                return 0, []
+            if any(SHARD_START_ACTION in line for line in missing):
+                logger.warning(
+                    "Journal repair skipped for %s: the shard's first line is missing, "
+                    "and appending it at the tail would break adoption. %d entry(s) are "
+                    "held in memory only.", name, len(missing),
+                )
+                self._own_unrepairable = True
+                return 0, [full_name]
+            if _file_is_contested(state.path):
+                logger.warning(
+                    "Journal repair skipped for %s: the file is mid-merge or conflicted. "
+                    "%d entry(s) are held in memory only until it is resolved.",
+                    name, len(missing),
+                )
+                self._own_unrepairable = True
+                return 0, [full_name]
+            healed = 0
+            for line in missing:
+                try:
+                    append_journal_line(state.path, line)
+                except OSError as exc:
+                    logger.warning("Journal repair could not write to %s: %s", name, exc)
+                    self._own_unrepairable = True
+                    return healed, [full_name]
+                state.own_unread.add(line_hash(line))
+                healed += 1
+            logger.warning(
+                "Journal repair: %s had lost %d entry(s) this checkout wrote; they were "
+                "appended back. Commit the file so teammates get them too.", name, healed,
+            )
+            return healed, []
+        except Exception as exc:  # noqa: BLE001 - never break a rebuild
+            logger.debug("journal repair failed (swallowed): %s", exc)
+            return 0, []
+
+    def plan_accept_disk(self) -> dict[str, Any]:
+        """What `accept-disk` would give up, without changing anything.
+
+        Lets the command show the human a true preview AND write its audit record
+        BEFORE dropping anything: the audit is the accountability for this command, so
+        a run that cannot be recorded must not happen (peer review).
+        """
+        with self._lock:
+            return {
+                "at": datetime.now(UTC).isoformat(),
+                "nodes_before": len(self.visible_node_ids()),
+                "dropped": self._entries_only_this_checkout_holds(),
+            }
+
+    def _entries_only_this_checkout_holds(self) -> list[str]:
+        """Every node id that accepting the files on disk would give up.
+
+        Two sources, and BOTH matter (peer review): this checkout's own ledger (lines it
+        could put back into its own shard), and nodes that are only in the graph because
+        replay retained them from a file this checkout may not repair -- a teammate's
+        shard or the legacy journal. Counting only the first told the human "0 entries
+        will be given up" while the run destroyed a teammate's retained nodes.
+
+        Read from the ledger rather than the graph for the first part: a fresh CLI
+        process holds nothing in memory, so a graph-only diff would report nothing.
+        """
+        given_up: list[str] = []
+        # Nodes whose add came from a file that is currently missing entries: they
+        # survive only in this process's memory, and a reset replays them away.
+        for node_id, (_stamp, from_file) in self._add_stamps.items():
+            if from_file in self._retained_missing and node_id in self._graph:
+                given_up.append(node_id)
+        name = None
+        with contextlib.suppress(Exception):
+            confirmed = read_confirmed_identity(self._dir)
+            email = (confirmed or {}).get("email")
+            if email:
+                name = shard_filename(email)
+        if name is None:
+            return given_up
+        state = self._files.get(f"{shard_dir(self._dir).name}/{name}")
+        on_disk: set[str] = set()
+        if state is not None and state.path.exists():
+            with contextlib.suppress(OSError):
+                on_disk = {
+                    raw.strip() for raw in
+                    state.path.read_text(encoding="utf-8").splitlines() if raw.strip()
+                }
+        for line in own_ledger_lines(self._dir, name):
+            if line.strip() in on_disk:
+                continue
+            with contextlib.suppress(ValueError, KeyError, TypeError):
+                entry = json.loads(line)
+                node_id = (entry.get("data") or {}).get("id")
+                if node_id:
+                    given_up.append(str(node_id))
+        return given_up
+
+    def accept_disk(self) -> dict[str, Any]:
+        """Accept the journal files as they are: drop what this checkout retained.
+
+        The deliberate-rollback escape hatch, and the ONLY path that may lose entries
+        replay is holding. Prunes this checkout's own-append ledger to what is on disk,
+        forgets everything, replays from the files alone, and clears the repair alert.
+
+        Returns what it dropped, for the caller to record as an audit trail.
+        """
+        with self._lock:
+            before = self.visible_node_ids()
+            given_up = self._entries_only_this_checkout_holds()
+            with contextlib.suppress(Exception):
+                confirmed = read_confirmed_identity(self._dir)
+                email = (confirmed or {}).get("email")
+                if email:
+                    name = shard_filename(email)
+                    state = self._files.get(f"{shard_dir(self._dir).name}/{name}")
+                    on_disk: set[str] = set()
+                    if state is not None and state.path.exists():
+                        with contextlib.suppress(OSError):
+                            on_disk = {
+                                raw.strip() for raw in
+                                state.path.read_text(encoding="utf-8").splitlines() if raw.strip()
+                            }
+                    own_ledger_prune(self._dir, on_disk)
+            self._retained_missing = {}
+            self.retained_files = []
+            self._hard_reset()
+            self._shard_dir_mtime_ns = None
+            self._catch_up()
+            after = self.visible_node_ids()
+            dropped = sorted(set(given_up) | (before - after))
+            # The human has just accepted the files as they stand, so every notice about
+            # entries missing from them is settled -- including a between-sessions report
+            # about the same state. Re-baseline the id snapshot too, or the NEXT session
+            # would report this deliberate decision as a fresh loss. A notice of any
+            # other kind is left alone.
+            with contextlib.suppress(OSError):
+                flag_path = local_write_path(self._dir, REHYDRATE_FLAG_FILENAME)
+                replace_kind(
+                    flag_path,
+                    (LOSS_KIND_HEALED, LOSS_KIND_RETAINED, LOSS_KIND_BETWEEN_SESSIONS),
+                    None,
+                )
+            self._watch_ready = True
+            refresh_known(self)
+            self.healed_lines = 0
+            self.retained_files = []
+            self._retained_missing = {}
+            return {
+                "at": datetime.now(UTC).isoformat(),
+                "nodes_before": len(before),
+                "nodes_after": len(after),
+                "dropped": dropped,
+            }
 
     def reload(self) -> dict[str, int]:
         """Force a full re-hydrate from every journal file; return before/after stats."""
@@ -1731,6 +2191,31 @@ def _complete_lines(data: bytes) -> list[str]:
     if last_nl == -1:
         return []
     return data[: last_nl + 1].decode("utf-8", errors="replace").splitlines()
+
+
+#: How often the machine-local id snapshot may be rewritten during a session.
+_KNOWN_REFRESH_SECONDS = 60.0
+
+_CONFLICT_MARKERS = (b"<<<<<<<", b">>>>>>>")
+_GIT_IN_PROGRESS = ("MERGE_HEAD", "rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD")
+
+
+def _file_is_contested(path: Path) -> bool:
+    """Whether a journal file is mid-merge, mid-rebase or carrying conflict markers.
+
+    Repairing such a file would append after someone else's unresolved edit. Errs
+    towards "contested" on any doubt: skipping a repair costs a warning, appending
+    into a conflicted file costs a mess someone has to untangle by hand.
+    """
+    try:
+        git = git_dir(path)
+        for name in _GIT_IN_PROGRESS:
+            if git is not None and (git / name).exists():
+                return True
+        blob = path.read_bytes()
+    except OSError:
+        return True
+    return any(marker in blob for marker in _CONFLICT_MARKERS)
 
 
 def _size(path: Path) -> int:

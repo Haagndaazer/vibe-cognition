@@ -233,12 +233,11 @@ def test_get_status_rehydrate_events_null_when_clean(tmp_path, mock_mcp, build_l
     assert result["rehydrate_events"] is None
 
 
-def test_get_status_surfaces_rehydrate_event(tmp_path, mock_mcp, build_lc, make_ctx):
-    """WP-1 item 1 (critical): a lossy rehydrate-reset must surface in get_status
-    with the node-count delta, not just an internal log line.
-
-    Fails-before: rehydrate resets were invisible outside a log grep — nothing
-    queryable recorded that a reset (and possible data loss) occurred.
+def test_get_status_surfaces_a_journal_repair(tmp_path, mock_mcp, build_lc, make_ctx):
+    """WP-Append-Only-Replay: this used to assert a LOSS was surfaced (nodes_after 0).
+    A wiped journal no longer loses anything, so what get_status must surface is the
+    REPAIR -- otherwise a rollback that silently fixed itself leaves no queryable trace
+    and nobody commits the restored file.
     """
     register_service_tools(mock_mcp)
     lc = build_lc(tmp_path, embeddings_ready=True)
@@ -253,11 +252,10 @@ def test_get_status_surfaces_rehydrate_event(tmp_path, mock_mcp, build_lc, make_
     storage.get_statistics()  # forces catch-up, detecting the shrink
 
     result = mock_mcp.tools["get_status"](ctx)  # type: ignore[arg-type]
-    events = result["rehydrate_events"]
-    assert events is not None
-    assert events["count"] == 1
-    assert events["last"]["nodes_before"] == 2
-    assert events["last"]["nodes_after"] == 0
+    repair = result["journal"]["repair"]
+    assert repair["healed_lines"] == 2, "the repair is not visible in get_status"
+    assert repair["retained_files"] == []
+    assert storage.has_node("n1") and storage.has_node("n2")
 
 
 # ── cognition_dashboard (zero-coverage, monkeypatched) ────────────────────────
