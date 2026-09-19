@@ -196,6 +196,31 @@ after the work is done (Colton's process), and — MANDATORY, not optional — a
 Violet's project, which has the only real reproduction and a known-good recovery procedure.
 Only then the Loki pin.
 
+## 6b. Field test result (vibe-memory, 2026-09-18) — PASSED
+
+Run by Violet against plugin source at ddeb3f8, on a COPY of their project; the live
+project was never written.
+
+- Their original trigger, reproduced: open, write a node, remove that line from the shard
+  on disk (what `git checkout -- .cognition` did to them), reload.
+- Result: 1554 -> 1555 -> 1555 nodes, nothing lost, and the shard repaired on disk (85 ->
+  86 -> 85 -> 86 lines). The same sequence cost them 15 nodes under 0.42.0.
+- Session-start text confirmed on both lines; a second open showed no notice, so it does
+  not nag once resolved.
+- UNTESTED, recorded as untested: "the notice clears once you commit the repaired file".
+  Their copy was a bare `.cognition` with no repository around it.
+
+Instruction gap found by that run, fixed here for whoever runs it next: a COPIED
+`.cognition` inherits no confirmed identity (the identity file is bound to machine,
+account and folder), so `add_node` raises `JournalWriterUnavailableError` and a
+copy-based test cannot reach the write the ledger needs. Confirm an identity in the copy
+first — `write_confirmed_identity(<copy>/.cognition, name, email)` — before reproducing.
+
+Also raised and checked, not a defect: `inspect_confirmed_identity` has no top-level
+`email` key (it returns `{status, identity, machine, mismatch}`), so reading `.get("email")`
+from it always yields None while `read_confirmed_identity` returns the nested value. The
+two never disagreed.
+
 ## 7. Rulings folded in
 
 - Full append-only replay, and repair the person's own file automatically (2026-09-18).
