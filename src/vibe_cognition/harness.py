@@ -82,7 +82,11 @@ HARNESSES: dict[str, Harness] = {
         display_name="Claude Code",
         skill_prefix="/",
         spawn_tool="Agent tool",
-        spawn_background_hint="pass `run_in_background: true` so the launcher gets the completion notification",
+        spawn_background_hint=(
+            "in fork mode (interactive sessions, the default since Claude Code 2.1.232) the Agent tool "
+            "has no `run_in_background` and every spawn is already background; pass "
+            "`run_in_background: true` only where the schema offers it (headless `-p` / SDK)"
+        ),
         spawn_depth_note="subagents may spawn their own subagents",
         plugin_root_var="CLAUDE_PLUGIN_ROOT",
         plugin_data_var="CLAUDE_PLUGIN_DATA",

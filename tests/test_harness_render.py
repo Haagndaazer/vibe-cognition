@@ -143,6 +143,7 @@ def test_codex_curate_and_backfill_renders_use_v2_spawn_syntax():
         text = (_REPO / "adapters" / "codex" / "skills" / name / "SKILL.md").read_text(encoding="utf-8")
         assert "spawn_agent" in text and "fork_turns" in text and "task_name" in text, name
         assert "subagent_type" not in text and "run_in_background" not in text and "Agent tool" not in text, name
+        assert "SubagentHandback" not in text and "fork mode" not in text, name
         assert "gpt-5.6-" in text, name
 
 
@@ -153,6 +154,7 @@ def test_codex_curation_references_render_from_agent_sources():
         text = (ref_dir / f"{stem}.md").read_text(encoding="utf-8")
         assert not text.startswith("---"), stem
         assert "{{" not in text and "subagent_type" not in text and "run_in_background" not in text, stem
+        assert "SubagentHandback" not in text and "COLLECTING ANALYZER RESULTS" not in text, stem
         src = (_REPO / "agents-src" / f"{stem}.md").read_text(encoding="utf-8")
         assert rh.render_reference(src, codex) == text.replace("\r\n", "\n"), stem
     orchestrator = (ref_dir / "curate-orchestrator.md").read_text(encoding="utf-8")
@@ -171,3 +173,19 @@ def test_codex_plan_role_toml_renders():
     codex = harness.HARNESSES[harness.CODEX]
     src = (_REPO / "agents-src" / "plan.md").read_text(encoding="utf-8")
     assert rh.render_role_toml(src, "vibe-plan", codex) == text.replace("\r\n", "\n")
+
+
+def test_claude_code_curation_prose_matches_fork_mode():
+    """Since Claude Code 2.1.232 every Agent spawn from an interactive session is
+    asynchronous. The orchestrator must wait for each analyzer's report by ending its
+    turn and hand back once, last; the old 'foreground, same tool result, never end
+    your turn' rule made it commit self-judged edges before any analyzer reported."""
+    orchestrator = (_REPO / "agents" / "curate-orchestrator.md").read_text(encoding="utf-8")
+    for stale in ("same tool result", "foreground only", "FOREGROUND", "NEVER end your turn"):
+        assert stale not in orchestrator, stale
+    for required in ("COLLECTING ANALYZER RESULTS", "SubagentHandback", "Async agent launched"):
+        assert required in orchestrator, required
+    skill = (_REPO / "skills" / "vibe-curate" / "SKILL.md").read_text(encoding="utf-8")
+    assert "`run_in_background: true` and an explicit" not in skill
+    assert "foreground-only" not in skill
+    assert "Do not pass `run_in_background`" in skill and "fork mode" in skill

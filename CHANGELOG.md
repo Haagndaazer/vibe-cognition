@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.45.0] - 2026-10-05
+
+### Fixed
+- **Curation works again under Claude Code fork mode.** Since Claude Code 2.1.232 an
+  interactive session runs every `Agent` spawn asynchronously and the tool has no
+  `run_in_background` parameter. The curate-orchestrator's SPAWN DISCIPLINE still said
+  analyzer results arrive in the same tool result and forbade ending its turn to wait, so
+  it treated the asynchronous launch as the degraded fallback, committed edges on its own
+  judgement, marked the batch curated and handed back; the analyzer reports arrived one to
+  three minutes later to a finished agent. On the reporting machine every orchestrator run
+  since 2026-08-30 spawned asynchronously; before Claude Code 2.1.271 (no `SubagentHandback`
+  tool yet) the orchestrator simply ended its turn and was resumed with the report, and from
+  2.1.284 on most runs handed back before their reports arrived. Reported from the
+  linglang-x-vibememory project; also fail 61b38791e680 in this repo.
+- The orchestrator now follows the asynchronous protocol the harness actually provides:
+  spawn with no `name` and no `run_in_background`, end the turn without handing back when
+  the launch is asynchronous, accept the report only from the matching analyzer for the
+  matching node ids, review and commit, one analyzer in flight at a time, and call
+  `SubagentHandback` exactly once at the end. Nothing is written for a batch before its
+  report is in hand, so a run that is never resumed (headless `-p` and SDK sessions do not
+  hold a launching subagent open) leaves its nodes uncurated for the next run instead of
+  leaving unreviewed edges. An analyzer that errors, or that has not reported after two
+  wake-ups, is written off and its nodes are reported as deferred.
+- `/vibe-curate` no longer asks for `run_in_background: true` (the parameter does not exist
+  in interactive sessions); it passes it only where the Agent tool offers it, and treats the
+  orchestrator's hand-back as the one completion signal.
+- The Codex render of the orchestrator is byte-identical to v0.44.0 (Codex already waited on
+  `wait_agent`); every new sentence lives in a Claude Code harness block. No MCP tool changed.
+
 ## [0.44.0] - 2026-09-18
 
 ### Fixed
