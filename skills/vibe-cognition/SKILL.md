@@ -81,7 +81,7 @@ are injected at session start and listed via `cognition_list_tasks`, so the grap
 **Before picking up work, check the open tasks first: `cognition_list_tasks`.**
 
 - **Create with `cognition_add_task`** (NOT `cognition_record` — that path is rejected for
-  tasks). The creator is resolved **server-side** from your git config — you can't set it,
+  tasks). The creator is resolved **server-side** from your confirmed identity — you can't set it,
   so multiple people sharing one graph see who filed each task. `priority` is
   `critical | high | normal | low`; an optional `owner` is free-text "who's on it".
 - **Hierarchy:** pass `parent_id` to file a task under a parent task/epic (any depth).

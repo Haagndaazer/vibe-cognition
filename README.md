@@ -630,7 +630,7 @@ fully searchable yet:
 Provenance is verified for **tasks and deletions**, not for other node authorship:
 
 - **Task creator** (`cognition_add_task`'s `created_by`) is resolved server-side via
-  the identity chain (your confirmed identity, else git config), behind the write
+  the identity chain (your confirmed identity, else your VCS identity), behind the write
   gate — a client can't override it. This is unspoofable: the tool doesn't even
   accept a caller-supplied creator.
 - **Who deleted a node** (`cognition_remove_node`) is likewise resolved server-side and

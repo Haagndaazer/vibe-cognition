@@ -98,10 +98,15 @@ def test_first_session_versions_cognition_without_any_machine_local_or_private_f
     assert {"local", "*.lock", "chromadb"} <= set(ignores)
 
     for committed in (".cognition/journal.jsonl", ".cognition/people/alice%40x.com.profile.jsonl",
-                      ".cognition/.gitignore", ".cognition/documents/ab/shared.md"):
+                      ".cognition/documents/ab/shared.md"):
         assert (_status_of(lab, wc, committed) or "")[0] == "A", (committed, lab.status(wc))
     assert (_status_of(lab, wc, ".cognition/local") or "")[0] == "I"
     assert (_status_of(lab, wc, ".cognition/journal.jsonl.lock") or "")[0] == "I"
+    # WP-VCS-Isolation (Colton ruling Q1, 2026-10-28): a git-named file left by an
+    # older plugin is hidden from svn status, never added; one already committed is
+    # left for a human to remove.
+    assert (_status_of(lab, wc, ".cognition/.gitignore") or "")[0] == "I"
+    assert ".gitignore" in ignores
     for private in (".cognition/documents/cd/private.pdf", ".cognition/documents/.gitignore",
                     ".cognition/documents/cd"):
         assert (_status_of(lab, wc, private) or "?")[0] != "A", (private, lab.status(wc))

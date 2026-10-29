@@ -37,6 +37,9 @@ from pathlib import Path
 from .documents import documents_dir, documents_gitignore_path
 from .git_hygiene import _GITIGNORE_ENTRIES, vcs_hygiene_opted_out
 from .local_paths import RELOCATED_FILENAMES
+from .vcs import svn_root
+
+__all__ = ["svn_root"]
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +50,7 @@ SVN_TIMEOUT_SECONDS = 30
 BUSY_TIMEOUT_MS = 2000
 _MAX_ADD_ROUNDS = 12
 IGNORE_PROPERTY = "svn:global-ignores"
+GIT_NAMED_IGNORE = ".gitignore"
 
 STATUS_OK = "ok"
 STATUS_NO_CLI = "no_svn_cli"
@@ -72,24 +76,6 @@ class SvnHygieneReport:
     conflicted: list[str] = field(default_factory=list)
     journal_excluded: bool = False
     detail: str = ""
-
-
-def svn_root(start: Path) -> Path | None:
-    """The working-copy root at or above `start`; None under git or outside SVN.
-
-    Requires `.svn/wc.db`, so a stray `.svn` folder is not mistaken for a checkout.
-    """
-    try:
-        start = Path(start).resolve()
-    except OSError:
-        return None
-    for candidate in (start, *start.parents):
-        with contextlib.suppress(OSError):
-            if (candidate / ".svn" / "wc.db").is_file():
-                return candidate
-            if (candidate / ".git").exists():
-                return None
-    return None
 
 
 def _svn_command() -> str | None:
@@ -195,9 +181,12 @@ def _status(svn: str, root: Path, target: str, *, depth: str | None = None,
 
 
 def ignore_globs(cognition_dir: Path) -> list[str]:
-    """The ignore list for SVN: every .cognition/.gitignore entry plus the managed
-    ones, comments dropped, trailing slashes stripped (SVN globs have no
-    directory-only form, so `local/` would match nothing)."""
+    """The ignore list for SVN: the managed entries plus every line of a
+    .cognition/.gitignore if one is still present (the plugin no longer writes one
+    on SVN), comments dropped, trailing slashes stripped (SVN globs have no
+    directory-only form, so `local/` would match nothing). `.gitignore` itself is
+    ignored so a git-named file never shows in `svn status`: the per-machine
+    documents/.gitignore, or one written by an older plugin."""
     lines: list[str] = []
     with contextlib.suppress(OSError):
         lines = (cognition_dir / ".gitignore").read_text(encoding="utf-8").splitlines()
@@ -206,7 +195,7 @@ def ignore_globs(cognition_dir: Path) -> list[str]:
     # `local` glob does not reach it.
     legacy = [f"{name}*" for name in RELOCATED_FILENAMES]
     out: list[str] = []
-    for raw in [*lines, *_GITIGNORE_ENTRIES, *legacy]:
+    for raw in [*lines, *_GITIGNORE_ENTRIES, *legacy, GIT_NAMED_IGNORE]:
         glob = raw.strip().rstrip("/")
         if glob and not glob.startswith("#") and glob not in out:
             out.append(glob)

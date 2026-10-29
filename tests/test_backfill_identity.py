@@ -276,6 +276,7 @@ def test_run_git_decodes_non_cp1252_bytes_without_crashing(tmp_path, monkeypatch
         assert "text" not in kw  # must decode manually, not rely on text=True
         return _FakeResult()
 
+    (tmp_path / ".git").mkdir()
     monkeypatch.setattr(subprocess, "run", _fake_run)
     out = _run_git(tmp_path, ["blame", "--line-porcelain", "--", ".cognition/journal.jsonl"])
     assert out is not None
@@ -602,3 +603,19 @@ def test_cli_apply_aborts_on_journal_mtime_change(tmp_path, capsys, monkeypatch)
 
     replayed = CognitionStorage(cognition)
     assert "recorded_by" not in (replayed.get_node("n1") or {}).get("metadata", {})
+
+
+def test_run_git_spawns_nothing_off_a_git_repository(tmp_path, monkeypatch):
+    """WP-VCS-Isolation: the call count proves that no git process was started on
+    a Subversion checkout; the mock also raises so a spawn can never pass unnoticed."""
+    calls = []
+
+    def _fake_run(*a, **kw):
+        calls.append(a)
+        raise AssertionError("subprocess must not be spawned")
+
+    (tmp_path / ".svn").mkdir()
+    (tmp_path / ".svn" / "wc.db").write_bytes(b"")
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    assert _run_git(tmp_path, ["blame", "--", "x"]) is None
+    assert calls == []

@@ -8,10 +8,15 @@ from pathlib import Path
 
 from ..config import resolve_repo_path_env
 from .storage import CognitionStorage
+from .vcs import VCS_GIT, detect_vcs
 
 _DEFAULT_DAYS = 30
 
 logger = logging.getLogger(__name__)
+
+GIT_ONLY_MESSAGE = (
+    "This command reads git history and this project is not a git repository; nothing was run."
+)
 
 
 def _get_tracked_commit_hashes(storage: CognitionStorage) -> set[str]:
@@ -25,7 +30,9 @@ def _get_tracked_commit_hashes(storage: CognitionStorage) -> set[str]:
 
 
 def _get_recent_commits(repo_path: Path, days: int = _DEFAULT_DAYS) -> list[dict]:
-    """Get recent git commits from the repo."""
+    """Get recent git commits from the repo. Spawns nothing off a git repository."""
+    if detect_vcs(repo_path) != VCS_GIT:
+        return []
     try:
         result = subprocess.run(
             [
@@ -58,7 +65,9 @@ def _get_recent_commits(repo_path: Path, days: int = _DEFAULT_DAYS) -> list[dict
 
 
 def _get_changed_files(repo_path: Path, commit_hash: str) -> list[str]:
-    """Get list of files changed in a commit."""
+    """Get list of files changed in a commit. Spawns nothing off a git repository."""
+    if detect_vcs(repo_path) != VCS_GIT:
+        return []
     try:
         result = subprocess.run(
             [
@@ -121,6 +130,10 @@ def main(argv: list[str] | None = None):
 
     if not cognition_dir.exists():
         print("No .cognition/ directory found. Run the vibe-cognition MCP server first.")
+        sys.exit(1)
+
+    if detect_vcs(repo_path) != VCS_GIT:
+        print(GIT_ONLY_MESSAGE)
         sys.exit(1)
 
     storage = CognitionStorage(cognition_dir)

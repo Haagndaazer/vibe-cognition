@@ -228,11 +228,11 @@ def _node_from_dict(node_id: str, data: dict[str, Any]) -> CognitionNode:
 
 
 def _acting_identity(cognition_dir: Path) -> dict[str, str]:
-    """Identity stamped on writes: confirmed file, else git config, else unresolved.
+    """Identity stamped on writes: confirmed file, else this checkout's VCS identity, else unresolved.
 
     Carries `source`/`confirmed` onto the stamp so a later audit can tell a
     human-confirmed identity from whatever happened to be in a shared machine's
-    git config — the shared-build-account case that otherwise reproduces, one
+    VCS config — the shared-build-account case that otherwise reproduces, one
     layer down, the anonymous-attribution bug this gate exists to close.
     Consumers reading only name/email are unaffected.
     """
@@ -264,7 +264,7 @@ def _gated_identity(
     """(refusal_or_None, identity_to_stamp) for every graph WRITE.
 
     Two conditions, both required: the identity is CONFIRMED (an answered
-    identity.json, not merely whatever sits in this machine's git config), and
+    identity.json, not merely whatever sits in this machine's VCS config), and
     its committed profile carries all of name/email/role/seniority/reports_to.
     Why an unconfirmed git email is not enough: see cognition/identity.py.
 
@@ -1132,7 +1132,7 @@ def _materialize_blob(
         warnings.append(f"size {size}B >= 95MB: default-commit refused; stored local_only")
     elif size >= BLOB_WARN_BYTES and not local_only:
         eff_local = True
-        warnings.append(f"size {size}B >= 50MB: auto local_only (exceeds GitHub push limit)")
+        warnings.append(f"size {size}B >= 50MB: auto local_only (exceeds common hosting push limits)")
 
     status: dict[str, Any] = {}
     already_committed = eff_local and blob_existed and not was_ignored
@@ -1143,7 +1143,7 @@ def _materialize_blob(
         status["already_committed"] = True
         warnings.append(
             "blob is on the default-commit track; local_only cannot retroactively "
-            "un-publish a committed blob (git history retains it)"
+            "un-publish a committed blob (version-control history retains it)"
         )
     elif eff_local:
         # WP-12 (07fdfe725e7f): gitignore BEFORE the blob write, not after — the
@@ -3113,8 +3113,8 @@ def register_cognition_tools(mcp) -> None:
         if nt == CognitionNodeType.TASK:
             return {
                 "error": (
-                    "Use cognition_add_task to create a task node — it resolves the git "
-                    "creator server-side and seeds the lifecycle (status, transitions). "
+                    "Use cognition_add_task to create a task node — it resolves the "
+                    "creator server-side from the confirmed identity and seeds the lifecycle (status, transitions). "
                     "cognition_record cannot attribute or track a task."
                 )
             }
@@ -3152,7 +3152,7 @@ def register_cognition_tools(mcp) -> None:
         `cognition_list_tasks`. The graph itself becomes the backlog. **Before picking
         up work, check open tasks with `cognition_list_tasks` first.**
 
-        The creator is resolved SERVER-SIDE from this repo's git config — there is no
+        The creator is resolved SERVER-SIDE from the confirmed identity for this checkout — there is no
         `created_by` parameter and a client value cannot override it. The task is seeded
         `status="open"` with an initial transition record; change it later with
         `cognition_update_task` (the only path to status/owner/parent/assignment edits).
@@ -3420,8 +3420,8 @@ def register_cognition_tools(mcp) -> None:
         not force the human to re-answer everything, and (b) a teammate whose
         manager already pre-registered them is finished in one call.
 
-        This overrides git config and SVN credentials for all future writes, so it
-        is also the fix when git reports a personal address and the human wants
+        This overrides whatever identity the checkout's own VCS suggests for all future writes, so it
+        is also the fix when the VCS reports a personal address and the human wants
         their work address used instead. It does NOT change attribution already
         recorded — for that, see the `vibe-cognition-remap-identity` CLI.
 
@@ -3459,8 +3459,9 @@ def register_cognition_tools(mcp) -> None:
             that is neither "nobody" nor an email. Nothing is written on failure.
 
         Suggestions for what to offer the human are in the refusal payload of any
-        gated write (`suggestions`), drawn from git config and cached SVN
-        credentials. Treat them as candidates to confirm, never as answers.
+        gated write (`suggestions`), drawn from the checkout's own VCS (git config
+        on git, cached SVN usernames on Subversion). Treat them as candidates to
+        confirm, never as answers.
         """
         lc = get_lifespan(ctx)
         storage: CognitionStorage = lc["cognition_storage"]
@@ -3793,7 +3794,7 @@ def register_cognition_tools(mcp) -> None:
     ) -> dict[str, Any]:
         """Store one durable environment fact about YOURSELF (self-only).
 
-        The target identity is ALWAYS the server-resolved identity (your confirmed identity if set, else git config) — there
+        The target identity is ALWAYS the server-resolved identity (your confirmed identity if set, else your VCS identity) — there
         is no email parameter (impersonation-resistant by construction). Facts
         are per-machine durable environment truths: project root, OS, tool
         choices ("container_runtime": "podman"), setup gotchas. They live in
@@ -5453,7 +5454,7 @@ def register_cognition_tools(mcp) -> None:
         test, or duplicate nodes — for an outdated-but-real node, record the
         correction and run /vibe-curate to add a `supersedes` edge (the only
         path that writes one) over deleting the history.
-        The acting author is resolved SERVER-SIDE from this repo's git config
+        The acting author is resolved SERVER-SIDE from the confirmed identity for this checkout
         (same as cognition_add_task) and recorded in the journal tombstone.
 
         WARNING — parent tasks: deleting a task that has child tasks DETACHES

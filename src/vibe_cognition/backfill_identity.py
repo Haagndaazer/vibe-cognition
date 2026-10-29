@@ -40,6 +40,7 @@ from .cognition.local_paths import write_path as local_write_path
 from .cognition.models import CognitionNodeType
 from .cognition.people_facts import fold_email
 from .cognition.storage import CognitionStorage
+from .cognition.vcs import VCS_GIT, detect_vcs
 
 # ── Node-type scope (design doc "NODE-TYPE SCOPE") ───────────────────────────
 
@@ -134,8 +135,10 @@ def _run_git(repo_path: Path, args: list[str]) -> str | None:
     UnicodeDecodeError on any non-cp1252 byte in a real repo's commit
     messages/author names (observed live on this repo's own history) --
     exactly the kind of subprocess-adjacent crash this best-effort source
-    must never surface.
+    must never surface. Spawns nothing off a git repository (WP-VCS-Isolation).
     """
+    if detect_vcs(repo_path) != VCS_GIT:
+        return None
     try:
         result = subprocess.run(
             ["git", "-C", str(repo_path), *args],

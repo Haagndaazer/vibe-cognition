@@ -66,6 +66,7 @@ from .person_migration import ensure_person_migration
 from .profiles import ProfileRegistry
 from .roster import Roster
 from .scope import SCOPE_REVIEW_KEY, recorded_by_email, visible_to
+from .vcs import VCS_GIT, detect_vcs
 
 logger = logging.getLogger(__name__)
 
@@ -2208,7 +2209,7 @@ def _file_is_contested(path: Path) -> bool:
     into a conflicted file costs a mess someone has to untangle by hand.
     """
     try:
-        git = git_dir(path)
+        git = git_dir(path) if detect_vcs(path.parent) == VCS_GIT else None
         for name in _GIT_IN_PROGRESS:
             if git is not None and (git / name).exists():
                 return True

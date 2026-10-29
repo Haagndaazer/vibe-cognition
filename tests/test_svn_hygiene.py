@@ -251,3 +251,18 @@ def test_session_start_on_an_svn_checkout_uses_the_svn_announce(tmp_path, monkey
     context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
     assert "command-line client is not on PATH" in context
     assert "local-only files ignored" not in context
+
+
+def test_git_named_files_are_ignored_so_svn_status_never_shows_them(tmp_path):
+    """WP-VCS-Isolation: the per-machine documents/.gitignore (and a
+    .cognition/.gitignore left unversioned by an older plugin) must not sit as a
+    permanent `?` row for an SVN user."""
+    from vibe_cognition.cognition.svn_hygiene import GIT_NAMED_IGNORE, matches_ignore
+
+    cognition = tmp_path / ".cognition"
+    cognition.mkdir()
+    globs = ignore_globs(cognition)
+    assert GIT_NAMED_IGNORE in globs
+    assert matches_ignore(".cognition/documents/.gitignore", ".cognition", globs)
+    assert matches_ignore(".cognition/.gitignore", ".cognition", globs)
+    assert not matches_ignore(".cognition/documents/spec.pdf", ".cognition", globs)

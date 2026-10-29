@@ -1,4 +1,9 @@
 {
+  "0.46.0": [
+    "On a Subversion checkout the plugin never touches git now: identity is not read from ~/.gitconfig, no .cognition/.gitignore is written, and backfill refuses to run rather than invoke git.",
+    "On a git checkout nothing Subversion-related appears: the loss warnings, hygiene announce and identity hints speak git only, and no .svn is looked for.",
+    "One VCS detector replaces four divergent checks. A .cognition/.gitignore already committed to an SVN repository is left for a human to remove. No MCP tool changed."
+  ],
   "0.45.0": [
     "Curation works again on current Claude Code: the curator now waits for its analyzers' reports instead of writing edges on its own judgement when a spawn comes back asynchronous.",
     "Nothing is written before a report arrives, so an interrupted run leaves nodes uncurated for the next /vibe-curate rather than leaving unreviewed edges behind.",

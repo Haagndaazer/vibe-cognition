@@ -560,15 +560,39 @@ def test_a_relocation_deferred_by_a_locked_file_is_retried_next_start(tmp_path, 
     assert local_read_path(cognition, _FLAG_FILENAME).read_text(encoding="utf-8").strip() == str(GIT_HYGIENE_VERSION)
 
 
-def test_announce_warns_no_union_merge_on_svn(tmp_path):
-    """v7: an SVN working copy is told plainly that appends conflict and how to resolve."""
+def _make_svn_wc(root: Path) -> Path:
+    (root / ".svn").mkdir(parents=True, exist_ok=True)
+    (root / ".svn" / "wc.db").write_bytes(b"")
+    return root
+
+
+def test_no_gitignore_is_written_on_an_svn_checkout(tmp_path):
+    """WP-VCS-Isolation (Colton ruling Q1, 2026-10-28): the SVN pass carries the
+    ignore list in svn:global-ignores; a git-named file must not be written into a
+    Subversion repository. Relocation and the flag still happen."""
     cognition = tmp_path / ".cognition"
     cognition.mkdir()
-    (tmp_path / ".svn").mkdir()
+    (cognition / "identity.json").write_text("{}", encoding="utf-8")
+    _make_svn_wc(tmp_path)
 
     _run(tmp_path, cognition)
 
+    assert not (cognition / ".gitignore").exists()
+    assert not (tmp_path / ".gitattributes").exists()
+    assert (cognition / "local" / "identity.json").exists(), "relocation still runs"
+    assert local_read_path(cognition, _FLAG_FILENAME).read_text(encoding="utf-8").strip() == str(GIT_HYGIENE_VERSION)
+
+
+def test_a_gitignore_left_by_an_older_plugin_on_svn_still_gets_the_mirror_instruction(tmp_path):
+    """Reached only when the automatic SVN pass is opted out: an existing file is
+    explained in SVN terms, never in git terms."""
+    cognition = tmp_path / ".cognition"
+    cognition.mkdir()
+    _make_svn_wc(tmp_path)
+    (cognition / ".gitignore").write_text("# vibe-cognition managed\nlocal/\n", encoding="utf-8")
+
     state = check_hygiene_state(tmp_path, cognition)
+    assert state["vcs"] == "svn"
     assert state["is_svn"]
     assert not state["is_git"]
     assert state["gitignore_configured"]
@@ -578,7 +602,6 @@ def test_announce_warns_no_union_merge_on_svn(tmp_path):
     assert "SVN has no union-merge equivalent" in line
     assert "CONFLICT" in line
     assert "BOTH" in line
-    # "local-only files ignored" is false on SVN until the property is set by hand.
     assert "local-only files ignored" not in line
     assert "svn:global-ignores" in line
     assert "svn add --force .cognition" in line
@@ -587,7 +610,7 @@ def test_announce_warns_no_union_merge_on_svn(tmp_path):
 def test_a_project_inside_a_larger_svn_checkout_is_recognised_as_svn(tmp_path):
     """Since SVN 1.7 `.svn` exists only at the checkout root, so a project checked
     out as `trunk/proj` has none of its own and was reported as an unknown VCS."""
-    (tmp_path / ".svn").mkdir()
+    _make_svn_wc(tmp_path)
     project = tmp_path / "proj"
     cognition = project / ".cognition"
     cognition.mkdir(parents=True)
@@ -595,12 +618,46 @@ def test_a_project_inside_a_larger_svn_checkout_is_recognised_as_svn(tmp_path):
 
 
 def test_a_git_repo_inside_an_svn_checkout_is_not_svn(tmp_path):
-    (tmp_path / ".svn").mkdir()
+    _make_svn_wc(tmp_path)
     project = tmp_path / "proj"
     (project / ".git").mkdir(parents=True)
     cognition = project / ".cognition"
     cognition.mkdir()
-    assert not check_hygiene_state(project, cognition)["is_svn"]
+    state = check_hygiene_state(project, cognition)
+    assert not state["is_svn"]
+    assert state["vcs"] == "git"
+
+
+def test_a_bare_svn_directory_without_a_database_is_not_svn(tmp_path):
+    (tmp_path / ".svn").mkdir()
+    cognition = tmp_path / ".cognition"
+    cognition.mkdir()
+    _run(tmp_path, cognition)
+    state = check_hygiene_state(tmp_path, cognition)
+    assert state["vcs"] == "none"
+    line = format_hygiene_announce(state).lower()
+    assert "svn" not in line and "subversion" not in line
+
+
+def test_a_git_project_below_its_repo_root_is_never_pointed_at_svn(tmp_path):
+    """G5: `.gitattributes` is only written when .git is AT the project root, so a
+    project under a monorepo root has it unconfigured -- the announce used to append
+    'This VCS has no union-merge equivalent ... Team setup (svn)' to a git user."""
+    (tmp_path / ".git").mkdir()
+    project = tmp_path / "packages" / "proj"
+    cognition = project / ".cognition"
+    cognition.mkdir(parents=True)
+
+    _run(project, cognition)
+
+    state = check_hygiene_state(project, cognition)
+    assert state["vcs"] == "git"
+    assert state["gitignore_configured"]
+    assert not state["gitattr_configured"]
+    line = format_hygiene_announce(state)
+    assert "local-only files ignored" in line
+    assert "svn" not in line.lower() and "subversion" not in line.lower()
+    assert "Team setup" not in line
 
 
 def test_announce_nothing_configured(tmp_path):
@@ -676,3 +733,24 @@ def test_relocation_never_clobbers_a_newer_destination(tmp_path):
 
     assert (cognition / "local" / "identity.json").read_text(encoding="utf-8") == "NEWER"
     assert not (cognition / "identity.json").exists()
+
+
+def test_a_git_svn_bridge_is_svn_and_gets_no_git_file_at_all(tmp_path):
+    """Colton ruling Q4 (2026-10-28): .git and .svn/wc.db at one level is Subversion,
+    so neither .gitattributes nor .cognition/.gitignore is written, and the state
+    never reads .gitattributes there."""
+    cognition = tmp_path / ".cognition"
+    cognition.mkdir()
+    _make_svn_wc(tmp_path)
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".gitattributes").write_text(f"{_GITATTRIBUTES_MARKER}\n{_GITATTRIBUTES_RULE}\n", encoding="utf-8")
+
+    _run(tmp_path, cognition)
+
+    assert not (cognition / ".gitignore").exists()
+    assert (tmp_path / ".gitattributes").read_text(encoding="utf-8").count(_GITATTRIBUTES_MARKER) == 1
+    state = check_hygiene_state(tmp_path, cognition)
+    assert state["vcs"] == "svn"
+    assert not state["is_git"]
+    assert not state["gitattr_configured"], "a git file must not be read on Subversion"
+    assert format_hygiene_announce(state) == ""

@@ -43,6 +43,13 @@ def _write_git_config(path: Path, name: str, email: str) -> None:
     path.write_text(f"[user]\n\tname = {name}\n\temail = {email}\n", encoding="utf-8")
 
 
+def _svn_wc(root: Path) -> Path:
+    """A real-looking Subversion working copy: `.svn/wc.db`, not just `.svn`."""
+    (root / ".svn").mkdir(parents=True, exist_ok=True)
+    (root / ".svn" / "wc.db").write_bytes(b"")
+    return root
+
+
 def _write_svn_credential(config_dir: Path, username: str, realm: str = "<https://x> R") -> Path:
     d = config_dir / "auth" / "svn.simple"
     d.mkdir(parents=True, exist_ok=True)
@@ -142,14 +149,31 @@ def test_resolve_falls_back_to_os_user_with_no_email(repo):
     assert ident["confirmed"] is False
 
 
-def test_resolve_prefers_git_over_svn(repo, monkeypatch, tmp_path):
+def test_resolve_never_reads_git_config_on_an_svn_checkout(repo, monkeypatch, tmp_path):
+    """WP-VCS-Isolation: on Subversion a stale ~/.gitconfig must not become the
+    acting identity, nor even a suggestion -- the SVN user never asked for git."""
+    import getpass
+
     root, cognition = repo
     _write_git_config(tmp_path / "gitconfig", "Git Name", "git@example.com")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
-    (root / ".svn").mkdir()
+    _svn_wc(root)
     cfg = tmp_path / "svnconf"
     _write_svn_credential(cfg, "svn@example.com")
     monkeypatch.setenv("SVN_CONFIG_DIR", str(cfg))
+
+    ident = resolve_identity(root, cognition)
+    assert ident["email"] == ""
+    assert ident["source"] == SOURCE_OS_USER
+    assert ident["name"] == getpass.getuser(), "the name still falls back to the OS user"
+    assert all(s["source"] != SOURCE_GIT for s in identity_suggestions(root, cognition))
+
+
+def test_resolve_reads_git_config_on_a_git_checkout(repo, monkeypatch, tmp_path):
+    root, cognition = repo
+    _write_git_config(tmp_path / "gitconfig", "Git Name", "git@example.com")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    (root / ".git").mkdir()
 
     ident = resolve_identity(root, cognition)
     assert ident["email"] == "git@example.com"
@@ -165,7 +189,7 @@ def test_svn_is_suggestion_only_and_never_stamps_a_write(repo, monkeypatch, tmp_
     a suggestion and the write stays blocked until a human confirms.
     """
     root, cognition = repo
-    (root / ".svn").mkdir()
+    _svn_wc(root)
     cfg = tmp_path / "svnconf"
     _write_svn_credential(cfg, "svn@example.com")
     monkeypatch.setenv("SVN_CONFIG_DIR", str(cfg))
@@ -320,7 +344,7 @@ def test_gate_in_a_read_only_checkout_refuses_without_asking_anyone(repo, monkey
 
 def test_gate_error_offers_svn_candidate_without_assuming_it(repo, monkeypatch, tmp_path):
     root, cognition = repo
-    (root / ".svn").mkdir()
+    _svn_wc(root)
     cfg = tmp_path / "svnconf"
     _write_svn_credential(cfg, "jsmith")  # bare login: not a usable email
     monkeypatch.setenv("SVN_CONFIG_DIR", str(cfg))
@@ -331,18 +355,35 @@ def test_gate_error_offers_svn_candidate_without_assuming_it(repo, monkeypatch, 
     assert "jsmith" in err["error"]
 
 
-def test_suggestions_are_deduped_and_sourced(repo, monkeypatch, tmp_path):
+def test_suggestions_on_svn_come_from_svn_alone(repo, monkeypatch, tmp_path):
+    """Used to assert the git source won the dedup on an SVN tree. Since
+    WP-VCS-Isolation git config is not consulted there at all."""
     root, cognition = repo
     _write_git_config(tmp_path / "gitconfig", "Git Name", "shared@example.com")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
-    (root / ".svn").mkdir()
+    _svn_wc(root)
     cfg = tmp_path / "svnconf"
     _write_svn_credential(cfg, "shared@example.com")
     monkeypatch.setenv("SVN_CONFIG_DIR", str(cfg))
 
     got = identity_suggestions(root, cognition)
     assert [s["email"] for s in got] == ["shared@example.com"]
-    assert got[0]["source"] == SOURCE_GIT
+    assert got[0]["source"] == SOURCE_SVN
+
+
+def test_suggestions_are_deduped_between_the_identity_file_and_git(repo, monkeypatch, tmp_path):
+    root, cognition = repo
+    _write_git_config(tmp_path / "gitconfig", "Git Name", "shared@example.com")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))
+    (root / ".git").mkdir()
+    (cognition / "local").mkdir()
+    (cognition / "local" / IDENTITY_FILENAME).write_text(
+        json.dumps({"name": "Old", "email": "Shared@Example.com"}), encoding="utf-8",
+    )
+
+    got = identity_suggestions(root, cognition)
+    assert [s["email"] for s in got] == ["shared@example.com"]
+    assert got[0]["source"] != SOURCE_GIT, "the unbound identity file is offered first"
 
 
 # ── remap CLI ─────────────────────────────────────────────────────────────────
@@ -684,7 +725,7 @@ def test_confirm_rejects_malformed_address_a_suggestion_could_carry(repo):
 def test_suggestions_reject_malformed_svn_username(repo, monkeypatch, tmp_path):
     """A malformed SVN username is offered as a name, never as an email."""
     root, cognition = repo
-    (root / ".svn").mkdir()
+    _svn_wc(root)
     cfg = tmp_path / "svnconf"
     _write_svn_credential(cfg, "a b@c.com")
     monkeypatch.setenv("SVN_CONFIG_DIR", str(cfg))
@@ -754,7 +795,7 @@ def test_the_refusal_says_the_file_travelled_and_how_to_stop_it(tmp_path, monkey
     bob = tmp_path / "wc-bob" / ".cognition"
     alice.mkdir(parents=True)
     bob.mkdir(parents=True)
-    (bob.parent / ".svn").mkdir()
+    _svn_wc(bob.parent)
     write_confirmed_identity(alice, "Alice", "alice@example.com")
     _copy_checkout_identity(alice, bob)
 
@@ -764,8 +805,28 @@ def test_the_refusal_says_the_file_travelled_and_how_to_stop_it(tmp_path, monkey
     assert "alice@example.com" in msg
     assert "NOT trusted" in msg
     assert "svn rm --keep-local .cognition/local/identity.json" in msg
+    assert "git" not in msg.lower(), "an SVN user is never shown a git command"
     # It must not steer Bob into confirming as Alice.
     assert "may or may not be" in msg
+
+
+def test_the_stop_travelling_hint_names_only_the_detected_vcs(tmp_path, monkeypatch):
+    """G2: a git project whose .git sits ABOVE the project used to be told both
+    commands; a plain folder is told neither."""
+    from vibe_cognition.cognition.identity import _stop_it_travelling
+
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-gitconfig"))
+    (tmp_path / "repo" / ".git").mkdir(parents=True)
+    project = tmp_path / "repo" / "packages" / "proj"
+    project.mkdir(parents=True)
+    hint = _stop_it_travelling(project)
+    assert "git rm --cached" in hint
+    assert "svn" not in hint.lower()
+
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    hint = _stop_it_travelling(plain)
+    assert "svn" not in hint.lower() and "git" not in hint.lower()
 
 
 def test_a_file_from_another_machine_is_not_trusted(tmp_path, monkeypatch):

@@ -43,7 +43,7 @@ from typing import Any
 from .checkout_binding import binding_mismatch, current_binding, is_bound
 from .journal_io import append_journal_line
 from .local_paths import read_path, write_path
-from .svn_identity import is_svn_working_copy
+from .vcs import VCS_GIT, VCS_SVN, detect_vcs, svn_root
 
 logger = logging.getLogger(__name__)
 
@@ -66,13 +66,7 @@ LOSS_KIND_REHYDRATE = "rehydrate"
 def _wc_root(cognition_dir: Path) -> Path | None:
     """The SVN working-copy root holding this project. Since SVN 1.7 `.svn` exists
     only there, so a project checked out as a subfolder has none of its own."""
-    start = Path(cognition_dir).parent
-    for candidate in (start, *start.parents):
-        if is_svn_working_copy(candidate):
-            return candidate
-        if (candidate / ".git").exists():
-            return None
-    return None
+    return svn_root(Path(cognition_dir).parent)
 
 
 def applies_to(cognition_dir: Path) -> bool:
@@ -149,8 +143,17 @@ def _git_source(cognition_dir: Path) -> dict[str, Any] | None:
 
 def checkout_source(cognition_dir: Path) -> dict[str, Any] | None:
     """Where this checkout's journal comes from: an SVN URL+revision, or a git
-    branch+commit, or None when the project is not under either."""
-    return journal_source(cognition_dir) or _git_source(cognition_dir)
+    branch+commit, or None when the project is not under either.
+
+    Only the detected VCS is consulted: an SVN project never has an ancestor
+    `.git` read, and a git project never has `.svn` looked for (WP-VCS-Isolation).
+    """
+    vcs = detect_vcs(Path(cognition_dir).parent)
+    if vcs == VCS_SVN:
+        return journal_source(cognition_dir)
+    if vcs == VCS_GIT:
+        return _git_source(cognition_dir)
+    return None
 
 
 def source_moved(cognition_dir: Path) -> bool:

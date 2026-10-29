@@ -30,6 +30,7 @@ from .scope import SCOPE_PERSONAL, SCOPE_PROJECT, SCOPE_REVIEW_KEY, node_scope, 
 from .storage import REHYDRATE_FLAG_FILENAME, CognitionStorage
 from .svn_hygiene import ensure_svn_hygiene, format_svn_announce
 from .task_meta import _task_claimed_at
+from .vcs import VCS_GIT, VCS_NONE, VCS_SVN, detect_vcs
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "normal": 2, "low": 3}
 
@@ -927,28 +928,40 @@ def _format_since_you_were_gone(
     return "## Since You Were Gone\n" + "\n".join(lines)
 
 
-IDENTITY_REQUIRED_NOTICE = (
-    "## ACTION REQUIRED -- graph identity not set\n"
-    "No email address resolves from git config or SVN credentials on this machine, "
-    "so **recording to the graph is currently REFUSED**. Reads still work.\n"
-    "- ASK THE HUMAN for their name and work email, then call "
-    "cognition_set_identity(name=..., email=...).\n"
-    "- Do NOT guess an address, and never use an agent name -- memories are "
-    "attributed to the person, not the agent."
-)
+_IDENTITY_UNRESOLVED_BY_VCS = {
+    VCS_GIT: "No email address resolves from git config on this machine",
+    VCS_SVN: (
+        "No email address resolves on this machine (SVN usernames are offered as "
+        "suggestions only, never assumed)"
+    ),
+    VCS_NONE: "No email address resolves on this machine",
+}
+
+
+def identity_required_notice(vcs: str) -> str:
+    """The blocked-identity banner, worded for the detected VCS only (WP-VCS-Isolation)."""
+    why = _IDENTITY_UNRESOLVED_BY_VCS.get(vcs, _IDENTITY_UNRESOLVED_BY_VCS[VCS_NONE])
+    return (
+        "## ACTION REQUIRED -- graph identity not set\n"
+        f"{why}, so **recording to the graph is currently REFUSED**. Reads still work.\n"
+        "- ASK THE HUMAN for their name and work email, then call "
+        "cognition_set_identity(name=..., email=...).\n"
+        "- Do NOT guess an address, and never use an agent name -- memories are "
+        "attributed to the person, not the agent."
+    )
 
 
 def _identity_notice(repo_path: Path, cognition_dir: Path) -> str:
     """The blocked-identity banner, or "" when an email resolves. Never raises.
 
     Fires ONLY when writes are actually gated -- an unconfirmed but resolvable
-    git/SVN identity is a working state, and nagging it every session would train
+    VCS identity is a working state, and nagging it every session would train
     people to ignore the banner that matters.
     """
     try:
         if resolve_identity(repo_path, cognition_dir).get("email"):
             return ""
-        note = IDENTITY_REQUIRED_NOTICE
+        note = identity_required_notice(detect_vcs(repo_path))
         suggestions = identity_suggestions(repo_path, cognition_dir)
         if suggestions:
             listed = ", ".join(
@@ -1102,13 +1115,60 @@ def generate_prime(
 REPAIR_NOTICE_FULL_RENDERS = 3
 
 
-def _repair_notice(info: dict) -> tuple[str, dict | None]:
+_ROLLBACK_CAUSE_BY_VCS = {
+    VCS_GIT: "the usual cause is `git checkout`, `git restore` or `git stash` putting",
+    VCS_SVN: "the usual cause is `svn revert` or an update to an older revision putting",
+    VCS_NONE: "the usual cause is something putting",
+}
+
+_REHYDRATE_RECOVERY_BY_VCS = {
+    VCS_GIT: "check `git log -- .cognition/journal .cognition/journal.jsonl` or a teammate's clone",
+    VCS_SVN: "check `svn log .cognition/journal .cognition/journal.jsonl` or a teammate's working copy",
+    VCS_NONE: "check a teammate's copy of .cognition",
+}
+
+_BETWEEN_SESSIONS_CAUSE_BY_VCS = {
+    VCS_GIT: (
+        "The usual cause is a merge or rebase that resolved a journal conflict by "
+        "taking one side, which deletes the other. A branch switch is recognised and "
+        "does NOT raise this. TELL THE USER, and do not attempt recovery without their "
+        "go-ahead. They are recoverable: `git log -- .cognition/journal "
+        ".cognition/journal.jsonl` shows the commit that dropped them, and `git show "
+        "<earlier>:<file>` on the person's shard under .cognition/journal/ (or the "
+        "legacy .cognition/journal.jsonl) has the lines to add back"
+    ),
+    VCS_SVN: (
+        "The usual cause on Subversion is resolving a journal conflict with 'use mine' "
+        "or 'use theirs', which deletes one side. A branch switch or an update to "
+        "an older revision is recognised and does NOT raise this. TELL THE USER, "
+        "and do not attempt recovery without their go-ahead. They are "
+        "recoverable: `svn log .cognition/journal .cognition/journal.jsonl` shows "
+        "the revision that dropped them, and `svn cat -r <earlier> <file>` on the "
+        "person's shard under .cognition/journal/ (or the legacy "
+        ".cognition/journal.jsonl) has the lines to add back"
+    ),
+    VCS_NONE: (
+        "The usual cause is a journal conflict resolved by taking one side, which "
+        "deletes the other. TELL THE USER, and do not attempt recovery without their "
+        "go-ahead. They are recoverable from a teammate's copy of the person's shard "
+        "under .cognition/journal/ (or the legacy .cognition/journal.jsonl), which "
+        "has the lines to add back"
+    ),
+}
+
+
+def _by_vcs(table: dict[str, str], vcs: str) -> str:
+    return table.get(vcs, table[VCS_NONE])
+
+
+def _repair_notice(info: dict, vcs: str = VCS_NONE) -> tuple[str, dict | None]:
     """The WP-Append-Only-Replay notice, and the notice to keep for next time.
 
     Unlike a loss report, this one is READ WITHOUT BEING CLEARED while its condition
     holds: a file on disk is still missing entries. The incident this was built for
     went unnoticed for 90 minutes precisely because the old flag showed once. Storage
-    clears it when the entries come back, or `accept-disk` does.
+    clears it when the entries come back, or `accept-disk` does. Worded for the
+    detected VCS only (WP-VCS-Isolation).
     """
     shown = int(info.get("shown") or 0) + 1
     kept = {**info, "shown": shown}
@@ -1119,11 +1179,10 @@ def _repair_notice(info: dict) -> tuple[str, dict | None]:
             return "", None  # the data is safe and the point has been made
         return (
             f"NOTE (vibe-cognition): this checkout's journal file had lost {healed} "
-            "entr(y/ies) it had written -- the usual cause is `git checkout`, `git "
-            "restore`, `git stash` or `svn revert` putting an older copy of "
-            ".cognition on disk. They were appended back automatically from this "
-            "machine's own record, so nothing was lost. COMMIT the journal file so "
-            "teammates get them too, and tell the user this happened."
+            f"entr(y/ies) it had written -- {_by_vcs(_ROLLBACK_CAUSE_BY_VCS, vcs)} an "
+            "older copy of .cognition on disk. They were appended back automatically "
+            "from this machine's own record, so nothing was lost. COMMIT the journal "
+            "file so teammates get them too, and tell the user this happened."
         ), kept
 
     files = [str(f) for f in (info.get("retained_files") or [])]
@@ -1185,24 +1244,26 @@ def _render_notices(cognition_dir: Path, flag: Path) -> str:
     # report is shown once. Rendering only the first would hide the others (review).
     rendered: list[str] = []
     keep: list[dict] = []
+    vcs = detect_vcs(Path(cognition_dir).parent)
     for info in notices:
         if info.get("kind") in (LOSS_KIND_HEALED, LOSS_KIND_RETAINED):
-            text, still = _repair_notice(info)
+            text, still = _repair_notice(info, vcs)
             if text:
                 rendered.append(text)
             if still is not None:
                 keep.append(still)
             continue
-        text = _loss_notice(info)
+        text = _loss_notice(info, vcs)
         if text:
             rendered.append(text)
     write_notices(local_write_path(cognition_dir, REHYDRATE_FLAG_FILENAME), keep)
     return "\n\n".join(rendered)
 
 
-def _loss_notice(info: dict) -> str:
+def _loss_notice(info: dict, vcs: str = VCS_NONE) -> str:
     """The one-shot loss report: a rehydrate that dropped nodes, or a between-sessions
-    loss. Shown once, then gone -- the condition it describes is already over."""
+    loss. Shown once, then gone -- the condition it describes is already over. Worded
+    for the detected VCS only (WP-VCS-Isolation)."""
     try:
         lost = int(info["nodes_lost"])
         at = str(info.get("at", "unknown time"))
@@ -1214,23 +1275,15 @@ def _loss_notice(info: dict) -> str:
         return (
             f"WARNING (vibe-cognition): {lost} memor{'y' if lost == 1 else 'ies'} this "
             f"checkout had before are GONE from the journal{sample_note}, with no "
-            "deletion record -- this happened between sessions, not during one. The "
-            "usual cause on Subversion is resolving a journal conflict with 'use mine' "
-            "or 'use theirs', which deletes one side. A branch switch or an update to "
-            "an older revision is recognised and does NOT raise this. TELL THE USER, "
-            "and do not attempt recovery without their go-ahead. They are "
-            "recoverable: `svn log .cognition/journal .cognition/journal.jsonl` shows "
-            "the revision that dropped them, and `svn cat -r <earlier> <file>` on the "
-            "person's shard under .cognition/journal/ (or the legacy "
-            ".cognition/journal.jsonl) has the lines to add back -- only the missing "
+            "deletion record -- this happened between sessions, not during one. "
+            f"{_by_vcs(_BETWEEN_SESSIONS_CAUSE_BY_VCS, vcs)} -- only the missing "
             "ids above, never the whole older file."
         )
     return (
         "WARNING (vibe-cognition): in a previous session a journal file was replaced or "
         f"truncated under a live server ({at}); {lost} node(s) recorded in that "
         f"session are no longer on disk{sample_note} — "
-        "check `git log -- .cognition/journal .cognition/journal.jsonl` or a teammate's "
-        "clone to recover, and alert the user."
+        f"{_by_vcs(_REHYDRATE_RECOVERY_BY_VCS, vcs)} to recover, and alert the user."
     )
 
 

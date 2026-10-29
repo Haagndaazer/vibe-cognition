@@ -41,6 +41,7 @@ import time
 from pathlib import Path
 
 from .local_paths import RELOCATED_FILENAMES, local_dir, read_path, write_path
+from .vcs import VCS_GIT, VCS_SVN, detect_vcs
 
 logger = logging.getLogger(__name__)
 
@@ -375,6 +376,9 @@ def ensure_git_hygiene(repo_path: Path, cognition_dir: Path) -> None:
 
     Args:
         repo_path: Repository root; .gitattributes is written only when it holds .git.
+            Under Subversion no .gitignore is written either: the SVN pass carries the
+            ignore list in svn:global-ignores, and a git-named file in an SVN
+            repository is exactly what WP-VCS-Isolation removes.
         cognition_dir: .cognition/ directory (flag lives here).
     """
     if _opt_out():
@@ -391,7 +395,8 @@ def ensure_git_hygiene(repo_path: Path, cognition_dir: Path) -> None:
     # exists while the files it no longer names are still at the legacy path.
     relocated = _relocate_local_files(cognition_dir)
 
-    is_git = (repo_path / ".git").exists()
+    vcs = detect_vcs(repo_path)
+    is_git = vcs == VCS_GIT and (repo_path / ".git").exists()
 
     gitattributes_path = repo_path / ".gitattributes"
     ga_ok = True
@@ -400,7 +405,7 @@ def ensure_git_hygiene(repo_path: Path, cognition_dir: Path) -> None:
         ga_ok = _write_gitattributes(gitattributes_path, cognition_dir)
     # else already present, or not a git repo — counts as resolved
 
-    gi_ok = _write_gitignore(cognition_dir)
+    gi_ok = True if vcs == VCS_SVN else _write_gitignore(cognition_dir)
 
     if ga_ok and gi_ok and relocated:
         try:
@@ -415,32 +420,32 @@ def check_hygiene_state(repo_path: Path, cognition_dir: Path) -> dict:
     Returns a dict with keys:
       - gitattr_configured: our marker is present in .gitattributes
       - gitignore_configured: chromadb/ is present in .cognition/.gitignore
-      - is_git / is_svn: which VCS the working copy is under, if any
+      - vcs: "git" | "svn" | "none" from vcs.detect_vcs
+      - is_git: vcs is git AND .git sits at the project root itself (where
+        .gitattributes goes)
+      - is_svn: vcs == "svn"
+    On Subversion no git file is read: .gitattributes is never consulted there
+    (a git-svn bridge is "svn" by ruling), so gitattr_configured stays False.
     Never raises.
     """
+    vcs = detect_vcs(repo_path)
     result = {
         "gitattr_configured": False,
         "gitignore_configured": False,
+        "vcs": vcs,
         "is_git": False,
-        "is_svn": False,
+        "is_svn": vcs == VCS_SVN,
     }
-    with contextlib.suppress(OSError):
-        result["is_git"] = (repo_path / ".git").exists()
-    with contextlib.suppress(OSError):
-        # .svn exists only at the working-copy root, which may be above the project.
-        for candidate in (repo_path, *repo_path.parents):
-            if (candidate / ".svn").exists():
-                result["is_svn"] = True
-                break
-            if (candidate / ".git").exists():
-                break
-    try:
-        gitattributes_path = repo_path / ".gitattributes"
-        if gitattributes_path.exists():
-            content = gitattributes_path.read_text(encoding="utf-8")
-            result["gitattr_configured"] = _GITATTRIBUTES_MARKER in content
-    except OSError:
-        pass
+    if vcs == VCS_GIT:
+        with contextlib.suppress(OSError):
+            result["is_git"] = (repo_path / ".git").exists()
+        try:
+            gitattributes_path = repo_path / ".gitattributes"
+            if gitattributes_path.exists():
+                content = gitattributes_path.read_text(encoding="utf-8")
+                result["gitattr_configured"] = _GITATTRIBUTES_MARKER in content
+        except OSError:
+            pass
     try:
         gitignore_path = cognition_dir / ".gitignore"
         if gitignore_path.exists():
@@ -457,16 +462,17 @@ def check_hygiene_state(repo_path: Path, cognition_dir: Path) -> dict:
 def format_hygiene_announce(state: dict) -> str:
     """Format a one-line announce string from check_hygiene_state output, or empty string.
 
-    On a non-git working copy the line also warns that the journal has no
-    union-merge equivalent, since a reader who knows the git behaviour would
-    otherwise assume parity.
+    Reached on Subversion only when the automatic SVN pass did not run (opted out),
+    and then it speaks SVN; on git and on no VCS it never mentions Subversion
+    (WP-VCS-Isolation).
     """
+    svn = state.get("vcs") == VCS_SVN
     parts = []
     if state.get("gitattr_configured"):
         parts.append("journal union-merge (.gitattributes)")
-    if state.get("gitignore_configured") and state.get("is_svn") and not state.get("is_git"):
+    if state.get("gitignore_configured") and svn:
         parts.append(
-            ".cognition/.gitignore written, but SVN does NOT read it -- mirror it once as "
+            ".cognition/.gitignore is present, but SVN does NOT read it -- mirror it once as "
             "svn:global-ignores and run `svn add --force .cognition` before every commit, "
             "or new profiles never reach teammates"
         )
@@ -475,10 +481,9 @@ def format_hygiene_announce(state: dict) -> str:
     if not parts:
         return ""
     line = "vibe-cognition configured: " + ", ".join(parts) + "."
-    if not state.get("gitattr_configured"):
-        vcs = "SVN" if state.get("is_svn") else "This VCS"
+    if svn and not state.get("gitattr_configured"):
         line += (
-            f" {vcs} has no union-merge equivalent, so concurrent journal appends"
+            " SVN has no union-merge equivalent, so concurrent journal appends"
             " CONFLICT -- resolve by keeping BOTH sides (the journal is append-only"
             " and order does not matter). See 'Team setup (svn)' via cognition_readme."
         )

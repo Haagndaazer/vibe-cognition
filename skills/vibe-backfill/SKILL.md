@@ -27,6 +27,10 @@ would still be found by this skill.
 
 ## Steps
 
+### Step 0: Confirm this is a git repository
+
+This skill reads git history and nothing else. Before running ANY git command, check that the project root (`repo_path` from `get_status`) has a `.git` entry at or above it. If it does not (for example a Subversion working copy, which has `.svn` instead), tell the user that backfill is git-only and stop here — do not run `git` to find out, because on a non-git project no git command may be invoked at all.
+
 ### Step 1: Find the last backfilled commit
 
 Fetch the most recent episode nodes via `cognition_get_history(node_type="episode", limit=5)`. Look at their `references` fields for `commit:<hash>` entries. The newest commit hash among those is the **watermark** — the last commit already in the graph.

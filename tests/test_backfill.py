@@ -6,10 +6,61 @@ Never invokes real git subprocess -- monkeypatches _get_recent_commits/
 _get_changed_files (the two functions that wrap subprocess.run) directly.
 """
 
+import subprocess
+
 import pytest
 
-from vibe_cognition.cognition.backfill import main
+from vibe_cognition.cognition.backfill import (
+    GIT_ONLY_MESSAGE,
+    _get_changed_files,
+    _get_recent_commits,
+    main,
+)
 from vibe_cognition.cognition.storage import CognitionStorage
+
+
+def _git_project(tmp_path):
+    """main() refuses to run off a git repository, so every report test needs one."""
+    (tmp_path / ".git").mkdir()
+    return tmp_path
+
+
+def _svn_project(tmp_path):
+    (tmp_path / ".svn").mkdir()
+    (tmp_path / ".svn" / "wc.db").write_bytes(b"")
+    return tmp_path
+
+
+def _recording_run(monkeypatch):
+    calls = []
+
+    def _fake(*a, **k):
+        calls.append(a)
+        raise AssertionError("subprocess must not be spawned")
+
+    monkeypatch.setattr(subprocess, "run", _fake)
+    return calls
+
+
+def test_no_git_is_spawned_on_an_svn_project(tmp_path, monkeypatch):
+    """WP-VCS-Isolation: the call COUNT is the proof that no process was started;
+    the mock also raises so a spawn can never pass unnoticed."""
+    calls = _recording_run(monkeypatch)
+    _svn_project(tmp_path)
+    assert _get_recent_commits(tmp_path) == []
+    assert _get_changed_files(tmp_path, "abc123") == []
+    assert calls == []
+
+
+def test_the_cli_says_it_is_git_only_on_an_svn_project(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("REPO_PATH", str(_svn_project(tmp_path)))
+    CognitionStorage(tmp_path / ".cognition")
+    calls = _recording_run(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        main([])
+    assert exc.value.code == 1
+    assert GIT_ONLY_MESSAGE in capsys.readouterr().out
+    assert calls == []
 
 
 def test_help_exits_zero_and_never_runs_the_report(tmp_path, monkeypatch, capsys):
@@ -53,7 +104,7 @@ def test_rejects_non_positive_days(tmp_path, monkeypatch):
 def test_days_flag_reaches_get_recent_commits(tmp_path, monkeypatch):
     """WP-13/H-6(b) (21232d2acaea): --days N must actually change the window
     passed to _get_recent_commits, not just exist as a no-op flag."""
-    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("REPO_PATH", str(_git_project(tmp_path)))
     CognitionStorage(tmp_path / ".cognition")  # creates .cognition/ so main() proceeds
     seen = {}
 
@@ -68,7 +119,7 @@ def test_days_flag_reaches_get_recent_commits(tmp_path, monkeypatch):
 
 
 def test_default_days_is_30_when_flag_omitted(tmp_path, monkeypatch):
-    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("REPO_PATH", str(_git_project(tmp_path)))
     CognitionStorage(tmp_path / ".cognition")
     seen = {}
 
@@ -91,7 +142,7 @@ def test_no_cognition_dir_exits_one(tmp_path, monkeypatch, capsys):
 
 
 def test_no_commits_message_mentions_the_actual_days_value(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("REPO_PATH", str(_git_project(tmp_path)))
     CognitionStorage(tmp_path / ".cognition")
     monkeypatch.setattr(
         "vibe_cognition.cognition.backfill._get_recent_commits", lambda *a, **k: []
@@ -103,7 +154,7 @@ def test_no_commits_message_mentions_the_actual_days_value(tmp_path, monkeypatch
 
 
 def test_all_tracked_message_mentions_the_actual_days_value(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("REPO_PATH", str(_git_project(tmp_path)))
     storage = CognitionStorage(tmp_path / ".cognition")
     from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
 
@@ -125,7 +176,7 @@ def test_all_tracked_message_mentions_the_actual_days_value(tmp_path, monkeypatc
 
 
 def test_untracked_report_mentions_the_actual_days_value(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("REPO_PATH", str(_git_project(tmp_path)))
     CognitionStorage(tmp_path / ".cognition")
     monkeypatch.setattr(
         "vibe_cognition.cognition.backfill._get_recent_commits",

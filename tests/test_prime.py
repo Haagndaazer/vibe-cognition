@@ -1316,3 +1316,81 @@ def test_main_no_harness_note_when_env_absent(tmp_path, monkeypatch):
 
     ctx = json.loads(buf.getvalue())["hookSpecificOutput"]["additionalContext"]
     assert "registered its MCP server" not in ctx
+
+
+# ── WP-VCS-Isolation: every dynamic notice speaks only the detected VCS ────────
+
+_VCS_WORDS = {
+    "git": ("git",),
+    "svn": ("svn", "subversion"),
+}
+
+
+def _assert_vcs_pure(text: str, vcs: str) -> None:
+    lowered = text.lower()
+    other = "svn" if vcs == "git" else "git"
+    for word in _VCS_WORDS[other]:
+        assert word not in lowered, f"{vcs} notice mentions {word!r}: {text}"
+    if vcs == "none":
+        for word in _VCS_WORDS["git"] + _VCS_WORDS["svn"]:
+            assert word not in lowered, f"no-VCS notice mentions {word!r}: {text}"
+
+
+@pytest.mark.parametrize("vcs", ["git", "svn", "none"])
+def test_the_identity_banner_names_only_the_detected_vcs(vcs):
+    from vibe_cognition.cognition.prime import identity_required_notice
+
+    text = identity_required_notice(vcs)
+    assert "ACTION REQUIRED" in text and "cognition_set_identity" in text
+    _assert_vcs_pure(text.replace("cognition_set_identity", ""), vcs)
+
+
+@pytest.mark.parametrize("vcs", ["git", "svn", "none"])
+def test_the_healed_journal_note_names_only_the_detected_vcs(vcs):
+    from vibe_cognition.cognition.journal_watch import LOSS_KIND_HEALED
+    from vibe_cognition.cognition.prime import _repair_notice
+
+    text, kept = _repair_notice({"kind": LOSS_KIND_HEALED, "healed_lines": 2}, vcs)
+    assert kept is not None
+    assert "appended back automatically" in text and "COMMIT" in text and "tell the user" in text
+    _assert_vcs_pure(text, vcs)
+
+
+@pytest.mark.parametrize("vcs", ["git", "svn", "none"])
+def test_the_rehydrate_loss_warning_names_only_the_detected_vcs(vcs):
+    from vibe_cognition.cognition.prime import _loss_notice
+
+    text = _loss_notice({"kind": "rehydrate", "nodes_lost": 1, "at": "t"}, vcs)
+    assert "WARNING" in text and "alert the user" in text
+    _assert_vcs_pure(text, vcs)
+
+
+@pytest.mark.parametrize("vcs", ["git", "svn", "none"])
+def test_the_between_sessions_loss_warning_names_only_the_detected_vcs(vcs):
+    """G1: this warning was SVN-worded for everyone after loss detection went
+    every-project in 0.44.0."""
+    from vibe_cognition.cognition.journal_watch import LOSS_KIND_BETWEEN_SESSIONS
+    from vibe_cognition.cognition.prime import _loss_notice
+
+    text = _loss_notice({"kind": LOSS_KIND_BETWEEN_SESSIONS, "nodes_lost": 3}, vcs)
+    assert "TELL THE USER" in text and "never the whole older file" in text
+    _assert_vcs_pure(text, vcs)
+
+
+def test_rendered_notices_take_the_vcs_from_the_project(tmp_path):
+    """The persisted notice dicts carry no VCS; prime detects it at render time."""
+    from vibe_cognition.cognition.journal_watch import LOSS_KIND_HEALED
+    from vibe_cognition.cognition.loss_notices import write_notices
+    from vibe_cognition.cognition.prime import _render_notices
+    from vibe_cognition.cognition.storage import REHYDRATE_FLAG_FILENAME
+
+    (tmp_path / ".svn").mkdir()
+    (tmp_path / ".svn" / "wc.db").write_bytes(b"")
+    cognition = tmp_path / ".cognition"
+    (cognition / "local").mkdir(parents=True)
+    flag = cognition / "local" / REHYDRATE_FLAG_FILENAME
+    write_notices(flag, [{"kind": LOSS_KIND_HEALED, "healed_lines": 1}])
+
+    text = _render_notices(cognition, flag)
+    assert "svn revert" in text
+    assert "git" not in text.lower()

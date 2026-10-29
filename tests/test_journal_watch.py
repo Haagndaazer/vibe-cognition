@@ -470,3 +470,59 @@ def test_losing_your_own_personal_constraint_is_repaired_like_any_other_line(svn
     flag = _healed(svn_checkout)
     assert flag["healed_lines"] == 1
     assert "alice-private" not in json.dumps(flag), "the alert must not name a personal constraint"
+
+
+def _svn_wc(root):
+    (root / ".svn").mkdir(parents=True, exist_ok=True)
+    (root / ".svn" / "wc.db").write_bytes(b"")
+    return root
+
+
+def test_an_svn_project_never_has_an_ancestor_git_directory_read(tmp_path, monkeypatch):
+    """S13 (WP-VCS-Isolation): with the working-copy database unreadable the old
+    checkout_source fell through to git and read any ancestor .git/HEAD."""
+    from vibe_cognition.cognition import journal_watch
+
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    wc = _svn_wc(tmp_path / "vendor" / "wc")
+    cognition = wc / ".cognition"
+    cognition.mkdir()
+
+    def _never(*a, **k):
+        raise AssertionError("git was consulted on an SVN project")
+
+    monkeypatch.setattr(journal_watch, "_git_source", _never)
+    assert journal_watch.checkout_source(cognition) is None
+
+
+def test_a_git_project_never_has_svn_looked_for(tmp_path, monkeypatch):
+    """G6: a git project under an outer SVN checkout used to have wc.db queried first."""
+    from vibe_cognition.cognition import journal_watch
+
+    _svn_wc(tmp_path)
+    project = tmp_path / "gitproj"
+    (project / ".git").mkdir(parents=True)
+    (project / ".git" / "HEAD").write_text("abc123\n", encoding="utf-8")
+    cognition = project / ".cognition"
+    cognition.mkdir()
+
+    def _never(*a, **k):
+        raise AssertionError("svn was consulted on a git project")
+
+    monkeypatch.setattr(journal_watch, "journal_source", _never)
+    assert journal_watch.checkout_source(cognition) == {"git_head": "abc123", "commit": "abc123"}
+
+
+def test_a_merge_in_an_ancestor_git_repo_does_not_contest_an_svn_journal(tmp_path):
+    """S13: _file_is_contested looked for MERGE_HEAD up the tree on every project."""
+    from vibe_cognition.cognition.storage import _file_is_contested
+
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "MERGE_HEAD").write_text("deadbeef\n", encoding="utf-8")
+    wc = _svn_wc(tmp_path / "vendor" / "wc")
+    cognition = wc / ".cognition"
+    cognition.mkdir()
+    journal = cognition / "journal.jsonl"
+    journal.write_text("", encoding="utf-8")
+    assert _file_is_contested(journal) is False

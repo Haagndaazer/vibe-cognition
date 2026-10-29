@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.46.0] - 2026-10-28
+
+### Fixed
+- **A Subversion user never meets git, and a git user never meets Subversion.** One
+  detector (`cognition/vcs.py`: walk up from the project, `.svn/wc.db` means SVN, `.git`
+  means git, SVN wins when both share a level) now gates every place the plugin used to
+  reach for the other system. On an SVN checkout: identity no longer reads `~/.gitconfig`
+  (a stale git email used to be stamped as the unconfirmed identity and offered as a
+  suggestion), no `.cognition/.gitignore` is written (the ignore list lives in
+  `svn:global-ignores`; a file already committed is left for a human to remove, Colton
+  ruling 2026-10-28), git-named files are ignored so `documents/.gitignore` never shows in
+  `svn status`, the backfill CLI, the identity-backfill CLI and the `/vibe-backfill`
+  skill refuse to run instead of invoking `git`, and the journal watch never reads an
+  ancestor `.git`. On a git checkout: the between-sessions loss warning no longer talks
+  about Subversion, the hygiene announce no longer points a project under a monorepo
+  root at "Team setup (svn)", the stop-travelling hint names one command, and no `.svn`
+  is looked for. Every session-start notice (identity required, healed journal, rehydrate
+  loss, between-sessions loss) is worded for the detected VCS only.
+- Known and accepted: the per-machine list of local-only documents is still the file
+  `.cognition/documents/.gitignore` on every VCS (git needs it under that name, and
+  renaming it would migrate every git checkout). On SVN it is never added and is now
+  hidden from `svn status`; a VCS-neutral manifest is a possible follow-up.
+- Static reference text (`cognition_readme`, README, tool docstrings) still describes
+  both systems, by ruling. No MCP tool parameter, return key or error changed; docstrings
+  that said "resolved from git config" now say "from the confirmed identity".
+
 ## [0.45.0] - 2026-10-05
 
 ### Fixed

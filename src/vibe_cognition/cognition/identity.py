@@ -13,7 +13,9 @@ on one machine attributes to whatever address happens to be in git config.
 
 Resolution order (first hit wins):
   1. CONFIRMED -- ``.cognition/local/identity.json``, written by answering once
-  2. git config files -- resolves, but does NOT satisfy the gate
+  2. git config files -- resolves, but does NOT satisfy the gate. Consulted only
+     when the project is NOT a Subversion working copy (WP-VCS-Isolation): an SVN
+     user's attribution must never come from a git file they may not know exists.
   3. OS user (name only, never an email)
 
 SVN credentials are SUGGESTION-ONLY and never stamp a write: the auth cache is
@@ -30,6 +32,7 @@ inferred identity on its own (decision 833e9f67de4d).
 """
 
 import contextlib
+import getpass
 import json
 import logging
 import os
@@ -47,7 +50,8 @@ from .git_identity import resolve_git_identity
 from .local_paths import local_dir, read_path, write_path
 from .people_facts import fold_email
 from .profiles import SENIORITY_LEVELS
-from .svn_identity import _looks_like_email, is_svn_working_copy, svn_username_candidates
+from .svn_identity import _looks_like_email, svn_username_candidates
+from .vcs import VCS_GIT, VCS_SVN, detect_vcs
 
 logger = logging.getLogger(__name__)
 
@@ -200,16 +204,21 @@ def resolve_identity(repo_path: Path | str, cognition_dir: Path | str) -> dict[s
             "machine": info["machine"], "mismatch": info["mismatch"],
         }}
 
-    git = resolve_git_identity(repo_path)
-    git_email = _casefold_email(git.get("email", ""))
-    if git_email:
-        return {
-            "name": git.get("name") or git_email,
-            "email": git_email,
-            "source": SOURCE_GIT,
-            "confirmed": False,
-            **untrusted,
-        }
+    name = ""
+    if detect_vcs(repo_path) != VCS_SVN:
+        git = resolve_git_identity(repo_path)
+        git_email = _casefold_email(git.get("email", ""))
+        if git_email:
+            return {
+                "name": git.get("name") or git_email,
+                "email": git_email,
+                "source": SOURCE_GIT,
+                "confirmed": False,
+                **untrusted,
+            }
+        name = git.get("name", "")
+    if not name:
+        name = _os_user()
 
     # SVN is deliberately SUGGESTION-ONLY and never stamps a write. Its auth cache
     # is machine-wide and realm-keyed, and nothing here correlates a realm to this
@@ -220,12 +229,19 @@ def resolve_identity(repo_path: Path | str, cognition_dir: Path | str) -> dict[s
     # cognition_set_identity and is authoritative from then on. See
     # identity_suggestions(), which DOES surface SVN candidates for that prompt.
     return {
-        "name": git.get("name") or "unknown",
+        "name": name or "unknown",
         "email": "",
         "source": SOURCE_OS_USER,
         "confirmed": False,
         **untrusted,
     }
+
+
+def _os_user() -> str:
+    try:
+        return getpass.getuser()
+    except Exception:  # noqa: BLE001 - getpass raises with no user env at all
+        return ""
 
 
 def identity_suggestions(repo_path: Path | str, cognition_dir: Path | str) -> list[dict[str, str]]:
@@ -246,14 +262,16 @@ def identity_suggestions(repo_path: Path | str, cognition_dir: Path | str) -> li
         # offered first -- but still only a candidate: it could also have leaked.
         _add(info["identity"]["name"], info["identity"]["email"], SOURCE_IDENTITY_FILE)
 
-    git = resolve_git_identity(repo_path)
-    if git.get("email"):
-        _add(git.get("name", ""), git["email"], SOURCE_GIT)
+    vcs = detect_vcs(repo_path)
+    if vcs != VCS_SVN:
+        git = resolve_git_identity(repo_path)
+        if git.get("email"):
+            _add(git.get("name", ""), git["email"], SOURCE_GIT)
     if info["status"] == FILE_FOREIGN and info["identity"]:
         # Offered LAST: written for another machine or folder, so more likely a
         # teammate's file that travelled than this person's own.
         _add(info["identity"]["name"], info["identity"]["email"], SOURCE_IDENTITY_FILE)
-    if is_svn_working_copy(repo_path):
+    if vcs == VCS_SVN:
         for cand in svn_username_candidates():
             username = cand["username"]
             if _looks_like_email(username):
@@ -286,15 +304,13 @@ def can_persist_identity(cognition_dir: Path | str) -> bool:
 def _stop_it_travelling(repo_path: Path | str) -> str:
     """The exact command that takes the identity file out of version control."""
     rel = ".cognition/local/identity.json"
-    svn = f"`svn rm --keep-local {rel}`"
-    git = f"`git rm --cached {rel}`"
-    root = Path(repo_path)
-    if is_svn_working_copy(root):
-        how = f"run {svn}"
-    elif (root / ".git").exists():
-        how = f"run {git}"
+    vcs = detect_vcs(repo_path)
+    if vcs == VCS_SVN:
+        how = f"run `svn rm --keep-local {rel}`"
+    elif vcs == VCS_GIT:
+        how = f"run `git rm --cached {rel}`"
     else:
-        how = f"run {svn} (SVN) or {git} (git)"
+        how = "remove it from version control"
     return (
         f"If it is under version control, {how} so it stops travelling, and make sure "
         ".cognition/local is ignored."
@@ -338,8 +354,9 @@ def require_identity(
               `identity_file: {status, name, email, machine, mismatch}` when an
               identity file exists here but is not trusted (see
               inspect_confirmed_identity).
-          `suggestions` -- candidates from git config and cached SVN
-              credentials; empty on the read-only branch.
+          `suggestions` -- candidates from this checkout's own VCS (git config
+              on git, cached SVN usernames on Subversion); empty on the
+              read-only branch.
           `confirmed` -- bool, whether the checkout is claimed at all. Absent on
               the read-only branch.
           `missing_profile_fields` -- the list passed in, echoed so the agent can
