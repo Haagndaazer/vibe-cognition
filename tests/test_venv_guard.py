@@ -61,7 +61,7 @@ def test_check_stops_at_first_failure_does_not_probe_later_modules():
     check (matches the READ-ONLY, fast-fail intent -- no reason to keep
     probing once one native dep is confirmed broken)."""
     ok, err = _venv_guard.check(
-        real_import_modules=("definitely_not_a_real_module_xyz", "chromadb")
+        real_import_modules=("definitely_not_a_real_module_xyz", "numpy")
     )
     assert ok is False
     assert "definitely_not_a_real_module_xyz" in err

@@ -36,7 +36,7 @@ from vibe_cognition.dashboard.server import (
 
 
 class _FakeEmbeddingStorage:
-    """Minimal stand-in for ChromaDBStorage — avoids spinning up a real DB."""
+    """Minimal stand-in for VectorStore — avoids spinning up a real DB."""
 
     def __init__(self):
         self._deleted: list[str] = []
@@ -52,6 +52,9 @@ class _FakeEmbeddingStorage:
 
     def delete_by_node_id(self, node_id: str) -> None:
         pass
+
+    def existing_ids(self, ids) -> set[str]:
+        return set()
 
     def vector_search(self, query_embedding, limit, entity_type=None):
         self.last_limit = limit
@@ -435,7 +438,7 @@ class TestSearch:
         re-embed-on-replay drain, or a teammate's replayed node stays
         invisible in dashboard search until an MCP search happens to run
         first. Verifies the wiring (not the full embed mechanics — those are
-        covered against a real ChromaDBStorage in test_reembed_on_replay.py)."""
+        covered against a real VectorStore in test_reembed_on_replay.py)."""
         c, lc = client
         lc["embedding_generator"] = _FakeEmbeddingGenerator()
         lc["embedding_ready"].set()
@@ -445,7 +448,8 @@ class TestSearch:
 
         assert r.status_code == 200
         mock_drain.assert_called_once_with(
-            lc["cognition_storage"], lc["cognition_embedding_storage"], lc["embedding_generator"]
+            lc["cognition_storage"], lc["cognition_embedding_storage"], lc["embedding_generator"],
+            index_syncing=False,
         )
 
     def test_search_drops_cross_process_ghost(self, client):

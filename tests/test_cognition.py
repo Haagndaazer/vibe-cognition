@@ -786,7 +786,7 @@ class TestJournalCatchUp:
 
 
 class _FakeEmbedStore:
-    """Minimal stand-in for ChromaDBStorage.delete_embedding."""
+    """Minimal stand-in for VectorStore.delete_embedding."""
 
     def __init__(self, raise_on_delete=False):
         self.deleted: list[str] = []

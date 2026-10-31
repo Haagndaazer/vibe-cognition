@@ -19,7 +19,7 @@ from .journal_shards import format_straggler_warning, straggler_report
 from .journal_watch import LOSS_KIND_BETWEEN_SESSIONS, LOSS_KIND_HEALED, LOSS_KIND_RETAINED
 from .local_paths import read_path as local_read_path
 from .local_paths import write_path as local_write_path
-from .loss_notices import notices_lock, read_notices, write_notices
+from .loss_notices import VECTOR_STORE_REBUILT_KIND, notices_lock, read_notices, write_notices
 from .models import CognitionEdgeType, CognitionNodeType
 from .people_facts import fold_email
 from .person_migration import consume_migration_report, format_migration_announce
@@ -1246,6 +1246,9 @@ def _render_notices(cognition_dir: Path, flag: Path) -> str:
     keep: list[dict] = []
     vcs = detect_vcs(Path(cognition_dir).parent)
     for info in notices:
+        if info.get("kind") == VECTOR_STORE_REBUILT_KIND:
+            rendered.append(_vector_store_rebuilt_notice(info))
+            continue
         if info.get("kind") in (LOSS_KIND_HEALED, LOSS_KIND_RETAINED):
             text, still = _repair_notice(info, vcs)
             if text:
@@ -1258,6 +1261,16 @@ def _render_notices(cognition_dir: Path, flag: Path) -> str:
             rendered.append(text)
     write_notices(local_write_path(cognition_dir, REHYDRATE_FLAG_FILENAME), keep)
     return "\n\n".join(rendered)
+
+
+def _vector_store_rebuilt_notice(info: dict) -> str:
+    """One-shot: the search index was found damaged, set aside and rebuilt."""
+    at = str(info.get("at") or "recently")
+    return (
+        "NOTE (vibe-cognition): this project's search index was found damaged "
+        f"({at}) and has been rebuilt from the journal; no memories were lost. "
+        "Search results may be incomplete until the rebuild finishes."
+    )
 
 
 def _loss_notice(info: dict, vcs: str = VCS_NONE) -> str:

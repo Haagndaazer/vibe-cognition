@@ -704,6 +704,11 @@ class CognitionStorage:
             self._replayed_node_ids.clear()
             return ids
 
+    def requeue_replayed_node_ids(self, node_ids: list[str]) -> None:
+        """Put ids back for the next re-embed pass (the vector store could not take them)."""
+        with self._lock:
+            self._replayed_node_ids.update(node_ids)
+
     # ── Read operations ───────────────────────────────────────────────
 
     def get_node(self, node_id: str) -> dict[str, Any] | None:

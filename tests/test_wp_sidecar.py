@@ -104,7 +104,7 @@ def test_embed_and_search_round_trip_through_the_sidecar(tmp_path, monkeypatch):
     """WPS-AC2: record (upsert) -> embed (via the sidecar-backed
     EmbeddingGenerator) -> search (vector_search) finds it, end to end
     through a real subprocess."""
-    from vibe_cognition.embeddings.storage import ChromaDBStorage
+    from vibe_cognition.embeddings import VectorStore
 
     monkeypatch.setattr(SidecarSupervisor, "_spawn", _make_stub_spawn())
     config = _make_settings(tmp_path)
@@ -116,7 +116,7 @@ def test_embed_and_search_round_trip_through_the_sidecar(tmp_path, monkeypatch):
         assert context["embedding_error"] is None
         generator: EmbeddingGenerator = context["embedding_generator"]
 
-        chroma = ChromaDBStorage(
+        chroma = VectorStore(
             persist_directory=tmp_path / "chromadb", embedding_model="stub", embedding_dimensions=3
         )
         try:

@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 from vibe_cognition.cognition import CognitionStorage
 from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
-from vibe_cognition.embeddings import ChromaDBStorage
+from vibe_cognition.embeddings import VectorStore
 from vibe_cognition.tools.cognition_tools import (
     _load_project_core,
     _search_cognition,
@@ -39,8 +39,8 @@ def _make_lc(tmp_path, home_tag="home", embedding_model="m", embedding_dimension
     home_path = tmp_path / "home"
     home_path.mkdir(parents=True, exist_ok=True)
     home_cognition = CognitionStorage(home_path / ".cognition")
-    home_chroma = ChromaDBStorage(
-        persist_directory=home_path / ".cognition" / "chromadb",
+    home_chroma = VectorStore(
+        persist_directory=home_path / ".cognition" / "local" / "vectors",
         embedding_model=embedding_model,
         embedding_dimensions=embedding_dimensions,
     )
@@ -152,8 +152,8 @@ def test_n1_discriminating_storage_pairing(tmp_path):
     b_storage.add_node(_node(live_id, "live decision"))
     # ghost_node is deliberately NOT added to the graph
 
-    b_chroma = ChromaDBStorage(
-        persist_directory=b_cognition / "chromadb",
+    b_chroma = VectorStore(
+        persist_directory=b_cognition / "local" / "vectors",
         embedding_model="m",
         embedding_dimensions=3,
     )
@@ -205,7 +205,7 @@ def test_search_cognition_default_is_unchanged(tmp_path):
     Fails-before: default path gained unexpected keys beyond this WP-TC10-updated set.
     """
     storage = CognitionStorage(tmp_path / ".cognition")
-    chroma = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
+    chroma = VectorStore(persist_directory=tmp_path / "chromadb")
     # Generator that returns a fixed vector
     mock_gen = MagicMock()
     mock_gen.generate_query_embedding.return_value = [0.1, 0.2, 0.3]
@@ -239,8 +239,8 @@ def test_cross_project_id_collision_no_dedup(tmp_path):
     home_path.mkdir(parents=True)
     home_storage = CognitionStorage(home_path / ".cognition")
     home_storage.add_node(_node(SHARED_ID, "home decision"))
-    home_chroma = ChromaDBStorage(
-        persist_directory=home_path / ".cognition" / "chromadb",
+    home_chroma = VectorStore(
+        persist_directory=home_path / ".cognition" / "local" / "vectors",
         embedding_model="m",
         embedding_dimensions=3,
     )
@@ -252,8 +252,8 @@ def test_cross_project_id_collision_no_dedup(tmp_path):
     (b_path / ".cognition" / "journal.jsonl").write_text("", encoding="utf-8")
     b_storage = CognitionStorage(b_path / ".cognition")
     b_storage.add_node(_node(SHARED_ID, "B decision"))
-    b_chroma = ChromaDBStorage(
-        persist_directory=b_path / ".cognition" / "chromadb",
+    b_chroma = VectorStore(
+        persist_directory=b_path / ".cognition" / "local" / "vectors",
         embedding_model="m",
         embedding_dimensions=3,
     )
@@ -513,8 +513,8 @@ def _make_lc_with_home_guard(
     home_path = tmp_path / "home"
     home_path.mkdir(parents=True, exist_ok=True)
     home_cognition = CognitionStorage(home_path / ".cognition")
-    home_chroma = ChromaDBStorage(
-        persist_directory=home_path / ".cognition" / "chromadb",
+    home_chroma = VectorStore(
+        persist_directory=home_path / ".cognition" / "local" / "vectors",
         embedding_model=stamped_model,
         embedding_dimensions=stamped_dims,
     )
@@ -651,7 +651,7 @@ def test_home_model_unknown_search_still_runs_with_confidence_caveat(tmp_path):
     home_path.mkdir(parents=True, exist_ok=True)
     home_cognition = CognitionStorage(home_path / ".cognition")
     # No embedding_model/dimensions passed -> collection metadata has no stamp.
-    home_chroma = ChromaDBStorage(persist_directory=home_path / ".cognition" / "chromadb")
+    home_chroma = VectorStore(persist_directory=home_path / ".cognition" / "local" / "vectors")
     config = SimpleNamespace(
         embedding_model="new-model", embedding_dimensions=3,
         repo_path=home_path, effective_repo_name="home",

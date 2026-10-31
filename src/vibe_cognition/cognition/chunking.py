@@ -1,7 +1,7 @@
 """Deterministic, dependency-free text chunking for document search (WP-D2).
 
 Chunks the agent-extracted sidecar text into overlapping windows for per-chunk
-ChromaDB embedding (``<node_id>#chunk-N``). The window is measured in WORDS, a
+vector-store embedding (``<node_id>#chunk-N``). The window is measured in WORDS, a
 deliberate approximation of DESIGN §3's "~1000-token windows / 100 overlap": the
 agent already bears the real token cost (§2), so the server stays free of a second
 tokenizer dependency and of coupling chunk boundaries to the embedding backend.

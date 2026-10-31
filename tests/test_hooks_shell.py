@@ -141,7 +141,7 @@ case "$ARGS" in
     # substring of "no-sync --project"), silently hijacking every other case.
     exit "$(_read_ctrl sync_exit 0)"
     ;;
-  *"import torch, chromadb"*)
+  *"import torch, numpy, sqlite3"*)
     exit "$(_read_ctrl health_probe_exit 0)"
     ;;
   *"vibe_cognition.migrate_mcp"*)
@@ -603,7 +603,7 @@ def test_update_check_breadcrumbs_present(hook_env):
 
 
 def test_health_probe_success_writes_stamp_and_proceeds(hook_env):
-    """A successful health probe (import torch, chromadb) writes the stamp
+    """A successful health probe (import torch, numpy, sqlite3) writes the stamp
     file and the hook proceeds to migrate+prime -- normal happy path."""
     hook_env.seed("health_probe_exit", "0")
     hook_env.seed("prime_stdout", '{"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "hi"}}')

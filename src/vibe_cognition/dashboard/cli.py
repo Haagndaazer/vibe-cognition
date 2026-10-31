@@ -22,18 +22,18 @@ logger = logging.getLogger(__name__)
 def _build_lifespan_ctx(repo_path: Path, load_embeddings: bool) -> dict[str, Any]:
     """Construct the same lifespan_ctx shape the MCP server builds."""
     from ..cognition import CognitionStorage
-    from ..embeddings import ChromaDBStorage
+    from ..embeddings import VectorStore
 
     os.environ["REPO_PATH"] = str(repo_path)
     config = Settings()
 
     cognition_storage = CognitionStorage(config.cognition_dir)
-    cognition_embedding_storage = ChromaDBStorage(
-        persist_directory=config.cognition_chromadb_path,
-        collection_name="cognition_embeddings",
-        embedding_model=config.embedding_model,
-        embedding_dimensions=config.embedding_dimensions,
-    )
+    cognition_embedding_storage = VectorStore.open_viewer(config.cognition_vectors_path)
+    if cognition_embedding_storage is None:
+        logger.warning(
+            f"No search index at {config.cognition_vectors_path}; open a Claude Code session "
+            "in this project once to build it. The graph view still works."
+        )
 
     ready_event = threading.Event()
     ctx: dict[str, Any] = {
@@ -45,7 +45,7 @@ def _build_lifespan_ctx(repo_path: Path, load_embeddings: bool) -> dict[str, Any
         "embedding_error": None,
     }
 
-    if load_embeddings:
+    if load_embeddings and cognition_embedding_storage is not None:
         from ..embeddings import EmbeddingGenerator
 
         logger.info(f"Loading embedding model ({config.embedding_backend})…")
@@ -86,9 +86,9 @@ def main() -> int:
         type=Path,
         default=None,
         help=(
-            "Plugin data root holding the keyed chromadb dirs (default: $VIBE_DATA_DIR, "
-            "then auto-discovery of ~/.claude/plugins/data/vibe-cognition-*; the legacy "
-            "in-repo .cognition/chromadb is the last resort)"
+            "Plugin data root holding the keyed vector-store dirs (default: $VIBE_DATA_DIR, "
+            "then auto-discovery of ~/.claude/plugins/data/vibe-cognition-*; the in-repo "
+            ".cognition/local/vectors is the last resort)"
         ),
     )
     parser.add_argument("--log-level", default="INFO")

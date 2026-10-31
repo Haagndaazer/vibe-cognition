@@ -81,7 +81,7 @@ if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$HASH" ]; then
     # Post-sync venv health probe. Runs ONLY here (install / upgrade / broken
     # retry) — the steady-state happy path matches the stamp and skips this whole
     # block, paying nothing. Imports the heavy native deps that actually brick
-    # (torch was the 0.7.3 culprit; chromadb is the other native dep). This is a
+    # (torch was the 0.7.3 culprit; numpy and sqlite3 back the vector store). This is a
     # targeted check for the half-installed-native-dep class, not the server's
     # full import graph. The `if` reads python's own exit code (no pipe — ledger
     # 17). The stamp is written ONLY for a verified-importable venv, so a broken
@@ -90,7 +90,7 @@ if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$HASH" ]; then
     _bc "probe_start"
     if UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
         uv run --no-sync --project "${PLUGIN_ROOT}" \
-        python -c "import torch, chromadb" 2>/dev/null; then
+        python -c "import torch, numpy, sqlite3" 2>/dev/null; then
         _bc "probe_done_ok"
         mkdir -p "${VENV_DIR}"
         echo "$HASH" > "$STAMP"

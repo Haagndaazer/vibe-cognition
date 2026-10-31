@@ -20,7 +20,7 @@ elsewhere (server.py, at every session start) never pays it; only an actual
 compact invocation does. SERVER_INSTRUCTIONS itself stays plain ASCII, and
 ``json.dump``'s default ``ensure_ascii=True`` \\u-escapes anything from the
 prime digest that isn't, so Windows stdout safety is unaffected either way.
-Still excludes the genuinely heavy embeddings stack (torch/chromadb), which
+Still excludes the genuinely heavy embeddings stack (torch), which
 this entry point never needs -- SentenceTransformers backend model loading
 lives entirely behind the embedding_generator, not the graph/storage layer.
 """

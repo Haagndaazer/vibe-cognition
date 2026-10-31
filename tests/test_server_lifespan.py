@@ -1,6 +1,6 @@
 """WP-11 (38a5914e6dc6): lifespan startup failure diagnosability.
 
-CognitionStorage/ChromaDBStorage init failures (corrupted journal, .cognition/
+CognitionStorage/VectorStore init failures (corrupted journal, .cognition/
 permission errors) must log the failing component + path at ERROR, then
 re-raise -- FastMCP still fails the server (that's correct); the point is
 being able to find WHY, matching Settings()'s existing log-and-reraise floor.
@@ -11,7 +11,7 @@ import threading
 
 import pytest
 
-from vibe_cognition.embeddings import ChromaDBStorage
+from vibe_cognition.embeddings import VectorStore
 from vibe_cognition.server import _load_embeddings_and_sync, lifespan
 
 
@@ -40,23 +40,29 @@ async def test_cognition_storage_init_failure_logs_component_and_reraises(
 
 
 @pytest.mark.asyncio
-async def test_chromadb_init_failure_logs_component_and_reraises(tmp_path, monkeypatch, caplog):
-    """Same guard on the second construction site (ChromaDBStorage)."""
+async def test_damaged_vector_store_never_fails_startup(tmp_path, monkeypatch):
+    """A store that is not a database at all (the corruption class that used to
+    crash chromadb natively) must not stop the lifespan: it yields, the damaged
+    generation is marked and a fresh one opened, and the next session start gets
+    a one-time notice. Fails against the chromadb build, whose open raised."""
+    from vibe_cognition.cognition.loss_notices import VECTOR_STORE_REBUILT_KIND, read_notices
+    from vibe_cognition.cognition.storage import REHYDRATE_FLAG_FILENAME
+    from vibe_cognition.config import Settings
+
     monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("EMBEDDING_BACKEND", "ollama")
+    store_dir = Settings().cognition_vectors_path
+    store_dir.mkdir(parents=True)
+    (store_dir / "vectors-1.sqlite3").write_bytes(b"this is not a sqlite database" * 64)
 
-    def _boom(**kwargs):
-        raise RuntimeError("simulated corrupted sqlite")
+    async with lifespan(None) as context:  # type: ignore[arg-type]
+        store = context["cognition_embedding_storage"]
+        assert store.available, store.status()
+        assert store.generation == 2
+        assert (store_dir / "vectors-1.corrupt").exists()
 
-    monkeypatch.setattr("vibe_cognition.server.ChromaDBStorage", _boom)
-
-    with caplog.at_level(logging.ERROR), pytest.raises(RuntimeError, match="simulated corrupted sqlite"):
-        async with lifespan(None):  # type: ignore[arg-type]
-            pass
-
-    assert any(
-        "ChromaDB" in r.message and "simulated corrupted sqlite" in r.message
-        for r in caplog.records
-    ), f"no diagnosable ERROR log found: {[r.message for r in caplog.records]}"
+    notices = read_notices(tmp_path / ".cognition" / "local" / REHYDRATE_FLAG_FILENAME)
+    assert [n["kind"] for n in notices] == [VECTOR_STORE_REBUILT_KIND]
 
 
 # ── WP-C: broken embedding backend degrades gracefully (background thread) ──
@@ -92,7 +98,7 @@ def test_broken_embedding_backend_degrades_gracefully_not_a_handshake_crash(tmp_
 
     context = {
         "cognition_storage": None,
-        "cognition_embedding_storage": ChromaDBStorage(persist_directory=tmp_path / "chromadb"),
+        "cognition_embedding_storage": VectorStore(persist_directory=tmp_path / "chromadb"),
         "loaded_projects": None,
         "embedding_ready": threading.Event(),
         "embedding_sync_done": threading.Event(),

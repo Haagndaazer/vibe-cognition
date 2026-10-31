@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import cast
 
 from vibe_cognition.cognition import CognitionNode, CognitionNodeType, CognitionStorage
-from vibe_cognition.embeddings import ChromaDBStorage, EmbeddingGenerator
+from vibe_cognition.embeddings import EmbeddingGenerator, VectorStore
 from vibe_cognition.tools.cognition_tools import (
     _list_tasks,
     _load_project_core,
@@ -76,7 +76,7 @@ def test_exclude_people_absent_by_default(tmp_path):
     """No exclude_people passed -> excluded_count/excluded_for are ABSENT, not
     present-with-zero. Fails-before: the keys were unconditionally emitted."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_entity("n1", recorded_by=ALICE))
     embed.upsert_embedding("n1", [1.0, 0.0, 0.0], {"entity_type": "decision"})
     gen = cast(EmbeddingGenerator, _FixedGen([1.0, 0.0, 0.0]))
@@ -104,7 +104,7 @@ def test_exclude_people_widens_past_excluded_flood_and_reports_terminating_round
     silently drop the refill candidates found in round 2, or excluded_count would
     read 25 (10+15, wrongly accumulated) instead of 15."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     for i in range(15):
         nid = f"alice{i:02d}"
         s.add_node(_entity(nid, recorded_by=ALICE))
@@ -132,7 +132,7 @@ def test_exclude_people_unstamped_node_never_excluded(tmp_path):
     != matches) -- and does not count toward excluded_count. Fails-before: matching
     against the free-text author field would wrongly drop it."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_entity("n1", author="alice@x.com"))  # no recorded_by stamp at all
     embed.upsert_embedding("n1", [1.0, 0.0, 0.0], {"entity_type": "decision"})
     gen = cast(EmbeddingGenerator, _FixedGen([1.0, 0.0, 0.0]))
@@ -149,7 +149,7 @@ def test_exclude_people_constraint_and_incident_never_excluded(tmp_path):
     excluded_count -- but an ordinary decision by the SAME author IS excluded,
     proving this is a type-specific carve-out, not a blanket exemption."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_entity("con1", CognitionNodeType.CONSTRAINT, recorded_by=ALICE))
     s.add_node(_entity("inc1", CognitionNodeType.INCIDENT, recorded_by=ALICE))
     s.add_node(_entity("dec1", CognitionNodeType.DECISION, recorded_by=ALICE))
@@ -170,7 +170,7 @@ def test_exclude_people_casefold_and_key_absence_when_nothing_matches(tmp_path):
     normalize and match); a param that matches NOTHING leaves both keys absent
     (never a silent present-with-zero)."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_entity("n1", recorded_by=ALICE))
     embed.upsert_embedding("n1", [1.0, 0.0, 0.0], {"entity_type": "decision"})
     gen = cast(EmbeddingGenerator, _FixedGen([1.0, 0.0, 0.0]))
@@ -194,7 +194,7 @@ def test_total_found_exhaustive_true_under_limit(tmp_path):
     """Fewer live matches than `limit` -> Chroma runs dry on round 1 -> exhaustive
     True, total_found == count exactly."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     for i in range(3):
         nid = f"n{i}"
         s.add_node(_entity(nid))
@@ -216,7 +216,7 @@ def test_total_found_exceeds_count_when_capped_at_limit(tmp_path):
     _format_search_results capped its own return to `limit`, so a caller could
     never see this gap."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     for i in range(20):
         nid = f"n{i:02d}"
         s.add_node(_entity(nid))
@@ -296,7 +296,7 @@ def test_get_history_recency_branch_total_found_and_exhaustive(tmp_path):
     (always exact -- a full structural scan, never a floor); exhaustive is always
     True (unlike cognition_search's adaptive vector search)."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     for i in range(5):
         s.add_node(_entity(f"n{i}", CognitionNodeType.PATTERN))
     config = SimpleNamespace(embedding_model="m", embedding_dimensions=3, repo_path=tmp_path)
@@ -323,7 +323,7 @@ def test_get_history_context_term_branch_total_found_and_exhaustive(tmp_path):
     slice -- "free" since get_history_for_context already returns the unsliced
     list, we just grab its length before slicing."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     for i in range(4):
         s.add_node(CognitionNode(
             id=f"n{i}", type=CognitionNodeType.DECISION, summary="s", detail="d",
@@ -356,8 +356,8 @@ def _multi_project_lc(tmp_path):
     home_path = tmp_path / "home"
     home_path.mkdir(parents=True)
     home_storage = CognitionStorage(home_path / ".cognition")
-    home_chroma = ChromaDBStorage(
-        persist_directory=home_path / ".cognition" / "chromadb",
+    home_chroma = VectorStore(
+        persist_directory=home_path / ".cognition" / "local" / "vectors",
         embedding_model="m", embedding_dimensions=3,
     )
     config = SimpleNamespace(embedding_model="m", embedding_dimensions=3, repo_path=home_path)
@@ -380,8 +380,8 @@ def _make_foreign_with_data(tmp_path, name, node_id, recorded_by):
     (b_path / ".cognition").mkdir(parents=True)
     b_storage = CognitionStorage(b_path / ".cognition")
     b_storage.add_node(_entity(node_id, recorded_by=recorded_by))
-    b_chroma = ChromaDBStorage(
-        persist_directory=b_path / ".cognition" / "chromadb",
+    b_chroma = VectorStore(
+        persist_directory=b_path / ".cognition" / "local" / "vectors",
         embedding_model="m", embedding_dimensions=3,
     )
     b_chroma.upsert_embedding(node_id, [1.0, 0.0, 0.0], {"entity_type": "decision"})
@@ -427,8 +427,8 @@ def test_get_history_multi_project_total_found_summed(tmp_path):
     (b_path / ".cognition").mkdir(parents=True)
     b_storage = CognitionStorage(b_path / ".cognition")
     b_storage.add_node(_entity("b1", CognitionNodeType.PATTERN))
-    b_chroma = ChromaDBStorage(
-        persist_directory=b_path / ".cognition" / "chromadb", embedding_model="m", embedding_dimensions=3,
+    b_chroma = VectorStore(
+        persist_directory=b_path / ".cognition" / "local" / "vectors", embedding_model="m", embedding_dimensions=3,
     )
     b_chroma.close()
     _load_project_core(lc, str(b_path))

@@ -85,7 +85,7 @@ from typing import Any, cast
 from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType, generate_node_id
 from vibe_cognition.cognition.prime import PrimeConfig, generate_prime
 from vibe_cognition.cognition.storage import CognitionStorage
-from vibe_cognition.embeddings import ChromaDBStorage
+from vibe_cognition.embeddings import VectorStore
 from vibe_cognition.tools import cognition_tools
 from vibe_cognition.tools.project_registry import ProjectEntry, build_registry
 
@@ -180,7 +180,7 @@ def _pick_task_claim(rng: random.Random) -> tuple[str, float | None]:
 
 
 def build_wave3_fixture(
-    storage: CognitionStorage, *, embedding_storage: ChromaDBStorage | None = None,
+    storage: CognitionStorage, *, embedding_storage: VectorStore | None = None,
     total_nodes: int = 1000, n_persons: int = 10, seed: int = SEED,
 ) -> dict[str, Any]:
     """Builds, directly via storage.add_node (no tool layer): n_persons PERSON
@@ -306,7 +306,7 @@ class _FixedGen:
 
 
 def bench_search(
-    storage: CognitionStorage, embed: ChromaDBStorage, *,
+    storage: CognitionStorage, embed: VectorStore, *,
     n_reps: int = 20, limit: int = 10, query_vec: list[float], query_text: str,
 ) -> dict[str, Any]:
     """Times _search_cognition over n_reps identical calls. Also asserts the
@@ -455,11 +455,11 @@ def bench_multi_project(
     foreign_cognition = foreign_dir / ".cognition"
 
     home_storage = CognitionStorage(home_cognition)
-    home_chroma = ChromaDBStorage(
+    home_chroma = VectorStore(
         persist_directory=home_dir / "chromadb", embedding_model="bench-m", embedding_dimensions=DIMS,
     )
     foreign_storage = CognitionStorage(foreign_cognition)
-    foreign_chroma = ChromaDBStorage(
+    foreign_chroma = VectorStore(
         persist_directory=foreign_dir / "chromadb", embedding_model="bench-m", embedding_dimensions=DIMS,
     )
     try:
@@ -524,7 +524,7 @@ def bench_multi_project(
             "pass": no_error,
         }
     finally:
-        # Windows: chromadb's sqlite/HNSW file handles must be released before
+        # Windows: the vector store's SQLite file handles must be released before
         # TemporaryDirectory cleanup rmtrees this path, else PermissionError.
         home_chroma.close()
         foreign_chroma.close()
@@ -588,9 +588,9 @@ def main(argv: list[str] | None = None) -> int:
         if run_search or run_prime:
             fixture_dir = tmp_path / "fixture" / ".cognition"
             storage = CognitionStorage(fixture_dir)
-            embed: ChromaDBStorage | None = None
+            embed: VectorStore | None = None
             if run_search:
-                embed = ChromaDBStorage(
+                embed = VectorStore(
                     persist_directory=tmp_path / "fixture" / "chromadb",
                     embedding_model="bench-m", embedding_dimensions=DIMS,
                 )

@@ -368,9 +368,9 @@ can duplicate entries across the rewrite boundary.
 **Auto-configuration:** On first startup in a separate-clones repo, the server
 automatically adds the union-merge lines to `.gitattributes` and adds `chromadb/` to
 `.cognition/.gitignore` (one-time-ever, idempotent). The vector store itself lives
-OUTSIDE the repo since v0.32.0 (under the plugin data dir -- see `chromadb_path` in
-`get_status`); the ignore line still protects repos where teammates run older
-plugin versions. Opt out with `VIBE_COGNITION_NO_VCS_HYGIENE=1` (the older
+OUTSIDE the repo (under the plugin data dir -- see `vectors_path` in `get_status`; a
+SQLite file since v0.47.0, regenerable from the journal); the `chromadb/` ignore line
+still protects repos where teammates run older plugin versions. Opt out with `VIBE_COGNITION_NO_VCS_HYGIENE=1` (the older
 `VIBE_COGNITION_NO_GIT_HYGIENE` also works; either also turns off the SVN setup). To
 re-arm: delete `.cognition/local/.git-hygiene-managed`.
 For existing projects or non-standard topologies, use the manual line above.

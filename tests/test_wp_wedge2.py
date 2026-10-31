@@ -23,7 +23,7 @@ from fastmcp.server.middleware import MiddlewareContext
 
 from tests.test_wp_wedge import _TOOL_ARGS
 from vibe_cognition import _startup_timing
-from vibe_cognition.embeddings import ChromaDBStorage
+from vibe_cognition.embeddings import VectorStore
 from vibe_cognition.server import _DispatchStallForensics, lifespan, mcp
 from vibe_cognition.tools.dispatch import (
     _DISPATCH_POOL_SIZE,
@@ -198,13 +198,13 @@ async def test_lifespan_pre_exercises_chroma_count_and_get_before_yield(tmp_path
     monkeypatch.setenv("EMBEDDING_BACKEND", "ollama")
 
     calls: list[dict | None] = []
-    real_count_documents = ChromaDBStorage.count_documents
+    real_count_documents = VectorStore.count_documents
 
     def _tracking_count_documents(self, filter=None):  # noqa: A002 - match real signature
         calls.append(filter)
         return real_count_documents(self, filter=filter)
 
-    monkeypatch.setattr(ChromaDBStorage, "count_documents", _tracking_count_documents)
+    monkeypatch.setattr(VectorStore, "count_documents", _tracking_count_documents)
 
     async with lifespan(None) as context:  # type: ignore[arg-type]
         assert None in calls, "bare count_documents() was not pre-exercised"
@@ -223,7 +223,7 @@ async def test_lifespan_survives_chroma_pre_exercise_failure(tmp_path, monkeypat
     def _boom(self, filter=None):  # noqa: A002 - match real signature
         raise RuntimeError("simulated chroma failure")
 
-    monkeypatch.setattr(ChromaDBStorage, "count_documents", _boom)
+    monkeypatch.setattr(VectorStore, "count_documents", _boom)
 
     async with lifespan(None) as context:  # type: ignore[arg-type]
         assert context is not None  # lifespan must still yield normally

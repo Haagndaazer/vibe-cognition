@@ -1483,7 +1483,7 @@ def test_embed_entity_node_extends_text_with_status(fake_generator, tmp_path):
 
     Fails-before: the un-extended embed path emitted only 'type: summary\\ndetail'.
     """
-    from vibe_cognition.embeddings import ChromaDBStorage
+    from vibe_cognition.embeddings import VectorStore
 
     seen = {}
 
@@ -1495,7 +1495,7 @@ def test_embed_entity_node_extends_text_with_status(fake_generator, tmp_path):
         def generate_query_embedding(self, text):
             return [1.0, 0.0, 0.0]
 
-    chroma = ChromaDBStorage(
+    chroma = VectorStore(
         persist_directory=tmp_path / "chromadb", embedding_model="m", embedding_dimensions=3,
     )
     node = CognitionNode(
@@ -1520,8 +1520,8 @@ def test_embed_entity_node_no_status_for_non_task(fake_generator, tmp_path):
         def generate_query_embedding(self, text):
             return [0.0, 0.0, 1.0]
 
-    from vibe_cognition.embeddings import ChromaDBStorage
-    chroma = ChromaDBStorage(
+    from vibe_cognition.embeddings import VectorStore
+    chroma = VectorStore(
         persist_directory=tmp_path / "chromadb", embedding_model="m", embedding_dimensions=3,
     )
     node = CognitionNode(

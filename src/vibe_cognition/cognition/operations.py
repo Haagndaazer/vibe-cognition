@@ -27,13 +27,13 @@ def delete_cognition_node(
 
     ``storage.remove_node`` cascades edge removal in-memory (NetworkX) and journals a
     single ``remove_node`` tombstone, so concurrent sessions converge on the deletion
-    via their per-op journal catch-up. The ChromaDB vector is purged best-effort —
+    via their per-op journal catch-up. The vector is purged best-effort —
     a failure there is logged, not fatal, mirroring the long-standing dashboard path.
 
     Args:
         storage: The cognition graph store.
-        embed_storage: The ChromaDB embedding store (duck-typed: needs
-            ``delete_embedding(node_id)``).
+        embed_storage: The vector store (duck-typed: needs ``delete_embedding`` and
+            ``delete_by_node_id``), or None when there is no index (graph-only delete).
         node_id: ID of the node to delete.
         removed_by: Acting author recorded in the journal tombstone (provenance):
             a resolved git identity dict (MCP path) or a surface tag like
@@ -72,15 +72,15 @@ def delete_cognition_node(
         # Lost a race with a concurrent deletion — treat as not found.
         return None
 
-    # delete_embedding returns True even when nothing was actually deleted (ChromaDB
-    # doesn't report it), so we don't surface its boolean — just purge best-effort.
-    # The node-level vector AND any chunk vectors (chunk-embedding is D2; this is a
-    # forward-compatible no-op today, present so document deletes inherit it).
-    try:
-        embed_storage.delete_embedding(node_id)
-        embed_storage.delete_by_node_id(node_id)
-    except Exception as e:
-        logger.warning(f"ChromaDB delete failed for {node_id}: {e}")
+    # delete_embedding returns True even when nothing was actually deleted, so we
+    # don't surface its boolean — just purge best-effort: the node-level vector AND
+    # any chunk vectors.
+    if embed_storage is not None:
+        try:
+            embed_storage.delete_embedding(node_id)
+            embed_storage.delete_by_node_id(node_id)
+        except Exception as e:
+            logger.warning(f"Vector delete failed for {node_id}: {e}")
 
     unlinked: list[str] = []
     if doc_sha:

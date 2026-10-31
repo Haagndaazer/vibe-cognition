@@ -2,11 +2,11 @@
 
 Imported FIRST in server.py (before any other import) so importing THIS
 module's own top-level ``stamp("server_module_import_start")`` call fires as
-early as possible -- before the heavy transitive imports (chromadb,
+early as possible -- before the heavier transitive imports (numpy,
 sentence-transformers/torch) run. A later ``stamp("server_module_import_done")``
 call brackets that cost, quantifying how much of first-connect latency is pure
 module-import weight (Windows Defender scanning the torch DLL tree, etc.) vs.
-the ChromaDB open or the handshake itself.
+the vector store open or the handshake itself.
 
 HEISENBUG GUARD: ``stamp()`` never touches disk -- monotonic time + an
 immediate stderr print (already captured by Claude Code) only, so it is safe

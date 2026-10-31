@@ -14,6 +14,7 @@ from . import _heavy_import_guard
 import asyncio
 import contextlib
 import logging
+import random
 import sys
 import threading
 import time
@@ -29,7 +30,11 @@ from .cognition import CognitionNodeType, CognitionStorage
 from .cognition.documents import find_orphaned_document_artifacts, read_text_sidecar
 from .cognition.storage import JournalWriterUnavailableError
 from .config import Settings, setup_logging
-from .embeddings import ChromaDBStorage, EmbeddingGenerator
+from .cognition.loss_notices import VECTOR_STORE_REBUILT_KIND, replace_kind
+from .cognition.local_paths import write_path as local_write_path
+from .cognition.storage import REHYDRATE_FLAG_FILENAME
+from .embeddings import EmbeddingGenerator, VectorStore
+from .embeddings.vector_store import DIMENSION_MISMATCH, warm_numpy
 from .embeddings import sidecar_client
 from .instructions import SERVER_INSTRUCTIONS
 from . import lifecycle
@@ -42,6 +47,7 @@ from .tools.cognition_tools import (
     _embed_entity_node,
     _embed_workflow,
     _node_from_dict,
+    _store_last_error,
 )
 from .tools.project_registry import build_registry, compute_model_guard
 
@@ -187,15 +193,68 @@ def _create_deterministic_edges_for_edgeless(
         )
 
 
+_RESYNC_MIN_INTERVAL_S = 30.0
+_RESYNC_MAX_INTERVAL_S = 600.0
+
+
+class _SyncAbortedError(Exception):
+    """The vector store stopped taking reads or writes partway through a sync pass."""
+
+
+def _check_store(embedding_storage: Any, during: str) -> None:
+    error = _store_last_error(embedding_storage)
+    if error:
+        raise _SyncAbortedError(f"{during}: {error}")
+
+
+def _check_writable(embedding_storage: Any) -> None:
+    can_write = getattr(embedding_storage, "can_write", None)
+    if callable(can_write) and can_write() is False:
+        raise _SyncAbortedError("the vector store is not taking writes right now")
+
+
+def _resync_when_store_recovers(embedding_storage: Any) -> None:
+    request = getattr(embedding_storage, "request_resync_on_recovery", None)
+    if callable(request):
+        request()
+
+
 def _sync_cognition_embeddings(
     cognition_storage: CognitionStorage,
-    embedding_storage: ChromaDBStorage,
+    embedding_storage: VectorStore,
     generator: EmbeddingGenerator,
 ) -> dict[str, int]:
-    """Sync cognition nodes from JSONL into ChromaDB if missing.
+    """Embed every journal node the vector store is missing, unless the store cannot
+    take writes: an unusable store is never read as an empty one (which would embed
+    the whole graph for nothing). A pass the store cuts short stops at once and asks
+    for a re-sync when the store next works."""
+    empty = {"nodes": 0, "workflows": 0, "documents": 0}
+    if getattr(embedding_storage, "available", True) is False:
+        logger.warning("Embedding sync skipped: the vector store is not usable right now")
+        _resync_when_store_recovers(embedding_storage)
+        return empty
+    try:
+        return _sync_pass(cognition_storage, embedding_storage, generator)
+    except _SyncAbortedError as e:
+        if str(e).split(": ", 1)[-1].startswith(DIMENSION_MISMATCH):
+            logger.warning(f"Embedding sync stopped: {e}")
+        else:
+            logger.warning(f"Embedding sync stopped early; it resumes when the vector store recovers ({e})")
+            _resync_when_store_recovers(embedding_storage)
+        return empty
 
-    This handles the case where a teammate pulled new JSONL entries via Git
-    but the local ChromaDB doesn't have their embeddings yet.
+
+def _sync_pass(
+    cognition_storage: CognitionStorage,
+    embedding_storage: VectorStore,
+    generator: EmbeddingGenerator,
+) -> dict[str, int]:
+    """Embed every journal node the vector store is missing.
+
+    This handles a teammate's pulled journal entries, the first start on a new
+    store, and a rebuild after a damaged store was set aside. Plain nodes are
+    taken in a per-process shuffled order and re-checked just before each embed,
+    so several sessions syncing one project split the work instead of repeating it.
 
     WP-4 (3e82d4ebc004): routes through the SAME shared embed paths
     _record_node uses (_embed_entity_node / _embed_workflow / _embed_document)
@@ -212,16 +271,9 @@ def _sync_cognition_embeddings(
 
     # Get existing IDs + metadata (WP-4, 41ced8d1fa63: metadata carries each
     # node's chunk_count for the completeness check below) in one call.
-    existing_ids: set[str] = set()
-    existing_meta: dict[str, Any] = {}
-    try:
-        results = embedding_storage._collection.get(
-            ids=[n["id"] for n in all_nodes], include=["metadatas"]
-        )
-        existing_ids = set(results["ids"])
-        existing_meta = dict(zip(results["ids"], results["metadatas"] or [], strict=False))
-    except Exception:
-        pass  # If collection is empty or IDs not found, treat all as missing
+    existing_meta: dict[str, Any] = embedding_storage.get_existing([n["id"] for n in all_nodes])
+    _check_store(embedding_storage, "reading the stored vectors")
+    existing_ids: set[str] = set(existing_meta)
 
     doc_type = CognitionNodeType.DOCUMENT.value
     wf_type = CognitionNodeType.WORKFLOW.value
@@ -240,13 +292,11 @@ def _sync_cognition_embeddings(
             continue
         count = int((existing_meta.get(n["id"]) or {}).get("chunk_count") or 0)
         expected_chunk_ids.extend(f"{n['id']}#chunk-{i}" for i in range(count))
-    chunk_present: set[str] = set()
+    chunk_present: set[str] = (
+        embedding_storage.existing_ids(expected_chunk_ids) if expected_chunk_ids else set()
+    )
     if expected_chunk_ids:
-        try:
-            probe = embedding_storage._collection.get(ids=expected_chunk_ids)
-            chunk_present = set(probe["ids"])
-        except Exception:
-            pass
+        _check_store(embedding_storage, "reading the stored chunks")
 
     def _chunks_complete(node_id: str) -> bool:
         meta = existing_meta.get(node_id) or {}
@@ -294,8 +344,14 @@ def _sync_cognition_embeddings(
             docs_to_embed.append((n, sidecar or ""))
 
     if non_doc_missing:
-        logger.info(f"Syncing {len(non_doc_missing)} cognition nodes to ChromaDB...")
+        logger.info(f"Syncing {len(non_doc_missing)} cognition nodes to the vector store...")
+        random.shuffle(non_doc_missing)
         for n in non_doc_missing:
+            present = embedding_storage.existing_ids([n["id"]])
+            _check_store(embedding_storage, "re-checking a node")
+            if present:
+                continue
+            _check_writable(embedding_storage)
             # WP-TC6 (BACK-COMPAT): per-node tolerance for a type this process
             # doesn't recognize (e.g. a NEWER client wrote a node type this
             # server predates — the exact defect discovered in an OLDER
@@ -307,22 +363,28 @@ def _sync_cognition_embeddings(
                 _embed_entity_node(embedding_storage, generator, _node_from_dict(n["id"], n))
             except Exception as e:  # noqa: BLE001 - a single node must never abort the batch
                 logger.warning(f"Cognition embedding sync: skipped node {n['id']!r}: {e}")
+                continue
+            _check_store(embedding_storage, f"writing {n['id']}")
 
     if wf_to_embed:
-        logger.info(f"Syncing {len(wf_to_embed)} workflow node(s) to ChromaDB...")
+        logger.info(f"Syncing {len(wf_to_embed)} workflow node(s) to the vector store...")
         for n in wf_to_embed:
+            _check_writable(embedding_storage)
             _embed_workflow(embedding_storage, generator, _node_from_dict(n["id"], n))
+            _check_store(embedding_storage, f"writing workflow {n['id']}")
 
     # Documents: node vector + sidecar chunks via the shared _embed_document (the same
     # delete-then-write path store-time uses — no chunk-contract drift). A sidecar-less
     # reference doc (teammate pulled the journal but not the sidecar) embeds the node
     # only (sidecar_text == "" -> zero chunks); not an error.
     for node, sidecar_text in docs_to_embed:
+        _check_writable(embedding_storage)
         _embed_document(
             embedding_storage, generator, node["id"],
             node.get("summary", ""), node.get("detail", ""), sidecar_text,
             from_agent=node.get("metadata", {}).get("from_agent"),
         )
+        _check_store(embedding_storage, f"writing document {node['id']}")
 
     if non_doc_missing or wf_to_embed or docs_to_embed:
         logger.info(
@@ -346,9 +408,9 @@ def _sync_cognition_embeddings(
 
 def _reconcile_orphan_embeddings(
     cognition_storage: CognitionStorage,
-    embedding_storage: ChromaDBStorage,
+    embedding_storage: VectorStore,
 ) -> None:
-    """N1 startup reclamation (§9 N1b): delete Chroma ids (incl. ``#chunk-*``) whose
+    """N1 startup reclamation (§9 N1b): delete vector ids (incl. ``#chunk-*``) whose
     node is absent from the graph. A node deleted on another machine replays as a
     remove_node tombstone (graph-only) and is NEVER un-embedded (the sync only ADDS),
     so its vector lingers and would surface in search.
@@ -362,22 +424,90 @@ def _reconcile_orphan_embeddings(
     landing between catch-up and delete) — accepted under the non-transactional model;
     it can cause only a transiently-late reclamation, never a wrong search result.
     """
-    try:
-        all_ids = embedding_storage._collection.get()["ids"]
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning(f"Orphan-embedding sweep: enumerate failed: {e}")
-        return
+    all_ids = embedding_storage.all_ids()
     if not all_ids:
         return
     graph_ids = {n["id"] for n in cognition_storage.get_all_nodes()}
     orphans = [cid for cid in all_ids if cid.split("#chunk-")[0] not in graph_ids]
     if not orphans:
         return
+    embedding_storage.delete_ids(orphans)
+    logger.info(f"Orphan-embedding sweep: removed {len(orphans)} stale vector(s)")
+
+
+def _maintain_vector_store(
+    context: dict[str, Any],
+    cognition_storage: CognitionStorage,
+    vector_store: VectorStore,
+    generator: EmbeddingGenerator,
+) -> None:
+    """Re-run the embedding sync when the store asks for it (a new generation, or
+    writes that failed and the store has recovered).
+
+    Runs on the existing background thread after the start-up sync, so no thread
+    is started after the handshake. Passes are at least _RESYNC_MIN_INTERVAL_S
+    apart, doubling up to _RESYNC_MAX_INTERVAL_S while passes keep being cut short,
+    so a store that peers keep busy can never make sessions spin. Returns when the
+    lifespan sets the stop flag.
+    """
+    resync: threading.Event = context["vector_resync"]
+    interval = _RESYNC_MIN_INTERVAL_S
+    last_end: float | None = None
+    while True:
+        resync.wait()
+        if context.get("_vector_maintenance_stop"):
+            return
+        while last_end is not None and time.monotonic() < last_end + interval:
+            if context.get("_vector_maintenance_stop"):
+                return
+            time.sleep(min(1.0, last_end + interval - time.monotonic()))
+        if context.get("_vector_maintenance_stop"):
+            return
+        resync.clear()
+        logger.info("Vector store asked for a re-sync; embedding what it is missing from the journal")
+        context["embedding_sync_done"].clear()
+        aborted = False
+        try:
+            context["embedding_sync_progress"] = _sync_cognition_embeddings(
+                cognition_storage, vector_store, generator
+            )
+            aborted = bool(_store_last_error(vector_store)) or (
+                getattr(vector_store, "can_write", lambda: True)() is False
+            )
+        except Exception as e:  # noqa: BLE001 - the loop must survive a failed pass
+            logger.warning(f"Vector store re-sync failed: {e}")
+            aborted = True
+        finally:
+            context["embedding_sync_done"].set()
+        interval = min(interval * 2, _RESYNC_MAX_INTERVAL_S) if aborted else _RESYNC_MIN_INTERVAL_S
+        last_end = time.monotonic()
+
+
+def _record_vector_store_rebuilt(cognition_dir: Any, info: dict[str, Any]) -> None:
+    """Leave a one-time notice for the next session start that the index was rebuilt."""
     try:
-        embedding_storage._collection.delete(ids=orphans)
-        logger.info(f"Orphan-embedding sweep: removed {len(orphans)} stale vector(s)")
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning(f"Orphan-embedding sweep: delete failed: {e}")
+        flag = local_write_path(cognition_dir, REHYDRATE_FLAG_FILENAME)
+        replace_kind(flag, (VECTOR_STORE_REBUILT_KIND,), {"kind": VECTOR_STORE_REBUILT_KIND, **info})
+    except Exception as e:  # noqa: BLE001 - a notice must never break the store
+        logger.warning(f"Could not record the vector store rebuild notice: {e}")
+
+
+def _warn_if_in_repo_store_unignored(config: Settings) -> None:
+    store_dir = config.cognition_vectors_path
+    try:
+        store_dir.resolve().relative_to(config.cognition_dir.resolve())
+    except (ValueError, OSError):
+        return
+    ignore = config.cognition_dir / ".gitignore"
+    try:
+        lines = {line.strip() for line in ignore.read_text(encoding="utf-8").splitlines()}
+    except OSError:
+        lines = set()
+    if not lines & {"local/", "local", "/local/", "/local"}:
+        logger.warning(
+            f"The vector store is inside the repo at {store_dir} and .cognition/.gitignore "
+            "does not ignore local/; do not commit it"
+        )
 
 
 def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None:
@@ -414,6 +544,15 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
     except Exception as e:  # pragma: no cover - defensive, must never block startup
         context["stale_server_sweep"] = {"error": str(e)}
 
+    vector_store: VectorStore | None = context.get("cognition_embedding_storage")
+    if vector_store is not None:
+        try:
+            vector_store.ensure_open()
+            vector_store.health_check()
+        except Exception as e:  # pragma: no cover - defensive, the store never raises
+            logger.warning(f"Vector store health check failed: {e}")
+        _startup_timing.stamp_and_flush("vectors_health_done")
+
     try:
         # Home model/dim drift guard (WP-2): a cheap metadata comparison (no
         # model load needed), run FIRST so it can't add to embedding_ready
@@ -424,10 +563,9 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
         # Unlike the foreign path, home's embeddings handle is never closed on
         # a mismatch: it's the actively-written index and new writes must
         # still land regardless of a stale stamp.
-        home_chroma = context.get("cognition_embedding_storage")
-        if home_chroma is not None:
+        if vector_store is not None:
             guard, guard_warning, _ = compute_model_guard(
-                home_chroma, config.embedding_model, config.embedding_dimensions,
+                vector_store, config.embedding_model, config.embedding_dimensions,
                 config.effective_repo_name,
             )
             loaded_projects = context.get("loaded_projects")
@@ -504,23 +642,20 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
         # Sync cognition embeddings (backfill any missing from JSONL)
         cognition_embedding_storage = context.get("cognition_embedding_storage")
 
+        sync_allowed = context.get("home_model_guard") not in ("dim-mismatch", "model-mismatch")
         if cognition_storage and cognition_embedding_storage and embedding_generator:
-            # E-3 one-time migration: if the collection lacks the doc-prefix-v1 marker,
-            # drop and recreate it so the sync below rebuilds all vectors document-prefixed.
-            # Crash mid-rebuild self-heals: the additive sync re-adds only what's missing.
-            # live_embed_scheme() (WP-3, b35e15766c6b), NOT self._collection.metadata:
-            # a process-cached handle can go stale if another process already
-            # recreated the collection, which used to let two racing startups
-            # both decide "needs migration" and double-delete-recreate.
-            # recreate_collection() itself is file-locked against that race too.
-            if cognition_embedding_storage.live_embed_scheme() != "doc-prefix-v1":
-                logger.info("E-3 migration: recreating collection with doc-prefix stamp")
-                cognition_embedding_storage.recreate_collection()
-
-            logger.info("Syncing cognition embeddings...")
-            context["embedding_sync_progress"] = _sync_cognition_embeddings(
-                cognition_storage, cognition_embedding_storage, embedding_generator
-            )
+            if sync_allowed:
+                logger.info("Syncing cognition embeddings...")
+                context["embedding_sync_progress"] = _sync_cognition_embeddings(
+                    cognition_storage, cognition_embedding_storage, embedding_generator
+                )
+            else:
+                logger.warning(
+                    "Embedding sync skipped: the vector store was built with a different "
+                    "embedding model or dimension (see get_status home_model_drift). To "
+                    "rebuild with the configured model, close every session in this project "
+                    "and delete the vector store folder"
+                )
 
         # WP-4 item 3 (5340ae677931, code half): embedding_ready.set() above
         # fires BEFORE this backfill sync — deliberately unchanged (known-
@@ -532,6 +667,10 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
         # availability.
         context["embedding_sync_done"].set()
         _startup_timing.stamp_and_flush("bg_sync_done")
+
+        resync = context.get("vector_resync")
+        if resync is not None and cognition_storage and cognition_embedding_storage and sync_allowed:
+            _maintain_vector_store(context, cognition_storage, cognition_embedding_storage, embedding_generator)
 
     except Exception as e:
         logger.error(f"Background initialization failed: {e}")
@@ -579,49 +718,38 @@ async def lifespan(server: FastMCP):
         logger.error(f"Failed to initialize cognition graph at {config.cognition_dir}: {e}")
         raise
 
-    # Initialize cognition ChromaDB
-    logger.info(f"Initializing cognition ChromaDB at {config.cognition_chromadb_path}...")
-    _startup_timing.stamp("chroma_open_start")
-    try:
-        cognition_embedding_storage = ChromaDBStorage(
-            persist_directory=config.cognition_chromadb_path,
-            collection_name="cognition_embeddings",
-            embedding_model=config.embedding_model,
-            embedding_dimensions=config.embedding_dimensions,
+    logger.info(f"Opening the vector store at {config.cognition_vectors_path}...")
+    _startup_timing.stamp("vectors_open_start")
+    cognition_embedding_storage = VectorStore.open_home(
+        config.cognition_vectors_path,
+        embedding_model=config.embedding_model,
+        embedding_dimensions=config.embedding_dimensions,
+        on_quarantine=lambda info: _record_vector_store_rebuilt(config.cognition_dir, info),
+        startup=True,
+    )
+    _startup_timing.stamp("vectors_open_done")
+    if not cognition_embedding_storage.available:
+        logger.warning(
+            f"Vector store not ready at start-up ({cognition_embedding_storage.status()['reason']}); "
+            "graph tools work, and the background thread retries the open"
         )
-    except Exception as e:
-        logger.error(
-            f"Failed to initialize cognition ChromaDB at {config.cognition_chromadb_path}: {e}"
-        )
-        raise
-    _startup_timing.stamp("chroma_open_done")
+    _warn_if_in_repo_store_unignored(config)
 
-    # WP-Wedge-2 §W2-c (INV-2): pre-EXERCISE chromadb's own count/get code
-    # paths pre-yield -- third-party conditional imports (chromadb telemetry/
-    # embedding-function first-use paths) can't be pre-enumerated by grep
-    # alone the way the four known function-body-import sites were (this is
-    # NOT the torch/scipy/sentence_transformers chain -- that stays lazy and
-    # gated on backend, unchanged). Same two calls get_status already makes
-    # in production (a bare count_documents(), then an is_chunk-filtered
-    # count_documents() -- the filtered form calls _collection.get(where=...)
-    # under the hood, but both are COUNT calls at the public API this exists
-    # to exercise), so this exercises exactly the tool-reachable code path,
-    # nothing extra. Chroma
-    # init already does pre-yield disk I/O (HEISENBUG GUARD constrains the
-    # breadcrumb flush path, not startup work per se), so this doesn't cross
-    # a new line. Best-effort + budgeted: a failure or overrun here must
-    # never break startup, only log -- the real calls still run (possibly
-    # un-pre-warmed) once tools actually dispatch.
+    # WP-Wedge-2 §W2-c (INV-2): pre-exercise the numpy and SQLite paths search
+    # and the background thread use, so their lazy setup (BLAS threads, numpy code
+    # paths) happens pre-yield, before the bg import thread opens its wedge window.
+    # Best-effort and budgeted: a failure or overrun is logged, never fatal.
     _pre_exercise_start = time.monotonic()
     try:
+        warm_numpy()
         cognition_embedding_storage.count_documents()
         cognition_embedding_storage.count_documents(filter={"is_chunk": True})
     except Exception as e:
-        logger.warning(f"Chroma pre-exercise failed (non-fatal): {e}")
+        logger.warning(f"Vector store pre-exercise failed (non-fatal): {e}")
     _pre_exercise_elapsed = time.monotonic() - _pre_exercise_start
     if _pre_exercise_elapsed > 0.2:
         logger.warning(
-            f"Chroma pre-exercise took {_pre_exercise_elapsed:.3f}s (budget 200ms)"
+            f"Vector store pre-exercise took {_pre_exercise_elapsed:.3f}s (budget 200ms)"
         )
 
     # Build project registry — home is always pinned
@@ -660,7 +788,9 @@ async def lifespan(server: FastMCP):
         # racing it anymore, since the watchdog is gone). None for ollama
         # (structurally untouched by this WP).
         "_sidecar_supervisor": None,
+        "vector_resync": threading.Event(),
     }
+    cognition_embedding_storage.on_resync_needed = context["vector_resync"].set
     if config.embedding_backend != "ollama":
         context["_sidecar_supervisor"] = sidecar_client.SidecarSupervisor(config, context)
 
@@ -782,6 +912,9 @@ async def lifespan(server: FastMCP):
             stop_dashboard(context, join_timeout=3.0)
         except Exception as e:
             logger.warning(f"Dashboard shutdown error: {e}")
+
+    context["_vector_maintenance_stop"] = True
+    context["vector_resync"].set()
 
     # Give background thread a chance to finish
     bg_thread = context.get("_bg_thread")

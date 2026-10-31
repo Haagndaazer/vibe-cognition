@@ -1,6 +1,6 @@
 [project]
 name = "vibe-cognition"
-version = "0.46.0"
+version = "0.47.0"
 description = "MCP server for project knowledge graphs — decisions, failures, discoveries, patterns"
 authors = [{ name = "Colton Dyck" }]
 license = { text = "MIT" }
@@ -20,7 +20,11 @@ dependencies = [
     # 2.x upgrade (WP-Lifecycle-2 rev 4, AC-PIN; see tests/test_dependency_pins.py).
     "mcp<2",
     "networkx>=3.0",
+    # Not imported by any code since v0.47.0 (the vector store is SQLite + numpy). It
+    # stays installed for one release so a plugin update never has to uninstall a
+    # native DLL that an older still-running session has loaded (Windows refuses).
     "chromadb>=0.5.0",
+    "numpy>=1.26",
     "sentence-transformers>=3.0.0",
     # Required at runtime, not imported directly: nomic-embed-text-v1.5's
     # trust_remote_code model code (loaded in embeddings/generator.py via

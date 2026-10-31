@@ -73,7 +73,7 @@ search work immediately, before that.
 ## How It Works
 
 Vibe Cognition uses:
-- **ChromaDB** for local vector storage of cognition node embeddings
+- **SQLite + numpy** for local vector storage of cognition node embeddings (exact cosine search; since v0.47.0, replacing ChromaDB)
 - **sentence-transformers** for generating embeddings locally
 - **NetworkX** for building and querying the in-memory cognition graph
 - **Ollama** (optional) as an alternative local embeddings backend
@@ -284,14 +284,17 @@ your-project/
 └── ... your code
 
 ~/.claude/plugins/data/vibe-cognition-<marketplace>/
-└── chromadb/
+└── vectors/
     └── <project>-<hash>/   # Vector embeddings (machine-local, regenerable)
+        └── vectors-1.sqlite3
 ```
 
 `.cognition/` is the **only** thing the plugin writes into your project. The MCP server is declared by the plugin itself and resolves your project directory automatically (via `CLAUDE_PROJECT_DIR`), so there is no per-project `.mcp.json` to manage. Python dependencies live in the plugin's own data directory, not in your repo. (If you installed an earlier version that wrote a `vibe-cognition` entry into your project's `.mcp.json`, the plugin removes just that entry on next start — other servers are left untouched.)
 
 - **`.cognition/journal/` and `.cognition/journal.jsonl`** should be **committed** — together they are the shared project knowledge base
-- **The chromadb vector store** lives per-project under the plugin data dir since v0.32.0 — it can never end up in source control, and it's a regenerable cache (rebuilt automatically from the journal if deleted). The resolved path is surfaced in `get_status` as `chromadb_path`. A leftover `.cognition/chromadb/` from earlier versions is unused and **safe to delete**.
+- **The vector store** lives per-project under the plugin data dir (`vectors/<project>-<hash>/`) — it can never end up in source control, and it's a regenerable cache (rebuilt automatically from the journal if deleted). `get_status` reports its database file as `vectors_path` and its health as `vector_store`. If no plugin data dir can be found (bare dev shells, CI) it falls back to `.cognition/local/vectors/`, inside the already-ignored `local/`.
+- **Since v0.47.0 the store is SQLite + numpy instead of ChromaDB.** The first session in each project after updating rebuilds the index from the journal (minutes on a large graph; search results carry `index_syncing: true` until it finishes). The old `chromadb/` folders under the plugin data dir, and any leftover `.cognition/chromadb/` in a project, are no longer read by 0.47.0; delete them **once every session on the machine runs 0.47.0 or later** (a still-open 0.46 session keeps using them). `VIBE_VECTORS_DIR` replaces `VIBE_CHROMADB_DIR`, which is now ignored.
+- **A damaged index repairs itself.** If the store is found damaged, that generation is set aside (`vectors-<n>.corrupt` marks it), a fresh `vectors-<n+1>.sqlite3` is built from the journal, and the next session start says so once. Nothing is lost. The set-aside generation's `.sqlite3`, `-wal` and `-shm` files may be deleted once no session is open; leave its `.corrupt` marker in place.
 
 > **Important:** Never gitignore the entire `.cognition/` directory. The journal files must be committed for team sharing.
 
@@ -933,11 +936,19 @@ historical nodes it hasn't embedded yet. If you're setting up multiple agents in
 shared working directory specifically (not just multiple independent sessions), see the
 [topology guide](docs/topology-guide.md) — that setup has its own protocol.
 
-**ChromaDB lock / database errors** — this is unrelated to running multiple sessions
-(see above); check for a stale lock file under the project's chromadb directory (the
-`chromadb_path` in `get_status`; since v0.32.0 under the plugin data dir, on older
-versions `.cognition/chromadb/`) from a process that didn't shut down cleanly, or
-antivirus/backup software holding a file open.
+**Search reports `semantic_unavailable` with reason `vector-store-unavailable`** — the
+search index could not be used for that call; graph tools keep working. `get_status`'s
+`vector_store.reason` says why. A busy store (antivirus, backup or indexing software
+holding the file, or a heavy write from another session) clears on its own; retry in a
+few seconds. "Repeated corruption" means the index kept getting damaged in its current
+location: keep the plugin data dir off network shares and cloud-synced folders.
+Reason `newer-schema` means a newer plugin version built the index: update the plugin.
+
+**Changed the embedding model or its dimension?** The index remembers the model it was
+built with, so search then reports `semantic_unavailable` with reason `model-mismatch` or
+`dim-mismatch` (and `get_status` shows `home_model_drift`); new vectors are not written.
+To rebuild with the new model, close every session in that project, delete the folder
+that holds `vectors_path`, and open a session: the index is rebuilt from the journal.
 
 **Journal permanently shows as modified, or replay resets after merges (Windows / autocrlf)** — The journal files are replayed by byte offset, so line-ending normalization must never rewrite their bytes; on `core.autocrlf` setups this holds only by convention. If `git status` permanently shows `.cognition/journal.jsonl` or a file under `.cognition/journal/` as modified, or logs show "re-hydrated from top" after merges/pulls, add `.cognition/*.jsonl merge=union -text` to your repo-root `.gitattributes` — EARLY in the graph's life. Do not retrofit `-text` onto a grown shared-checkout journal without a planned cut-over: the first commit after adding it re-normalizes the file once, which live sessions see as a replaced journal. (Auto-configuration writes only `merge=union`, never `-text`.)
 
@@ -961,7 +972,7 @@ automatic self-exit yet. Workaround: periodically check Task Manager (or
 processes with no corresponding open Claude Code window, and end them manually. Don't
 end a process tied to a session you're still using.
 
-**General** — the chromadb vector store (see `chromadb_path` in `get_status`) is always safe to delete. It is fully regenerated on the next server startup. A leftover `.cognition/chromadb/` inside a project is unused since v0.32.0 and equally safe to delete.
+**General** — the vector store (the folder holding `vectors_path` in `get_status`) is always safe to delete while no session is open. It is fully regenerated from the journal on the next server startup. Old `chromadb/` folders, under the plugin data dir or inside a project as `.cognition/chromadb/`, are unused since v0.47.0 and safe to delete once no session on the machine runs an older version.
 
 ## Codex CLI
 
@@ -1021,9 +1032,10 @@ Developers can install the current `main` instead via this repo's own dev market
    ```bash
    rm -rf ~/.claude/plugins/data/vibe-cognition-coltondyck/
    ```
-   Projects set up before v0.32.0 may also have a leftover in-repo cache:
+   Projects set up before v0.32.0 may also have a leftover in-repo cache, and env-less dev
+   launches keep one under `local/`:
    ```bash
-   rm -rf .cognition/chromadb/
+   rm -rf .cognition/chromadb/ .cognition/local/vectors/
    ```
 
 4. Optionally delete the cognition history (warning: this deletes shared project knowledge):

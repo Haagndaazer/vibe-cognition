@@ -15,7 +15,7 @@ from vibe_cognition.cognition import (
     get_incident_resolution,
     get_superseded_chain,
 )
-from vibe_cognition.embeddings import ChromaDBStorage, EmbeddingGenerator
+from vibe_cognition.embeddings import EmbeddingGenerator, VectorStore
 from vibe_cognition.tools.cognition_tools import (
     _add_edge_core,
     _add_edges_batch_core,
@@ -153,7 +153,7 @@ def test_update_node_reembeds_so_search_finds_new_text(tmp_path):
     scores ~1.0 and an ALPHA search collapses to ~0. Fails-before (no re-embed): the
     vector stays on ALPHA, BETA search scores ~0 — silent search-staleness."""
     s = CognitionStorage(tmp_path / ".cognition")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
+    embed = VectorStore(persist_directory=tmp_path / "chromadb")
     gen = _gen()
 
     node = CognitionNode(
@@ -187,7 +187,7 @@ def test_update_node_deferred_when_embeddings_not_ready(tmp_path):
     """If the model isn't ready, the edit still applies but the re-embed is deferred
     (reported), not silently skipped as 'done'."""
     s = CognitionStorage(tmp_path / ".cognition")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
+    embed = VectorStore(persist_directory=tmp_path / "chromadb")
     s.add_node(_node("n1", summary="alpha"))
     out = _update_node(s, embed, _gen(), node_id="n1", embeddings_ready=False, summary="beta")
     assert out.get("reembed") == "deferred", out
@@ -199,7 +199,7 @@ def test_update_node_whitelist_leaves_structural_fields_intact(tmp_path):
     /timestamp (editing those would corrupt a document's sha/mode ref or the part_of
     index)."""
     s = CognitionStorage(tmp_path / ".cognition")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
+    embed = VectorStore(persist_directory=tmp_path / "chromadb")
     n = CognitionNode(
         id="n1", type=CognitionNodeType.DECISION, summary="s", detail="d",
         context=["old"], references=["commit:abc"], severity=None,
@@ -222,7 +222,7 @@ def test_update_node_reembeds_metadata_on_context_or_severity_edit(tmp_path):
     (re-embed gated on summary/detail only): a context+severity edit leaves search
     results showing the OLD values — the WP's own search-staleness, on the metadata."""
     s = CognitionStorage(tmp_path / ".cognition")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
+    embed = VectorStore(persist_directory=tmp_path / "chromadb")
     gen = _gen()
     node = CognitionNode(
         id="n1", type=CognitionNodeType.INCIDENT, summary="alpha incident", detail="body",
@@ -250,7 +250,7 @@ def test_update_node_missing_and_empty(tmp_path):
     """A missing node errors; an existing node with no editable field errors (no
     silent no-op success)."""
     s = CognitionStorage(tmp_path / ".cognition")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
+    embed = VectorStore(persist_directory=tmp_path / "chromadb")
     assert "error" in _update_node(s, embed, _gen(), node_id="nope", embeddings_ready=False, summary="x")
     s.add_node(_node("n1"))
     assert "error" in _update_node(s, embed, _gen(), node_id="n1", embeddings_ready=False)
@@ -319,7 +319,7 @@ def test_update_node_preserves_id_edges_and_curation(tmp_path):
     and search reflects the NEW text. (This is the end-to-end composition of Commits
     1+3 — the read surface, the in-place edit, and the re-embed.)"""
     s = CognitionStorage(tmp_path / ".cognition")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
+    embed = VectorStore(persist_directory=tmp_path / "chromadb")
     gen = _gen()
 
     a = CognitionNode(
@@ -351,7 +351,7 @@ def test_record_and_update_share_one_embed_path(tmp_path):
     produces must be the same — i.e. update routes through the same helper, not a
     re-encoded copy that could drift."""
     s = CognitionStorage(tmp_path / ".cognition")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
+    embed = VectorStore(persist_directory=tmp_path / "chromadb")
     gen = _gen()
 
     # record a node directly on GAMMA

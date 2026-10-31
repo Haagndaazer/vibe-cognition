@@ -10,6 +10,10 @@ from typing import Literal
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+logger = logging.getLogger(__name__)
+
+_warned = {"chromadb_dir": False}
+
 
 def _default_repo_path() -> Path:
     """Default repository path when REPO_PATH is not set explicitly.
@@ -46,12 +50,12 @@ def resolve_repo_path_env(*, default: Path | None = None) -> Path:
     return default if default is not None else Path.cwd()
 
 
-def chroma_project_key(repo_path: Path) -> str:
-    """Stable per-project subdirectory name under the shared chromadb root.
+def project_store_key(repo_path: Path) -> str:
+    """Stable per-project subdirectory name under the shared vector-store root.
 
     THE single key derivation (WP-Chroma-Home) — server lifespan, the
     dashboard CLI, and cognition_load_project must all go through this (via
-    resolve_chromadb_dir/resolve_foreign_chromadb_dir), or plugin-launched
+    resolve_vectors_dir/resolve_foreign_vectors_dir), or plugin-launched
     and standalone launches of the same project silently diverge into
     different directories.
 
@@ -72,8 +76,8 @@ def _home_plugins_data_dir() -> Path:
     return Path.home() / ".claude" / "plugins" / "data"
 
 
-def resolve_chroma_data_root() -> Path | None:
-    """The plugin-data root that keyed chromadb dirs live under, or None.
+def resolve_store_data_root() -> Path | None:
+    """The plugin-data root that keyed vector-store dirs live under, or None.
 
     Resolution (WP-Chroma-Home): VIBE_DATA_DIR (the explicit plugin.json
     entry — the only PROVEN channel is ${CLAUDE_PLUGIN_DATA} substitution
@@ -100,43 +104,44 @@ def resolve_chroma_data_root() -> Path | None:
     return None
 
 
-def resolve_chromadb_dir(repo_path: Path) -> Path:
-    """The chromadb persist directory for the HOME project at ``repo_path``.
+def resolve_vectors_dir(repo_path: Path) -> Path:
+    """The vector-store directory for the HOME project at ``repo_path``.
 
-    VIBE_CHROMADB_DIR (exact directory, no keying — tests and power users)
-    → ``<data root>/chromadb/<project key>`` when a data root resolves
-    → legacy ``<repo>/.cognition/chromadb`` as the last resort (no plugin
-    install discoverable: CI, bare dev shells). Migration is ALWAYS fresh
-    (Colton, WP-Chroma-Home): nothing is ever copied or moved from the
-    legacy dir, and shipped code never deletes it — startup sync re-embeds
-    the journal into an empty new location.
+    VIBE_VECTORS_DIR (exact directory, no keying -- tests and power users)
+    -> ``<data root>/vectors/<project key>`` when a data root resolves
+    -> ``<repo>/.cognition/local/vectors`` as the last resort (no plugin install
+    discoverable: CI, bare dev shells), inside the already-ignored ``local/``.
+    VIBE_CHROMADB_DIR is no longer read: it named a chromadb directory, and
+    pointing the new store there would mix two formats in one folder.
     """
-    override = os.environ.get("VIBE_CHROMADB_DIR")
+    override = os.environ.get("VIBE_VECTORS_DIR")
     if override:
         return Path(override)
-    root = resolve_chroma_data_root()
+    if os.environ.get("VIBE_CHROMADB_DIR") and not _warned["chromadb_dir"]:
+        _warned["chromadb_dir"] = True
+        logger.warning("VIBE_CHROMADB_DIR is no longer used; set VIBE_VECTORS_DIR instead")
+    root = resolve_store_data_root()
     if root is not None:
-        return root / "chromadb" / chroma_project_key(repo_path)
-    return Path(repo_path) / ".cognition" / "chromadb"
+        return root / "vectors" / project_store_key(repo_path)
+    return Path(repo_path) / ".cognition" / "local" / "vectors"
 
 
-def resolve_foreign_chromadb_dir(repo_path: Path) -> Path:
-    """The chromadb directory to READ for a foreign project (cognition_load_project).
+def resolve_foreign_vectors_dir(repo_path: Path) -> Path | None:
+    """The vector-store directory to READ for a foreign project, or None.
 
-    Deliberately ignores VIBE_CHROMADB_DIR: that override names ONE exact
+    Deliberately ignores VIBE_VECTORS_DIR: that override names ONE exact
     directory for the home project, and honoring it here would collapse home
-    and foreign collections into the same store. Prefers the keyed
-    plugin-data dir only when it actually exists (foreign opens are
-    read-only, never create) and falls back to the project's legacy in-repo
-    dir — a project not yet re-opened since the relocation still has its
-    vectors there.
+    and foreign stores into one. The keyed data-root dir wins when it exists,
+    then the project's in-repo fallback; None when the project has never been
+    opened on a version that writes this store.
     """
-    root = resolve_chroma_data_root()
+    root = resolve_store_data_root()
     if root is not None:
-        keyed = root / "chromadb" / chroma_project_key(repo_path)
+        keyed = root / "vectors" / project_store_key(repo_path)
         if keyed.exists():
             return keyed
-    return Path(repo_path) / ".cognition" / "chromadb"
+    local = Path(repo_path) / ".cognition" / "local" / "vectors"
+    return local if local.exists() else None
 
 
 class Settings(BaseSettings):
@@ -504,17 +509,14 @@ class Settings(BaseSettings):
         return self.repo_path / ".cognition"
 
     @property
-    def cognition_chromadb_path(self) -> Path:
-        """The cognition ChromaDB persist directory (machine-local, regenerable).
+    def cognition_vectors_path(self) -> Path:
+        """The vector-store directory (machine-local, regenerable from the journal).
 
-        WP-Chroma-Home: lives OUTSIDE the repo by default — under the plugin
-        data dir (``${CLAUDE_PLUGIN_DATA}/chromadb/<project-key>``) so it can
-        never be source-controlled and never holds file handles inside the
-        repo. See resolve_chromadb_dir for the full resolution order; the
-        legacy in-repo ``.cognition/chromadb`` remains only as the last-resort
-        fallback when no plugin data root is resolvable.
+        Outside the repo by default, under the plugin data dir
+        (``${CLAUDE_PLUGIN_DATA}/vectors/<project-key>``); see resolve_vectors_dir
+        for the full resolution order.
         """
-        return resolve_chromadb_dir(self.repo_path)
+        return resolve_vectors_dir(self.repo_path)
 
 
 def setup_logging(level: str) -> None:

@@ -214,7 +214,7 @@ def find_orphaned_document_artifacts(cognition_dir: Path, storage: "CognitionSto
 
     Discovery only — never deletes. Callers decide whether/how to act on the
     result; reclaiming here would mean unlinking data with no way to first rule
-    out "another process is mid-write" the way the (regenerable) ChromaDB orphan
+    out "another process is mid-write" the way the (regenerable) vector-store orphan
     sweep can. Best-effort: any filesystem error scanning a subdirectory yields
     "no orphans found there" rather than raising — this must never block startup.
 

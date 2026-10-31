@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from vibe_cognition.cognition import CognitionStorage
-from vibe_cognition.embeddings import ChromaDBStorage
+from vibe_cognition.embeddings import VectorStore
 from vibe_cognition.tools.cognition_tools import (
     _list_projects_core,
     _load_project_core,
@@ -20,65 +20,51 @@ from vibe_cognition.tools.project_registry import (
 # ── C1: model stamp ──────────────────────────────────────────────────────────
 
 
-def test_c1_fresh_collection_gets_model_stamp(tmp_path):
-    """C1: a freshly created collection has embedding_model and embedding_dimensions
-    in its metadata.
+def test_c1_fresh_store_gets_model_stamp(tmp_path):
+    """C1: a freshly created store carries embedding_model and embedding_dimensions.
 
-    Fails-before: __init__ with no model params → metadata lacks both keys.
-    Passes after: both keys present when params provided.
+    Fails-before: a store created with no stamp has neither key.
     """
-    storage = ChromaDBStorage(
-        persist_directory=tmp_path / "chromadb",
+    storage = VectorStore(
+        persist_directory=tmp_path / "vectors",
         embedding_model="test-model",
         embedding_dimensions=128,
     )
-    meta = storage._collection.metadata or {}
-    assert meta.get("embedding_model") == "test-model", (
-        f"embedding_model not stamped; got metadata={meta}"
-    )
-    assert meta.get("embedding_dimensions") == 128, (
-        f"embedding_dimensions not stamped; got metadata={meta}"
-    )
+    meta = storage.store_metadata()
+    assert meta.get("embedding_model") == "test-model", f"got {meta}"
+    assert meta.get("embedding_dimensions") == 128, f"got {meta}"
 
 
-def test_c1_existing_collection_hnsw_space_survives(tmp_path):
-    """C1: re-opening an existing collection with stamp params must NOT drop hnsw:space.
+def test_c1_existing_store_stamp_is_never_rewritten(tmp_path):
+    """C1: re-opening an existing store with different stamp params must leave the
+    creation stamp alone (a refresh would silently defeat the model-drift guard)."""
+    VectorStore(persist_directory=tmp_path / "vectors", embedding_model="old", embedding_dimensions=3).close()
 
-    chromadb 1.5.5 silently ignores new metadata on get_or_create for existing
-    collections. collection.modify would drop hnsw:space (raises if present).
-    The safe path is: stamp only at NEW collection creation, leave existing alone.
-
-    Fails-before: if code called collection.modify → ValueError (hnsw:space present).
-    Passes after: second open leaves hnsw:space="cosine" intact, no exception raised.
-    """
-    # First open: creates collection with hnsw:space
-    ChromaDBStorage(persist_directory=tmp_path / "chromadb")
-
-    # Second open with stamp params against existing collection: must not raise
-    storage2 = ChromaDBStorage(
-        persist_directory=tmp_path / "chromadb",
-        embedding_model="test-model",
+    storage2 = VectorStore(
+        persist_directory=tmp_path / "vectors",
+        embedding_model="new-model",
         embedding_dimensions=128,
     )
-    meta = storage2._collection.metadata or {}
-    assert meta.get("hnsw:space") == "cosine", (
-        f"hnsw:space dropped on re-open; got metadata={meta}"
-    )
+    meta = storage2.store_metadata()
+    assert meta.get("embedding_model") == "old", f"stamp rewritten on re-open: {meta}"
+    assert meta.get("embedding_dimensions") == 3
 
 
 # ── C2: close ────────────────────────────────────────────────────────────────
 
 
-def test_c2_close_calls_client_close(tmp_path):
-    """C2: storage.close() must delegate to self._client.close().
-
-    Fails-before: close() was `pass` → _client.close never called.
-    Passes after: _client.close called exactly once.
-    """
-    storage = ChromaDBStorage(persist_directory=tmp_path / "chromadb")
-    storage._client.close = MagicMock()  # type: ignore[attr-defined]
+def test_c2_close_releases_the_database_handle(tmp_path):
+    """C2: close() releases the SQLite handle, so the store's files can be removed
+    (critical on Windows, where an open handle blocks deletion)."""
+    storage = VectorStore(persist_directory=tmp_path / "vectors")
+    storage.upsert_embedding("n1", [0.1, 0.2, 0.3], {"entity_type": "decision"})
+    db = storage.path
     storage.close()
-    storage._client.close.assert_called_once()  # type: ignore[attr-defined]
+    for suffix in ("", "-wal", "-shm"):
+        candidate = db.with_name(db.name + suffix)
+        if candidate.exists():
+            candidate.unlink()
+    assert not db.exists()
 
 
 def test_c2_close_integration_reopen(tmp_path):
@@ -88,11 +74,11 @@ def test_c2_close_integration_reopen(tmp_path):
     attach (critical on Windows, where an open handle blocks file access).
     """
     chroma_dir = tmp_path / "chromadb"
-    storage = ChromaDBStorage(persist_directory=chroma_dir)
+    storage = VectorStore(persist_directory=chroma_dir)
     storage.upsert_embedding("n1", [0.1, 0.2, 0.3], {"entity_type": "decision"})
     storage.close()
 
-    reopened = ChromaDBStorage.open_existing(chroma_dir)
+    reopened = VectorStore.open_existing(chroma_dir)
     assert reopened is not None, "open_existing returned None after close"
     assert reopened.count_documents() == 1, (
         f"expected 1 document after reopen, got {reopened.count_documents()}"
@@ -110,7 +96,7 @@ def test_open_existing_absent_dir_returns_none(tmp_path):
     → open_existing returns None → model_guard="no-index".
     """
     absent = tmp_path / "no-such-chromadb"
-    result = ChromaDBStorage.open_existing(absent)
+    result = VectorStore.open_existing(absent)
     assert result is None
 
 
@@ -123,39 +109,41 @@ def test_open_existing_absent_dir_does_not_create_it(tmp_path):
     Fails-before: if open_existing called __init__ → chroma.sqlite3 would appear.
     Passes after: directory still absent after the call.
     """
-    absent = tmp_path / "B" / ".cognition" / "chromadb"
-    ChromaDBStorage.open_existing(absent)
+    absent = tmp_path / "B" / ".cognition" / "local" / "vectors"
+    VectorStore.open_existing(absent)
     assert not absent.exists(), (
         f"open_existing created the directory at {absent}"
     )
 
 
-def test_open_existing_absent_collection_returns_none(tmp_path):
-    """open_existing returns None when the directory exists but the collection doesn't.
+def test_open_existing_not_a_vector_store_returns_none(tmp_path):
+    """open_existing returns None when the directory holds a database that is not a
+    vector store (no schema), and leaves it untouched."""
+    import sqlite3
 
-    Simulates B having a chroma dir from a DIFFERENT collection name.
-    """
-    chroma_dir = tmp_path / "chromadb"
-    # Create a collection under a different name
-    from chromadb import PersistentClient
-    from chromadb.config import Settings as ChromaSettings
-    client = PersistentClient(path=str(chroma_dir), settings=ChromaSettings(anonymized_telemetry=False))
-    client.get_or_create_collection("some_other_collection")
-    client.close()  # type: ignore[attr-defined]
+    store_dir = tmp_path / "vectors"
+    store_dir.mkdir()
+    db = store_dir / "vectors-1.sqlite3"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE other (x)")
+    conn.commit()
+    conn.close()
+    before = db.read_bytes()
 
-    result = ChromaDBStorage.open_existing(chroma_dir, collection_name="cognition_embeddings")
-    assert result is None
+    assert VectorStore.open_existing(store_dir) is None
+    assert db.read_bytes() == before
+    assert not list(store_dir.glob("*.corrupt"))
 
 
 def test_open_existing_present_collection_returns_storage(tmp_path):
-    """open_existing returns a usable ChromaDBStorage when the collection exists."""
+    """open_existing returns a usable VectorStore when the collection exists."""
     chroma_dir = tmp_path / "chromadb"
     # Write-path: create via __init__
-    s = ChromaDBStorage(persist_directory=chroma_dir)
+    s = VectorStore(persist_directory=chroma_dir)
     s.upsert_embedding("n1", [0.1, 0.2, 0.3], {"entity_type": "decision"})
     s.close()
 
-    result = ChromaDBStorage.open_existing(chroma_dir)
+    result = VectorStore.open_existing(chroma_dir)
     assert result is not None
     assert result.count_documents() == 1
     result.close()
@@ -280,8 +268,8 @@ def _make_lc(tmp_path, home_tag="myproject", embedding_model="test-model", embed
     home_path = tmp_path / "home"
     home_path.mkdir(parents=True, exist_ok=True)
     home_cognition = CognitionStorage(home_path / ".cognition")
-    home_chroma = ChromaDBStorage(
-        persist_directory=home_path / ".cognition" / "chromadb",
+    home_chroma = VectorStore(
+        persist_directory=home_path / ".cognition" / "local" / "vectors",
         embedding_model=embedding_model,
         embedding_dimensions=embedding_dimensions,
     )
@@ -404,7 +392,7 @@ def test_structural_only_degrade_end_to_end(tmp_path):
     """
     lc = _make_lc(tmp_path)
     b_path = _make_foreign(tmp_path, "B", with_journal=True)
-    b_chroma_dir = b_path / ".cognition" / "chromadb"
+    b_chroma_dir = b_path / ".cognition" / "local" / "vectors"
 
     # Load
     res = _load_project_core(lc, str(b_path))
@@ -463,8 +451,8 @@ def test_load_project_dim_mismatch_structural_only(tmp_path):
     b_path = _make_foreign(tmp_path, "B", with_journal=True)
 
     # Create B's chroma with DIM=6 (different from home's 3)
-    b_chroma = ChromaDBStorage(
-        persist_directory=b_path / ".cognition" / "chromadb",
+    b_chroma = VectorStore(
+        persist_directory=b_path / ".cognition" / "local" / "vectors",
         embedding_model="model-a",
         embedding_dimensions=6,
     )
@@ -490,8 +478,8 @@ def test_load_project_model_mismatch_structural_only(tmp_path):
     b_path = _make_foreign(tmp_path, "B", with_journal=True)
 
     # Create B's chroma with a DIFFERENT model stamp, same dim
-    b_chroma = ChromaDBStorage(
-        persist_directory=b_path / ".cognition" / "chromadb",
+    b_chroma = VectorStore(
+        persist_directory=b_path / ".cognition" / "local" / "vectors",
         embedding_model="model-b",  # different
         embedding_dimensions=3,
     )
@@ -513,8 +501,8 @@ def test_load_project_match_guard(tmp_path):
     b_path = _make_foreign(tmp_path, "B", with_journal=True)
 
     # Create B's chroma matching home stamp
-    b_chroma = ChromaDBStorage(
-        persist_directory=b_path / ".cognition" / "chromadb",
+    b_chroma = VectorStore(
+        persist_directory=b_path / ".cognition" / "local" / "vectors",
         embedding_model="model-a",
         embedding_dimensions=3,
     )

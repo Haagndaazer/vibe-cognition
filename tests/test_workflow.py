@@ -94,8 +94,8 @@ def test_embed_workflow_creates_node_vector_and_chunks(fake_generator, tmp_path)
     Fails-before: if the function embedded only the node vector (like _embed_entity_node)
     and skipped chunking, long procedures would be unsearchable past the nomic truncation.
     """
-    from vibe_cognition.embeddings import ChromaDBStorage
-    chroma = ChromaDBStorage(
+    from vibe_cognition.embeddings import VectorStore
+    chroma = VectorStore(
         persist_directory=tmp_path / "chromadb",
         embedding_model="m",
         embedding_dimensions=3,
@@ -386,8 +386,8 @@ def test_superseded_workflow_chunks_survive_supersession(fake_generator, tmp_pat
     Fails-before: if _embed_workflow purged chunks by the *old* node_id when embedding a
     NEW node, superseded history would silently disappear from ChromaDB.
     """
-    from vibe_cognition.embeddings import ChromaDBStorage
-    chroma = ChromaDBStorage(
+    from vibe_cognition.embeddings import VectorStore
+    chroma = VectorStore(
         persist_directory=tmp_path / "chromadb",
         embedding_model="m",
         embedding_dimensions=3,

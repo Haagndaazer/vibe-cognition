@@ -16,7 +16,7 @@ from vibe_cognition.cognition import (
     CognitionStorage,
 )
 from vibe_cognition.cognition.queries import conflict_details
-from vibe_cognition.embeddings import ChromaDBStorage, EmbeddingGenerator
+from vibe_cognition.embeddings import EmbeddingGenerator, VectorStore
 from vibe_cognition.tools.cognition_tools import (
     _load_project_core,
     _search_cognition,
@@ -42,7 +42,7 @@ def _entity(
 
 
 def _upsert(
-    embed: ChromaDBStorage,
+    embed: VectorStore,
     node_id: str,
     vec: list[float],
     node_type: CognitionNodeType = CognitionNodeType.DECISION,
@@ -100,7 +100,7 @@ def _add_edge(s: CognitionStorage, from_id: str, to_id: str, edge_type: Cognitio
 
 def test_conflicted_true_for_incoming_contradicts(tmp_path):
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_entity("a"))
     s.add_node(_entity("b"))
     _add_edge(s, "b", "a", CognitionEdgeType.CONTRADICTS)
@@ -118,7 +118,7 @@ def test_conflicted_true_for_outgoing_contradicts_fails_before(tmp_path):
     SOURCE (outgoing) side of the contradicts edge, the exact V1-banner bug class
     (pattern 6ed494680fb3)."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_entity("a"))
     s.add_node(_entity("b"))
     _add_edge(s, "a", "b", CognitionEdgeType.CONTRADICTS)
@@ -133,7 +133,7 @@ def test_conflicted_true_for_outgoing_contradicts_fails_before(tmp_path):
 
 def test_conflicted_and_superseded_by_always_present_and_clean_on_isolated_hit(tmp_path):
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_entity("clean"))
     _upsert(embed, "clean", [1.0, 0.0, 0.0])
     gen = cast(EmbeddingGenerator, _FixedGen([1.0, 0.0, 0.0]))
@@ -153,7 +153,7 @@ def test_superseded_by_points_to_newer_node_id_not_a_bool(tmp_path):
     the newer node's id; a backwards-direction implementation would leave 'old'
     unmarked and/or mark 'new' instead."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_entity("old", summary="old"))
     s.add_node(_entity("new", summary="new"))
     _add_edge(s, "new", "old", CognitionEdgeType.SUPERSEDES)
@@ -175,7 +175,7 @@ def test_superseded_by_branch_case_uses_node_timestamp_not_edge_timestamp(tmp_pa
     storage.get_node(source_id)['timestamp'] (authorship time), never the edge's
     own 'timestamp' (mint time), or this picks newer2 instead of newer1."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_entity("old", summary="old", timestamp="2026-01-01T00:00:00+00:00"))
     s.add_node(_entity("newer1", summary="newer1", timestamp="2026-06-01T00:00:00+00:00"))
     s.add_node(_entity("newer2", summary="newer2", timestamp="2026-02-01T00:00:00+00:00"))
@@ -202,7 +202,7 @@ def test_gate_d_s4_replay_shape_junior_find_flagged_by_senior_revision(tmp_path)
     the senior node, so a consumer reading only the junior hit still learns it has
     been revised."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_entity("junior_find", CognitionNodeType.DISCOVERY, summary="junior's original finding"))
     s.add_node(_entity("senior_revision", CognitionNodeType.DISCOVERY, summary="senior's revision"))
     _add_edge(s, "senior_revision", "junior_find", CognitionEdgeType.SUPERSEDES)
@@ -227,7 +227,7 @@ def test_ranking_unaffected_by_conflicted_or_superseded_flags(tmp_path):
     identical to a clean hit with the same raw score. Proves the new flags carry
     no silent down-weight."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_entity("flagged", summary="flagged hit"))
     s.add_node(_entity("newer", summary="newer"))
     s.add_node(_entity("clean", summary="clean hit"))
@@ -313,7 +313,7 @@ def test_search_conflicted_with_present_only_when_conflicted(tmp_path):
     """conflicted_with names the counterparty ONLY for conflicted hits -- a clean
     hit never pays the conflict_details cost and never carries the key."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_entity("a", summary="claim a"))
     s.add_node(CognitionNode(
         id="b", type=CognitionNodeType.DECISION, summary="claim b", detail="d",
@@ -349,8 +349,8 @@ def test_multiproject_foreign_graph_flags_computed_against_its_own_graph(tmp_pat
     home_path.mkdir(parents=True)
     home_storage = CognitionStorage(home_path / ".cognition")
     home_storage.add_node(_entity("home1", summary="home hit"))
-    home_chroma = ChromaDBStorage(
-        persist_directory=home_path / ".cognition" / "chromadb",
+    home_chroma = VectorStore(
+        persist_directory=home_path / ".cognition" / "local" / "vectors",
         embedding_model="m", embedding_dimensions=3,
     )
     _upsert(home_chroma, "home1", [1.0, 0.0, 0.0], summary="home hit")
@@ -365,8 +365,8 @@ def test_multiproject_foreign_graph_flags_computed_against_its_own_graph(tmp_pat
         from_id="b_new", to_id="b_old", edge_type=CognitionEdgeType.SUPERSEDES,
         timestamp="2026-07-15T00:00:00+00:00", source="test",
     ))
-    b_chroma = ChromaDBStorage(
-        persist_directory=b_path / ".cognition" / "chromadb",
+    b_chroma = VectorStore(
+        persist_directory=b_path / ".cognition" / "local" / "vectors",
         embedding_model="m", embedding_dimensions=3,
     )
     _upsert(b_chroma, "b_old", [1.0, 0.0, 0.0], summary="b old")

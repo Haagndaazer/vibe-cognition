@@ -1,4 +1,9 @@
 {
+  "0.47.0": [
+    "The search index is now SQLite instead of ChromaDB, whose native crash took Ling Lang's server down at start-up. A damaged index is set aside and rebuilt from the journal; it never stops the server.",
+    "The first session in each project rebuilds its index from the journal (about 20 minutes for a 5,000-node graph). Every tool works meanwhile; search results say index_syncing.",
+    "Search reports semantic_unavailable instead of an empty result when the index can't serve it. get_status gains vectors_path and vector_store. Start-up is nearly a second faster."
+  ],
   "0.46.0": [
     "On a Subversion checkout the plugin never touches git now: identity is not read from ~/.gitconfig, no .cognition/.gitignore is written, and backfill refuses to run rather than invoke git.",
     "On a git checkout nothing Subversion-related appears: the loss warnings, hygiene announce and identity hints speak git only, and no .svn is looked for.",

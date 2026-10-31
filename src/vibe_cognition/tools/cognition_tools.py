@@ -75,8 +75,9 @@ from ..cognition.svn_hygiene import add_new_files_in_background
 # implementation itself lives in task_meta.py (shared with prime, which
 # cannot import cognition_tools).
 from ..cognition.task_meta import _task_claimed_at  # noqa: F401
-from ..config import resolve_foreign_chromadb_dir
-from ..embeddings import ChromaDBStorage, EmbeddingGenerator, adaptive_vector_search
+from ..config import resolve_foreign_vectors_dir
+from ..embeddings import EmbeddingGenerator, VectorStore, adaptive_vector_search
+from ..running_version import code_version
 from .dispatch import dispatch_tool
 from .project_registry import (
     LoadedProjects,
@@ -109,7 +110,7 @@ def _embeddings_ready(lc: dict[str, Any]) -> bool:
 
 
 def _embed_entity_node(
-    embedding_storage: "ChromaDBStorage",
+    embedding_storage: "VectorStore",
     generator: "EmbeddingGenerator",
     node: CognitionNode,
 ) -> None:
@@ -121,7 +122,7 @@ def _embed_entity_node(
     ``id`` is the FINAL (post-mint) id, else the vector lands under a stale id (A1).
 
     TASK lifecycle (B1): a ``task`` node carries ``status``/``owner`` in ``node.metadata``.
-    Surface BOTH into the Chroma metadata dict AND the embed text (only when present) so
+    Surface BOTH into the vector metadata dict AND the embed text (only when present) so
     metadata filters and semantic search both reflect lifecycle state. This is the SINGLE
     shared embed path, so create AND re-embed (cognition_update_task) pick it up once-and-
     done; for non-task nodes ``metadata`` is empty so this stays a no-op."""
@@ -148,7 +149,7 @@ def _embed_entity_node(
         metadata["status"] = status
     if owner:
         metadata["owner"] = owner
-    # WP-TC6: surface from_agent (when stamped) into Chroma metadata so search hits
+    # WP-TC6: surface from_agent (when stamped) into vector metadata so search hits
     # carry it too (get_node/list_tasks already surface it via the raw metadata dict).
     # "in" (not truthiness) -- False is a real, present value, distinct from missing.
     if "from_agent" in node.metadata:
@@ -157,7 +158,7 @@ def _embed_entity_node(
 
 
 def _embed_workflow(
-    embedding_storage: "ChromaDBStorage",
+    embedding_storage: "VectorStore",
     generator: "EmbeddingGenerator",
     node: CognitionNode,
 ) -> int:
@@ -165,8 +166,9 @@ def _embed_workflow(
     ``<node_id>#chunk-N`` vectors (each carrying ``is_chunk: True``). Mirrors the
     document chunking path so long procedures remain fully searchable.
 
-    Delete-then-write (idempotent): purges this node's existing chunks BEFORE
-    writing the fresh set so a re-chunk never orphans stale high-N chunks.
+    The chunk set is replaced in one transaction (``replace_chunks``) after every
+    chunk is embedded, so a re-chunk never orphans stale high-N chunks and a peer
+    writing the same node can never interleave a half set.
     The node-level vector's metadata carries ``chunk_count`` (WP-4,
     41ced8d1fa63) so a completeness check (e.g. the startup reconciler) can
     verify the FULL chunk set landed, not just chunk-0 — a crash mid-loop
@@ -186,20 +188,18 @@ def _embed_workflow(
     # WP-TC6 (see _embed_entity_node's matching comment): "in", not truthiness.
     if "from_agent" in node.metadata:
         wf_metadata["from_agent"] = node.metadata["from_agent"]
-    embedding_storage.upsert_embedding(
-        node.id,
-        generator.generate(node_text, input_type="document"),
-        wf_metadata,
-    )
-    # Delete-then-write the chunk set (idempotent regardless of count change).
-    embedding_storage.delete_by_node_id(node.id)
-    for i, chunk in enumerate(chunks):
-        embedding_storage.upsert_embedding(
+    node_vector = generator.generate(node_text, input_type="document")
+    chunk_rows = [
+        (
             f"{node.id}#chunk-{i}",
             generator.generate(chunk, input_type="document"),
             {"node_id": node.id, "entity_type": wf_type, "is_chunk": True},
-            document=chunk,
+            chunk,
         )
+        for i, chunk in enumerate(chunks)
+    ]
+    embedding_storage.upsert_embedding(node.id, node_vector, wf_metadata)
+    embedding_storage.replace_chunks(node.id, chunk_rows)
     return len(chunks)
 
 
@@ -310,7 +310,7 @@ def _record_node(
         return scope_error
     lc = get_lifespan(ctx)
     storage: CognitionStorage = lc["cognition_storage"]
-    embedding_storage: ChromaDBStorage = lc["cognition_embedding_storage"]
+    embedding_storage: VectorStore = lc["cognition_embedding_storage"]
 
     # Parse comma-separated strings into lists
     context_list = [c.strip() for c in context.split(",") if c.strip()] if context else []
@@ -385,7 +385,7 @@ def _record_node(
     node_id = storage.add_node(node, mint_unique_id=True)
     node = node.model_copy(update={"id": node_id})
 
-    # Embed and upsert to ChromaDB (skip if model not loaded yet — startup sync catches it later).
+    # Embed and upsert to the vector store (skip if model not loaded yet — startup sync catches it later).
     # Workflows chunk the full body for searchability; all other types use a single node vector.
     # WP-Wedge (AC4): re-read the generator HERE, at the gate, rather than an early
     # capture at function entry — a watchdog-fired -> late-recovery sequence can
@@ -847,7 +847,7 @@ def _format_search_results(
     every hit as unregistered, same as an empty dict.
 
     N1 (§9): a cross-process remove_node replays into the graph but never un-embeds,
-    so Chroma serves hits for nodes deleted on another machine — escalated by
+    so the vector store serves hits for nodes deleted on another machine — escalated by
     documents to verbatim deleted client text. Dropping hits whose (chunk-stripped)
     node id is absent from the graph is the CORRECTNESS guarantee (it never deletes;
     the startup sweep is best-effort reclamation).
@@ -963,10 +963,35 @@ def _format_search_results(
     return formatted, excluded_count
 
 
+def _store_unavailable_reason(store: Any) -> str | None:
+    """``vector-store-unavailable`` / ``newer-schema`` when the store cannot serve a
+    search, so an empty result never reads as "no history"."""
+    state = getattr(store, "state", None)
+    if not isinstance(state, str) or state == "ok":
+        return None
+    return "newer-schema" if state == "newer-schema" else "vector-store-unavailable"
+
+
+def _store_last_error(store: Any) -> str | None:
+    last_error = getattr(store, "last_error", None)
+    if not callable(last_error):
+        return None
+    error = last_error()
+    return error if isinstance(error, str) and error else None
+
+
+def _index_syncing(lc: dict[str, Any]) -> bool:
+    """True while the start-up (re)build of the vector index is still running."""
+    done = lc.get("embedding_sync_done")
+    return bool(done is not None and hasattr(done, "is_set") and not done.is_set()
+                and not lc.get("embedding_error"))
+
+
 def _reembed_replayed_nodes(
     storage: CognitionStorage,
-    embedding_storage: ChromaDBStorage,
+    embedding_storage: VectorStore,
     generator: EmbeddingGenerator,
+    index_syncing: bool = False,
 ) -> int:
     """Close the node<->embedding structural drift for nodes that arrived via
     journal REPLAY — another process's write — rather than this process's own
@@ -987,27 +1012,35 @@ def _reembed_replayed_nodes(
     handling that only the existing startup _sync_cognition_embeddings path
     does today — left to that path, same as before this fix (no regression).
 
-    Filters to ids ACTUALLY missing from Chroma (one batched existence check)
+    Filters to ids ACTUALLY missing from the vector store (one batched existence check)
     before embedding anything, so redundant catch-up of this process's OWN
     just-written nodes doesn't cost a model call on every search. Never
     raises — a per-node failure is logged and skipped so it can't block the
     search that triggered this or take down the rest of the batch.
     """
+    if index_syncing:
+        return 0
     pending = storage.pop_replayed_node_ids()
     if not pending:
         return 0
 
-    try:
-        existing = set(embedding_storage._collection.get(ids=pending)["ids"])
-    except Exception:
-        existing = set()
+    existing = embedding_storage.existing_ids(pending)
+    if _store_last_error(embedding_storage):
+        _requeue_replayed(storage, pending)
+        return 0
     missing = [nid for nid in pending if nid not in existing]
     if not missing:
         return 0
+    if len(missing) > _INLINE_REEMBED_CAP:
+        _requeue_replayed(storage, missing[_INLINE_REEMBED_CAP:])
+        request = getattr(embedding_storage, "request_resync", None)
+        if callable(request):
+            request()
+        missing = missing[:_INLINE_REEMBED_CAP]
 
     doc_type = CognitionNodeType.DOCUMENT.value
     embedded = 0
-    for node_id in missing:
+    for index, node_id in enumerate(missing):
         data = storage.get_node(node_id)
         if data is None or data.get("type") == doc_type:
             continue
@@ -1017,15 +1050,28 @@ def _reembed_replayed_nodes(
                 _embed_workflow(embedding_storage, generator, node)
             else:
                 _embed_entity_node(embedding_storage, generator, node)
-            embedded += 1
         except Exception as e:
             logger.warning(f"re-embed-on-replay: failed for {node_id}: {e}")
+            continue
+        if _store_last_error(embedding_storage):
+            _requeue_replayed(storage, missing[index:])
+            break
+        embedded += 1
     return embedded
+
+
+_INLINE_REEMBED_CAP = 10
+
+
+def _requeue_replayed(storage: Any, node_ids: list[str]) -> None:
+    requeue = getattr(storage, "requeue_replayed_node_ids", None)
+    if callable(requeue):
+        requeue(node_ids)
 
 
 def _search_with_embedding(
     storage: CognitionStorage,
-    embedding_storage: ChromaDBStorage,
+    embedding_storage: VectorStore,
     query_embedding: list[float],
     node_type: str | None,
     limit: int,
@@ -1062,7 +1108,7 @@ def _search_with_embedding(
 
 def _search_cognition(
     storage: CognitionStorage,
-    embedding_storage: ChromaDBStorage,
+    embedding_storage: VectorStore,
     generator: EmbeddingGenerator,
     query: str,
     node_type: str | None = None,
@@ -1071,7 +1117,7 @@ def _search_cognition(
 ) -> dict[str, Any]:
     """Semantic search core (testable; cognition_search is the thin ctx wrapper).
 
-    Embeds the query, ADAPTIVELY over-queries Chroma, then dedupes-to-best-hit-per-
+    Embeds the query, ADAPTIVELY over-queries the vector store, then dedupes-to-best-hit-per-
     node + drops graph-absent ghosts (N1) via _format_search_results. Keeping
     vector_search + the filter together here lets the cross-process ghost test
     exercise the REAL search path end-to-end.
@@ -1079,7 +1125,7 @@ def _search_cognition(
     Adaptive over-query (peer-review B3): a FIXED limit×k cannot guarantee `limit`
     distinct nodes — a single document can yield more than limit×k chunks and starve
     other live nodes. So widen n_results (doubling) until we have `limit` distinct
-    live nodes, OR Chroma is exhausted (fewer hits than asked), OR a cap is hit.
+    live nodes, OR the store is exhausted (fewer hits than asked), OR a cap is hit.
     Doubling keeps round-trips logarithmic. The single-document-with->cap-chunks case
     is the only residual (capped), and only degrades recall (never serves a wrong or
     deleted node — the dedupe + N1 filter are exact).
@@ -1161,7 +1207,7 @@ def _materialize_blob(
 
 
 def _embed_document(
-    embedding_storage: ChromaDBStorage,
+    embedding_storage: VectorStore,
     generator: EmbeddingGenerator,
     node_id: str,
     summary: str,
@@ -1174,10 +1220,10 @@ def _embed_document(
     text + ``is_chunk: True``). THE single chunk-write path — store-time (D2 c3) and
     re-sync (c4) both call it, so the chunk-metadata contract can't drift.
 
-    Delete-then-write (peer-review A5): purge this node's existing chunks BEFORE
-    writing the fresh set, so a re-chunk that yields FEWER chunks can't orphan stale
-    high-N chunks under the live node_id (which would surface as ghost excerpts of
-    deleted text). The node-level vector's metadata carries ``chunk_count`` (WP-4,
+    The chunk set is replaced in one transaction (``replace_chunks``, peer-review A5)
+    after every chunk is embedded, so a re-chunk that yields FEWER chunks can't orphan
+    stale high-N chunks under the live node_id (which would surface as ghost excerpts
+    of deleted text), and a peer can never interleave a half set. The node-level vector's metadata carries ``chunk_count`` (WP-4,
     41ced8d1fa63) so a completeness check can verify the FULL chunk set landed,
     not just chunk-0 — a crash mid-loop used to read as "fully synced" once
     chunk-0 existed, permanently hiding chunks 1..N. Returns the chunk count
@@ -1191,20 +1237,18 @@ def _embed_document(
     # WP-TC6: "is not None", not truthiness -- False is a real, present value.
     if from_agent is not None:
         doc_metadata["from_agent"] = from_agent
-    embedding_storage.upsert_embedding(
-        node_id,
-        generator.generate(node_text, input_type="document"),
-        doc_metadata,
-    )
-    # Delete-then-write the chunk set (idempotent regardless of count change).
-    embedding_storage.delete_by_node_id(node_id)
-    for i, chunk in enumerate(chunks):
-        embedding_storage.upsert_embedding(
+    node_vector = generator.generate(node_text, input_type="document")
+    chunk_rows = [
+        (
             f"{node_id}#chunk-{i}",
             generator.generate(chunk, input_type="document"),
             {"node_id": node_id, "entity_type": doc_type, "is_chunk": True},
-            document=chunk,
+            chunk,
         )
+        for i, chunk in enumerate(chunks)
+    ]
+    embedding_storage.upsert_embedding(node_id, node_vector, doc_metadata)
+    embedding_storage.replace_chunks(node_id, chunk_rows)
     return len(chunks)
 
 
@@ -1222,7 +1266,7 @@ def _store_document(
     store_copy: bool = False,
     local_only: bool | None = None,
     from_agent: bool = True,
-    embedding_storage: "ChromaDBStorage | None" = None,
+    embedding_storage: "VectorStore | None" = None,
     generator: "EmbeddingGenerator | None" = None,
 ) -> dict[str, Any]:
     """Document store, reference (default) or opt-in copy mode (testable core of
@@ -1471,7 +1515,7 @@ def _get_node(storage: CognitionStorage, node_id: str) -> dict[str, Any]:
 
 def _update_node(
     storage: CognitionStorage,
-    embedding_storage: "ChromaDBStorage",
+    embedding_storage: "VectorStore",
     generator: "EmbeddingGenerator | None",
     *,
     node_id: str,
@@ -1528,7 +1572,7 @@ def _update_node(
     storage.update_node(node_id, **updates)
 
     # Re-embed on ANY whitelisted change. summary/detail change the searchable VECTOR;
-    # context/severity don't, but they ARE stored in the Chroma metadata that
+    # context/severity don't, but they ARE stored in the vector metadata that
     # _format_search_results surfaces in every hit — so a context/severity-only edit
     # would otherwise leave search results DISPLAYING the old values (the same silent
     # search-staleness this tool exists to kill). For such an edit _embed_entity_node
@@ -1715,7 +1759,7 @@ def _add_task(
 
     lc = get_lifespan(ctx)
     storage: CognitionStorage = lc["cognition_storage"]
-    embedding_storage: ChromaDBStorage = lc["cognition_embedding_storage"]
+    embedding_storage: VectorStore = lc["cognition_embedding_storage"]
 
     # Validate the parent BEFORE creating the node, so a bad parent_id never leaves an
     # orphan task behind. Parent must exist AND be a task.
@@ -1962,7 +2006,7 @@ def _reparent_task(
 
 def _update_task(
     storage: CognitionStorage,
-    embedding_storage: "ChromaDBStorage",
+    embedding_storage: "VectorStore",
     generator: "EmbeddingGenerator | None",
     *,
     node_id: str,
@@ -2265,7 +2309,7 @@ def _update_task(
     # unmutated node is harmless.
 
     # Re-embed ONCE on the fresh node (NOT via _update_node) so the new status/owner +
-    # narrative land in Chroma. Deferred if the model isn't ready (rare — an edit needs a
+    # narrative land in the vector store. Deferred if the model isn't ready (rare — an edit needs a
     # loaded model anyway).
     if embeddings_ready:
         assert generator is not None  # callers pass a generator whenever ready=True
@@ -2870,11 +2914,20 @@ def _load_project_core(lc: dict[str, Any], path: str) -> dict[str, Any]:
     b_storage = CognitionStorage(resolved / ".cognition", read_only=True)
     node_count = b_storage.get_statistics().get("nodes", 0)
 
-    # Open B's chroma — read-only path (never creates). WP-Chroma-Home: keyed
-    # plugin-data dir when it exists, else B's legacy in-repo dir (B may not
-    # have been opened since the relocation).
-    b_chroma_dir = resolve_foreign_chromadb_dir(resolved)
-    b_embeddings = ChromaDBStorage.open_existing(b_chroma_dir)
+    # Open B's vector store read-only (never creates): the keyed plugin-data dir
+    # when it exists, else B's in-repo fallback; none until B has been opened once
+    # on a version that writes this store.
+    b_vectors_dir = resolve_foreign_vectors_dir(resolved)
+    b_embeddings = VectorStore.open_existing(b_vectors_dir) if b_vectors_dir is not None else None
+    if b_vectors_dir is None:
+        index_reason: str | None = (
+            "search index not built yet for this project; open a session in it once on "
+            f"vibe-cognition {_running_version_label()} or later to build it"
+        )
+    elif b_embeddings is None:
+        index_reason = f"search index at {b_vectors_dir} could not be opened (see the server log)"
+    else:
+        index_reason = None
 
     # Load-time guard — THE single model/dim drift check (also used for the
     # home collection at startup, WP-2; see compute_model_guard).
@@ -2911,7 +2964,13 @@ def _load_project_core(lc: dict[str, Any], path: str) -> dict[str, Any]:
     }
     if warning:
         result["warning"] = warning
+    if index_reason:
+        result["index_reason"] = index_reason
     return result
+
+
+def _running_version_label() -> str:
+    return code_version() or "0.47.0"
 
 
 def _unload_project_core(lc: dict[str, Any], project: str) -> dict[str, Any]:
@@ -4186,6 +4245,12 @@ def register_cognition_tools(mcp) -> None:
         This searches the cognition graph only. It does NOT search code —
         this server provides cognition history tools only.
 
+        Read these two flags before trusting an empty or short result:
+        ``semantic_unavailable: true`` (with ``reason``) means the search index
+        could not serve this call — it is NOT "no history"; retry later or fall
+        back to cognition_get_history. ``index_syncing: true`` means the index is
+        still being (re)built from the journal, so results may be incomplete.
+
         Args:
             query: What you're looking for, e.g.:
                    - "caching strategy decisions"
@@ -4299,7 +4364,7 @@ def register_cognition_tools(mcp) -> None:
                                          # discovered before search stopped widening —
                                          # ALWAYS present. A floor unless exhaustive.
               exhaustive: bool,          # true: total_found is the exact match count
-                                         # (Chroma ran dry). false: search stopped at
+                                         # (the store ran dry). false: search stopped at
                                          # `limit`/an internal cap — total_found is a
                                          # floor, more matches may exist unseen. So
                                          # count < total_found is possible even with no
@@ -4313,21 +4378,37 @@ def register_cognition_tools(mcp) -> None:
                                          # excluded_count — the casefolded emails that
                                          # were matched against.
               project_notes: {           # project != None only; omitted when empty
-                "<tag>": {semantic_unavailable: true, reason: "<model_guard>"}
+                "<tag>": {semantic_unavailable: true, reason: "<reason>",
+                          detail?: str}
                           # or {confidence: "degraded (no model provenance for <tag>)"}
               },
               semantic_unavailable: true,  # project=None (home) only; present
-              reason: "<model_guard>",     # only when home's embedding model/dims
-                                            # have drifted from current config —
-                                            # results/count are [] / 0 in this case
+              reason: "<reason>",          # when home's index cannot serve this
+              detail: str,                 # search — results/count are [] / 0.
+                                            # reason is a model_guard state
+                                            # (dim-mismatch / model-mismatch: the
+                                            # model or dims drifted from config),
+                                            # "vector-store-unavailable" (the index
+                                            # could not be opened, is damaged
+                                            # beyond automatic repair, or failed
+                                            # during this search — detail, when
+                                            # present, says why; retry later), or
+                                            # "newer-schema" (written by a newer
+                                            # plugin version; update the plugin)
+              index_syncing: true,         # present only while the index is
+                                            # being (re)built from the journal
+                                            # (first start on a new store, or a
+                                            # rebuild after damage): results may
+                                            # be incomplete. Absent otherwise.
               confidence: "degraded — no model provenance in collection metadata "
                           "(pre-stamp)"  # project=None only; present when home
                                          # ran search but provenance is unverified
             }
             semantic_unavailable/project_notes[tag].semantic_unavailable means the
-            index is guarded off (no-index / dim-mismatch / model-mismatch) — that
-            source contributed no hits, but it is NOT "no history." A confidence
-            caveat means search ran but the model provenance couldn't be verified.
+            index is guarded off or unavailable (no-index / dim-mismatch /
+            model-mismatch / vector-store-unavailable / newer-schema) — that source
+            contributed no hits, but it is NOT "no history." A confidence caveat
+            means search ran but the model provenance couldn't be verified.
             Multi-project (project="*"/tag set): total_found is SUMMED across
             entries, exhaustive is AND-reduced (false if any searched entry didn't
             exhaust), and excluded_count/excluded_for likewise combine across
@@ -4352,8 +4433,8 @@ def register_cognition_tools(mcp) -> None:
 
         # Default (project=None): byte-identical to the pre-XP2 path UNLESS the
         # home collection's model/dims have drifted from current config (WP-2
-        # item 2) — a dim-mismatch would otherwise raise inside Chroma (caught
-        # by vector_search's broad except -> silent results:[]) and a
+        # item 2) — a dim-mismatch would otherwise be rejected inside the store
+        # (vector_search logs and returns results:[]) and a
         # model-mismatch with equal dims wouldn't raise at all, just return
         # confidently-wrong nonsense scores. Both must be surfaced honestly
         # instead, mirroring the multi-project project_notes shape.
@@ -4379,24 +4460,47 @@ def register_cognition_tools(mcp) -> None:
             # multi-project entries are deliberately NOT covered here (scoped
             # to home) — writing new embeddings into a project this process
             # doesn't own is a separate design question this WP doesn't settle.
+            home_store = lifespan["cognition_embedding_storage"]
+            store_reason = _store_unavailable_reason(home_store)
+            if store_reason:
+                return {
+                    "query": query,
+                    "results": [],
+                    "count": 0,
+                    "semantic_unavailable": True,
+                    "reason": store_reason,
+                }
             _reembed_replayed_nodes(
                 lifespan["cognition_storage"],
-                lifespan["cognition_embedding_storage"],
+                home_store,
                 lifespan["embedding_generator"],
+                index_syncing=_index_syncing(lifespan),
             )
             result = _search_cognition(
                 lifespan["cognition_storage"],
-                lifespan["cognition_embedding_storage"],
+                home_store,
                 lifespan["embedding_generator"],
                 query,
                 node_type=node_type,
                 limit=limit,
                 exclude_people=exclude_people,
             )
+            failed = _store_last_error(home_store)
+            if failed:
+                return {
+                    "query": query,
+                    "results": [],
+                    "count": 0,
+                    "semantic_unavailable": True,
+                    "reason": "vector-store-unavailable",
+                    "detail": failed,
+                }
             if home_entry is not None and home_entry.model_guard == "unknown":
                 result["confidence"] = (
                     "degraded — no model provenance in collection metadata (pre-stamp)"
                 )
+            if _index_syncing(lifespan):
+                result["index_syncing"] = True
             return result
 
         # Multi-project path: resolve entries, embed once, fan out.
@@ -4414,7 +4518,10 @@ def register_cognition_tools(mcp) -> None:
         # (read-only by design/contract, not a compromise; see XP1 lineage).
         home_in_fanout = next((e for e in entries if e.pinned), None)
         if home_in_fanout is not None and home_in_fanout.embeddings is not None:
-            _reembed_replayed_nodes(home_in_fanout.storage, home_in_fanout.embeddings, generator)
+            _reembed_replayed_nodes(
+                home_in_fanout.storage, home_in_fanout.embeddings, generator,
+                index_syncing=_index_syncing(lifespan),
+            )
 
         limit = min(limit, 50)
         exclude_emails = _parse_exclude_people(exclude_people)
@@ -4443,9 +4550,21 @@ def register_cognition_tools(mcp) -> None:
                     "reason": entry.model_guard,
                 }
                 continue
+            store_reason = _store_unavailable_reason(entry.embeddings)
+            if store_reason:
+                project_notes[tag] = {"semantic_unavailable": True, "reason": store_reason}
+                continue
             search = _search_with_embedding(
                 entry.storage, entry.embeddings, query_embedding, node_type, limit, exclude_emails
             )
+            failed = _store_last_error(entry.embeddings)
+            if failed:
+                project_notes[tag] = {
+                    "semantic_unavailable": True,
+                    "reason": "vector-store-unavailable",
+                    "detail": failed,
+                }
+                continue
             tag_results(search["results"], tag)
             all_results.extend(search["results"])
             total_found += search["total_found"]
@@ -4478,6 +4597,8 @@ def register_cognition_tools(mcp) -> None:
             result["excluded_for"] = sorted(exclude_emails)
         if project_notes:
             result["project_notes"] = project_notes
+        if home_in_fanout is not None and _index_syncing(lifespan):
+            result["index_syncing"] = True
         return result
 
     @dispatch_tool(mcp)
@@ -4606,7 +4727,7 @@ def register_cognition_tools(mcp) -> None:
 
         if project is None:
             storage = lc["cognition_storage"]
-            embedding_storage: ChromaDBStorage = lc["cognition_embedding_storage"]
+            embedding_storage: VectorStore = lc["cognition_embedding_storage"]
             generator: EmbeddingGenerator = lc["embedding_generator"]
             project_tag = None
         else:
@@ -5489,7 +5610,7 @@ def register_cognition_tools(mcp) -> None:
         """
         lc = get_lifespan(ctx)
         storage: CognitionStorage = lc["cognition_storage"]
-        embed_storage: ChromaDBStorage = lc["cognition_embedding_storage"]
+        embed_storage: VectorStore = lc["cognition_embedding_storage"]
 
         # Delete provenance (WP-1): server-resolved identity, same source as
         # cognition_add_task's creator (pure file reads, never raises).
@@ -5533,18 +5654,20 @@ def register_cognition_tools(mcp) -> None:
           - Structural reads (get_node, get_chain, get_neighbors, get_history, …)
           - Semantic search (cognition_search) — availability depends on model_guard
 
-        The load is READ-ONLY: never writes to the foreign journal or chroma, never
-        runs sync/backfill, and never creates a chroma collection if one is absent.
+        The load is READ-ONLY: never writes to the foreign journal or vector store,
+        never runs sync/backfill, and never creates a vector store if one is absent.
 
         Re-loading an already-loaded project (home or foreign) returns an error;
         unload it first with cognition_unload_project if you need to reload.
 
         model_guard values and what they mean for you:
           match         — embedding model confirmed compatible; semantic search enabled
-          unknown       — pre-stamp collection (no model metadata); search runs with a
+          unknown       — unstamped store (no model metadata); search runs with a
                           degraded-confidence caveat in project_notes
-          no-index      — no chroma collection found; semantic search DISABLED for this
-                          project; structural reads still work
+          no-index      — no vector store found (index_reason says why: usually the
+                          project has not been opened yet on a version that builds
+                          this store); semantic search DISABLED for this project;
+                          structural reads still work
           dim-mismatch  — vector dimensions differ from home; semantic DISABLED
           model-mismatch — different embedding model; semantic DISABLED
 
@@ -5558,8 +5681,13 @@ def register_cognition_tools(mcp) -> None:
                   .cognition/journal/).
 
         Returns:
-            On success: {tag, path, node_count, vector_count, model_guard, warning?}
-            vector_count is "n/a" when no chroma index exists for the project.
+            On success: {tag, path, node_count, vector_count, model_guard, warning?,
+            index_reason?}
+            vector_count is "n/a" when no vector index exists for the project.
+            index_reason is present only when no usable index was found: either the
+            project has never been opened on a version that builds this store (open a
+            session in that project once to build it), or its store could not be
+            opened (see the server log).
 
             On failure: {"error": "..."} — invalid path, path is already loaded
             as home, no journal file (.cognition/journal.jsonl or
@@ -5574,8 +5702,8 @@ def register_cognition_tools(mcp) -> None:
     def cognition_unload_project(ctx: Context, project: str) -> dict[str, Any]:
         """Unload a previously loaded foreign project.
 
-        Refuses to unload the home project (always pinned). Releases the chroma
-        client handle so B's directory is unlocked on Windows.
+        Refuses to unload the home project (always pinned). Closes the foreign vector
+        store's database handle so B's directory is unlocked on Windows.
 
         Args:
             project: Tag or path of the foreign project to unload.
@@ -5595,7 +5723,7 @@ def register_cognition_tools(mcp) -> None:
         model_guard values per entry:
           match         — semantic search enabled for this project
           unknown       — pre-stamp; search runs with degraded-confidence caveat
-          no-index      — no chroma collection; semantic DISABLED, structural only
+          no-index      — no vector store; semantic DISABLED, structural only
           dim-mismatch  — vector dimensions differ; semantic DISABLED
           model-mismatch — different embedding model; semantic DISABLED
 

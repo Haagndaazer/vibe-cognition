@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from ..cognition import CognitionStorage
-    from ..embeddings import ChromaDBStorage
+    from ..embeddings import VectorStore
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ ModelGuard = Literal["match", "unknown", "no-index", "dim-mismatch", "model-mism
 
 
 def compute_model_guard(
-    embeddings: ChromaDBStorage | None,
+    embeddings: VectorStore | None,
     configured_model: str,
     configured_dims: int,
     label: str,
@@ -25,8 +25,8 @@ def compute_model_guard(
     """THE single embedding model/dimension drift check (XP1's foreign-attach
     load-time guard, reused for the HOME collection at startup — WP-2, so a
     home config change can't silently degrade search to an empty result
-    indistinguishable from "no history"). Compares a Chroma collection's
-    stamped (or, for pre-stamp collections, live-probed) embedding_model /
+    indistinguishable from "no history"). Compares a vector store's
+    stamped (or, for an unstamped store, live-probed) embedding_model /
     embedding_dimensions against what THIS process is currently configured to
     run. Never raises.
 
@@ -41,22 +41,12 @@ def compute_model_guard(
     if embeddings is None:
         return "no-index", f"semantic search unavailable for {label} (no vector index)", "n/a"
 
-    meta = embeddings._collection.metadata or {}
+    meta = embeddings.store_metadata()
     stored_model = meta.get("embedding_model")
     stored_dims_meta = meta.get("embedding_dimensions")
-
-    if stored_dims_meta is not None:
-        stored_dims: int | None = int(stored_dims_meta)
-    else:
-        # Pre-stamp collection: fall back to probing a sample vector. len()
-        # works for both plain lists and numpy arrays (chromadb Rust backend
-        # may return either). Exception -> None (unknown dim, skip dim check).
-        try:
-            probe = embeddings._collection.get(limit=1, include=["embeddings"])
-            embs = probe.get("embeddings") or []
-            stored_dims = int(len(embs[0])) if embs else None
-        except Exception:
-            stored_dims = None
+    stored_dims: int | None = (
+        int(stored_dims_meta) if stored_dims_meta is not None else embeddings.sample_dim()
+    )
 
     if stored_dims is not None and stored_dims != configured_dims:
         return (
@@ -89,7 +79,7 @@ class ProjectEntry:
     path: Path
     tag: str
     storage: CognitionStorage
-    embeddings: ChromaDBStorage | None
+    embeddings: VectorStore | None
     pinned: bool
     model_guard: ModelGuard
 
@@ -110,7 +100,7 @@ class LoadedProjects:
         path: Path,
         tag: str,
         storage: CognitionStorage,
-        embeddings: ChromaDBStorage | None,
+        embeddings: VectorStore | None,
     ) -> None:
         """Register the home project (pinned, un-unloadable)."""
         self._entries[path] = ProjectEntry(
@@ -167,7 +157,7 @@ def build_registry(
     home_path: Path,
     home_tag: str,
     home_storage: CognitionStorage,
-    home_embeddings: ChromaDBStorage | None,
+    home_embeddings: VectorStore | None,
 ) -> LoadedProjects:
     """Build the registry and register the home project."""
     registry = LoadedProjects(_home_path=home_path)

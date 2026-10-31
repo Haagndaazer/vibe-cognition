@@ -9,7 +9,7 @@ from typing import cast
 from fastmcp import Context
 
 from vibe_cognition.cognition import CognitionNode, CognitionNodeType, CognitionStorage
-from vibe_cognition.embeddings import ChromaDBStorage, EmbeddingGenerator
+from vibe_cognition.embeddings import EmbeddingGenerator, VectorStore
 from vibe_cognition.tools.cognition_tools import (
     _AGENT_MULTIPLIER,
     _SENIORITY_MULTIPLIERS,
@@ -59,7 +59,7 @@ def _person(node_id: str, email: str, seniority: str, name: str = "P") -> Cognit
 
 
 def _upsert(
-    embed: ChromaDBStorage,
+    embed: VectorStore,
     node_id: str,
     vec: list[float],
     node_type: CognitionNodeType = CognitionNodeType.DECISION,
@@ -127,7 +127,7 @@ def test_ordering_penalized_higher_raw_hit_sorts_below_unpenalized_lower_raw(tmp
     """Junior-authored hit with the HIGHER raw score still surfaces (never wiped)
     but sorts BELOW a senior hit whose weighted_score exceeds it."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_person("psen", "senior@x.com", "senior"))
     s.add_node(_person("pjr", "junior@x.com", "junior"))
     s.add_node(_entity("jr", summary="junior hit",
@@ -149,7 +149,7 @@ def test_ordering_unpenalized_hit_enters_top_n_crossing_limit_boundary(tmp_path)
     """Same setup, but limit=1: the reordering crosses the limit SLICE, not just the
     returned order -- the senior hit displaces the junior hit out of the top-N."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_person("psen", "senior@x.com", "senior"))
     s.add_node(_person("pjr", "junior@x.com", "junior"))
     s.add_node(_entity("jr", summary="junior hit",
@@ -183,7 +183,7 @@ def test_all_shipped_multipliers_in_penalty_only_range():
 
 def test_no_weighted_score_ever_exceeds_raw_score(tmp_path):
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_person("psen", "senior@x.com", "senior"))
     s.add_node(_entity("agent1", recorded_by={"name": "A", "email": "agent@x.com"}, from_agent=True))
     s.add_node(_entity("sr1", recorded_by={"name": "S", "email": "senior@x.com"}, from_agent=False))
@@ -206,7 +206,7 @@ def test_exempt_hit_rises_relative_to_a_raw_score_tied_penalized_neighbor(tmp_pa
     the exact tie boundary the brief calls out (a tie requires the neighbor's raw
     score to already meet the exempt hit's -- constructed directly here)."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_person("pjr", "junior@x.com", "junior"))
     s.add_node(_entity("con1", node_type=CognitionNodeType.CONSTRAINT, summary="constraint"))
     s.add_node(_entity("jr1", summary="junior decision",
@@ -232,7 +232,7 @@ def test_fallback_a_pre_tc6_stamped_registered_person(tmp_path):
     """(a) pre-TC6 node: stamped, no from_agent KEY at all, registered person ->
     from_agent null, no agent penalty, basis human:<seniority>."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_person("pmid", "mid@x.com", "mid"))
     s.add_node(_entity("n1", recorded_by={"name": "M", "email": "mid@x.com"}))  # no from_agent key
     _upsert(embed, "n1", [1.0, 0.0, 0.0])
@@ -251,7 +251,7 @@ def test_fallback_b_stamped_unregistered_human(tmp_path):
     """(b) stamped email, from_agent explicitly False, no person node -> seniority
     null, neutral, basis human:unregistered (NOT unverified)."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_entity("n1", recorded_by={"name": "U", "email": "unrostered@x.com"}, from_agent=False))
     _upsert(embed, "n1", [1.0, 0.0, 0.0], from_agent=False)
     gen = cast(EmbeddingGenerator, _FixedGen([1.0, 0.0, 0.0]))
@@ -268,7 +268,7 @@ def test_fallback_c_fully_unstamped(tmp_path):
     """(c) fully unstamped (no recorded_by/created_by at all) -> both axes null,
     multiplier 1.0, basis unverified."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_entity("n1"))
     _upsert(embed, "n1", [1.0, 0.0, 0.0])
     gen = cast(EmbeddingGenerator, _FixedGen([1.0, 0.0, 0.0]))
@@ -285,7 +285,7 @@ def test_fallback_d_compound_stamped_no_from_agent_key_no_person_node(tmp_path):
     """(d) COMPOUND (peer-review): stamped + no from_agent key + no person node (the
     realistic post-P13n/pre-TC6 unrostered case) -> neutral, basis human:unregistered."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_entity("n1", recorded_by={"name": "C", "email": "compound@x.com"}))
     _upsert(embed, "n1", [1.0, 0.0, 0.0])
     gen = cast(EmbeddingGenerator, _FixedGen([1.0, 0.0, 0.0]))
@@ -306,7 +306,7 @@ def test_fallback_e_unknown_seniority_tier_is_neutral_not_a_crash(tmp_path):
     string still surfaces verbatim in weight.seniority/basis (visible, not hidden,
     never silently coerced to a penalty)."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_person("pprincipal", "principal@x.com", "principal"))
     s.add_node(_entity("n1", recorded_by={"name": "P", "email": "principal@x.com"}, from_agent=False))
     _upsert(embed, "n1", [1.0, 0.0, 0.0], from_agent=False)
@@ -327,7 +327,7 @@ def test_fallback_f_person_node_missing_seniority_key_treated_as_unregistered(tm
     KeyError -- it's treated exactly like no matching person node at all
     (human:unregistered), not surfaced as a fake seniority value."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(CognitionNode(
         id="pold", type=CognitionNodeType.PERSON, summary="Old — eng", detail="",
         context=[], references=[], timestamp="2026-07-15T00:00:00+00:00", author="Old",
@@ -353,7 +353,7 @@ def test_fallback_f_person_node_missing_seniority_key_treated_as_unregistered(tm
 
 def test_weight_key_present_on_every_hit_including_neutral(tmp_path):
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_entity("n1"))
     _upsert(embed, "n1", [1.0, 0.0, 0.0])
     gen = cast(EmbeddingGenerator, _FixedGen([1.0, 0.0, 0.0]))
@@ -365,7 +365,7 @@ def test_weight_key_present_on_every_hit_including_neutral(tmp_path):
 
 def test_score_and_weighted_score_equal_when_multiplier_is_1_0(tmp_path):
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_entity("n1"))
     _upsert(embed, "n1", [1.0, 0.0, 0.0])
     gen = cast(EmbeddingGenerator, _FixedGen([1.0, 0.0, 0.0]))
@@ -423,7 +423,7 @@ def test_exclude_people_composes_with_weighting_excluded_set_unaffected(tmp_path
     """exclude_people drops hits BEFORE weighting ever runs on them -- the excluded
     set is unaffected by weights, and weighting still applies to survivors."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_person("psen", "senior@x.com", "senior"))
     s.add_node(_entity("alice1", recorded_by={"name": "A", "email": "alice@x.com"}, from_agent=False))
     s.add_node(_entity("sr1", recorded_by={"name": "S", "email": "senior@x.com"}, from_agent=False))
@@ -442,7 +442,7 @@ def test_total_found_exhaustive_unchanged_by_weighting(tmp_path):
     """Weighting reorders within the discovered set -- total_found/exhaustive count
     the same hits regardless of weighted reordering."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_person("psen", "senior@x.com", "senior"))
     for i, email in enumerate(["agent@x.com", "senior@x.com"]):
         nid = f"n{i}"
@@ -471,8 +471,8 @@ def test_multiproject_resort_uses_weighted_score_not_raw(tmp_path):
     home_storage.add_node(
         _entity("home1", recorded_by={"name": "A", "email": "agent@x.com"}, from_agent=True)
     )
-    home_chroma = ChromaDBStorage(
-        persist_directory=home_path / ".cognition" / "chromadb",
+    home_chroma = VectorStore(
+        persist_directory=home_path / ".cognition" / "local" / "vectors",
         embedding_model="m", embedding_dimensions=3,
     )
     _upsert(home_chroma, "home1", [1.0, 0.0, 0.0], from_agent=True)
@@ -485,8 +485,8 @@ def test_multiproject_resort_uses_weighted_score_not_raw(tmp_path):
     b_storage.add_node(
         _entity("b1", recorded_by={"name": "S", "email": "senior@x.com"}, from_agent=False)
     )
-    b_chroma = ChromaDBStorage(
-        persist_directory=b_path / ".cognition" / "chromadb",
+    b_chroma = VectorStore(
+        persist_directory=b_path / ".cognition" / "local" / "vectors",
         embedding_model="m", embedding_dimensions=3,
     )
     _upsert(b_chroma, "b1", [0.99, 0.01, 0.0], from_agent=False)
@@ -525,8 +525,8 @@ def test_multiproject_per_entry_uses_its_own_person_registry(tmp_path):
     home_storage.add_node(
         _entity("home1", recorded_by={"name": "X", "email": "same@x.com"}, from_agent=False)
     )
-    home_chroma = ChromaDBStorage(
-        persist_directory=home_path / ".cognition" / "chromadb",
+    home_chroma = VectorStore(
+        persist_directory=home_path / ".cognition" / "local" / "vectors",
         embedding_model="m", embedding_dimensions=3,
     )
     _upsert(home_chroma, "home1", [1.0, 0.0, 0.0])
@@ -539,8 +539,8 @@ def test_multiproject_per_entry_uses_its_own_person_registry(tmp_path):
     b_storage.add_node(
         _entity("b1", recorded_by={"name": "X", "email": "same@x.com"}, from_agent=False)
     )
-    b_chroma = ChromaDBStorage(
-        persist_directory=b_path / ".cognition" / "chromadb",
+    b_chroma = VectorStore(
+        persist_directory=b_path / ".cognition" / "local" / "vectors",
         embedding_model="m", embedding_dimensions=3,
     )
     _upsert(b_chroma, "b1", [1.0, 0.0, 0.0])
@@ -587,7 +587,7 @@ def test_person_scan_happens_once_per_call_across_widening_rounds(tmp_path, monk
     exclusion-flood pattern as WP-TC10's fixture (15 alice hits rank above 2 senior
     hits on raw score, so round 1 -- n=10 -- surfaces zero survivors)."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_person("psen", "senior@x.com", "senior"))
     for i in range(15):
         nid = f"alice{i:02d}"

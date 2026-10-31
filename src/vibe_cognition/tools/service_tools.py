@@ -44,9 +44,33 @@ def register_service_tools(mcp) -> None:
                             checkout, or a host that does not pass the plugin
                             root).
               repo_path: str,
-              chromadb_path: str,  # resolved vector-store persist directory
-                                   # (WP-Chroma-Home: under the plugin data
-                                   # dir by default, NOT inside the repo)
+              vectors_path: str,   # the vector store's active database file,
+                                   # under the plugin data dir by default
+                                   # (<data>/vectors/<project key>/vectors-<g>.sqlite3),
+                                   # NOT inside the repo
+              chromadb_path: str,  # DEPRECATED alias, removed in a later release:
+                                   # the vector store's DIRECTORY (the folder
+                                   # holding vectors_path), kept so older readers
+                                   # still find where the index lives
+              vector_store: {state: "ok" | "unavailable" | "newer-schema",
+                             generation: int, path: str, reason: str | None,
+                             quarantined: [{generation, at, reason}],
+                             failed_writes: int}
+                            -- health of the search index. "unavailable": the
+                            store could not be opened or is damaged beyond
+                            automatic repair (reason says why); search reports
+                            semantic_unavailable meanwhile and graph tools keep
+                            working. "newer-schema": written by a newer plugin
+                            version, left untouched. quarantined lists damaged
+                            generations that were set aside and rebuilt from the
+                            journal (their files stay on disk; the .sqlite3,
+                            -wal and -shm files of a listed generation may be
+                            deleted once no session is open, never its .corrupt
+                            marker). failed_writes counts vectors this process
+                            could not store (busy or unavailable store); they
+                            are filled from the journal by a re-sync once the
+                            store works again. {"error": ...} when not
+                            initialized.
               roster: {people: int, from_profiles: int,
                        unmigrated_person_nodes: int, removed: int,
                        incomplete_profiles: list[str]}
@@ -244,11 +268,22 @@ def register_service_tools(mcp) -> None:
             "repo_path": str(config.repo_path) if config else "unknown",
         }
 
-        # WP-Chroma-Home: the store lives outside the repo now, so "where did
-        # my vectors go" must be answerable from here. getattr: test lifespans
-        # stub config with a SimpleNamespace that has no such property.
-        chroma_path = getattr(config, "cognition_chromadb_path", None)
-        result["chromadb_path"] = str(chroma_path) if chroma_path is not None else "unknown"
+        # The store lives outside the repo, so "where did my vectors go" must be
+        # answerable from here. getattr: test lifespans stub config with a
+        # SimpleNamespace that has no such property.
+        vectors_dir = getattr(config, "cognition_vectors_path", None)
+        store_status: dict[str, Any] | None = None
+        if cognition_embedding_storage is not None and hasattr(cognition_embedding_storage, "status"):
+            try:
+                store_status = cognition_embedding_storage.status()
+            except Exception as e:  # noqa: BLE001
+                store_status = {"error": str(e)}
+        if store_status is not None and "path" in store_status:
+            result["vectors_path"] = store_status["path"]
+        else:
+            result["vectors_path"] = "unknown"
+        result["chromadb_path"] = str(vectors_dir) if vectors_dir is not None else "unknown"
+        result["vector_store"] = store_status if store_status is not None else {"error": "not initialized"}
         result["running_code"] = running_report()
 
         # Cognition graph stats

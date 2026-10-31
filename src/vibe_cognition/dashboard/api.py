@@ -27,7 +27,7 @@ from ..cognition.queries import conflict_flags, get_superseded_chain
 from ..cognition.scope import node_scope
 from ..cognition.task_meta import _task_claimed_at  # WP-TC16: relocated (was cognition_tools)
 from ..embeddings import adaptive_vector_search
-from ..tools.cognition_tools import _reembed_replayed_nodes
+from ..tools.cognition_tools import _index_syncing, _reembed_replayed_nodes
 
 # Deliberately NOT `from ..cognition.prime import SEVERITY_ORDER` (scope-dashboard-v1
 # brief, doc:4c0b9d426f4c): prime.py carries markdown-formatting + CLI-facing deps this
@@ -231,7 +231,7 @@ def get_node(request):
 
 
 def delete_node(request):
-    """Remove a node from the graph and ChromaDB.
+    """Remove a node from the graph and the vector store.
 
     Provenance: the journal tombstone records the acting surface ("dashboard") —
     the dashboard has no per-user identity (deliberately: token-gated, single
@@ -297,6 +297,17 @@ async def search(request):
     generator = lc["embedding_generator"]
     embed_storage = lc["cognition_embedding_storage"]
     cognition_storage = lc["cognition_storage"]
+    store_state = getattr(embed_storage, "state", "ok")
+    if store_state != "ok":
+        return JSONResponse(
+            {
+                "embedding_status": "unavailable",
+                "semantic_unavailable": True,
+                "reason": "newer-schema" if store_state == "newer-schema" else "vector-store-unavailable",
+                "error": "the search index is unavailable; see get_status vector_store",
+            },
+            status_code=503,
+        )
 
     def _do_search():
         # WP-3 (8606d59905a5): same drain cognition_search's home path runs —
@@ -306,7 +317,7 @@ async def search(request):
         # until an MCP search happened to run first. The dashboard is always
         # home-only (no project routing), so this is an unambiguous 1:1 fit —
         # no foreign-store-write scoping question like the MCP side has.
-        _reembed_replayed_nodes(cognition_storage, embed_storage, generator)
+        _reembed_replayed_nodes(cognition_storage, embed_storage, generator, index_syncing=_index_syncing(lc))
         vector = generator.generate_query_embedding(query)
 
         def _dedupe(hits: list[dict], lim: int) -> tuple[list[dict], int]:
@@ -349,7 +360,10 @@ async def search(request):
         )["results"]
 
     results = await run_in_threadpool(_do_search)
-    return JSONResponse({"results": results})
+    payload: dict[str, Any] = {"results": results}
+    if _index_syncing(lc):
+        payload["index_syncing"] = True
+    return JSONResponse(payload)
 
 
 def get_stats(request):
@@ -360,7 +374,7 @@ def get_stats(request):
 
     ready, status = _embedding_status(lc)
     try:
-        embedding_count = embed_storage.count_documents()
+        embedding_count = embed_storage.count_documents() if embed_storage is not None else 0
     except Exception as e:
         embedding_count = 0
         logger.warning(f"count_documents failed: {e}")
@@ -372,6 +386,8 @@ def get_stats(request):
         "embedding_status": status,
         "embedding_error": lc.get("embedding_error"),
         "embedding_generator_loaded": lc.get("embedding_generator") is not None,
+        "index_syncing": _index_syncing(lc),
+        "vector_store": getattr(embed_storage, "state", "unavailable"),
     })
 
 

@@ -12,12 +12,12 @@ whole point.
 
 from ._backend import EmbeddingBackend
 from .generator import EmbeddingGenerator, OllamaBackend
-from .storage import ChromaDBStorage, adaptive_vector_search
+from .vector_store import VectorStore, adaptive_vector_search
 
 __all__ = [
-    "ChromaDBStorage",
     "EmbeddingBackend",
     "EmbeddingGenerator",
     "OllamaBackend",
+    "VectorStore",
     "adaptive_vector_search",
 ]

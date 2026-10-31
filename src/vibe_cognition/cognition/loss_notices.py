@@ -18,6 +18,8 @@ from typing import Any
 
 from .journal_io import journal_lock
 
+VECTOR_STORE_REBUILT_KIND = "vector_store_rebuilt"
+
 
 def read_notices(flag: Path) -> list[dict[str, Any]]:
     """Every outstanding notice. Empty when there is no flag or it is unreadable."""

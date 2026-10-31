@@ -2,7 +2,7 @@
 
 WP-TC16: relocated out of tools/cognition_tools.py so prime.py (stdlib + light
 cognition-package imports only, never tools/cognition_tools -- that pulls in
-chroma/embeddings) can compute claim age for the manager-rollup section without
+the embeddings stack) can compute claim age for the manager-rollup section without
 violating prime's light-import constraint. cognition_tools.py re-exports the name
 so its existing internal callers and tests/test_task.py's direct import both keep
 working unchanged.

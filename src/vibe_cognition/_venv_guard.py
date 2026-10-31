@@ -1,8 +1,8 @@
 """Read-only venv health guard for --no-sync launches (WP-B, decision 9022f7de94e9).
 
-Imported early in server.py -- BEFORE the heavy ``from .embeddings import ...``
-line, which eagerly pulls in chromadb at MODULE TOP (``embeddings/__init__.py``
--> ``storage.py``). On a broken/incomplete venv that import would otherwise
+Imported early in server.py -- BEFORE the ``from .embeddings import ...`` line,
+which pulls in numpy at MODULE TOP (``embeddings/__init__.py`` ->
+``vector_store.py``). On a broken/incomplete venv that import would otherwise
 crash with a raw, unactionable ImportError before ``server.py``'s ``main()``
 is ever reached -- `-m` execution runs the whole module top-to-bottom
 (defining ``mcp``, registering tools) before it gets to the
@@ -28,9 +28,9 @@ endgame) moved the actual import out of the server process entirely, into
 separate subprocess) -- this presence-only check still catches the SAME
 broken-venv class of problem early, before the server even reaches
 ``main()``, since the sidecar spawns from this identical installed tree.
-chromadb, in contrast, stays a REAL import: ``server.py``'s lifespan opens
-ChromaDB pre-yield regardless (WP-A), so paying that cost here is free --
-there is no path where the guard runs but the real ChromaDB open doesn't. A
+numpy and sqlite3, in contrast, are REAL imports: ``server.py``'s lifespan
+opens the vector store pre-yield regardless, so paying that cost here is free
+-- there is no path where the guard runs but the real store open doesn't. A
 torch DLL that's actually broken is instead caught later, when the sidecar
 supervisor's load attempt fails, where it hits the EXISTING
 ``embedding_error`` graceful-degradation path (``embedding_ready`` still
@@ -44,7 +44,7 @@ import importlib.util
 import sys
 
 # Actually imported (needed pre-yield in lifespan regardless -- free to check here).
-REAL_IMPORT_MODULES = ("chromadb",)
+REAL_IMPORT_MODULES = ("numpy", "sqlite3")
 # Presence-checked only -- see WP-C RECONCILIATION above for why torch must
 # NOT be actually imported by this guard.
 PRESENCE_ONLY_MODULES = ("torch",)

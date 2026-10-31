@@ -21,7 +21,7 @@ from vibe_cognition.cognition.identity import (
     identity_write_path,
     write_confirmed_identity,
 )
-from vibe_cognition.embeddings import ChromaDBStorage, EmbeddingGenerator
+from vibe_cognition.embeddings import EmbeddingGenerator, VectorStore
 from vibe_cognition.tools.project_registry import build_registry
 
 # ── _TextKeyedGen ─────────────────────────────────────────────────────────────
@@ -303,21 +303,22 @@ def graph_identity(monkeypatch, _isolate_identity_resolution):
 
 
 @pytest.fixture(autouse=True)
-def _isolate_chroma_resolution(monkeypatch, tmp_path):
-    """WP-Chroma-Home: keep chromadb path resolution off the real machine.
+def _isolate_store_resolution(monkeypatch, tmp_path):
+    """Keep vector-store path resolution off the real machine, in-process AND in
+    every subprocess a test spawns.
 
-    Without this, any test that builds Settings() and touches
-    cognition_chromadb_path on a dev machine resolves into the REAL
-    ~/.claude/plugins/data/vibe-cognition-* dir (the discovery glob finds it —
-    confirmed live during scoping). Clearing the env vars and pointing the
-    discovery seam at a nonexistent tmp dir restores the legacy in-repo
-    fallback for every test by default; resolution-order tests set env vars /
-    seed the seam dir explicitly on top of this baseline.
+    VIBE_DATA_DIR is SET to a per-test temp root rather than deleted: a deleted
+    variable is inherited as absent by subprocesses, whose own discovery glob then
+    finds the REAL ~/.claude/plugins/data/vibe-cognition-* dir (that leak left 246
+    empty stores there, task 46822ab83433). The in-process discovery seam is also
+    pointed at a nonexistent dir. Tests of the no-data-root fallback remove
+    VIBE_DATA_DIR themselves.
     """
     from vibe_cognition import config as config_module
 
-    for var in ("VIBE_CHROMADB_DIR", "VIBE_DATA_DIR", "CLAUDE_PLUGIN_DATA"):
+    for var in ("VIBE_VECTORS_DIR", "VIBE_CHROMADB_DIR", "CLAUDE_PLUGIN_DATA"):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("VIBE_DATA_DIR", str(tmp_path / "_test_data_root"))
     monkeypatch.setattr(
         config_module, "_home_plugins_data_dir", lambda: tmp_path / "_no_plugins_data"
     )
@@ -354,8 +355,8 @@ def build_lc(fake_generator: EmbeddingGenerator):  # type: ignore[type-arg]
         home_path = tmp_path / "home"
         home_path.mkdir(parents=True, exist_ok=True)
         cognition_storage = CognitionStorage(home_path / ".cognition")
-        chroma = ChromaDBStorage(
-            persist_directory=home_path / ".cognition" / "chromadb",
+        chroma = VectorStore(
+            persist_directory=home_path / ".cognition" / "local" / "vectors",
             embedding_model="m",
             embedding_dimensions=3,
         )

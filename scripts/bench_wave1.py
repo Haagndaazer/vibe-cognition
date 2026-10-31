@@ -47,7 +47,7 @@ from vibe_cognition.cognition.models import (
 )
 from vibe_cognition.cognition.prime import PrimeConfig, generate_prime
 from vibe_cognition.cognition.storage import CognitionStorage
-from vibe_cognition.embeddings import ChromaDBStorage
+from vibe_cognition.embeddings import VectorStore
 from vibe_cognition.tools.cognition_tools import _update_task, register_cognition_tools
 from vibe_cognition.tools.project_registry import build_registry
 
@@ -315,7 +315,7 @@ def _build_lc(cognition_dir: Path, chroma_dir: Path, generator: Any, *, embeddin
     cognition_dir while keeping their chroma dirs apart."""
     cognition_dir.parent.mkdir(parents=True, exist_ok=True)
     cognition_storage = CognitionStorage(cognition_dir)
-    chroma = ChromaDBStorage(
+    chroma = VectorStore(
         persist_directory=chroma_dir, embedding_model="m", embedding_dimensions=3,
     )
     config = SimpleNamespace(
@@ -390,7 +390,7 @@ def bench_b4_embeds_per_operation(tmp_path: Path) -> dict[str, Any]:
 
         counter.calls = 0
         storage: CognitionStorage = lc["cognition_storage"]
-        chroma: ChromaDBStorage = lc["cognition_embedding_storage"]
+        chroma: VectorStore = lc["cognition_embedding_storage"]
         upd = _update_task(
             storage, chroma, cast(Any, counter),
             node_id=task["id"], embeddings_ready=True,
@@ -404,7 +404,7 @@ def bench_b4_embeds_per_operation(tmp_path: Path) -> dict[str, Any]:
             "pass": all(v == 1 for v in results.values()),
         }
     finally:
-        # Windows: chromadb's sqlite/HNSW file handles must be released before
+        # Windows: the vector store's SQLite file handles must be released before
         # the caller's TemporaryDirectory cleanup tries to rmtree this path,
         # else cleanup raises PermissionError (WinError 32).
         lc["cognition_embedding_storage"].close()
@@ -478,7 +478,7 @@ def bench_b5_cross_instance_convergence(tmp_path: Path) -> dict[str, Any]:
             "pass": b_sees_person and b_sees_task and a_sees_update,
         }
     finally:
-        # Windows: chromadb's sqlite/HNSW file handles must be released before
+        # Windows: the vector store's SQLite file handles must be released before
         # the caller's TemporaryDirectory cleanup tries to rmtree this path,
         # else cleanup raises PermissionError (WinError 32).
         lc_a["cognition_embedding_storage"].close()

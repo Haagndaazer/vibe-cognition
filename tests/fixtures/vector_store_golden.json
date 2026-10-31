@@ -1,0 +1,6362 @@
+{
+ "_note": "Recorded from ChromaDBStorage (chromadb 1.5.5) by record_vector_store_golden.py",
+ "expected": {
+  "after_deletes": {
+   "count": 29,
+   "ids": [
+    "node06",
+    "node03",
+    "doc1#chunk-1",
+    "node14",
+    "node13",
+    "node04",
+    "doc1#chunk-2",
+    "node16",
+    "node07",
+    "node01",
+    "node09",
+    "node10",
+    "node23",
+    "node15",
+    "node02",
+    "node17",
+    "node21",
+    "node05",
+    "node22",
+    "node08",
+    "doc0#chunk-1",
+    "doc0#chunk-2",
+    "doc1#chunk-0",
+    "node12",
+    "node18",
+    "node20",
+    "doc0#chunk-0",
+    "node19",
+    "node11"
+   ]
+  },
+  "counts": {
+   "all": 33,
+   "entity_decision": 5,
+   "is_chunk": 9,
+   "node_id_doc1": 3
+  },
+  "searches": [
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": 0.37517
+     }
+    ],
+    "limit": 1,
+    "query": 0
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node10",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic10",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.02779,
+      "summary": "summary 10",
+      "timestamp": "2026-10-11T00:00:00+00:00",
+      "weight": 1.4285714285714286
+     }
+    ],
+    "limit": 1,
+    "query": 0
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": 0.37517
+     }
+    ],
+    "limit": 1,
+    "query": 0
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": 0.37517
+     },
+     {
+      "_id": "node06",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic6",
+      "entity_type": "fail",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.28159,
+      "summary": "summary 6",
+      "timestamp": "2026-10-07T00:00:00+00:00",
+      "weight": 0.8571428571428571
+     },
+     {
+      "_id": "node03",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic3",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.27227,
+      "summary": "overwritten",
+      "timestamp": "2026-10-04T00:00:00+00:00",
+      "weight": 0.42857142857142855
+     }
+    ],
+    "limit": 3,
+    "query": 0
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node10",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic10",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.02779,
+      "summary": "summary 10",
+      "timestamp": "2026-10-11T00:00:00+00:00",
+      "weight": 1.4285714285714286
+     },
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.02706,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.12764,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     }
+    ],
+    "limit": 3,
+    "query": 0
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": 0.37517
+     },
+     {
+      "_id": "doc1#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 1",
+      "node_id": "doc1",
+      "score": 0.2044
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.16236
+     }
+    ],
+    "limit": 3,
+    "query": 0
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": 0.37517
+     },
+     {
+      "_id": "node06",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic6",
+      "entity_type": "fail",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.28159,
+      "summary": "summary 6",
+      "timestamp": "2026-10-07T00:00:00+00:00",
+      "weight": 0.8571428571428571
+     },
+     {
+      "_id": "node03",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic3",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.27227,
+      "summary": "overwritten",
+      "timestamp": "2026-10-04T00:00:00+00:00",
+      "weight": 0.42857142857142855
+     },
+     {
+      "_id": "doc1#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 1",
+      "node_id": "doc1",
+      "score": 0.2044
+     },
+     {
+      "_id": "node14",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic14",
+      "entity_type": "task",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.18653,
+      "summary": "summary 14",
+      "timestamp": "2026-10-15T00:00:00+00:00",
+      "weight": 2.0
+     },
+     {
+      "_id": "node13",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic13",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.17337,
+      "summary": "summary 13",
+      "timestamp": "2026-10-14T00:00:00+00:00",
+      "weight": 1.8571428571428572
+     },
+     {
+      "_id": "node04",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic4",
+      "entity_type": "task",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.17017,
+      "summary": "summary 4",
+      "timestamp": "2026-10-05T00:00:00+00:00",
+      "weight": 0.5714285714285714
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.16236
+     },
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.12779
+     },
+     {
+      "_id": "node16",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic16",
+      "entity_type": "fail",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.11877,
+      "summary": "summary 16",
+      "timestamp": "2026-10-17T00:00:00+00:00",
+      "weight": 2.2857142857142856
+     }
+    ],
+    "limit": 10,
+    "query": 0
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node10",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic10",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.02779,
+      "summary": "summary 10",
+      "timestamp": "2026-10-11T00:00:00+00:00",
+      "weight": 1.4285714285714286
+     },
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.02706,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.12764,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.23984,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     },
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.35347,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     }
+    ],
+    "limit": 10,
+    "query": 0
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": 0.37517
+     },
+     {
+      "_id": "doc1#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 1",
+      "node_id": "doc1",
+      "score": 0.2044
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.16236
+     },
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.12779
+     },
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": -0.16902
+     },
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": -0.18153
+     },
+     {
+      "_id": "doc0#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 0",
+      "node_id": "doc0",
+      "score": -0.26266
+     },
+     {
+      "_id": "doc1#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 1",
+      "node_id": "doc1",
+      "score": -0.31183
+     },
+     {
+      "_id": "doc0#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 0",
+      "node_id": "doc0",
+      "score": -0.48195
+     }
+    ],
+    "limit": 10,
+    "query": 0
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": 0.37517
+     },
+     {
+      "_id": "node06",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic6",
+      "entity_type": "fail",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.28159,
+      "summary": "summary 6",
+      "timestamp": "2026-10-07T00:00:00+00:00",
+      "weight": 0.8571428571428571
+     },
+     {
+      "_id": "node03",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic3",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.27227,
+      "summary": "overwritten",
+      "timestamp": "2026-10-04T00:00:00+00:00",
+      "weight": 0.42857142857142855
+     },
+     {
+      "_id": "doc1#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 1",
+      "node_id": "doc1",
+      "score": 0.2044
+     },
+     {
+      "_id": "node14",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic14",
+      "entity_type": "task",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.18653,
+      "summary": "summary 14",
+      "timestamp": "2026-10-15T00:00:00+00:00",
+      "weight": 2.0
+     },
+     {
+      "_id": "node13",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic13",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.17337,
+      "summary": "summary 13",
+      "timestamp": "2026-10-14T00:00:00+00:00",
+      "weight": 1.8571428571428572
+     },
+     {
+      "_id": "node04",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic4",
+      "entity_type": "task",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.17017,
+      "summary": "summary 4",
+      "timestamp": "2026-10-05T00:00:00+00:00",
+      "weight": 0.5714285714285714
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.16236
+     },
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.12779
+     },
+     {
+      "_id": "node16",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic16",
+      "entity_type": "fail",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.11877,
+      "summary": "summary 16",
+      "timestamp": "2026-10-17T00:00:00+00:00",
+      "weight": 2.2857142857142856
+     },
+     {
+      "_id": "node07",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic7",
+      "entity_type": "discovery",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.04603,
+      "summary": "summary 7",
+      "timestamp": "2026-10-08T00:00:00+00:00",
+      "weight": 1.0
+     },
+     {
+      "_id": "node01",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic1",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.03968,
+      "summary": "summary 1",
+      "timestamp": "2026-10-02T00:00:00+00:00",
+      "weight": 0.14285714285714285
+     },
+     {
+      "_id": "node09",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic9",
+      "entity_type": "task",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.02939,
+      "summary": "summary 9",
+      "timestamp": "2026-10-10T00:00:00+00:00",
+      "weight": 1.2857142857142858
+     },
+     {
+      "_id": "node10",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic10",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.02779,
+      "summary": "summary 10",
+      "timestamp": "2026-10-11T00:00:00+00:00",
+      "weight": 1.4285714285714286
+     },
+     {
+      "_id": "node23",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic23",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.01991,
+      "summary": "summary 23",
+      "timestamp": "2026-10-24T00:00:00+00:00",
+      "weight": 3.2857142857142856
+     },
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.02706,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node02",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic2",
+      "entity_type": "discovery",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.02985,
+      "summary": "summary 2",
+      "timestamp": "2026-10-03T00:00:00+00:00",
+      "weight": 0.2857142857142857
+     },
+     {
+      "_id": "node17",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic17",
+      "entity_type": "discovery",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.05208,
+      "summary": "summary 17",
+      "timestamp": "2026-10-18T00:00:00+00:00",
+      "weight": 2.4285714285714284
+     },
+     {
+      "_id": "node21",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic21",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.06362,
+      "summary": "summary 21",
+      "timestamp": "2026-10-22T00:00:00+00:00",
+      "weight": 3.0
+     },
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.12764,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node22",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic22",
+      "entity_type": "discovery",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.15829,
+      "summary": "summary 22",
+      "timestamp": "2026-10-23T00:00:00+00:00",
+      "weight": 3.142857142857143
+     },
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": -0.16902
+     },
+     {
+      "_id": "node08",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic8",
+      "entity_type": "pattern",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.18151,
+      "summary": "summary 8",
+      "timestamp": "2026-10-09T00:00:00+00:00",
+      "weight": 1.1428571428571428
+     },
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": -0.18153
+     },
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.23984,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     },
+     {
+      "_id": "doc0#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 0",
+      "node_id": "doc0",
+      "score": -0.26266
+     },
+     {
+      "_id": "doc1#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 1",
+      "node_id": "doc1",
+      "score": -0.31183
+     },
+     {
+      "_id": "node12",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic12",
+      "entity_type": "discovery",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.31328,
+      "summary": "summary 12",
+      "timestamp": "2026-10-13T00:00:00+00:00",
+      "weight": 1.7142857142857142
+     },
+     {
+      "_id": "node18",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic18",
+      "entity_type": "pattern",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.34327,
+      "summary": "summary 18",
+      "timestamp": "2026-10-19T00:00:00+00:00",
+      "weight": 2.5714285714285716
+     },
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.35347,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     },
+     {
+      "_id": "doc0#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 0",
+      "node_id": "doc0",
+      "score": -0.48195
+     },
+     {
+      "_id": "node19",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic19",
+      "entity_type": "task",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.49904,
+      "summary": "summary 19",
+      "timestamp": "2026-10-20T00:00:00+00:00",
+      "weight": 2.7142857142857144
+     },
+     {
+      "_id": "node11",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic11",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.57385,
+      "summary": "summary 11",
+      "timestamp": "2026-10-12T00:00:00+00:00",
+      "weight": 1.5714285714285714
+     }
+    ],
+    "limit": 100,
+    "query": 0
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node10",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic10",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.02779,
+      "summary": "summary 10",
+      "timestamp": "2026-10-11T00:00:00+00:00",
+      "weight": 1.4285714285714286
+     },
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.02706,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.12764,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.23984,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     },
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.35347,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     }
+    ],
+    "limit": 100,
+    "query": 0
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": 0.37517
+     },
+     {
+      "_id": "doc1#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 1",
+      "node_id": "doc1",
+      "score": 0.2044
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.16236
+     },
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.12779
+     },
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": -0.16902
+     },
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": -0.18153
+     },
+     {
+      "_id": "doc0#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 0",
+      "node_id": "doc0",
+      "score": -0.26266
+     },
+     {
+      "_id": "doc1#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 1",
+      "node_id": "doc1",
+      "score": -0.31183
+     },
+     {
+      "_id": "doc0#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 0",
+      "node_id": "doc0",
+      "score": -0.48195
+     }
+    ],
+    "limit": 100,
+    "query": 0
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.50144
+     }
+    ],
+    "limit": 1,
+    "query": 1
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.11659,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     }
+    ],
+    "limit": 1,
+    "query": 1
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.50144
+     }
+    ],
+    "limit": 1,
+    "query": 1
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.50144
+     },
+     {
+      "_id": "node09",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic9",
+      "entity_type": "task",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.31611,
+      "summary": "summary 9",
+      "timestamp": "2026-10-10T00:00:00+00:00",
+      "weight": 1.2857142857142858
+     },
+     {
+      "_id": "node06",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic6",
+      "entity_type": "fail",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.31284,
+      "summary": "summary 6",
+      "timestamp": "2026-10-07T00:00:00+00:00",
+      "weight": 0.8571428571428571
+     }
+    ],
+    "limit": 3,
+    "query": 1
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.11659,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.18394,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.39201,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     }
+    ],
+    "limit": 3,
+    "query": 1
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.50144
+     },
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": 0.1267
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.00192
+     }
+    ],
+    "limit": 3,
+    "query": 1
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.50144
+     },
+     {
+      "_id": "node09",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic9",
+      "entity_type": "task",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.31611,
+      "summary": "summary 9",
+      "timestamp": "2026-10-10T00:00:00+00:00",
+      "weight": 1.2857142857142858
+     },
+     {
+      "_id": "node06",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic6",
+      "entity_type": "fail",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.31284,
+      "summary": "summary 6",
+      "timestamp": "2026-10-07T00:00:00+00:00",
+      "weight": 0.8571428571428571
+     },
+     {
+      "_id": "node13",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic13",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.27681,
+      "summary": "summary 13",
+      "timestamp": "2026-10-14T00:00:00+00:00",
+      "weight": 1.8571428571428572
+     },
+     {
+      "_id": "node11",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic11",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.22238,
+      "summary": "summary 11",
+      "timestamp": "2026-10-12T00:00:00+00:00",
+      "weight": 1.5714285714285714
+     },
+     {
+      "_id": "node21",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic21",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.22133,
+      "summary": "summary 21",
+      "timestamp": "2026-10-22T00:00:00+00:00",
+      "weight": 3.0
+     },
+     {
+      "_id": "node02",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic2",
+      "entity_type": "discovery",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.2165,
+      "summary": "summary 2",
+      "timestamp": "2026-10-03T00:00:00+00:00",
+      "weight": 0.2857142857142857
+     },
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": 0.1267
+     },
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.11659,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node12",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic12",
+      "entity_type": "discovery",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.09884,
+      "summary": "summary 12",
+      "timestamp": "2026-10-13T00:00:00+00:00",
+      "weight": 1.7142857142857142
+     }
+    ],
+    "limit": 10,
+    "query": 1
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.11659,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.18394,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.39201,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     },
+     {
+      "_id": "node10",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic10",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.40013,
+      "summary": "summary 10",
+      "timestamp": "2026-10-11T00:00:00+00:00",
+      "weight": 1.4285714285714286
+     },
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.60046,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     }
+    ],
+    "limit": 10,
+    "query": 1
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.50144
+     },
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": 0.1267
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.00192
+     },
+     {
+      "_id": "doc0#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 0",
+      "node_id": "doc0",
+      "score": -0.1494
+     },
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": -0.19408
+     },
+     {
+      "_id": "doc0#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 0",
+      "node_id": "doc0",
+      "score": -0.23238
+     },
+     {
+      "_id": "doc1#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 1",
+      "node_id": "doc1",
+      "score": -0.26915
+     },
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": -0.27175
+     },
+     {
+      "_id": "doc1#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 1",
+      "node_id": "doc1",
+      "score": -0.2972
+     }
+    ],
+    "limit": 10,
+    "query": 1
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.50144
+     },
+     {
+      "_id": "node09",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic9",
+      "entity_type": "task",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.31611,
+      "summary": "summary 9",
+      "timestamp": "2026-10-10T00:00:00+00:00",
+      "weight": 1.2857142857142858
+     },
+     {
+      "_id": "node06",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic6",
+      "entity_type": "fail",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.31284,
+      "summary": "summary 6",
+      "timestamp": "2026-10-07T00:00:00+00:00",
+      "weight": 0.8571428571428571
+     },
+     {
+      "_id": "node13",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic13",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.27681,
+      "summary": "summary 13",
+      "timestamp": "2026-10-14T00:00:00+00:00",
+      "weight": 1.8571428571428572
+     },
+     {
+      "_id": "node11",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic11",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.22238,
+      "summary": "summary 11",
+      "timestamp": "2026-10-12T00:00:00+00:00",
+      "weight": 1.5714285714285714
+     },
+     {
+      "_id": "node21",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic21",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.22133,
+      "summary": "summary 21",
+      "timestamp": "2026-10-22T00:00:00+00:00",
+      "weight": 3.0
+     },
+     {
+      "_id": "node02",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic2",
+      "entity_type": "discovery",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.2165,
+      "summary": "summary 2",
+      "timestamp": "2026-10-03T00:00:00+00:00",
+      "weight": 0.2857142857142857
+     },
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": 0.1267
+     },
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.11659,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node12",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic12",
+      "entity_type": "discovery",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.09884,
+      "summary": "summary 12",
+      "timestamp": "2026-10-13T00:00:00+00:00",
+      "weight": 1.7142857142857142
+     },
+     {
+      "_id": "node17",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic17",
+      "entity_type": "discovery",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.08955,
+      "summary": "summary 17",
+      "timestamp": "2026-10-18T00:00:00+00:00",
+      "weight": 2.4285714285714284
+     },
+     {
+      "_id": "node22",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic22",
+      "entity_type": "discovery",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.06909,
+      "summary": "summary 22",
+      "timestamp": "2026-10-23T00:00:00+00:00",
+      "weight": 3.142857142857143
+     },
+     {
+      "_id": "node01",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic1",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.04225,
+      "summary": "summary 1",
+      "timestamp": "2026-10-02T00:00:00+00:00",
+      "weight": 0.14285714285714285
+     },
+     {
+      "_id": "node16",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic16",
+      "entity_type": "fail",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.00721,
+      "summary": "summary 16",
+      "timestamp": "2026-10-17T00:00:00+00:00",
+      "weight": 2.2857142857142856
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.00192
+     },
+     {
+      "_id": "node08",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic8",
+      "entity_type": "pattern",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.01418,
+      "summary": "summary 8",
+      "timestamp": "2026-10-09T00:00:00+00:00",
+      "weight": 1.1428571428571428
+     },
+     {
+      "_id": "node07",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic7",
+      "entity_type": "discovery",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.09704,
+      "summary": "summary 7",
+      "timestamp": "2026-10-08T00:00:00+00:00",
+      "weight": 1.0
+     },
+     {
+      "_id": "doc0#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 0",
+      "node_id": "doc0",
+      "score": -0.1494
+     },
+     {
+      "_id": "node23",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic23",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.15676,
+      "summary": "summary 23",
+      "timestamp": "2026-10-24T00:00:00+00:00",
+      "weight": 3.2857142857142856
+     },
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.18394,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": -0.19408
+     },
+     {
+      "_id": "doc0#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 0",
+      "node_id": "doc0",
+      "score": -0.23238
+     },
+     {
+      "_id": "node03",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic3",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.24406,
+      "summary": "overwritten",
+      "timestamp": "2026-10-04T00:00:00+00:00",
+      "weight": 0.42857142857142855
+     },
+     {
+      "_id": "node04",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic4",
+      "entity_type": "task",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.25205,
+      "summary": "summary 4",
+      "timestamp": "2026-10-05T00:00:00+00:00",
+      "weight": 0.5714285714285714
+     },
+     {
+      "_id": "node18",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic18",
+      "entity_type": "pattern",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.26479,
+      "summary": "summary 18",
+      "timestamp": "2026-10-19T00:00:00+00:00",
+      "weight": 2.5714285714285716
+     },
+     {
+      "_id": "doc1#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 1",
+      "node_id": "doc1",
+      "score": -0.26915
+     },
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": -0.27175
+     },
+     {
+      "_id": "node19",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic19",
+      "entity_type": "task",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.2914,
+      "summary": "summary 19",
+      "timestamp": "2026-10-20T00:00:00+00:00",
+      "weight": 2.7142857142857144
+     },
+     {
+      "_id": "doc1#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 1",
+      "node_id": "doc1",
+      "score": -0.2972
+     },
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.39201,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     },
+     {
+      "_id": "node10",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic10",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.40013,
+      "summary": "summary 10",
+      "timestamp": "2026-10-11T00:00:00+00:00",
+      "weight": 1.4285714285714286
+     },
+     {
+      "_id": "node14",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic14",
+      "entity_type": "task",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.50216,
+      "summary": "summary 14",
+      "timestamp": "2026-10-15T00:00:00+00:00",
+      "weight": 2.0
+     },
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.60046,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     }
+    ],
+    "limit": 100,
+    "query": 1
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.11659,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.18394,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.39201,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     },
+     {
+      "_id": "node10",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic10",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.40013,
+      "summary": "summary 10",
+      "timestamp": "2026-10-11T00:00:00+00:00",
+      "weight": 1.4285714285714286
+     },
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.60046,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     }
+    ],
+    "limit": 100,
+    "query": 1
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.50144
+     },
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": 0.1267
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.00192
+     },
+     {
+      "_id": "doc0#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 0",
+      "node_id": "doc0",
+      "score": -0.1494
+     },
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": -0.19408
+     },
+     {
+      "_id": "doc0#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 0",
+      "node_id": "doc0",
+      "score": -0.23238
+     },
+     {
+      "_id": "doc1#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 1",
+      "node_id": "doc1",
+      "score": -0.26915
+     },
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": -0.27175
+     },
+     {
+      "_id": "doc1#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 1",
+      "node_id": "doc1",
+      "score": -0.2972
+     }
+    ],
+    "limit": 100,
+    "query": 1
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": 0.45187
+     }
+    ],
+    "limit": 1,
+    "query": 2
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.07344,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     }
+    ],
+    "limit": 1,
+    "query": 2
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": 0.45187
+     }
+    ],
+    "limit": 1,
+    "query": 2
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": 0.45187
+     },
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.44154
+     },
+     {
+      "_id": "node13",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic13",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.36436,
+      "summary": "summary 13",
+      "timestamp": "2026-10-14T00:00:00+00:00",
+      "weight": 1.8571428571428572
+     }
+    ],
+    "limit": 3,
+    "query": 2
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.07344,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     },
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.1156,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node10",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic10",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.11753,
+      "summary": "summary 10",
+      "timestamp": "2026-10-11T00:00:00+00:00",
+      "weight": 1.4285714285714286
+     }
+    ],
+    "limit": 3,
+    "query": 2
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": 0.45187
+     },
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.44154
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.11138
+     }
+    ],
+    "limit": 3,
+    "query": 2
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": 0.45187
+     },
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.44154
+     },
+     {
+      "_id": "node13",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic13",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.36436,
+      "summary": "summary 13",
+      "timestamp": "2026-10-14T00:00:00+00:00",
+      "weight": 1.8571428571428572
+     },
+     {
+      "_id": "node17",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic17",
+      "entity_type": "discovery",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.32989,
+      "summary": "summary 17",
+      "timestamp": "2026-10-18T00:00:00+00:00",
+      "weight": 2.4285714285714284
+     },
+     {
+      "_id": "node07",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic7",
+      "entity_type": "discovery",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.32492,
+      "summary": "summary 7",
+      "timestamp": "2026-10-08T00:00:00+00:00",
+      "weight": 1.0
+     },
+     {
+      "_id": "node01",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic1",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.26257,
+      "summary": "summary 1",
+      "timestamp": "2026-10-02T00:00:00+00:00",
+      "weight": 0.14285714285714285
+     },
+     {
+      "_id": "node09",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic9",
+      "entity_type": "task",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.23255,
+      "summary": "summary 9",
+      "timestamp": "2026-10-10T00:00:00+00:00",
+      "weight": 1.2857142857142858
+     },
+     {
+      "_id": "node14",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic14",
+      "entity_type": "task",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.21025,
+      "summary": "summary 14",
+      "timestamp": "2026-10-15T00:00:00+00:00",
+      "weight": 2.0
+     },
+     {
+      "_id": "node04",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic4",
+      "entity_type": "task",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.14655,
+      "summary": "summary 4",
+      "timestamp": "2026-10-05T00:00:00+00:00",
+      "weight": 0.5714285714285714
+     },
+     {
+      "_id": "node21",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic21",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.12175,
+      "summary": "summary 21",
+      "timestamp": "2026-10-22T00:00:00+00:00",
+      "weight": 3.0
+     }
+    ],
+    "limit": 10,
+    "query": 2
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.07344,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     },
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.1156,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node10",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic10",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.11753,
+      "summary": "summary 10",
+      "timestamp": "2026-10-11T00:00:00+00:00",
+      "weight": 1.4285714285714286
+     },
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.2235,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.25675,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     }
+    ],
+    "limit": 10,
+    "query": 2
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": 0.45187
+     },
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.44154
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.11138
+     },
+     {
+      "_id": "doc1#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 1",
+      "node_id": "doc1",
+      "score": 0.06646
+     },
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": 0.01087
+     },
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": -0.09506
+     },
+     {
+      "_id": "doc1#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 1",
+      "node_id": "doc1",
+      "score": -0.10258
+     },
+     {
+      "_id": "doc0#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 0",
+      "node_id": "doc0",
+      "score": -0.1877
+     },
+     {
+      "_id": "doc0#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 0",
+      "node_id": "doc0",
+      "score": -0.49644
+     }
+    ],
+    "limit": 10,
+    "query": 2
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": 0.45187
+     },
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.44154
+     },
+     {
+      "_id": "node13",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic13",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.36436,
+      "summary": "summary 13",
+      "timestamp": "2026-10-14T00:00:00+00:00",
+      "weight": 1.8571428571428572
+     },
+     {
+      "_id": "node17",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic17",
+      "entity_type": "discovery",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.32989,
+      "summary": "summary 17",
+      "timestamp": "2026-10-18T00:00:00+00:00",
+      "weight": 2.4285714285714284
+     },
+     {
+      "_id": "node07",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic7",
+      "entity_type": "discovery",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.32492,
+      "summary": "summary 7",
+      "timestamp": "2026-10-08T00:00:00+00:00",
+      "weight": 1.0
+     },
+     {
+      "_id": "node01",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic1",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.26257,
+      "summary": "summary 1",
+      "timestamp": "2026-10-02T00:00:00+00:00",
+      "weight": 0.14285714285714285
+     },
+     {
+      "_id": "node09",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic9",
+      "entity_type": "task",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.23255,
+      "summary": "summary 9",
+      "timestamp": "2026-10-10T00:00:00+00:00",
+      "weight": 1.2857142857142858
+     },
+     {
+      "_id": "node14",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic14",
+      "entity_type": "task",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.21025,
+      "summary": "summary 14",
+      "timestamp": "2026-10-15T00:00:00+00:00",
+      "weight": 2.0
+     },
+     {
+      "_id": "node04",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic4",
+      "entity_type": "task",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.14655,
+      "summary": "summary 4",
+      "timestamp": "2026-10-05T00:00:00+00:00",
+      "weight": 0.5714285714285714
+     },
+     {
+      "_id": "node21",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic21",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.12175,
+      "summary": "summary 21",
+      "timestamp": "2026-10-22T00:00:00+00:00",
+      "weight": 3.0
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.11138
+     },
+     {
+      "_id": "node16",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic16",
+      "entity_type": "fail",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.06875,
+      "summary": "summary 16",
+      "timestamp": "2026-10-17T00:00:00+00:00",
+      "weight": 2.2857142857142856
+     },
+     {
+      "_id": "doc1#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 1",
+      "node_id": "doc1",
+      "score": 0.06646
+     },
+     {
+      "_id": "node03",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic3",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.01218,
+      "summary": "overwritten",
+      "timestamp": "2026-10-04T00:00:00+00:00",
+      "weight": 0.42857142857142855
+     },
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": 0.01087
+     },
+     {
+      "_id": "node12",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic12",
+      "entity_type": "discovery",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.02143,
+      "summary": "summary 12",
+      "timestamp": "2026-10-13T00:00:00+00:00",
+      "weight": 1.7142857142857142
+     },
+     {
+      "_id": "node19",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic19",
+      "entity_type": "task",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.06057,
+      "summary": "summary 19",
+      "timestamp": "2026-10-20T00:00:00+00:00",
+      "weight": 2.7142857142857144
+     },
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.07344,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     },
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": -0.09506
+     },
+     {
+      "_id": "doc1#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 1",
+      "node_id": "doc1",
+      "score": -0.10258
+     },
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.1156,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node10",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic10",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.11753,
+      "summary": "summary 10",
+      "timestamp": "2026-10-11T00:00:00+00:00",
+      "weight": 1.4285714285714286
+     },
+     {
+      "_id": "node22",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic22",
+      "entity_type": "discovery",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.11766,
+      "summary": "summary 22",
+      "timestamp": "2026-10-23T00:00:00+00:00",
+      "weight": 3.142857142857143
+     },
+     {
+      "_id": "node18",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic18",
+      "entity_type": "pattern",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.1663,
+      "summary": "summary 18",
+      "timestamp": "2026-10-19T00:00:00+00:00",
+      "weight": 2.5714285714285716
+     },
+     {
+      "_id": "node08",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic8",
+      "entity_type": "pattern",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.18606,
+      "summary": "summary 8",
+      "timestamp": "2026-10-09T00:00:00+00:00",
+      "weight": 1.1428571428571428
+     },
+     {
+      "_id": "doc0#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 0",
+      "node_id": "doc0",
+      "score": -0.1877
+     },
+     {
+      "_id": "node02",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic2",
+      "entity_type": "discovery",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.20482,
+      "summary": "summary 2",
+      "timestamp": "2026-10-03T00:00:00+00:00",
+      "weight": 0.2857142857142857
+     },
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.2235,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.25675,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     },
+     {
+      "_id": "node23",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic23",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.28497,
+      "summary": "summary 23",
+      "timestamp": "2026-10-24T00:00:00+00:00",
+      "weight": 3.2857142857142856
+     },
+     {
+      "_id": "node06",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic6",
+      "entity_type": "fail",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.43129,
+      "summary": "summary 6",
+      "timestamp": "2026-10-07T00:00:00+00:00",
+      "weight": 0.8571428571428571
+     },
+     {
+      "_id": "node11",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic11",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.45498,
+      "summary": "summary 11",
+      "timestamp": "2026-10-12T00:00:00+00:00",
+      "weight": 1.5714285714285714
+     },
+     {
+      "_id": "doc0#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 0",
+      "node_id": "doc0",
+      "score": -0.49644
+     }
+    ],
+    "limit": 100,
+    "query": 2
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.07344,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     },
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.1156,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node10",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic10",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.11753,
+      "summary": "summary 10",
+      "timestamp": "2026-10-11T00:00:00+00:00",
+      "weight": 1.4285714285714286
+     },
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.2235,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.25675,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     }
+    ],
+    "limit": 100,
+    "query": 2
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": 0.45187
+     },
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.44154
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.11138
+     },
+     {
+      "_id": "doc1#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 1",
+      "node_id": "doc1",
+      "score": 0.06646
+     },
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": 0.01087
+     },
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": -0.09506
+     },
+     {
+      "_id": "doc1#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 1",
+      "node_id": "doc1",
+      "score": -0.10258
+     },
+     {
+      "_id": "doc0#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 0",
+      "node_id": "doc0",
+      "score": -0.1877
+     },
+     {
+      "_id": "doc0#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 0",
+      "node_id": "doc0",
+      "score": -0.49644
+     }
+    ],
+    "limit": 100,
+    "query": 2
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.33606
+     }
+    ],
+    "limit": 1,
+    "query": 3
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.32154,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     }
+    ],
+    "limit": 1,
+    "query": 3
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.33606
+     }
+    ],
+    "limit": 1,
+    "query": 3
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.33606
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.33319
+     },
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.32154,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     }
+    ],
+    "limit": 3,
+    "query": 3
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.32154,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     },
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.10754,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     },
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.02788,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     }
+    ],
+    "limit": 3,
+    "query": 3
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.33606
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.33319
+     },
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": 0.05003
+     }
+    ],
+    "limit": 3,
+    "query": 3
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.33606
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.33319
+     },
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.32154,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     },
+     {
+      "_id": "node03",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic3",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.32139,
+      "summary": "overwritten",
+      "timestamp": "2026-10-04T00:00:00+00:00",
+      "weight": 0.42857142857142855
+     },
+     {
+      "_id": "node01",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic1",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.29788,
+      "summary": "summary 1",
+      "timestamp": "2026-10-02T00:00:00+00:00",
+      "weight": 0.14285714285714285
+     },
+     {
+      "_id": "node12",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic12",
+      "entity_type": "discovery",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.1749,
+      "summary": "summary 12",
+      "timestamp": "2026-10-13T00:00:00+00:00",
+      "weight": 1.7142857142857142
+     },
+     {
+      "_id": "node19",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic19",
+      "entity_type": "task",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.15355,
+      "summary": "summary 19",
+      "timestamp": "2026-10-20T00:00:00+00:00",
+      "weight": 2.7142857142857144
+     },
+     {
+      "_id": "node04",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic4",
+      "entity_type": "task",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.12655,
+      "summary": "summary 4",
+      "timestamp": "2026-10-05T00:00:00+00:00",
+      "weight": 0.5714285714285714
+     },
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.10754,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     },
+     {
+      "_id": "node16",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic16",
+      "entity_type": "fail",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.05169,
+      "summary": "summary 16",
+      "timestamp": "2026-10-17T00:00:00+00:00",
+      "weight": 2.2857142857142856
+     }
+    ],
+    "limit": 10,
+    "query": 3
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.32154,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     },
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.10754,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     },
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.02788,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.00262,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node10",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic10",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.11984,
+      "summary": "summary 10",
+      "timestamp": "2026-10-11T00:00:00+00:00",
+      "weight": 1.4285714285714286
+     }
+    ],
+    "limit": 10,
+    "query": 3
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.33606
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.33319
+     },
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": 0.05003
+     },
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": -0.07964
+     },
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": -0.08516
+     },
+     {
+      "_id": "doc0#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 0",
+      "node_id": "doc0",
+      "score": -0.26678
+     },
+     {
+      "_id": "doc1#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 1",
+      "node_id": "doc1",
+      "score": -0.33504
+     },
+     {
+      "_id": "doc1#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 1",
+      "node_id": "doc1",
+      "score": -0.35352
+     },
+     {
+      "_id": "doc0#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 0",
+      "node_id": "doc0",
+      "score": -0.38325
+     }
+    ],
+    "limit": 10,
+    "query": 3
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.33606
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.33319
+     },
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.32154,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     },
+     {
+      "_id": "node03",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic3",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.32139,
+      "summary": "overwritten",
+      "timestamp": "2026-10-04T00:00:00+00:00",
+      "weight": 0.42857142857142855
+     },
+     {
+      "_id": "node01",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic1",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.29788,
+      "summary": "summary 1",
+      "timestamp": "2026-10-02T00:00:00+00:00",
+      "weight": 0.14285714285714285
+     },
+     {
+      "_id": "node12",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic12",
+      "entity_type": "discovery",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.1749,
+      "summary": "summary 12",
+      "timestamp": "2026-10-13T00:00:00+00:00",
+      "weight": 1.7142857142857142
+     },
+     {
+      "_id": "node19",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic19",
+      "entity_type": "task",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.15355,
+      "summary": "summary 19",
+      "timestamp": "2026-10-20T00:00:00+00:00",
+      "weight": 2.7142857142857144
+     },
+     {
+      "_id": "node04",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic4",
+      "entity_type": "task",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.12655,
+      "summary": "summary 4",
+      "timestamp": "2026-10-05T00:00:00+00:00",
+      "weight": 0.5714285714285714
+     },
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.10754,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     },
+     {
+      "_id": "node16",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic16",
+      "entity_type": "fail",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.05169,
+      "summary": "summary 16",
+      "timestamp": "2026-10-17T00:00:00+00:00",
+      "weight": 2.2857142857142856
+     },
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": 0.05003
+     },
+     {
+      "_id": "node07",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic7",
+      "entity_type": "discovery",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.04845,
+      "summary": "summary 7",
+      "timestamp": "2026-10-08T00:00:00+00:00",
+      "weight": 1.0
+     },
+     {
+      "_id": "node21",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic21",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.02806,
+      "summary": "summary 21",
+      "timestamp": "2026-10-22T00:00:00+00:00",
+      "weight": 3.0
+     },
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.02788,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node09",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic9",
+      "entity_type": "task",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.02294,
+      "summary": "summary 9",
+      "timestamp": "2026-10-10T00:00:00+00:00",
+      "weight": 1.2857142857142858
+     },
+     {
+      "_id": "node06",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic6",
+      "entity_type": "fail",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.01619,
+      "summary": "summary 6",
+      "timestamp": "2026-10-07T00:00:00+00:00",
+      "weight": 0.8571428571428571
+     },
+     {
+      "_id": "node22",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic22",
+      "entity_type": "discovery",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.00284,
+      "summary": "summary 22",
+      "timestamp": "2026-10-23T00:00:00+00:00",
+      "weight": 3.142857142857143
+     },
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.00262,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node14",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic14",
+      "entity_type": "task",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.04823,
+      "summary": "summary 14",
+      "timestamp": "2026-10-15T00:00:00+00:00",
+      "weight": 2.0
+     },
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": -0.07964
+     },
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": -0.08516
+     },
+     {
+      "_id": "node10",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic10",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.11984,
+      "summary": "summary 10",
+      "timestamp": "2026-10-11T00:00:00+00:00",
+      "weight": 1.4285714285714286
+     },
+     {
+      "_id": "node13",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic13",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.12753,
+      "summary": "summary 13",
+      "timestamp": "2026-10-14T00:00:00+00:00",
+      "weight": 1.8571428571428572
+     },
+     {
+      "_id": "node02",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic2",
+      "entity_type": "discovery",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.13729,
+      "summary": "summary 2",
+      "timestamp": "2026-10-03T00:00:00+00:00",
+      "weight": 0.2857142857142857
+     },
+     {
+      "_id": "node11",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic11",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.15435,
+      "summary": "summary 11",
+      "timestamp": "2026-10-12T00:00:00+00:00",
+      "weight": 1.5714285714285714
+     },
+     {
+      "_id": "node18",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic18",
+      "entity_type": "pattern",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.15718,
+      "summary": "summary 18",
+      "timestamp": "2026-10-19T00:00:00+00:00",
+      "weight": 2.5714285714285716
+     },
+     {
+      "_id": "node08",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic8",
+      "entity_type": "pattern",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.15726,
+      "summary": "summary 8",
+      "timestamp": "2026-10-09T00:00:00+00:00",
+      "weight": 1.1428571428571428
+     },
+     {
+      "_id": "doc0#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 0",
+      "node_id": "doc0",
+      "score": -0.26678
+     },
+     {
+      "_id": "node17",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic17",
+      "entity_type": "discovery",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.3119,
+      "summary": "summary 17",
+      "timestamp": "2026-10-18T00:00:00+00:00",
+      "weight": 2.4285714285714284
+     },
+     {
+      "_id": "node23",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic23",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.32557,
+      "summary": "summary 23",
+      "timestamp": "2026-10-24T00:00:00+00:00",
+      "weight": 3.2857142857142856
+     },
+     {
+      "_id": "doc1#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 1",
+      "node_id": "doc1",
+      "score": -0.33504
+     },
+     {
+      "_id": "doc1#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 1",
+      "node_id": "doc1",
+      "score": -0.35352
+     },
+     {
+      "_id": "doc0#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 0",
+      "node_id": "doc0",
+      "score": -0.38325
+     }
+    ],
+    "limit": 100,
+    "query": 3
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.32154,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     },
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.10754,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     },
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.02788,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.00262,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node10",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic10",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.11984,
+      "summary": "summary 10",
+      "timestamp": "2026-10-11T00:00:00+00:00",
+      "weight": 1.4285714285714286
+     }
+    ],
+    "limit": 100,
+    "query": 3
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": 0.33606
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": 0.33319
+     },
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": 0.05003
+     },
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": -0.07964
+     },
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": -0.08516
+     },
+     {
+      "_id": "doc0#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 0",
+      "node_id": "doc0",
+      "score": -0.26678
+     },
+     {
+      "_id": "doc1#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 1",
+      "node_id": "doc1",
+      "score": -0.33504
+     },
+     {
+      "_id": "doc1#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 1",
+      "node_id": "doc1",
+      "score": -0.35352
+     },
+     {
+      "_id": "doc0#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 0",
+      "node_id": "doc0",
+      "score": -0.38325
+     }
+    ],
+    "limit": 100,
+    "query": 3
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.30843,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     }
+    ],
+    "limit": 1,
+    "query": 4
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.30843,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     }
+    ],
+    "limit": 1,
+    "query": 4
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": 0.19321
+     }
+    ],
+    "limit": 1,
+    "query": 4
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.30843,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node19",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic19",
+      "entity_type": "task",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.26885,
+      "summary": "summary 19",
+      "timestamp": "2026-10-20T00:00:00+00:00",
+      "weight": 2.7142857142857144
+     },
+     {
+      "_id": "node01",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic1",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.26858,
+      "summary": "summary 1",
+      "timestamp": "2026-10-02T00:00:00+00:00",
+      "weight": 0.14285714285714285
+     }
+    ],
+    "limit": 3,
+    "query": 4
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.30843,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.18126,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.11175,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     }
+    ],
+    "limit": 3,
+    "query": 4
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": 0.19321
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": -0.02393
+     },
+     {
+      "_id": "doc1#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 1",
+      "node_id": "doc1",
+      "score": -0.03108
+     }
+    ],
+    "limit": 3,
+    "query": 4
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.30843,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node19",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic19",
+      "entity_type": "task",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.26885,
+      "summary": "summary 19",
+      "timestamp": "2026-10-20T00:00:00+00:00",
+      "weight": 2.7142857142857144
+     },
+     {
+      "_id": "node01",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic1",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.26858,
+      "summary": "summary 1",
+      "timestamp": "2026-10-02T00:00:00+00:00",
+      "weight": 0.14285714285714285
+     },
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": 0.19321
+     },
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.18126,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node18",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic18",
+      "entity_type": "pattern",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.16639,
+      "summary": "summary 18",
+      "timestamp": "2026-10-19T00:00:00+00:00",
+      "weight": 2.5714285714285716
+     },
+     {
+      "_id": "node16",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic16",
+      "entity_type": "fail",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.14858,
+      "summary": "summary 16",
+      "timestamp": "2026-10-17T00:00:00+00:00",
+      "weight": 2.2857142857142856
+     },
+     {
+      "_id": "node04",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic4",
+      "entity_type": "task",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.13804,
+      "summary": "summary 4",
+      "timestamp": "2026-10-05T00:00:00+00:00",
+      "weight": 0.5714285714285714
+     },
+     {
+      "_id": "node06",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic6",
+      "entity_type": "fail",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.13311,
+      "summary": "summary 6",
+      "timestamp": "2026-10-07T00:00:00+00:00",
+      "weight": 0.8571428571428571
+     },
+     {
+      "_id": "node13",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic13",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.11871,
+      "summary": "summary 13",
+      "timestamp": "2026-10-14T00:00:00+00:00",
+      "weight": 1.8571428571428572
+     }
+    ],
+    "limit": 10,
+    "query": 4
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.30843,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.18126,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.11175,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     },
+     {
+      "_id": "node10",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic10",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.06681,
+      "summary": "summary 10",
+      "timestamp": "2026-10-11T00:00:00+00:00",
+      "weight": 1.4285714285714286
+     },
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.06258,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     }
+    ],
+    "limit": 10,
+    "query": 4
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": 0.19321
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": -0.02393
+     },
+     {
+      "_id": "doc1#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 1",
+      "node_id": "doc1",
+      "score": -0.03108
+     },
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": -0.10086
+     },
+     {
+      "_id": "doc0#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 0",
+      "node_id": "doc0",
+      "score": -0.11649
+     },
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": -0.12501
+     },
+     {
+      "_id": "doc0#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 0",
+      "node_id": "doc0",
+      "score": -0.15157
+     },
+     {
+      "_id": "doc1#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 1",
+      "node_id": "doc1",
+      "score": -0.43543
+     },
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": -0.45497
+     }
+    ],
+    "limit": 10,
+    "query": 4
+   },
+   {
+    "entity_type": null,
+    "hits": [
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.30843,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node19",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic19",
+      "entity_type": "task",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.26885,
+      "summary": "summary 19",
+      "timestamp": "2026-10-20T00:00:00+00:00",
+      "weight": 2.7142857142857144
+     },
+     {
+      "_id": "node01",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic1",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.26858,
+      "summary": "summary 1",
+      "timestamp": "2026-10-02T00:00:00+00:00",
+      "weight": 0.14285714285714285
+     },
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": 0.19321
+     },
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.18126,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node18",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic18",
+      "entity_type": "pattern",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.16639,
+      "summary": "summary 18",
+      "timestamp": "2026-10-19T00:00:00+00:00",
+      "weight": 2.5714285714285716
+     },
+     {
+      "_id": "node16",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic16",
+      "entity_type": "fail",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.14858,
+      "summary": "summary 16",
+      "timestamp": "2026-10-17T00:00:00+00:00",
+      "weight": 2.2857142857142856
+     },
+     {
+      "_id": "node04",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic4",
+      "entity_type": "task",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.13804,
+      "summary": "summary 4",
+      "timestamp": "2026-10-05T00:00:00+00:00",
+      "weight": 0.5714285714285714
+     },
+     {
+      "_id": "node06",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic6",
+      "entity_type": "fail",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.13311,
+      "summary": "summary 6",
+      "timestamp": "2026-10-07T00:00:00+00:00",
+      "weight": 0.8571428571428571
+     },
+     {
+      "_id": "node13",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic13",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.11871,
+      "summary": "summary 13",
+      "timestamp": "2026-10-14T00:00:00+00:00",
+      "weight": 1.8571428571428572
+     },
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.11175,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     },
+     {
+      "_id": "node09",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic9",
+      "entity_type": "task",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.08627,
+      "summary": "summary 9",
+      "timestamp": "2026-10-10T00:00:00+00:00",
+      "weight": 1.2857142857142858
+     },
+     {
+      "_id": "node02",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic2",
+      "entity_type": "discovery",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.08298,
+      "summary": "summary 2",
+      "timestamp": "2026-10-03T00:00:00+00:00",
+      "weight": 0.2857142857142857
+     },
+     {
+      "_id": "node08",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic8",
+      "entity_type": "pattern",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.0815,
+      "summary": "summary 8",
+      "timestamp": "2026-10-09T00:00:00+00:00",
+      "weight": 1.1428571428571428
+     },
+     {
+      "_id": "node10",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic10",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.06681,
+      "summary": "summary 10",
+      "timestamp": "2026-10-11T00:00:00+00:00",
+      "weight": 1.4285714285714286
+     },
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.06258,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     },
+     {
+      "_id": "node03",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic3",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.02035,
+      "summary": "overwritten",
+      "timestamp": "2026-10-04T00:00:00+00:00",
+      "weight": 0.42857142857142855
+     },
+     {
+      "_id": "node11",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic11",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.01204,
+      "summary": "summary 11",
+      "timestamp": "2026-10-12T00:00:00+00:00",
+      "weight": 1.5714285714285714
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": -0.02393
+     },
+     {
+      "_id": "doc1#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 1",
+      "node_id": "doc1",
+      "score": -0.03108
+     },
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": -0.10086
+     },
+     {
+      "_id": "doc0#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 0",
+      "node_id": "doc0",
+      "score": -0.11649
+     },
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": -0.12501
+     },
+     {
+      "_id": "doc0#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 0",
+      "node_id": "doc0",
+      "score": -0.15157
+     },
+     {
+      "_id": "node12",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic12",
+      "entity_type": "discovery",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.16201,
+      "summary": "summary 12",
+      "timestamp": "2026-10-13T00:00:00+00:00",
+      "weight": 1.7142857142857142
+     },
+     {
+      "_id": "node21",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic21",
+      "entity_type": "fail",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.16774,
+      "summary": "summary 21",
+      "timestamp": "2026-10-22T00:00:00+00:00",
+      "weight": 3.0
+     },
+     {
+      "_id": "node22",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic22",
+      "entity_type": "discovery",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.20805,
+      "summary": "summary 22",
+      "timestamp": "2026-10-23T00:00:00+00:00",
+      "weight": 3.142857142857143
+     },
+     {
+      "_id": "node23",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic23",
+      "entity_type": "pattern",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.23694,
+      "summary": "summary 23",
+      "timestamp": "2026-10-24T00:00:00+00:00",
+      "weight": 3.2857142857142856
+     },
+     {
+      "_id": "node14",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic14",
+      "entity_type": "task",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": -0.29791,
+      "summary": "summary 14",
+      "timestamp": "2026-10-15T00:00:00+00:00",
+      "weight": 2.0
+     },
+     {
+      "_id": "node07",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic7",
+      "entity_type": "discovery",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.3711,
+      "summary": "summary 7",
+      "timestamp": "2026-10-08T00:00:00+00:00",
+      "weight": 1.0
+     },
+     {
+      "_id": "doc1#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 1",
+      "node_id": "doc1",
+      "score": -0.43543
+     },
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": -0.45497
+     },
+     {
+      "_id": "node17",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic17",
+      "entity_type": "discovery",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": -0.45995,
+      "summary": "summary 17",
+      "timestamp": "2026-10-18T00:00:00+00:00",
+      "weight": 2.4285714285714284
+     }
+    ],
+    "limit": 100,
+    "query": 4
+   },
+   {
+    "entity_type": "decision",
+    "hits": [
+     {
+      "_id": "node15",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic15",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.30843,
+      "summary": "summary 15",
+      "timestamp": "2026-10-16T00:00:00+00:00",
+      "weight": 2.142857142857143
+     },
+     {
+      "_id": "node05",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic5",
+      "entity_type": "decision",
+      "from_agent": true,
+      "has_updated_at": true,
+      "score": 0.18126,
+      "summary": "summary 5",
+      "timestamp": "2026-10-06T00:00:00+00:00",
+      "weight": 0.7142857142857143
+     },
+     {
+      "_id": "node20",
+      "author": "Colton Dyck",
+      "chunk_count": 2,
+      "context": "a.py,topic20",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.11175,
+      "summary": "summary 20",
+      "timestamp": "2026-10-21T00:00:00+00:00",
+      "weight": 2.857142857142857
+     },
+     {
+      "_id": "node10",
+      "author": "Colton Dyck",
+      "chunk_count": 1,
+      "context": "a.py,topic10",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.06681,
+      "summary": "summary 10",
+      "timestamp": "2026-10-11T00:00:00+00:00",
+      "weight": 1.4285714285714286
+     },
+     {
+      "_id": "node00",
+      "author": "Colton Dyck",
+      "chunk_count": 0,
+      "context": "a.py,topic0",
+      "entity_type": "decision",
+      "from_agent": false,
+      "has_updated_at": true,
+      "score": 0.06258,
+      "summary": "summary 0",
+      "timestamp": "2026-10-01T00:00:00+00:00",
+      "weight": 0.0
+     }
+    ],
+    "limit": 100,
+    "query": 4
+   },
+   {
+    "entity_type": "document",
+    "hits": [
+     {
+      "_id": "doc0#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 0",
+      "node_id": "doc0",
+      "score": 0.19321
+     },
+     {
+      "_id": "doc2#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 2",
+      "node_id": "doc2",
+      "score": -0.02393
+     },
+     {
+      "_id": "doc1#chunk-1",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 1 of doc 1",
+      "node_id": "doc1",
+      "score": -0.03108
+     },
+     {
+      "_id": "doc2#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 2",
+      "node_id": "doc2",
+      "score": -0.10086
+     },
+     {
+      "_id": "doc0#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 0",
+      "node_id": "doc0",
+      "score": -0.11649
+     },
+     {
+      "_id": "doc1#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 1",
+      "node_id": "doc1",
+      "score": -0.12501
+     },
+     {
+      "_id": "doc0#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 0",
+      "node_id": "doc0",
+      "score": -0.15157
+     },
+     {
+      "_id": "doc1#chunk-0",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 0 of doc 1",
+      "node_id": "doc1",
+      "score": -0.43543
+     },
+     {
+      "_id": "doc2#chunk-2",
+      "entity_type": "document",
+      "has_updated_at": true,
+      "is_chunk": true,
+      "matched_text": "chunk 2 of doc 2",
+      "node_id": "doc2",
+      "score": -0.45497
+     }
+    ],
+    "limit": 100,
+    "query": 4
+   }
+  ]
+ },
+ "fixture": {
+  "dim": 16,
+  "entries": [
+   {
+    "document": null,
+    "embedding": [
+     -0.388477,
+     0.527613,
+     -0.248697,
+     0.025037,
+     -0.582524,
+     -0.048312,
+     0.26264,
+     -0.784202,
+     0.555447,
+     0.74524,
+     0.528036,
+     0.173634,
+     -0.458928,
+     -0.841823,
+     0.126525,
+     -0.634682
+    ],
+    "id": "node00",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 0,
+     "context": [
+      "a.py",
+      "topic0"
+     ],
+     "entity_type": "decision",
+     "from_agent": false,
+     "severity": null,
+     "summary": "summary 0",
+     "timestamp": "2026-10-01T00:00:00+00:00",
+     "weight": 0.0
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     0.920359,
+     0.746216,
+     -0.280698,
+     0.227523,
+     -0.787895,
+     -0.153081,
+     0.265491,
+     -0.021463,
+     0.07381,
+     -0.090017,
+     -0.224965,
+     0.297292,
+     -0.264345,
+     0.099355,
+     -0.496473,
+     -0.912833
+    ],
+    "id": "node01",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 1,
+     "context": [
+      "a.py",
+      "topic1"
+     ],
+     "entity_type": "fail",
+     "from_agent": true,
+     "severity": null,
+     "summary": "summary 1",
+     "timestamp": "2026-10-02T00:00:00+00:00",
+     "weight": 0.14285714285714285
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     -0.849566,
+     -0.245543,
+     -0.768456,
+     -0.522446,
+     0.312722,
+     0.792527,
+     -0.742835,
+     0.105377,
+     -0.599289,
+     -0.831599,
+     0.921372,
+     0.714772,
+     0.72422,
+     0.481719,
+     -0.502594,
+     0.276766
+    ],
+    "id": "node02",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 2,
+     "context": [
+      "a.py",
+      "topic2"
+     ],
+     "entity_type": "discovery",
+     "from_agent": false,
+     "severity": null,
+     "summary": "summary 2",
+     "timestamp": "2026-10-03T00:00:00+00:00",
+     "weight": 0.2857142857142857
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     -0.196262,
+     0.10629,
+     -0.824965,
+     0.140173,
+     0.079494,
+     0.926846,
+     -0.084682,
+     0.264154,
+     0.11565,
+     0.004106,
+     0.153663,
+     -0.891304,
+     -0.159274,
+     -0.697043,
+     -0.496222,
+     0.836609
+    ],
+    "id": "node03",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 0,
+     "context": [
+      "a.py",
+      "topic3"
+     ],
+     "entity_type": "pattern",
+     "from_agent": true,
+     "severity": null,
+     "summary": "summary 3",
+     "timestamp": "2026-10-04T00:00:00+00:00",
+     "weight": 0.42857142857142855
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     0.415697,
+     0.586726,
+     -0.996108,
+     0.321846,
+     -0.431714,
+     -0.603787,
+     -0.522029,
+     0.440113,
+     0.055855,
+     0.337019,
+     0.38795,
+     -0.599772,
+     -0.536918,
+     0.120574,
+     0.216264,
+     0.638644
+    ],
+    "id": "node04",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 1,
+     "context": [
+      "a.py",
+      "topic4"
+     ],
+     "entity_type": "task",
+     "from_agent": false,
+     "severity": null,
+     "summary": "summary 4",
+     "timestamp": "2026-10-05T00:00:00+00:00",
+     "weight": 0.5714285714285714
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     -0.032784,
+     -0.079013,
+     -0.891997,
+     -0.969032,
+     0.869475,
+     0.517901,
+     0.531436,
+     0.130708,
+     -0.867234,
+     0.720941,
+     -0.531752,
+     0.215298,
+     0.589413,
+     -0.837629,
+     0.519754,
+     -0.477185
+    ],
+    "id": "node05",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 2,
+     "context": [
+      "a.py",
+      "topic5"
+     ],
+     "entity_type": "decision",
+     "from_agent": true,
+     "severity": null,
+     "summary": "summary 5",
+     "timestamp": "2026-10-06T00:00:00+00:00",
+     "weight": 0.7142857142857143
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     -0.437714,
+     -0.573319,
+     0.700856,
+     0.236683,
+     0.412114,
+     0.217119,
+     -0.201267,
+     0.507973,
+     0.518346,
+     0.648829,
+     0.23846,
+     0.646856,
+     0.528557,
+     -0.002837,
+     -0.468476,
+     0.686282
+    ],
+    "id": "node06",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 0,
+     "context": [
+      "a.py",
+      "topic6"
+     ],
+     "entity_type": "fail",
+     "from_agent": false,
+     "severity": null,
+     "summary": "summary 6",
+     "timestamp": "2026-10-07T00:00:00+00:00",
+     "weight": 0.8571428571428571
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     -0.408625,
+     0.429525,
+     0.552559,
+     0.670554,
+     -0.311348,
+     -0.19943,
+     0.915301,
+     -0.559525,
+     0.094939,
+     0.712099,
+     -0.337609,
+     -0.791896,
+     0.209224,
+     0.514204,
+     -0.261987,
+     0.817096
+    ],
+    "id": "node07",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 1,
+     "context": [
+      "a.py",
+      "topic7"
+     ],
+     "entity_type": "discovery",
+     "from_agent": true,
+     "severity": null,
+     "summary": "summary 7",
+     "timestamp": "2026-10-08T00:00:00+00:00",
+     "weight": 1.0
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     0.251217,
+     -0.365312,
+     0.213838,
+     -0.400265,
+     -0.839073,
+     -0.694756,
+     -0.714011,
+     0.105235,
+     0.352735,
+     -0.599871,
+     0.459396,
+     0.777675,
+     0.290397,
+     0.113347,
+     0.491219,
+     -0.484337
+    ],
+    "id": "node08",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 2,
+     "context": [
+      "a.py",
+      "topic8"
+     ],
+     "entity_type": "pattern",
+     "from_agent": false,
+     "severity": null,
+     "summary": "summary 8",
+     "timestamp": "2026-10-09T00:00:00+00:00",
+     "weight": 1.1428571428571428
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     0.347487,
+     0.065457,
+     -0.588595,
+     0.146538,
+     -0.303225,
+     -0.421733,
+     -0.177483,
+     0.932078,
+     0.10245,
+     -0.440549,
+     -0.484169,
+     -0.223781,
+     0.857179,
+     0.622821,
+     0.998742,
+     0.91251
+    ],
+    "id": "node09",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 0,
+     "context": [
+      "a.py",
+      "topic9"
+     ],
+     "entity_type": "task",
+     "from_agent": true,
+     "severity": null,
+     "summary": "summary 9",
+     "timestamp": "2026-10-10T00:00:00+00:00",
+     "weight": 1.2857142857142858
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     -0.724837,
+     0.686877,
+     -0.062431,
+     -0.611743,
+     -0.319627,
+     0.416478,
+     -0.411338,
+     0.840981,
+     -0.467794,
+     -0.779866,
+     0.976016,
+     0.169986,
+     -0.524836,
+     -0.98271,
+     0.9771,
+     -0.680309
+    ],
+    "id": "node10",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 1,
+     "context": [
+      "a.py",
+      "topic10"
+     ],
+     "entity_type": "decision",
+     "from_agent": false,
+     "severity": null,
+     "summary": "summary 10",
+     "timestamp": "2026-10-11T00:00:00+00:00",
+     "weight": 1.4285714285714286
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     -0.689142,
+     -0.560421,
+     0.006151,
+     -0.708094,
+     -0.213274,
+     0.440363,
+     0.313271,
+     -0.345363,
+     0.333411,
+     -0.294931,
+     0.273778,
+     0.672268,
+     0.916522,
+     0.662319,
+     0.242568,
+     -0.808325
+    ],
+    "id": "node11",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 2,
+     "context": [
+      "a.py",
+      "topic11"
+     ],
+     "entity_type": "fail",
+     "from_agent": true,
+     "severity": null,
+     "summary": "summary 11",
+     "timestamp": "2026-10-12T00:00:00+00:00",
+     "weight": 1.5714285714285714
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     -0.302916,
+     -0.657935,
+     -0.977374,
+     0.213944,
+     -0.044394,
+     0.377682,
+     -0.886329,
+     -0.936625,
+     0.557661,
+     0.244378,
+     -0.505211,
+     -0.742115,
+     0.550724,
+     -0.221187,
+     -0.888938,
+     0.074337
+    ],
+    "id": "node12",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 0,
+     "context": [
+      "a.py",
+      "topic12"
+     ],
+     "entity_type": "discovery",
+     "from_agent": false,
+     "severity": null,
+     "summary": "summary 12",
+     "timestamp": "2026-10-13T00:00:00+00:00",
+     "weight": 1.7142857142857142
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     0.987866,
+     0.797348,
+     -0.44894,
+     0.835714,
+     0.848117,
+     -0.978265,
+     -0.409133,
+     0.446638,
+     -0.635499,
+     0.778751,
+     -0.315258,
+     -0.547485,
+     -0.356498,
+     0.986761,
+     0.060941,
+     0.095657
+    ],
+    "id": "node13",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 1,
+     "context": [
+      "a.py",
+      "topic13"
+     ],
+     "entity_type": "pattern",
+     "from_agent": true,
+     "severity": null,
+     "summary": "summary 13",
+     "timestamp": "2026-10-14T00:00:00+00:00",
+     "weight": 1.8571428571428572
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     -0.700415,
+     0.907515,
+     0.130419,
+     -0.283158,
+     -0.768645,
+     0.208452,
+     0.979641,
+     0.168105,
+     -0.817755,
+     0.167685,
+     0.628568,
+     -0.993718,
+     0.291238,
+     -0.544742,
+     0.372867,
+     0.382346
+    ],
+    "id": "node14",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 2,
+     "context": [
+      "a.py",
+      "topic14"
+     ],
+     "entity_type": "task",
+     "from_agent": false,
+     "severity": null,
+     "summary": "summary 14",
+     "timestamp": "2026-10-15T00:00:00+00:00",
+     "weight": 2.0
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     -0.535887,
+     0.864035,
+     -0.143861,
+     -0.648394,
+     0.244619,
+     -0.312323,
+     -0.67612,
+     0.835331,
+     0.41181,
+     0.326092,
+     -0.25225,
+     0.012327,
+     0.69869,
+     -0.897289,
+     0.926944,
+     0.588201
+    ],
+    "id": "node15",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 0,
+     "context": [
+      "a.py",
+      "topic15"
+     ],
+     "entity_type": "decision",
+     "from_agent": true,
+     "severity": null,
+     "summary": "summary 15",
+     "timestamp": "2026-10-16T00:00:00+00:00",
+     "weight": 2.142857142857143
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     0.523899,
+     0.908975,
+     -0.331931,
+     0.396334,
+     0.953907,
+     0.991725,
+     -0.861492,
+     -0.192377,
+     -0.477215,
+     0.808268,
+     -0.246378,
+     0.757448,
+     -0.155973,
+     -0.986937,
+     0.825166,
+     -0.014083
+    ],
+    "id": "node16",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 1,
+     "context": [
+      "a.py",
+      "topic16"
+     ],
+     "entity_type": "fail",
+     "from_agent": false,
+     "severity": null,
+     "summary": "summary 16",
+     "timestamp": "2026-10-17T00:00:00+00:00",
+     "weight": 2.2857142857142856
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     -0.467997,
+     -0.271925,
+     0.285919,
+     -0.301667,
+     0.306375,
+     -0.514729,
+     0.617332,
+     -0.55917,
+     -0.954573,
+     0.150644,
+     -0.639372,
+     -0.735103,
+     0.515633,
+     0.467495,
+     -0.113932,
+     0.741192
+    ],
+    "id": "node17",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 2,
+     "context": [
+      "a.py",
+      "topic17"
+     ],
+     "entity_type": "discovery",
+     "from_agent": true,
+     "severity": null,
+     "summary": "summary 17",
+     "timestamp": "2026-10-18T00:00:00+00:00",
+     "weight": 2.4285714285714284
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     0.758499,
+     0.690046,
+     -0.471054,
+     -0.900433,
+     0.179252,
+     0.699307,
+     -0.881178,
+     -0.649722,
+     0.546009,
+     0.202966,
+     0.438331,
+     -0.422485,
+     0.841691,
+     -0.165519,
+     0.305659,
+     -0.491893
+    ],
+    "id": "node18",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 0,
+     "context": [
+      "a.py",
+      "topic18"
+     ],
+     "entity_type": "pattern",
+     "from_agent": false,
+     "severity": null,
+     "summary": "summary 18",
+     "timestamp": "2026-10-19T00:00:00+00:00",
+     "weight": 2.5714285714285716
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     -0.179233,
+     0.429854,
+     -0.993165,
+     -0.846204,
+     0.495522,
+     -0.706206,
+     -0.343695,
+     -0.693762,
+     0.413505,
+     -0.016771,
+     -0.913801,
+     0.055746,
+     -0.331475,
+     -0.902728,
+     0.895784,
+     -0.38854
+    ],
+    "id": "node19",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 1,
+     "context": [
+      "a.py",
+      "topic19"
+     ],
+     "entity_type": "task",
+     "from_agent": true,
+     "severity": null,
+     "summary": "summary 19",
+     "timestamp": "2026-10-20T00:00:00+00:00",
+     "weight": 2.7142857142857144
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     0.292099,
+     0.394761,
+     -0.738002,
+     -0.798723,
+     -0.73138,
+     0.757729,
+     0.125394,
+     0.080007,
+     0.577837,
+     -0.969813,
+     -0.087013,
+     -0.569591,
+     -0.663477,
+     -0.271531,
+     0.45747,
+     -0.676586
+    ],
+    "id": "node20",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 2,
+     "context": [
+      "a.py",
+      "topic20"
+     ],
+     "entity_type": "decision",
+     "from_agent": false,
+     "severity": null,
+     "summary": "summary 20",
+     "timestamp": "2026-10-21T00:00:00+00:00",
+     "weight": 2.857142857142857
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     -0.936544,
+     -0.863303,
+     -0.515753,
+     0.684198,
+     0.893328,
+     -0.853998,
+     -0.015774,
+     0.33337,
+     -0.19363,
+     -0.228812,
+     -0.187487,
+     -0.810983,
+     0.588082,
+     0.029864,
+     0.955042,
+     0.486941
+    ],
+    "id": "node21",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 0,
+     "context": [
+      "a.py",
+      "topic21"
+     ],
+     "entity_type": "fail",
+     "from_agent": true,
+     "severity": null,
+     "summary": "summary 21",
+     "timestamp": "2026-10-22T00:00:00+00:00",
+     "weight": 3.0
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     -0.982553,
+     -0.385855,
+     0.661832,
+     0.7836,
+     0.643822,
+     -0.072376,
+     -0.092352,
+     -0.701226,
+     0.469262,
+     0.368961,
+     -0.054247,
+     0.301632,
+     -0.45446,
+     0.22003,
+     -0.227868,
+     0.142986
+    ],
+    "id": "node22",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 1,
+     "context": [
+      "a.py",
+      "topic22"
+     ],
+     "entity_type": "discovery",
+     "from_agent": false,
+     "severity": null,
+     "summary": "summary 22",
+     "timestamp": "2026-10-23T00:00:00+00:00",
+     "weight": 3.142857142857143
+    }
+   },
+   {
+    "document": null,
+    "embedding": [
+     -0.542012,
+     -0.461374,
+     0.208468,
+     -0.583307,
+     -0.769052,
+     0.965277,
+     -0.76111,
+     0.96875,
+     0.029045,
+     -0.407896,
+     0.934336,
+     -0.779269,
+     0.287377,
+     -0.21163,
+     -0.038943,
+     -0.176985
+    ],
+    "id": "node23",
+    "metadata": {
+     "author": "Colton Dyck",
+     "chunk_count": 2,
+     "context": [
+      "a.py",
+      "topic23"
+     ],
+     "entity_type": "pattern",
+     "from_agent": true,
+     "severity": null,
+     "summary": "summary 23",
+     "timestamp": "2026-10-24T00:00:00+00:00",
+     "weight": 3.2857142857142856
+    }
+   },
+   {
+    "document": "chunk 0 of doc 0",
+    "embedding": [
+     -0.420054,
+     0.28342,
+     0.300338,
+     -0.384034,
+     0.716051,
+     0.189305,
+     -0.980501,
+     -0.881086,
+     0.379176,
+     0.819807,
+     -0.446785,
+     -0.343398,
+     -0.863123,
+     0.305058,
+     -0.459958,
+     -0.419077
+    ],
+    "id": "doc0#chunk-0",
+    "metadata": {
+     "entity_type": "document",
+     "is_chunk": true,
+     "node_id": "doc0"
+    }
+   },
+   {
+    "document": "chunk 1 of doc 0",
+    "embedding": [
+     0.413748,
+     0.477064,
+     -0.348943,
+     0.093673,
+     -0.643451,
+     -0.479999,
+     -0.852954,
+     0.282348,
+     0.239902,
+     0.36808,
+     -0.035027,
+     0.443477,
+     0.918749,
+     -0.370546,
+     0.710073,
+     -0.953343
+    ],
+    "id": "doc0#chunk-1",
+    "metadata": {
+     "entity_type": "document",
+     "is_chunk": true,
+     "node_id": "doc0"
+    }
+   },
+   {
+    "document": "chunk 2 of doc 0",
+    "embedding": [
+     -0.73772,
+     -0.950555,
+     0.081285,
+     -0.606791,
+     0.358756,
+     0.068072,
+     -0.863832,
+     -0.465818,
+     0.749782,
+     0.494828,
+     0.168038,
+     -0.278112,
+     -0.875,
+     0.249831,
+     -0.363353,
+     0.977287
+    ],
+    "id": "doc0#chunk-2",
+    "metadata": {
+     "entity_type": "document",
+     "is_chunk": true,
+     "node_id": "doc0"
+    }
+   },
+   {
+    "document": "chunk 0 of doc 1",
+    "embedding": [
+     -0.406683,
+     -0.003402,
+     0.785272,
+     -0.536294,
+     -0.837816,
+     0.246554,
+     0.321423,
+     -0.148411,
+     0.358339,
+     -0.512154,
+     -0.353276,
+     -0.612219,
+     -0.20806,
+     0.515423,
+     -0.002911,
+     0.247816
+    ],
+    "id": "doc1#chunk-0",
+    "metadata": {
+     "entity_type": "document",
+     "is_chunk": true,
+     "node_id": "doc1"
+    }
+   },
+   {
+    "document": "chunk 1 of doc 1",
+    "embedding": [
+     0.483969,
+     0.388313,
+     0.79972,
+     -0.636044,
+     -0.445592,
+     0.528991,
+     -0.075952,
+     0.609045,
+     0.114102,
+     -0.277061,
+     0.518105,
+     0.109769,
+     -0.013681,
+     0.178601,
+     0.826559,
+     0.791499
+    ],
+    "id": "doc1#chunk-1",
+    "metadata": {
+     "entity_type": "document",
+     "is_chunk": true,
+     "node_id": "doc1"
+    }
+   },
+   {
+    "document": "chunk 2 of doc 1",
+    "embedding": [
+     0.726415,
+     -0.465146,
+     -0.758772,
+     0.91566,
+     -0.570541,
+     0.386956,
+     0.71686,
+     -0.119427,
+     -0.46288,
+     -0.857602,
+     -0.335518,
+     -0.104556,
+     0.916615,
+     0.557458,
+     -0.314412,
+     -0.234099
+    ],
+    "id": "doc1#chunk-2",
+    "metadata": {
+     "entity_type": "document",
+     "is_chunk": true,
+     "node_id": "doc1"
+    }
+   },
+   {
+    "document": "chunk 0 of doc 2",
+    "embedding": [
+     0.411456,
+     -0.165731,
+     0.778558,
+     0.365868,
+     0.735266,
+     0.467717,
+     0.390344,
+     0.289306,
+     -0.336896,
+     0.545429,
+     0.835797,
+     -0.779794,
+     -0.781019,
+     -0.823338,
+     -0.170647,
+     -0.754603
+    ],
+    "id": "doc2#chunk-0",
+    "metadata": {
+     "entity_type": "document",
+     "is_chunk": true,
+     "node_id": "doc2"
+    }
+   },
+   {
+    "document": "chunk 1 of doc 2",
+    "embedding": [
+     -0.305911,
+     -0.243549,
+     -0.448028,
+     0.814963,
+     -0.391312,
+     -0.319095,
+     -0.131469,
+     0.515116,
+     -0.001501,
+     -0.049478,
+     -0.095081,
+     -0.422614,
+     -0.960104,
+     -0.520987,
+     -0.566531,
+     -0.644311
+    ],
+    "id": "doc2#chunk-1",
+    "metadata": {
+     "entity_type": "document",
+     "is_chunk": true,
+     "node_id": "doc2"
+    }
+   },
+   {
+    "document": "chunk 2 of doc 2",
+    "embedding": [
+     0.008857,
+     -0.024391,
+     -0.040392,
+     0.315079,
+     0.049183,
+     0.03178,
+     0.270296,
+     -0.581342,
+     -0.521273,
+     -0.615631,
+     0.11861,
+     -0.880381,
+     0.417128,
+     -0.294167,
+     0.970381,
+     -0.563805
+    ],
+    "id": "doc2#chunk-2",
+    "metadata": {
+     "entity_type": "document",
+     "is_chunk": true,
+     "node_id": "doc2"
+    }
+   }
+  ],
+  "queries": [
+   [
+    0.808841,
+    0.134725,
+    0.471595,
+    0.845244,
+    0.133894,
+    -0.105906,
+    0.30907,
+    0.922793,
+    -0.747288,
+    -0.16233,
+    0.641336,
+    0.187585,
+    0.018927,
+    -0.886654,
+    -0.73188,
+    0.919108
+   ],
+   [
+    0.099733,
+    -0.680081,
+    -0.228267,
+    0.777778,
+    0.426295,
+    0.187486,
+    -0.178186,
+    0.788006,
+    -0.389821,
+    0.043299,
+    -0.97756,
+    0.712481,
+    0.815554,
+    0.973851,
+    -0.346136,
+    -0.370437
+   ],
+   [
+    0.313069,
+    0.68771,
+    0.189466,
+    0.892103,
+    -0.197223,
+    -0.27181,
+    -0.053276,
+    -0.324993,
+    -0.793003,
+    -0.700322,
+    -0.599892,
+    -0.460713,
+    0.1965,
+    -0.054714,
+    -0.025792,
+    0.203009
+   ],
+   [
+    0.128543,
+    0.171273,
+    -0.942752,
+    0.858515,
+    -0.046278,
+    -0.111578,
+    0.836545,
+    0.041584,
+    0.794813,
+    -0.261767,
+    -0.098149,
+    0.449519,
+    0.11576,
+    -0.889404,
+    -0.407254,
+    0.150368
+   ],
+   [
+    0.439516,
+    0.642032,
+    -0.727661,
+    -0.370864,
+    0.755671,
+    -0.36494,
+    0.279487,
+    0.750395,
+    0.928222,
+    -0.119172,
+    0.169,
+    0.843433,
+    0.072493,
+    -0.257044,
+    -0.409262,
+    -0.11052
+   ]
+  ]
+ }
+}

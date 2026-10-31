@@ -2691,7 +2691,7 @@ wheels = [
 
 [[package]]
 name = "vibe-cognition"
-version = "0.46.0"
+version = "0.47.0"
 source = { editable = "." }
 dependencies = [
     { name = "chromadb" },
@@ -2699,6 +2699,7 @@ dependencies = [
     { name = "fastmcp" },
     { name = "mcp" },
     { name = "networkx" },
+    { name = "numpy" },
     { name = "ollama" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
@@ -2726,6 +2727,7 @@ requires-dist = [
     { name = "fastmcp", specifier = ">=2.0.0,<4" },
     { name = "mcp", specifier = "<2" },
     { name = "networkx", specifier = ">=3.0" },
+    { name = "numpy", specifier = ">=1.26" },
     { name = "ollama", specifier = ">=0.3.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.0.0" },

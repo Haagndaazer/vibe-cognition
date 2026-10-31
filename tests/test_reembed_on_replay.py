@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from vibe_cognition.cognition import CognitionStorage
 from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
-from vibe_cognition.embeddings import ChromaDBStorage
+from vibe_cognition.embeddings import VectorStore
 from vibe_cognition.tools.cognition_tools import _reembed_replayed_nodes
 
 
@@ -36,8 +36,8 @@ def _node(node_id: str, ntype: CognitionNodeType = CognitionNodeType.DECISION,
     )
 
 
-def _make_chroma(tmp_path) -> ChromaDBStorage:
-    return ChromaDBStorage(
+def _make_chroma(tmp_path) -> VectorStore:
+    return VectorStore(
         persist_directory=tmp_path / "chroma",
         embedding_model="m",
         embedding_dimensions=_Spy.DIM,
@@ -143,7 +143,7 @@ class TestReembedReplayedNodes:
         embedded = _reembed_replayed_nodes(store_a, chroma, spy)  # type: ignore[arg-type]
 
         assert embedded == 1
-        ids = chroma._collection.get()["ids"]
+        ids = chroma.all_ids()
         assert "wf1" in ids
         assert any(i.startswith("wf1#chunk-") for i in ids), (
             f"expected chunk vectors from _embed_workflow, got: {ids}"

@@ -7,6 +7,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-10-31
+
+### Changed
+- **The vector store is SQLite + numpy, replacing ChromaDB.** chromadb 1.5.5 crashed
+  natively (`0xC0000005`, no traceback, Claude Code shows only `CONNECTION_CLOSED`) when it
+  replayed unsaved writes onto a saved index that held deleted entries and was nearly
+  full. That took Ling Lang Teacher's server down at every start, twice in a month, and
+  the crash happens inside a single process, so no locking scheme could prevent it. The
+  new store (`embeddings/vector_store.py`) does exact cosine search over an in-memory
+  matrix that reloads whenever any session commits. Its results match ChromaDB's on a
+  recorded fixture (same ids, order, scores to 2e-5, metadata and filters), and many
+  sessions can share one store through SQLite's own locking.
+- **A damaged index never stops the server and repairs itself.** Every store error is
+  an ordinary Python error now. Damage that a second, independent check confirms marks
+  that generation (`vectors-<n>.corrupt`) and starts a fresh `vectors-<n+1>.sqlite3`,
+  rebuilt from the journal; nothing is ever renamed or deleted, so Windows file locks
+  cannot block it. Peers follow on their next call and re-sync. The next session start
+  says once that the index was rebuilt. Lock contention, a full disk and I/O errors are
+  never treated as damage. A write the store could not take is counted
+  (`vector_store.failed_writes`) and filled by a re-sync once the store works again, and
+  a sync never reads an unusable store as an empty one. At most 3 rebuilds per process and per day; past that the
+  index stays off with a reason pointing at the location (network or sync folder).
+- **Searches never pass off a broken index as "no history".** `cognition_search` (home
+  and every `project_notes` entry) returns `semantic_unavailable: true` with reason
+  `vector-store-unavailable` (plus `detail`) or `newer-schema` when the index cannot
+  serve the call, and `index_syncing: true` while it is being (re)built.
+- **Faster start-up.** The server no longer imports chromadb, which cuts module import
+  from about 3.5 s to 2.7 s on a warm Windows machine, so it answers Claude Code sooner.
+- **Location.** `<plugin data>/vectors/<project>-<hash>/`, falling back to
+  `.cognition/local/vectors/` (already ignored) when no plugin data dir exists.
+  `VIBE_VECTORS_DIR` replaces `VIBE_CHROMADB_DIR`, which is now ignored with a warning.
+- **Tool surface.** `get_status` gains `vectors_path` (the database file) and
+  `vector_store` (`state`, `generation`, `path`, `reason`, `quarantined`); `chromadb_path`
+  stays as a deprecated alias naming the store's directory. `cognition_load_project`
+  gains `index_reason` when a project has no usable index. The dashboard's search and
+  stats report `index_syncing`.
+
+### Upgrade notes
+- **The first session in each project rebuilds its search index from the journal.**
+  Measured on a copy of a 4,800-node graph: about 4.5 vectors a second for one session
+  and 6.4 for two sessions sharing the work, so roughly 20 minutes for a graph that size
+  and a few minutes for most. Recording, searching and every graph tool work at once;
+  search results are partial and carry `index_syncing: true` until it finishes.
+- A foreign project loaded with `cognition_load_project` is structural-only until a
+  session has been opened in that project on this version (`index_reason` says so).
+- The old `chromadb/` folders are left untouched and are no longer read; a downgrade
+  to 0.46.x still finds them. Delete them once every session on the machine runs 0.47.0
+  or later. `chromadb` stays installed for this release only, so the update never has to
+  remove a DLL an older open session holds.
+- Changing the embedding model or its dimension now needs the index deleted to rebuild
+  (search reports `model-mismatch` / `dim-mismatch` until then); see the README.
+
+### Fixed
+- **A search right after a fresh index started no longer hangs.** Every node replayed at
+  start-up was queued for the search-time re-embed, so on a new (or rebuilt) store the
+  first search tried to embed the whole graph before answering. The drain now waits
+  while the index is syncing and embeds at most 10 nodes per search, handing the rest to
+  the background.
+- Tests no longer leak empty stores into the real plugin data dir: every test, and every
+  subprocess a test starts, now inherits an isolated `VIBE_DATA_DIR`.
+- A document's or workflow's chunk set is replaced in one transaction, so two sessions
+  re-embedding the same node can no longer interleave a half set.
+- With the embedding model or dimension changed in config, the start-up sync no longer
+  re-embeds everything only to have every write rejected; it is skipped with a warning.
+
 ## [0.46.0] - 2026-10-28
 
 ### Fixed

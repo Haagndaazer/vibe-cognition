@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 
 from vibe_cognition.cognition import CognitionStorage
-from vibe_cognition.embeddings import ChromaDBStorage
+from vibe_cognition.embeddings import VectorStore
 from vibe_cognition.server import _sync_cognition_embeddings
 
 
@@ -35,8 +35,8 @@ class _Spy:
         return [0.1] * self.DIM
 
 
-def _make_chroma(tmp_path) -> ChromaDBStorage:
-    return ChromaDBStorage(
+def _make_chroma(tmp_path) -> VectorStore:
+    return VectorStore(
         persist_directory=tmp_path / "chroma",
         embedding_model="m",
         embedding_dimensions=_Spy.DIM,
@@ -90,7 +90,7 @@ def test_sync_skips_unknown_type_node_without_aborting_the_batch(tmp_path):
     # Must not raise.
     result = _sync_cognition_embeddings(storage, chroma, spy)  # type: ignore[arg-type]
 
-    embedded_ids = set(chroma._collection.get()["ids"])
+    embedded_ids = set(chroma.all_ids())
     assert "before1" in embedded_ids
     assert "after1" in embedded_ids, (
         "a node AFTER the unknown-type node in iteration order was never embedded -- "

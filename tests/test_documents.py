@@ -23,7 +23,7 @@ from vibe_cognition.cognition.models import (
 )
 from vibe_cognition.cognition.operations import delete_cognition_node
 from vibe_cognition.cognition.storage import CognitionStorage
-from vibe_cognition.embeddings import ChromaDBStorage, EmbeddingGenerator
+from vibe_cognition.embeddings import EmbeddingGenerator, VectorStore
 from vibe_cognition.server import _reconcile_orphan_embeddings, _sync_cognition_embeddings
 from vibe_cognition.tools.cognition_tools import (
     _format_search_results,
@@ -273,17 +273,17 @@ def test_sync_backfills_document_node_and_chunks(tmp_path):
     """_sync embeds documents that were stored without embeddings (deferred): node
     vector + sidecar chunks. Idempotent — a second sync does ZERO embedding work."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     gen_obj = _FixedGen([0.1, 0.2, 0.3])
     gen = cast(EmbeddingGenerator, gen_obj)
     text = " ".join(str(i) for i in range(1500))  # multi-chunk
     res = _store_document(s, title="d", document_text=text, context="", author="t",
                           content_text=text)  # no embedding deps -> deferred
-    assert embed._collection.get()["ids"] == [], "precondition: deferred (no vectors yet)"
+    assert embed.all_ids() == [], "precondition: deferred (no vectors yet)"
     nid = res["node_id"]
 
     _sync_cognition_embeddings(s, embed, gen)
-    ids = set(embed._collection.get()["ids"])
+    ids = set(embed.all_ids())
     assert nid in ids, "document node not backfilled by sync"
     assert any(i.startswith(f"{nid}#chunk-") for i in ids), "document chunks not backfilled"
 
@@ -296,7 +296,7 @@ def test_sync_does_not_re_embed_empty_text_document(tmp_path):
     """A4 loop guard: a text-less document (empty sidecar) is fully synced after its
     NODE vector lands — no chunks, and NOT re-embedded every boot."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     gen_obj = _FixedGen([0.1, 0.2, 0.3])
     gen = cast(EmbeddingGenerator, gen_obj)
     res = _store_document(s, title="empty", document_text="", context="", author="t",
@@ -304,7 +304,7 @@ def test_sync_does_not_re_embed_empty_text_document(tmp_path):
     nid = res["node_id"]
 
     _sync_cognition_embeddings(s, embed, gen)
-    ids = set(embed._collection.get()["ids"])
+    ids = set(embed.all_ids())
     assert nid in ids, "empty-text document node not embedded"
     assert not any(i.startswith(f"{nid}#chunk-") for i in ids), "empty-text doc should have no chunks"
 
@@ -667,7 +667,7 @@ def test_reconcile_orphan_sweep_removes_only_graph_absent(tmp_path):
     graph (incl. #chunk-*), KEEPS present ones (the ordering guard — a present node
     is never swept), and is a no-op on an empty collection (the ids=[] raise guard)."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
 
     # No-op safe on an empty collection (the all_ids guard; never raises).
     _reconcile_orphan_embeddings(s, embed)
@@ -680,7 +680,7 @@ def test_reconcile_orphan_sweep_removes_only_graph_absent(tmp_path):
 
     _reconcile_orphan_embeddings(s, embed)
 
-    remaining = set(embed._collection.get()["ids"])
+    remaining = set(embed.all_ids())
     assert "ghost002" not in remaining, "orphan vector not swept"
     assert remaining == {"live0002", "live0002#chunk-0"}, (
         f"sweep removed a present node or its chunk (ordering guard failed): {remaining}"
@@ -730,7 +730,7 @@ def test_all_artifact_classes_share_one_delete_path(tmp_path):
     (sidecar+blob via documents_with_sha; vectors via node_id). Deleting the sole
     node leaves NO managed artifact of any class behind."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     res = _store_document(s, title="d", document_text="extracted", context="", author="t",
                           content_text="bytes", store_copy=True, local_only=True)
     sha = _meta_sha(s, res["node_id"])
@@ -742,13 +742,13 @@ def test_all_artifact_classes_share_one_delete_path(tmp_path):
                            {"node_id": res["node_id"], "entity_type": "document", "is_chunk": True},
                            document="chunk body")
     assert sidecar.exists() and bp.exists()
-    assert set(embed._collection.get()["ids"]) == {res["node_id"], f"{res['node_id']}#chunk-0"}
+    assert set(embed.all_ids()) == {res["node_id"], f"{res['node_id']}#chunk-0"}
 
     delete_cognition_node(s, embed, res["node_id"])
     assert not sidecar.exists(), "sidecar (artifact class 1) not reclaimed"
     assert not bp.exists(), "blob (artifact class 2) not reclaimed"
     assert not gitignore_has_entry(s.cognition_dir, res["blob_path"]), ".gitignore line not reclaimed"
-    assert embed._collection.get()["ids"] == [], "node/chunk vectors (artifact class 3) not reclaimed"
+    assert embed.all_ids() == [], "node/chunk vectors (artifact class 3) not reclaimed"
 
 
 class _FixedGen:
@@ -778,7 +778,7 @@ def test_n1_cross_process_ghost_filtered_end_to_end(tmp_path):
     cog = tmp_path / "cog"
     vec = [0.11, 0.22, 0.33]
     gen = _FixedGen(vec)
-    embed_b = ChromaDBStorage(persist_directory=tmp_path / "chromaB")
+    embed_b = VectorStore(persist_directory=tmp_path / "chromaB")
 
     # A records a normal node into the shared journal.
     stor_a = CognitionStorage(cog)
@@ -808,36 +808,35 @@ def test_store_document_embeds_node_and_chunks(tmp_path):
     vector (no is_chunk) + N chunk vectors (is_chunk True, node_id set, chunk text
     stored). The node-vs-chunk marker is the count-split discriminator (A1)."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     gen = cast(EmbeddingGenerator, _FixedGen([0.1, 0.2, 0.3]))
     text = " ".join(str(i) for i in range(2500))  # > 1000 words -> multiple chunks
     res = _store_document(s, title="big doc", document_text=text, context="", author="t",
                           content_text=text, embedding_storage=embed, generator=gen)
     nid = res["node_id"]
-    ids = set(embed._collection.get()["ids"])
+    ids = set(embed.all_ids())
     assert nid in ids, "document node vector not embedded"
     chunk_ids = {i for i in ids if i.startswith(f"{nid}#chunk-")}
     assert len(chunk_ids) >= 2, f"sidecar not chunked into multiple chunks: {chunk_ids}"
 
-    node_meta = (embed._collection.get(ids=[nid], include=["metadatas"])["metadatas"] or [{}])[0]
+    node_meta = embed.get_existing([nid])[nid]
     assert "is_chunk" not in node_meta, "node vector wrongly marked is_chunk"
-    chunk = embed._collection.get(ids=[f"{nid}#chunk-0"], include=["metadatas", "documents"])
-    cmeta = (chunk["metadatas"] or [{}])[0]
-    cdocs = chunk["documents"] or [""]
+    cmeta = embed.get_existing([f"{nid}#chunk-0"])[f"{nid}#chunk-0"]
     assert cmeta["is_chunk"] is True, "chunk missing is_chunk marker (count-split breaks)"
     assert cmeta["node_id"] == nid
-    assert cdocs[0], "chunk text not stored as a Chroma document"
+    hits = [h for h in embed.vector_search([0.1, 0.2, 0.3], limit=50) if h["_id"] == f"{nid}#chunk-0"]
+    assert hits and hits[0].get("matched_text"), "chunk text not stored with the chunk vector"
 
 
 def test_store_document_defers_embedding_when_deps_missing(tmp_path):
     """The skip-if-None guard / deferred path: with a generator absent, the store
     writes the node+sidecar but NO vectors (the next sync backfills) — never errors."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     res = _store_document(s, title="d", document_text="body text", context="", author="t",
                           content_text="body text", embedding_storage=embed, generator=None)
     assert s.has_node(res["node_id"]), "node not stored"
-    assert embed._collection.get()["ids"] == [], "embedded despite missing generator (should defer)"
+    assert embed.all_ids() == [], "embedded despite missing generator (should defer)"
 
 
 def test_copy_blob_refcount_is_per_blob_path_not_per_sha(tmp_path):
@@ -887,7 +886,7 @@ def test_search_dedupes_chunks_to_one_node_with_excerpt(tmp_path):
     """Two chunks of one document + another node → the document comes back ONCE
     (best chunk) keyed on the NODE id, with matched_excerpt; the other node too."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_node("docaaaa1", CognitionNodeType.DOCUMENT, summary="doc A"))
     s.add_node(_node("decbbbb1", CognitionNodeType.DECISION, summary="decision B"))
     q = [1.0, 0.0, 0.0]
@@ -915,7 +914,7 @@ def test_adaptive_overquery_returns_distinct_nodes_past_starve_boundary(tmp_path
     would see only that doc's chunks and starve the second node (recall miss). The
     prior 8-chunk test passed by luck (8 < 10); this exercises the starve threshold."""
     s = CognitionStorage(tmp_path / "cog")
-    embed = ChromaDBStorage(persist_directory=tmp_path / "chroma")
+    embed = VectorStore(persist_directory=tmp_path / "chroma")
     s.add_node(_node("docaaaa2", CognitionNodeType.DOCUMENT, summary="doc A"))
     s.add_node(_node("decbbbb2", CognitionNodeType.DECISION, summary="decision B"))
     q = [1.0, 0.0, 0.0]
