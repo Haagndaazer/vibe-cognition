@@ -987,6 +987,23 @@ def _index_syncing(lc: dict[str, Any]) -> bool:
                 and not lc.get("embedding_error"))
 
 
+_INDEX_COVERAGE_SLACK = 0.02
+
+
+def _index_coverage(storage: CognitionStorage, store: Any) -> dict[str, Any] | None:
+    """``{index_incomplete, indexed_nodes, graph_nodes}`` when a project's index is missing
+    more than 2% of its graph nodes (and more than one); None when complete or uncountable."""
+    if store is None:
+        return None
+    nodes = storage.get_statistics().get("nodes", 0)
+    if not isinstance(nodes, int) or nodes <= 0:
+        return None
+    indexed = store.count_documents({"is_chunk": False})
+    if _store_last_error(store) or nodes - indexed <= max(1, nodes * _INDEX_COVERAGE_SLACK):
+        return None
+    return {"index_incomplete": True, "indexed_nodes": indexed, "graph_nodes": nodes}
+
+
 def _reembed_replayed_nodes(
     storage: CognitionStorage,
     embedding_storage: VectorStore,
@@ -2966,6 +2983,10 @@ def _load_project_core(lc: dict[str, Any], path: str) -> dict[str, Any]:
         result["warning"] = warning
     if index_reason:
         result["index_reason"] = index_reason
+    coverage = _index_coverage(b_storage, b_embeddings)
+    if coverage:
+        result["index_incomplete"] = True
+        result["indexed_nodes"] = coverage["indexed_nodes"]
     return result
 
 
@@ -4381,6 +4402,14 @@ def register_cognition_tools(mcp) -> None:
                 "<tag>": {semantic_unavailable: true, reason: "<reason>",
                           detail?: str}
                           # or {confidence: "degraded (no model provenance for <tag>)"}
+                          # and/or, for a loaded (non-home) project whose index
+                          # is missing more than 2% of its nodes (and more than
+                          # one): {index_incomplete: true,
+                          # indexed_nodes: int, graph_nodes: int} -- its results
+                          # are partial (exhaustive is false). The index is still
+                          # being built by a session in that project, or the build
+                          # stopped when that session closed; it resumes the next
+                          # time a session opens there.
               },
               semantic_unavailable: true,  # project=None (home) only; present
               reason: "<reason>",          # when home's index cannot serve this
@@ -4570,10 +4599,15 @@ def register_cognition_tools(mcp) -> None:
             total_found += search["total_found"]
             exhaustive = exhaustive and search["exhaustive"]
             excluded_count += search["excluded_count"]
+            note: dict[str, Any] = {}
             if entry.model_guard == "unknown":
-                project_notes[tag] = {
-                    "confidence": "degraded — no model provenance in collection metadata (pre-stamp)"
-                }
+                note["confidence"] = "degraded — no model provenance in collection metadata (pre-stamp)"
+            coverage = None if entry.pinned else _index_coverage(entry.storage, entry.embeddings)
+            if coverage:
+                note.update(coverage)
+                exhaustive = False
+            if note:
+                project_notes[tag] = note
 
         # Sort merged results by weighted_score desc (WP-TC9: THE safety-critical
         # edit for multi-project weighting -- sorting by raw `score` here would
@@ -5682,12 +5716,18 @@ def register_cognition_tools(mcp) -> None:
 
         Returns:
             On success: {tag, path, node_count, vector_count, model_guard, warning?,
-            index_reason?}
+            index_reason?, index_incomplete?, indexed_nodes?}
             vector_count is "n/a" when no vector index exists for the project.
             index_reason is present only when no usable index was found: either the
             project has never been opened on a version that builds this store (open a
             session in that project once to build it), or its store could not be
             opened (see the server log).
+            index_incomplete (true) and indexed_nodes are present only when the index
+            exists but is missing more than 2% of node_count (and more than one node):
+            a session in that project is
+            still building it, or stopped before finishing (it resumes the next time
+            a session opens there). Its search results are partial until then, and
+            cognition_search says so in project_notes[tag].
 
             On failure: {"error": "..."} — invalid path, path is already loaded
             as home, no journal file (.cognition/journal.jsonl or

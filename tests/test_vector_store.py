@@ -1036,3 +1036,22 @@ def test_a_search_never_embeds_the_whole_graph_inline(tmp_path):
     not_embedded = {f"node{i}" for i in range(40)} - set(store.all_ids())
     assert len(not_embedded) == 40 - _INLINE_REEMBED_CAP
     assert not_embedded <= set(cognition.pop_replayed_node_ids()), "unembedded nodes must stay queued"
+
+
+def test_column_filter_counts_use_sql_and_match_the_metadata_path(tmp_path):
+    store = _store(tmp_path)
+    for i in range(6):
+        meta = {"entity_type": "decision" if i % 2 else "fail", "author": "a" if i < 2 else "b"}
+        store.upsert_embedding(f"n{i}", [0.1, 0.2, 0.3], meta)
+    for c in range(3):
+        store.upsert_embedding(f"d#chunk-{c}", [0.1, 0.2, 0.3],
+                               {"node_id": "d", "is_chunk": True, "entity_type": "document"})
+    expected = [
+        ({"is_chunk": False}, 6), ({"is_chunk": True}, 3), ({"entity_type": "decision"}, 3),
+        ({"node_id": "d"}, 3), ({"is_chunk": True, "node_id": "d"}, 3),
+        ({"is_chunk": False, "entity_type": "fail"}, 3), ({"node_id": "nope"}, 0),
+        ({"is_chunk": False, "author": "a"}, 2), ({"entity_type": "fail", "author": "b"}, 2),
+    ]
+    for flt, count in expected:
+        assert store.count_documents(flt) == count, flt
+    store.close()

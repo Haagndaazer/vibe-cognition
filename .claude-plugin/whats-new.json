@@ -1,4 +1,8 @@
 {
+  "0.47.1": [
+    "Searching another loaded project now says when its index is still being built (project_notes index_incomplete, exhaustive false) instead of returning partial results silently.",
+    "The standalone dashboard command (vibe-cognition-dashboard) starts again; it had crashed on a circular import since 0.28. The in-session dashboard was never affected."
+  ],
   "0.47.0": [
     "The search index is now SQLite instead of ChromaDB, whose native crash took Ling Lang's server down at start-up. A damaged index is set aside and rebuilt from the journal; it never stops the server.",
     "The first session in each project rebuilds its index from the journal (about 20 minutes for a 5,000-node graph). Every tool works meanwhile; search results say index_syncing.",

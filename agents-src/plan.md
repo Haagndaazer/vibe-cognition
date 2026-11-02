@@ -117,7 +117,7 @@ Sometimes a sibling project on this machine has already solved a closely related
 
 5. **Unload unconditionally before returning.** Call `cognition_unload_project(<tag>)` for every graph you loaded — even if the plan is incomplete or you hit an error. Leave the registry as you found it.
 
-**Degraded search:** a foreign graph may be guarded off (model/dim mismatch) — `project_notes` will say so. Structural reads still work and "no hits" does not mean "no history."
+**Degraded search:** a foreign graph may be guarded off (model/dim mismatch, or no index built yet), or its index may still be building (`index_incomplete`: its hits are partial) — `project_notes` will say so. Structural reads still work and "no hits" does not mean "no history."
 
 === REQUIRED OUTPUT ===
 

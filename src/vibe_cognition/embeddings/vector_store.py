@@ -168,6 +168,23 @@ def _check_filter(filter: dict[str, Any] | None) -> None:
             raise ValueError(f"unsupported filter value for {key!r}: {value!r}")
 
 
+def _filter_sql(filter: dict[str, Any]) -> tuple[str, list[Any], dict[str, Any]]:
+    """(WHERE clause, params, keys left to match against the metadata JSON)."""
+    clauses: list[str] = []
+    params: list[Any] = []
+    extra: dict[str, Any] = {}
+    for key, value in filter.items():
+        if key == "is_chunk":
+            clauses.append("is_chunk = 1" if value is True else "is_chunk != 1")
+        elif key in _COLUMN_FILTERS:
+            clauses.append(f"{key} = ?")
+            params.append(value)
+        else:
+            extra[key] = value
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    return where, params, extra
+
+
 def _batched(items: list[str]) -> Iterable[list[str]]:
     for start in range(0, len(items), _ID_BATCH):
         yield items[start:start + _ID_BATCH]
@@ -824,23 +841,15 @@ class VectorStore:
         def op(conn: sqlite3.Connection) -> int:
             if not filter:
                 return int(conn.execute("SELECT count(*) FROM vectors").fetchone()[0])
+            where, params, extra = _filter_sql(filter)
+            if not extra:
+                return int(conn.execute(f"SELECT count(*) FROM vectors{where}", params).fetchone()[0])
             return len(self._select_ids(conn, filter))
 
         return int(self._run(op, 0, "count"))
 
     def _select_ids(self, conn: sqlite3.Connection, filter: dict[str, Any]) -> list[str]:
-        clauses: list[str] = []
-        params: list[Any] = []
-        extra: dict[str, Any] = {}
-        for key, value in filter.items():
-            if key == "is_chunk":
-                clauses.append("is_chunk = 1" if value is True else "is_chunk != 1")
-            elif key in _COLUMN_FILTERS:
-                clauses.append(f"{key} = ?")
-                params.append(value)
-            else:
-                extra[key] = value
-        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        where, params, extra = _filter_sql(filter)
         rows = conn.execute(f"SELECT id, metadata FROM vectors{where}", params).fetchall()
         if not extra:
             return [r[0] for r in rows]

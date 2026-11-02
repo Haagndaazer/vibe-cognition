@@ -753,3 +753,102 @@ def test_replay_drain_runs_in_multiproject_path_for_home(tmp_path):
         "replayed node must be embedded via the multi-project (project=*) path too"
     )
     lc["cognition_embedding_storage"].close()
+
+
+# ── 0.47.1: a loaded project's half-built index is reported, not silently partial ──
+
+
+def _foreign_with_index(tmp_path, name: str, nodes: int, indexed: int):
+    b_path = tmp_path / name
+    b_storage = CognitionStorage(b_path / ".cognition")
+    for i in range(nodes):
+        b_storage.add_node(_node(f"{name}-n{i}", summary=f"{name} decision {i}"))
+    store = VectorStore(
+        persist_directory=b_path / ".cognition" / "local" / "vectors",
+        embedding_model="model-a",
+        embedding_dimensions=3,
+    )
+    for i in range(indexed):
+        store.upsert_embedding(f"{name}-n{i}", [0.1, 0.2, 0.3 + i / 100], {"entity_type": "decision"})
+    store.upsert_embedding(f"{name}-doc#chunk-0", [0.1, 0.2, 0.3], {"node_id": f"{name}-n0", "is_chunk": True})
+    store.close()
+    return b_path
+
+
+def _close_all(lc):
+    for entry in list(lc["loaded_projects"]._entries.values()):
+        if entry.embeddings is not None:
+            entry.embeddings.close()
+
+
+def test_partial_foreign_index_is_flagged_in_load_and_search(tmp_path):
+    """Upgrade-day finding: every project rebuilds its index on 0.47, and a session
+    that closes mid-rebuild leaves it partial. Searching that project from another
+    one returned partial (even zero) results marked exhaustive, with no signal."""
+    lc = _make_lc_with_home_guard(tmp_path)
+    b_path = _foreign_with_index(tmp_path, "B", nodes=10, indexed=3)
+
+    loaded = _load_project_core(lc, str(b_path))
+    assert loaded["model_guard"] == "match", loaded
+    assert loaded["index_incomplete"] is True
+    assert loaded["indexed_nodes"] == 3
+    assert loaded["node_count"] == 10
+
+    mock = _MockMcp()
+    register_cognition_tools(mock)
+    result = mock.tools["cognition_search"](_make_ctx(lc), query="alpha", project="*")
+    assert "error" not in result, result
+    assert result["project_notes"]["B"] == {"index_incomplete": True, "indexed_nodes": 3, "graph_nodes": 10}
+    assert result["exhaustive"] is False
+    assert {r["project"] for r in result["results"]} == {"B"}
+    _close_all(lc)
+
+
+def test_complete_foreign_index_gets_no_note(tmp_path):
+    lc = _make_lc_with_home_guard(tmp_path)
+    b_path = _foreign_with_index(tmp_path, "B", nodes=10, indexed=10)
+
+    loaded = _load_project_core(lc, str(b_path))
+    assert "index_incomplete" not in loaded and "indexed_nodes" not in loaded, loaded
+
+    mock = _MockMcp()
+    register_cognition_tools(mock)
+    result = mock.tools["cognition_search"](_make_ctx(lc), query="alpha", project="B")
+    assert "project_notes" not in result, result
+    assert result["count"] > 0
+    _close_all(lc)
+
+
+def test_partial_index_note_keeps_the_provenance_caveat(tmp_path):
+    lc = _make_lc_with_home_guard(tmp_path)
+    b_path = _foreign_with_index(tmp_path, "B", nodes=10, indexed=2)
+    _load_project_core(lc, str(b_path))
+    lc["loaded_projects"].resolve_tag("B").model_guard = "unknown"
+
+    mock = _MockMcp()
+    register_cognition_tools(mock)
+    result = mock.tools["cognition_search"](_make_ctx(lc), query="alpha", project="B")
+    note = result["project_notes"]["B"]
+    assert note["index_incomplete"] is True and note["indexed_nodes"] == 2
+    assert note["confidence"].startswith("degraded")
+    _close_all(lc)
+
+
+def test_one_unembeddable_node_on_a_small_graph_is_not_flagged(tmp_path):
+    """Review finding: a node the sync can never embed (e.g. an unknown type from a newer
+    client) must not flag a small project's search as incomplete forever."""
+    from vibe_cognition.tools.cognition_tools import _index_coverage
+
+    lc = _make_lc_with_home_guard(tmp_path)
+    one_short = _load_project_core(lc, str(_foreign_with_index(tmp_path, "B", nodes=10, indexed=9)))
+    two_short = _load_project_core(lc, str(_foreign_with_index(tmp_path, "C", nodes=10, indexed=8)))
+    assert "index_incomplete" not in one_short, one_short
+    assert two_short["index_incomplete"] is True and two_short["indexed_nodes"] == 8
+
+    big = lc["loaded_projects"].resolve_tag("B")
+    big.storage = SimpleNamespace(get_statistics=lambda: {"nodes": 1000})
+    store = SimpleNamespace(count_documents=lambda flt: 980, last_error=lambda: None)
+    assert _index_coverage(big.storage, store) is None
+    store.count_documents = lambda flt: 979
+    assert _index_coverage(big.storage, store) == {"index_incomplete": True, "indexed_nodes": 979, "graph_nodes": 1000}
+    _close_all(lc)

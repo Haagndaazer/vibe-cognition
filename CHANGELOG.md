@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.1] - 2026-11-02
+
+### Fixed
+- **Searching another project no longer hides a half-built index.** Every project
+  rebuilds its search index once on 0.47 (about 20 minutes for a 5,000-node graph), and
+  a session that closes first leaves it partial until the next session there finishes
+  it. A search over a loaded project (`cognition_search` with `project=<tag>` or `"*"`)
+  returned its partial results, even none, marked exhaustive. When that project's index
+  is missing more than 2% of its nodes (and more than one), the search now adds
+  `project_notes[tag] = {index_incomplete: true, indexed_nodes, graph_nodes}` and sets
+  `exhaustive: false`, and `cognition_load_project` returns `index_incomplete` and
+  `indexed_nodes`. Found by searching Ling Lang Teacher from another project while its
+  first 0.47 rebuild ran. Home searches already said `index_syncing`. The Plan agent's
+  prompt now names both cases (no index yet, index still building) under degraded search.
+- **The standalone dashboard starts again.** `vibe-cognition-dashboard`
+  (`python -m vibe_cognition.dashboard.cli`), which the README and the dashboard skill
+  offer for use outside a session, had crashed at import since 0.28 on a circular import
+  (dashboard, tools, dashboard). The dashboard package now loads the tools package
+  first. The in-session `cognition_dashboard` tool was never affected.
+- `count_documents` counts column-only filters (`is_chunk`, `entity_type`, `node_id`)
+  in SQL instead of reading every row's metadata.
+
 ## [0.47.0] - 2026-10-31
 
 ### Changed
