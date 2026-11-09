@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.47.2] - 2026-11-09
+
+### Fixed
+- **A rebuild the embedding model cuts short is resumed, not abandoned.** When the
+  embedding sidecar stopped partway through an index rebuild (a slow request under
+  load, or the session closing), the sync logged a warning for every remaining node,
+  then the first workflow or document raised out of it. That ended the start-up thread
+  before the background maintenance loop started: the rest of the rebuild waited for the
+  next session start, and searches stopped saying `index_syncing` while the index was
+  partial. Now the pass stops with one log line and asks for a retry; the maintenance
+  loop always starts, wakes the sidecar supervisor before each retry, and backs off
+  (up to 10 minutes) while the model is down. While a pass is unfinished the loop also
+  retries on that timer, reopening an unusable store first, so an idle session still
+  finishes its index. A single workflow or document that cannot be embedded is skipped
+  like any other node; after five failures in a row the sync checks that the model
+  still answers before calling it down. A node that stops a model which had been
+  answering in the same pass, three times, is skipped for the rest of that process; a
+  plain outage blames no node. Found by stopping a live 0.47.1 rebuild of
+  linglang-x-vibememory halfway.
+- **"Syncing" means the index is still incomplete.** `get_status` keeps
+  `embedding_status: "syncing"` (and `embedding_sync_progress: null`), and searches keep
+  `index_syncing: true`, after a pass that stopped early, until a later pass finishes.
+  A store written by a newer plugin version, or a model or dimension mismatch, still
+  counts as finished, since no pass can complete there.
+
 ## [0.47.1] - 2026-11-02
 
 ### Fixed

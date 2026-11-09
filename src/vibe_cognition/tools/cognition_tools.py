@@ -4426,9 +4426,11 @@ def register_cognition_tools(mcp) -> None:
                                             # plugin version; update the plugin)
               index_syncing: true,         # present only while the index is
                                             # being (re)built from the journal
-                                            # (first start on a new store, or a
-                                            # rebuild after damage): results may
-                                            # be incomplete. Absent otherwise.
+                                            # (first start on a new store, a
+                                            # rebuild after damage, or a pass
+                                            # that stopped early and waits to
+                                            # resume): results may be
+                                            # incomplete. Absent otherwise.
               confidence: "degraded — no model provenance in collection metadata "
                           "(pre-stamp)"  # project=None only; present when home
                                          # ran search but provenance is unverified

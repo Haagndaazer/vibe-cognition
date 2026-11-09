@@ -34,7 +34,7 @@ from .cognition.loss_notices import VECTOR_STORE_REBUILT_KIND, replace_kind
 from .cognition.local_paths import write_path as local_write_path
 from .cognition.storage import REHYDRATE_FLAG_FILENAME
 from .embeddings import EmbeddingGenerator, VectorStore
-from .embeddings.vector_store import DIMENSION_MISMATCH, warm_numpy
+from .embeddings.vector_store import DIMENSION_MISMATCH, STATE_NEWER_SCHEMA, warm_numpy
 from .embeddings import sidecar_client
 from .instructions import SERVER_INSTRUCTIONS
 from . import lifecycle
@@ -201,6 +201,73 @@ class _SyncAbortedError(Exception):
     """The vector store stopped taking reads or writes partway through a sync pass."""
 
 
+class _EmbedderUnavailableError(_SyncAbortedError):
+    """The embedding model stopped answering partway through a sync pass."""
+
+
+_MAX_EMBED_FAILURES_IN_A_ROW = 5
+_MODEL_STOPPER_LIMIT = 3
+_model_stoppers: dict[str, int] = {}
+_model_suspects: set[str] = set()
+
+
+class _EmbedFailures:
+    """Skip a node that cannot be embedded; stop the pass when the model itself is gone.
+
+    A node is blamed for stopping the model only when the model had answered earlier
+    in the same pass; otherwise it is a suspect, embedded next time only after the
+    model answers a probe. A node blamed _MODEL_STOPPER_LIMIT times in this process is
+    skipped from then on, so one text that crashes the model cannot stop every pass,
+    while an outage blames nothing."""
+
+    def __init__(self, generator: EmbeddingGenerator) -> None:
+        self.generator = generator
+        self.in_a_row = 0
+        self.answered = False
+
+    def should_skip(self, node_id: str) -> bool:
+        if _model_stoppers.get(node_id, 0) >= _MODEL_STOPPER_LIMIT:
+            logger.warning(
+                f"Cognition embedding sync: skipped node {node_id!r}: the embedding model "
+                f"stopped {_MODEL_STOPPER_LIMIT} times while embedding it"
+            )
+            return True
+        suspect = node_id in _model_suspects or node_id in _model_stoppers
+        if suspect and not self.answered and not self._model_answers():
+            raise _EmbedderUnavailableError("the embedding model is unavailable")
+        return False
+
+    def succeeded(self, node_id: str) -> None:
+        self.in_a_row = 0
+        self.answered = True
+        _model_suspects.discard(node_id)
+        _model_stoppers.pop(node_id, None)
+
+    def failed(self, node_id: str, error: Exception) -> None:
+        if isinstance(error, sidecar_client.SidecarError):
+            if self.answered:
+                _model_stoppers[node_id] = _model_stoppers.get(node_id, 0) + 1
+            else:
+                _model_suspects.add(node_id)
+            raise _EmbedderUnavailableError(f"the embedding model is unavailable: {error}") from error
+        self.in_a_row += 1
+        logger.warning(f"Cognition embedding sync: skipped node {node_id!r}: {error}")
+        if self.in_a_row >= _MAX_EMBED_FAILURES_IN_A_ROW:
+            if not self._model_answers():
+                raise _EmbedderUnavailableError(
+                    f"the embedding model failed {self.in_a_row} nodes in a row: {error}"
+                ) from error
+            self.in_a_row = 0
+
+    def _model_answers(self) -> bool:
+        try:
+            answered = bool(self.generator.generate("ping"))
+        except Exception:  # noqa: BLE001 - any failure means the model is not answering
+            return False
+        self.answered = self.answered or answered
+        return answered
+
+
 def _check_store(embedding_storage: Any, during: str) -> None:
     error = _store_last_error(embedding_storage)
     if error:
@@ -223,25 +290,38 @@ def _sync_cognition_embeddings(
     cognition_storage: CognitionStorage,
     embedding_storage: VectorStore,
     generator: EmbeddingGenerator,
-) -> dict[str, int]:
+) -> dict[str, int] | None:
     """Embed every journal node the vector store is missing, unless the store cannot
     take writes: an unusable store is never read as an empty one (which would embed
-    the whole graph for nothing). A pass the store cuts short stops at once and asks
-    for a re-sync when the store next works."""
+    the whole graph for nothing).
+
+    Returns what the pass embedded, or None when it stopped early and asked for a
+    re-sync: when the store next works, or after a backoff when the embedding model
+    stopped answering. A store or model that will never take this pass (a newer
+    schema, a dimension mismatch) counts as finished, so nothing waits on it."""
     empty = {"nodes": 0, "workflows": 0, "documents": 0}
     if getattr(embedding_storage, "available", True) is False:
+        if getattr(embedding_storage, "state", None) == STATE_NEWER_SCHEMA:
+            logger.warning("Embedding sync skipped: the vector store was written by a newer plugin version")
+            return empty
         logger.warning("Embedding sync skipped: the vector store is not usable right now")
         _resync_when_store_recovers(embedding_storage)
-        return empty
+        return None
     try:
         return _sync_pass(cognition_storage, embedding_storage, generator)
+    except _EmbedderUnavailableError as e:
+        logger.warning(f"Embedding sync stopped early; a later pass resumes it ({e})")
+        request = getattr(embedding_storage, "request_resync", None)
+        if callable(request):
+            request()
+        return None
     except _SyncAbortedError as e:
         if str(e).split(": ", 1)[-1].startswith(DIMENSION_MISMATCH):
             logger.warning(f"Embedding sync stopped: {e}")
-        else:
-            logger.warning(f"Embedding sync stopped early; it resumes when the vector store recovers ({e})")
-            _resync_when_store_recovers(embedding_storage)
-        return empty
+            return empty
+        logger.warning(f"Embedding sync stopped early; it resumes when the vector store recovers ({e})")
+        _resync_when_store_recovers(embedding_storage)
+        return None
 
 
 def _sync_pass(
@@ -343,13 +423,14 @@ def _sync_pass(
         if not complete:
             docs_to_embed.append((n, sidecar or ""))
 
+    failures = _EmbedFailures(generator)
     if non_doc_missing:
         logger.info(f"Syncing {len(non_doc_missing)} cognition nodes to the vector store...")
         random.shuffle(non_doc_missing)
         for n in non_doc_missing:
             present = embedding_storage.existing_ids([n["id"]])
             _check_store(embedding_storage, "re-checking a node")
-            if present:
+            if present or failures.should_skip(n["id"]):
                 continue
             _check_writable(embedding_storage)
             # WP-TC6 (BACK-COMPAT): per-node tolerance for a type this process
@@ -362,15 +443,23 @@ def _sync_pass(
             try:
                 _embed_entity_node(embedding_storage, generator, _node_from_dict(n["id"], n))
             except Exception as e:  # noqa: BLE001 - a single node must never abort the batch
-                logger.warning(f"Cognition embedding sync: skipped node {n['id']!r}: {e}")
+                failures.failed(n["id"], e)
                 continue
+            failures.succeeded(n["id"])
             _check_store(embedding_storage, f"writing {n['id']}")
 
     if wf_to_embed:
         logger.info(f"Syncing {len(wf_to_embed)} workflow node(s) to the vector store...")
         for n in wf_to_embed:
+            if failures.should_skip(n["id"]):
+                continue
             _check_writable(embedding_storage)
-            _embed_workflow(embedding_storage, generator, _node_from_dict(n["id"], n))
+            try:
+                _embed_workflow(embedding_storage, generator, _node_from_dict(n["id"], n))
+            except Exception as e:  # noqa: BLE001 - a single node must never abort the batch
+                failures.failed(n["id"], e)
+                continue
+            failures.succeeded(n["id"])
             _check_store(embedding_storage, f"writing workflow {n['id']}")
 
     # Documents: node vector + sidecar chunks via the shared _embed_document (the same
@@ -378,12 +467,19 @@ def _sync_pass(
     # reference doc (teammate pulled the journal but not the sidecar) embeds the node
     # only (sidecar_text == "" -> zero chunks); not an error.
     for node, sidecar_text in docs_to_embed:
+        if failures.should_skip(node["id"]):
+            continue
         _check_writable(embedding_storage)
-        _embed_document(
-            embedding_storage, generator, node["id"],
-            node.get("summary", ""), node.get("detail", ""), sidecar_text,
-            from_agent=node.get("metadata", {}).get("from_agent"),
-        )
+        try:
+            _embed_document(
+                embedding_storage, generator, node["id"],
+                node.get("summary", ""), node.get("detail", ""), sidecar_text,
+                from_agent=node.get("metadata", {}).get("from_agent"),
+            )
+        except Exception as e:  # noqa: BLE001 - a single node must never abort the batch
+            failures.failed(node["id"], e)
+            continue
+        failures.succeeded(node["id"])
         _check_store(embedding_storage, f"writing document {node['id']}")
 
     if non_doc_missing or wf_to_embed or docs_to_embed:
@@ -442,7 +538,9 @@ def _maintain_vector_store(
     generator: EmbeddingGenerator,
 ) -> None:
     """Re-run the embedding sync when the store asks for it (a new generation, or
-    writes that failed and the store has recovered).
+    writes that failed and the store has recovered), and retry a pass that stopped
+    early on a timer, reopening an unusable store first, so an idle session still
+    finishes its index.
 
     Runs on the existing background thread after the start-up sync, so no thread
     is started after the handshake. Passes are at least _RESYNC_MIN_INTERVAL_S
@@ -454,7 +552,8 @@ def _maintain_vector_store(
     interval = _RESYNC_MIN_INTERVAL_S
     last_end: float | None = None
     while True:
-        resync.wait()
+        unfinished = not context["embedding_sync_done"].is_set()
+        resync.wait(timeout=interval if unfinished else None)
         if context.get("_vector_maintenance_stop"):
             return
         while last_end is not None and time.monotonic() < last_end + interval:
@@ -463,22 +562,32 @@ def _maintain_vector_store(
             time.sleep(min(1.0, last_end + interval - time.monotonic()))
         if context.get("_vector_maintenance_stop"):
             return
+        reopen = getattr(vector_store, "ensure_open", None)
+        if unfinished and callable(reopen) and getattr(vector_store, "available", True) is False:
+            with contextlib.suppress(Exception):
+                reopen()
         resync.clear()
         logger.info("Vector store asked for a re-sync; embedding what it is missing from the journal")
         context["embedding_sync_done"].clear()
-        aborted = False
+        supervisor = context.get("_sidecar_supervisor")
+        if supervisor is not None:
+            with contextlib.suppress(Exception):
+                supervisor.notify_demand()
+        progress = None
         try:
-            context["embedding_sync_progress"] = _sync_cognition_embeddings(
-                cognition_storage, vector_store, generator
-            )
-            aborted = bool(_store_last_error(vector_store)) or (
+            progress = _sync_cognition_embeddings(cognition_storage, vector_store, generator)
+            context["embedding_sync_progress"] = progress
+            aborted = progress is None or bool(_store_last_error(vector_store)) or (
                 getattr(vector_store, "can_write", lambda: True)() is False
             )
         except Exception as e:  # noqa: BLE001 - the loop must survive a failed pass
-            logger.warning(f"Vector store re-sync failed: {e}")
+            logger.warning(f"Vector store re-sync failed; it is retried later: {e}")
+            context["embedding_sync_progress"] = None
+            resync.set()
             aborted = True
         finally:
-            context["embedding_sync_done"].set()
+            if progress is not None:
+                context["embedding_sync_done"].set()
         interval = min(interval * 2, _RESYNC_MAX_INTERVAL_S) if aborted else _RESYNC_MIN_INTERVAL_S
         last_end = time.monotonic()
 
@@ -643,12 +752,25 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
         cognition_embedding_storage = context.get("cognition_embedding_storage")
 
         sync_allowed = context.get("home_model_guard") not in ("dim-mismatch", "model-mismatch")
+        resync = context.get("vector_resync")
+        will_maintain = bool(
+            resync is not None and cognition_storage and cognition_embedding_storage and sync_allowed
+        )
+        finished = True
         if cognition_storage and cognition_embedding_storage and embedding_generator:
             if sync_allowed:
                 logger.info("Syncing cognition embeddings...")
-                context["embedding_sync_progress"] = _sync_cognition_embeddings(
-                    cognition_storage, cognition_embedding_storage, embedding_generator
-                )
+                try:
+                    progress = _sync_cognition_embeddings(
+                        cognition_storage, cognition_embedding_storage, embedding_generator
+                    )
+                except Exception as e:  # noqa: BLE001 - a failed sync must not stop the maintenance loop
+                    logger.warning(f"Embedding sync failed; it is retried later: {e}")
+                    progress = None
+                    if resync is not None:
+                        resync.set()
+                context["embedding_sync_progress"] = progress
+                finished = progress is not None
             else:
                 logger.warning(
                     "Embedding sync skipped: the vector store was built with a different "
@@ -664,12 +786,13 @@ def _load_embeddings_and_sync(config: Settings, context: dict[str, Any]) -> None
         # un-embedded and search silently incomplete. embedding_sync_done is
         # a SEPARATE signal get_status uses to report "syncing" in that
         # window instead of a falsely-confident "ready"; it never gates tool
-        # availability.
-        context["embedding_sync_done"].set()
+        # availability. A pass that stopped early stays "syncing" until the
+        # maintenance loop finishes it.
+        if finished or not will_maintain:
+            context["embedding_sync_done"].set()
         _startup_timing.stamp_and_flush("bg_sync_done")
 
-        resync = context.get("vector_resync")
-        if resync is not None and cognition_storage and cognition_embedding_storage and sync_allowed:
+        if will_maintain:
             _maintain_vector_store(context, cognition_storage, cognition_embedding_storage, embedding_generator)
 
     except Exception as e:

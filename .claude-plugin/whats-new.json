@@ -1,4 +1,8 @@
 {
+  "0.47.2": [
+    "An index rebuild interrupted by the embedding model (a slow request, a session closing) now resumes in the background instead of waiting for the next session start.",
+    "Search and get_status keep saying the index is syncing until an interrupted rebuild actually finishes, and the server log gets one line instead of one per node."
+  ],
   "0.47.1": [
     "Searching another loaded project now says when its index is still being built (project_notes index_incomplete, exhaustive false) instead of returning partial results silently.",
     "The standalone dashboard command (vibe-cognition-dashboard) starts again; it had crashed on a circular import since 0.28. The in-session dashboard was never affected."

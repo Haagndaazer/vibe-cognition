@@ -209,15 +209,23 @@ def register_service_tools(mcp) -> None:
                                 model is loaded and tools are usable, but the
                                 historical backfill sync (teammate-pulled nodes
                                 not yet embedded) hasn't finished — search may be
-                                silently incomplete during this window. embedding_
+                                silently incomplete during this window. It stays
+                                "syncing" after a pass that stopped early (the
+                                vector store or the embedding model stopped
+                                answering) until a later pass finishes; passes are
+                                retried with a backoff of up to 10 minutes for as
+                                long as the store or model stays down. embedding_
                                 ready (tool availability) still fires BEFORE sync
                                 starts, unchanged; "syncing" is purely a visibility
                                 signal, not a new gate,
               embedding_sync_progress: null before the sync PASS finishes (covers
-                                both "still loading" and "still syncing"); once it
+                                both "still loading" and "still syncing") and after
+                                a pass that stopped early; once it
                                 finishes, {nodes, workflows, documents} counts of
-                                what THAT pass (re)embedded (0/0/0 if nothing was
-                                missing),
+                                what THAT pass attempted to (re)embed (0/0/0 if
+                                nothing was missing, or if no pass can run here: a
+                                store from a newer plugin version, or a model or
+                                dimension mismatch),
               home_model_drift: null when the home embedding collection's stored
                                 model/dims match this process's configured
                                 embedding_model/embedding_dimensions (the common

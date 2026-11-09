@@ -1055,3 +1055,319 @@ def test_column_filter_counts_use_sql_and_match_the_metadata_path(tmp_path):
     for flt, count in expected:
         assert store.count_documents(flt) == count, flt
     store.close()
+
+
+# ── 0.47.2: a rebuild the embedding model cuts short is resumed, not abandoned ──
+
+
+class _FlakyGen:
+    def __init__(self, error: Exception | None = None, fail_after: int = 0, poison: str | None = None) -> None:
+        self.calls = 0
+        self.error = error
+        self.fail_after = fail_after
+        self.poison = poison
+
+    def generate(self, text: str, input_type: str = "document") -> list[float]:
+        self.calls += 1
+        if self.poison and self.poison in text:
+            raise ValueError("cannot embed this text")
+        if self.error is not None and self.calls > self.fail_after:
+            raise self.error
+        return [1.0, float(len(text) % 7), 0.5]
+
+
+def _workflow(node_id: str, summary: str) -> CognitionNode:
+    return CognitionNode(
+        id=node_id, type=CognitionNodeType.WORKFLOW, summary=summary, detail="step one\nstep two",
+        context=[], references=[], timestamp="2026-10-31T00:00:00+00:00", author="t",
+    )
+
+
+def test_a_lost_embedding_model_stops_the_pass_with_one_warning(tmp_path, caplog):
+    """Live finding (0.47.1, linglang-x-vibememory): when the sidecar ended mid-rebuild the
+    sync logged a warning per remaining node, then a workflow raised out of the sync."""
+    from vibe_cognition.embeddings.sidecar_client import SidecarError
+    from vibe_cognition.server import _sync_cognition_embeddings
+
+    store = _store(tmp_path)
+    asked: list[int] = []
+    store.on_resync_needed = lambda: asked.append(1)
+    cognition = _cognition_with_nodes(tmp_path, 30)
+    cognition.add_node(_workflow("wf1", "release steps"))
+    gen = _FlakyGen(SidecarError("sidecar_process_ended"), fail_after=4)
+    with caplog.at_level(logging.WARNING, logger="vibe_cognition.server"):
+        result = _sync_cognition_embeddings(cognition, store, gen)  # type: ignore[arg-type]
+    assert result is None, "a pass the model cut short must not read as finished"
+    assert gen.calls == 5
+    assert store.count_documents() == 4
+    assert not [r for r in caplog.records if "skipped node" in r.getMessage()]
+    stopped = [r for r in caplog.records if "a later pass resumes it" in r.getMessage()]
+    assert len(stopped) == 1 and "sidecar_process_ended" in stopped[0].getMessage()
+    assert asked, "the pass must ask the maintenance loop for a retry"
+    store.close()
+
+
+def test_a_model_failing_every_node_stops_after_five(tmp_path, caplog):
+    from vibe_cognition.server import _MAX_EMBED_FAILURES_IN_A_ROW, _sync_cognition_embeddings
+
+    store = _store(tmp_path)
+    gen = _FlakyGen(RuntimeError("connection refused"))
+    with caplog.at_level(logging.WARNING, logger="vibe_cognition.server"):
+        result = _sync_cognition_embeddings(_cognition_with_nodes(tmp_path, 40), store, gen)  # type: ignore[arg-type]
+    assert result is None
+    assert gen.calls == _MAX_EMBED_FAILURES_IN_A_ROW + 1, "five failures, then one check that the model answers"
+    assert len([r for r in caplog.records if "skipped node" in r.getMessage()]) == _MAX_EMBED_FAILURES_IN_A_ROW
+    store.close()
+
+
+def test_one_unembeddable_workflow_is_skipped_not_fatal(tmp_path):
+    """Before 0.47.2 only plain nodes were skipped on error; a failing workflow or
+    document raised out of the sync and ended the start-up thread."""
+    from vibe_cognition.server import _sync_cognition_embeddings
+
+    store = _store(tmp_path)
+    cognition = _cognition_with_nodes(tmp_path, 6)
+    cognition.add_node(_workflow("wf-bad", "POISON workflow"))
+    cognition.add_node(_workflow("wf-good", "fine workflow"))
+    result = _sync_cognition_embeddings(cognition, store, _FlakyGen(poison="POISON"))  # type: ignore[arg-type]
+    assert result is not None and result["workflows"] == 2
+    ids = set(store.all_ids())
+    assert {f"node{i}" for i in range(6)} <= ids
+    assert "wf-good" in ids and "wf-bad" not in ids
+    store.close()
+
+
+def test_the_maintenance_loop_resumes_a_pass_the_model_cut_short(tmp_path, monkeypatch):
+    from vibe_cognition import server
+    from vibe_cognition.embeddings.sidecar_client import SidecarError
+
+    monkeypatch.setattr(server, "_RESYNC_MIN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(server, "_RESYNC_MAX_INTERVAL_S", 0.2)
+    store = _store(tmp_path)
+    cognition = _cognition_with_nodes(tmp_path, 12)
+    gen = _FlakyGen(SidecarError("sidecar unavailable"), fail_after=3)
+    pokes: list[int] = []
+    context: dict[str, Any] = {
+        "vector_resync": threading.Event(), "embedding_sync_done": threading.Event(),
+        "_sidecar_supervisor": SimpleNamespace(notify_demand=lambda: pokes.append(1)),
+    }
+    store.on_resync_needed = context["vector_resync"].set
+    t = threading.Thread(target=server._maintain_vector_store, args=(context, cognition, store, gen), daemon=True)
+    try:
+        t.start()
+        context["vector_resync"].set()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and not pokes:
+            time.sleep(0.01)
+        time.sleep(0.1)
+        assert not context["embedding_sync_done"].is_set(), "a cut-short pass must leave the index syncing"
+        assert context.get("embedding_sync_progress") is None
+        gen.error = None
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not context["embedding_sync_done"].is_set():
+            time.sleep(0.02)
+        assert context["embedding_sync_done"].is_set(), "the loop must resume and finish the pass"
+        assert store.count_documents() == 12
+        assert len(pokes) >= 2, "each retry asks the supervisor to bring the model back"
+    finally:
+        context["_vector_maintenance_stop"] = True
+        context["vector_resync"].set()
+        t.join(5)
+    assert not t.is_alive()
+    store.close()
+
+
+def _startup_context(tmp_path, monkeypatch, gen):
+    from vibe_cognition import server
+
+    monkeypatch.setenv("REPO_PATH", str(tmp_path))
+    monkeypatch.setenv("EMBEDDING_BACKEND", "ollama")
+    monkeypatch.setenv("EMBEDDING_DIMENSIONS", "3")
+    monkeypatch.setattr(server, "run_stale_sweep", lambda: {})
+    monkeypatch.setattr(server.EmbeddingGenerator, "from_config", lambda cfg: gen)
+    maintained: list[bool] = []
+    monkeypatch.setattr(server, "_maintain_vector_store",
+                        lambda ctx, *a: maintained.append(ctx["embedding_sync_done"].is_set()))
+    config = server.Settings()
+    store = VectorStore(tmp_path / "v", embedding_model=config.embedding_model,
+                        embedding_dimensions=config.embedding_dimensions)
+    context: dict[str, Any] = {
+        "cognition_storage": _cognition_with_nodes(tmp_path, 10),
+        "cognition_embedding_storage": store, "loaded_projects": None,
+        "embedding_ready": threading.Event(), "embedding_sync_done": threading.Event(),
+        "embedding_error": None, "vector_resync": threading.Event(),
+    }
+    store.on_resync_needed = context["vector_resync"].set
+    return server, config, context, maintained
+
+
+def test_a_startup_sync_the_model_cut_short_stays_syncing_and_the_loop_starts(tmp_path, monkeypatch):
+    from vibe_cognition.embeddings.sidecar_client import SidecarError
+
+    gen = _FlakyGen(SidecarError("sidecar_process_ended"), fail_after=2)
+    server, config, context, maintained = _startup_context(tmp_path, monkeypatch, gen)
+    server._load_embeddings_and_sync(config, context)
+    assert context["embedding_error"] is None, "a sync stopped by the model is not a failed model load"
+    assert maintained == [False], "the maintenance loop must start, with the index still syncing"
+    assert context["vector_resync"].is_set()
+    assert context["embedding_sync_progress"] is None
+    context["cognition_embedding_storage"].close()
+
+
+def test_an_unexpected_startup_sync_error_still_starts_the_loop(tmp_path, monkeypatch):
+    server, config, context, maintained = _startup_context(tmp_path, monkeypatch, _FlakyGen())
+    monkeypatch.setattr(server, "_sync_cognition_embeddings",
+                        lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+    server._load_embeddings_and_sync(config, context)
+    assert context["embedding_error"] is None
+    assert maintained == [False]
+    assert context["vector_resync"].is_set()
+    context["cognition_embedding_storage"].close()
+
+
+def test_a_finished_startup_sync_marks_the_index_ready(tmp_path, monkeypatch):
+    server, config, context, maintained = _startup_context(tmp_path, monkeypatch, _FlakyGen())
+    server._load_embeddings_and_sync(config, context)
+    assert maintained == [True]
+    assert context["embedding_sync_progress"]["nodes"] == 10
+    assert context["cognition_embedding_storage"].count_documents() == 10
+    context["cognition_embedding_storage"].close()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_model_stoppers(monkeypatch):
+    from vibe_cognition import server
+
+    monkeypatch.setattr(server, "_model_stoppers", {})
+    monkeypatch.setattr(server, "_model_suspects", set())
+
+
+def test_bad_nodes_in_a_row_with_a_healthy_model_do_not_stop_the_pass(tmp_path):
+    """Review finding: five unembeddable nodes in a row must not read as a dead model;
+    the sync checks that the model still answers and keeps going."""
+    from vibe_cognition.server import _sync_cognition_embeddings
+
+    store = _store(tmp_path)
+    cognition = CognitionStorage(tmp_path / ".cognition")
+    for i in range(9):
+        cognition.add_node(_node(f"bad{i}", f"POISON {i}"))
+    cognition.add_node(_node("good1", "fine one"))
+    cognition.add_node(_workflow("wf-good", "fine workflow"))
+    gen = _FlakyGen(poison="POISON")
+    result = _sync_cognition_embeddings(cognition, store, gen)  # type: ignore[arg-type]
+    assert result is not None, "bad nodes with a working model must not leave the index syncing"
+    ids = set(store.all_ids())
+    assert {"good1", "wf-good"} <= ids
+    assert not any(i.startswith("bad") for i in ids)
+    store.close()
+
+
+def test_a_node_that_keeps_crashing_the_model_is_skipped_after_three(tmp_path):
+    from vibe_cognition import server
+    from vibe_cognition.embeddings.sidecar_client import SidecarError
+
+    class _CrashOnPoison(_FlakyGen):
+        def generate(self, text: str, input_type: str = "document") -> list[float]:
+            if "POISON" in text:
+                raise SidecarError("sidecar_process_ended")
+            return super().generate(text, input_type)
+
+    store = _store(tmp_path)
+    cognition = _cognition_with_nodes(tmp_path, 5)
+    cognition.add_node(_node("poison", "POISON text"))
+    results = []
+    while len(results) < 6 and (not results or results[-1] is None):
+        results.append(server._sync_cognition_embeddings(cognition, store, _CrashOnPoison()))  # type: ignore[arg-type]
+    assert results[-1] is not None, "after three blamed crashes the node is skipped and the pass finishes"
+    assert 4 <= len(results) <= 5, results
+    ids = set(store.all_ids())
+    assert {f"node{i}" for i in range(5)} <= ids and "poison" not in ids
+    assert server._model_stoppers["poison"] == server._MODEL_STOPPER_LIMIT
+    store.close()
+
+
+def test_a_lost_model_during_the_workflow_phase_stops_the_pass(tmp_path):
+    from vibe_cognition.embeddings.sidecar_client import SidecarError
+    from vibe_cognition.server import _sync_cognition_embeddings
+
+    store = _store(tmp_path)
+    cognition = CognitionStorage(tmp_path / ".cognition")
+    for i in range(3):
+        cognition.add_node(_workflow(f"wf{i}", f"workflow {i}"))
+    result = _sync_cognition_embeddings(  # type: ignore[arg-type]
+        cognition, store, _FlakyGen(SidecarError("sidecar unavailable"), fail_after=1)
+    )
+    assert result is None
+    store.close()
+
+
+def test_a_newer_schema_store_finishes_and_an_unusable_store_waits(tmp_path):
+    from vibe_cognition.server import _sync_cognition_embeddings
+
+    d = tmp_path / "vectors"
+    _store(tmp_path).close()
+    conn = _peer_conn(db_path(d, 1))
+    conn.execute("PRAGMA user_version=2")
+    conn.close()
+    newer = VectorStore(d, "m", 3)
+    assert _sync_cognition_embeddings(_cognition_with_nodes(tmp_path), newer, _FlakyGen()) == {  # type: ignore[arg-type]
+        "nodes": 0, "workflows": 0, "documents": 0}
+    newer.close()
+    asked: list[int] = []
+    unusable = SimpleNamespace(available=False, state="unavailable",
+                               request_resync_on_recovery=lambda: asked.append(1))
+    assert _sync_cognition_embeddings(_cognition_with_nodes(tmp_path), unusable, _FlakyGen()) is None  # type: ignore[arg-type]
+    assert asked == [1]
+
+
+def test_the_loop_retries_an_unfinished_pass_without_being_asked(tmp_path, monkeypatch):
+    """Review finding: an unusable store at start-up only asked for a re-sync on its next
+    successful call, so an idle session stayed "syncing" forever."""
+    from vibe_cognition import server
+
+    monkeypatch.setattr(server, "_RESYNC_MIN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(server, "_RESYNC_MAX_INTERVAL_S", 0.2)
+    outcomes = [None, None, {"nodes": 1, "workflows": 0, "documents": 0}]
+    passes: list[int] = []
+    monkeypatch.setattr(server, "_sync_cognition_embeddings",
+                        lambda *a: passes.append(1) or outcomes[min(len(passes), 3) - 1])
+    reopened: list[int] = []
+    store = SimpleNamespace(available=False, ensure_open=lambda: reopened.append(1))
+    context: dict[str, Any] = {"vector_resync": threading.Event(), "embedding_sync_done": threading.Event()}
+    t = threading.Thread(target=server._maintain_vector_store, args=(context, None, store, None), daemon=True)
+    try:
+        t.start()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not context["embedding_sync_done"].is_set():
+            time.sleep(0.02)
+        assert context["embedding_sync_done"].is_set(), "nobody asked, yet the loop must retry and finish"
+        assert len(passes) == 3
+        assert len(reopened) == 3, "each retry first tries to reopen the unusable store"
+    finally:
+        context["_vector_maintenance_stop"] = True
+        context["vector_resync"].set()
+        t.join(5)
+    assert not t.is_alive()
+
+
+def test_an_outage_never_blames_the_node_in_flight(tmp_path):
+    """Re-review finding: workflows are not shuffled, so during an outage spanning
+    several passes the same healthy workflow was in flight each time and got skipped
+    for the rest of the process. A node is blamed only if the model had answered
+    earlier in the same pass."""
+    from vibe_cognition import server
+    from vibe_cognition.embeddings.sidecar_client import SidecarError
+
+    store = _store(tmp_path)
+    cognition = CognitionStorage(tmp_path / ".cognition")
+    for i in range(3):
+        cognition.add_node(_workflow(f"wf{i}", f"workflow {i}"))
+    down = _FlakyGen(SidecarError("sidecar unavailable"))
+    for _ in range(5):
+        assert server._sync_cognition_embeddings(cognition, store, down) is None  # type: ignore[arg-type]
+    assert server._model_stoppers == {}, "an outage must not blame any node"
+    up = _FlakyGen()
+    assert server._sync_cognition_embeddings(cognition, store, up) is not None  # type: ignore[arg-type]
+    assert {"wf0", "wf1", "wf2"} <= set(store.all_ids())
+    assert server._model_suspects == set(), "a suspect that embeds fine is cleared"
+    store.close()
