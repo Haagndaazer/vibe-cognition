@@ -1,0 +1,349 @@
+"""Query functions for traversing the cognition history graph."""
+
+import logging
+from typing import Any
+
+from .models import CognitionEdgeType, CognitionNodeType
+from .storage import CognitionStorage
+
+logger = logging.getLogger(__name__)
+
+
+def get_reasoning_chain(
+    storage: CognitionStorage,
+    node_id: str,
+    max_depth: int = 5,
+    direction: str = "outgoing",
+) -> dict[str, Any]:
+    """Get the reasoning chain from/to a node via LED_TO edges.
+
+    Args:
+        storage: Cognition storage instance
+        node_id: ID of the starting node
+        max_depth: Maximum depth to traverse
+        direction: "outgoing" (what it led to) or "incoming" (what led to it)
+
+    Returns:
+        Nested dictionary representing the reasoning tree
+    """
+    def traverse(nid: str, depth: int, path: set[str]) -> dict[str, Any]:
+        # C-7: cycle detection is PATH-based — `path` is the set of ancestors on the
+        # current root→node path, not a traversal-global visited set. A node is a
+        # cycle only if it is one of its own ancestors (`nid in path`). A global
+        # visited set (never popped) wrongly flagged a re-convergent DAG node (a
+        # diamond A→B→D, A→C→D) as a cycle on the second arm. Each recursion passes a
+        # fresh `path | {nid}`, so siblings don't see each other's nodes and no pop is
+        # needed. Trade-off: a re-convergent node is now fully re-expanded once per
+        # path — worst case O(b^max_depth) tree nodes (b = avg LED_TO out-degree),
+        # bounded by max_depth (default 5; the tool exposes it to callers).
+        node_data = storage.get_node(nid)
+        result: dict[str, Any] = {
+            "id": nid,
+            "type": node_data.get("type") if node_data else "unknown",
+            "summary": node_data.get("summary", "") if node_data else "",
+            "severity": node_data.get("severity") if node_data else None,
+            "timestamp": node_data.get("timestamp", "") if node_data else "",
+        }
+
+        if depth > max_depth or nid in path:
+            result["truncated"] = depth > max_depth
+            result["cycle"] = nid in path
+            result["chain"] = []
+            return result
+
+        result["truncated"] = False
+        result["cycle"] = False
+        next_path = path | {nid}
+
+        chain = []
+        if direction == "outgoing":
+            for target_id, _ in storage.get_successors(nid, CognitionEdgeType.LED_TO):
+                chain.append(traverse(target_id, depth + 1, next_path))
+        else:
+            for source_id, _ in storage.get_predecessors(nid, CognitionEdgeType.LED_TO):
+                chain.append(traverse(source_id, depth + 1, next_path))
+
+        result["chain"] = chain
+        return result
+
+    return traverse(node_id, 0, set())
+
+
+def get_superseded_chain(
+    storage: CognitionStorage,
+    node_id: str,
+) -> list[dict[str, Any]]:
+    """Follow SUPERSEDES edges to get the full version history of a decision.
+
+    Returns the chain from newest to oldest.
+
+    Args:
+        storage: Cognition storage instance
+        node_id: ID of the starting node
+
+    Returns:
+        List of nodes in the supersedes chain (newest first)
+    """
+    chain = []
+    visited: set[str] = set()
+    current_id = node_id
+
+    while current_id and current_id not in visited:
+        visited.add(current_id)
+        node_data = storage.get_node(current_id)
+        if not node_data:
+            break
+
+        chain.append({"id": current_id, **node_data})
+
+        # Follow SUPERSEDES edge to the node this one replaced
+        successors = storage.get_successors(current_id, CognitionEdgeType.SUPERSEDES)
+        if not successors:
+            current_id = None
+        else:
+            if len(successors) > 1:
+                logger.warning(
+                    f"Node {current_id} has {len(successors)} SUPERSEDES successors "
+                    f"(expected 1) — following first match"
+                )
+            current_id = successors[0][0]
+
+    return chain
+
+
+def get_workflow_head(
+    storage: CognitionStorage,
+    node_id: str,
+) -> str:
+    """Resolve any workflow node to the current HEAD by walking incoming SUPERSEDES edges.
+
+    Starting from ``node_id`` (which may be an old version), follows predecessor
+    SUPERSEDES edges until a node with no incoming SUPERSEDES exists — that node is
+    the HEAD (authoritative current version). Cycle-guarded with the same pattern as
+    ``get_superseded_chain``.
+
+    When multiple predecessors are found at any step (branched supersession), the first
+    match is followed and a warning is logged (mirrors ``get_superseded_chain``).
+
+    Args:
+        storage: Cognition storage instance
+        node_id: ID of any version in the workflow chain
+
+    Returns:
+        Node ID of the current HEAD version.
+    """
+    visited: set[str] = set()
+    current = node_id
+
+    while current not in visited:
+        visited.add(current)
+        preds = storage.get_predecessors(current, CognitionEdgeType.SUPERSEDES)
+        if not preds:
+            break  # no node supersedes this one — it IS the head
+        if len(preds) > 1:
+            logger.warning(
+                f"Node {current} has {len(preds)} SUPERSEDES predecessors "
+                f"(expected 1) — following first match"
+            )
+        current = preds[0][0]
+
+    return current
+
+
+def conflict_flags(
+    storage: CognitionStorage,
+    node_id: str,
+) -> tuple[bool, str | None]:
+    """The single-implementation home for "is this node in conflict / superseded?"
+    (WP-SearchFlags) -- shared by cognition_search's per-result flags and the
+    dashboard's ``_is_conflicted`` wrapper (WP-DashV3). Callers needing a bare
+    conflicted bool that also folds in supersedes membership (the dashboard's
+    ⚠ indicator) must compose it themselves: ``flags[0] or flags[1] is not None``
+    -- this function keeps the two signals SEPARATE so a search consumer can act
+    on supersession (fetch the replacement) independently of contradiction.
+
+    Direction semantics (pattern 6ed494680fb3, pinned): ``contradicts`` edges are
+    stored ONE-WAY with ARBITRARY direction (``cognition_add_edge``'s own
+    docstring: "either direction" -- no reciprocal edge is ever minted), so
+    conflicted-by-contradicts is BIDIRECTIONAL (incoming OR outgoing) -- an
+    incoming-only check flags only one side of every contradicts pair.
+    ``supersedes`` stays INCOMING-only: a node with an OUTGOING supersedes edge
+    is the newer version (the resolution), not itself superseded --
+    ``superseded_by`` is null for it.
+
+    Returns:
+        (conflicted, superseded_by) -- ``conflicted`` is True iff >=1 incoming or
+        outgoing CONTRADICTS edge. ``superseded_by`` is the node id of the newest
+        node with an incoming SUPERSEDES edge onto ``node_id`` (i.e. the node that
+        replaced it), or None if ``node_id`` has no incoming SUPERSEDES edge.
+        Branch case (multiple incoming SUPERSEDES edges): the tie-break picks the
+        superseder whose NODE timestamp (``storage.get_node(source_id)['timestamp']``
+        -- authorship time) is lexicographically greatest, NEVER the edge's own
+        ``timestamp`` (edge-mint time -- a backfilled edge's mint time can differ
+        wildly from when its author actually wrote it).
+
+    Cost: up to three edge lookups per call (in-contradicts, out-contradicts,
+    in-supersedes) plus, only on the branch case, one ``get_node`` per extra
+    superseder -- NetworkX in-memory MultiDiGraph lookups, O(degree); negligible
+    at search/dashboard row counts. No caching.
+    """
+    conflicted = bool(
+        storage.get_predecessors(node_id, CognitionEdgeType.CONTRADICTS)
+        or storage.get_successors(node_id, CognitionEdgeType.CONTRADICTS)
+    )
+
+    superseded_by: str | None = None
+    supersessors = storage.get_predecessors(node_id, CognitionEdgeType.SUPERSEDES)
+    if supersessors:
+        best_id, best_ts = supersessors[0][0], None
+        for source_id, _edge_data in supersessors:
+            node = storage.get_node(source_id)
+            ts = node.get("timestamp") if node else None
+            if ts and (best_ts is None or ts > best_ts):
+                best_id, best_ts = source_id, ts
+        superseded_by = best_id
+
+    return conflicted, superseded_by
+
+
+def conflict_details(
+    storage: CognitionStorage,
+    node_id: str,
+) -> list[dict[str, Any]]:
+    """Sibling to conflict_flags (task 888a21f729dd, TC2): names each CONTRADICTS
+    counterparty -- id, summary, author, reason -- for search's per-result
+    ``conflicted_with`` list. Deliberately NOT folded into conflict_flags's
+    return: that function's strict 2-tuple is unpacked positionally at two call
+    sites (dashboard/api.py, cognition_tools.py search formatting) and widening
+    it would break both (peer-review-pinned constraint). Called ONLY from the
+    search formatting loop, ONLY when conflict_flags already reported
+    ``conflicted=True`` for this node -- read-side advisory only, no write-time
+    equivalent (Colton ruled that permanently out, decision 1583c5391354).
+
+    Bidirectional, same membership as conflict_flags's ``conflicted`` (an
+    incoming OR an outgoing CONTRADICTS edge both count) -- reuses
+    get_predecessors/get_successors, which already return (id, edge_data)
+    pairs (see the supersedes tie-break above).
+
+    ``author``: the counterparty's ``recorded_by`` stamp (name, else email)
+    when present, else its free-text ``author`` field -- never fabricated.
+    ``reason``: the CONTRADICTS edge's own ``reason`` field, null when the
+    edge carries none -- never fabricated either.
+
+    A dangling edge target (node deleted, edge not yet cleaned up) is
+    silently skipped -- never a row for a node that doesn't exist.
+    """
+    pairs = (
+        storage.get_predecessors(node_id, CognitionEdgeType.CONTRADICTS)
+        + storage.get_successors(node_id, CognitionEdgeType.CONTRADICTS)
+    )
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for other_id, edge_data in pairs:
+        if other_id in seen:
+            continue
+        seen.add(other_id)
+        other = storage.get_node(other_id)
+        if not other:
+            continue
+        meta = other.get("metadata", {}) or {}
+        recorded_by = meta.get("recorded_by")
+        author = None
+        if isinstance(recorded_by, dict):
+            author = recorded_by.get("name") or recorded_by.get("email")
+        author = author or other.get("author")
+        out.append({
+            "id": other_id,
+            "summary": other.get("summary"),
+            "author": author,
+            "reason": edge_data.get("reason") if isinstance(edge_data, dict) else None,
+        })
+    return out
+
+
+def get_history_for_context(
+    storage: CognitionStorage,
+    context_term: str,
+    node_type: CognitionNodeType | None = None,
+) -> list[dict[str, Any]]:
+    """Get all cognition nodes whose context field matches a term.
+
+    Args:
+        storage: Cognition storage instance
+        context_term: Term to search for in context fields (case-insensitive substring)
+        node_type: Optional type filter
+
+    Returns:
+        List of matching nodes sorted by timestamp descending
+    """
+    term_lower = context_term.lower()
+    results = []
+
+    # get_all_nodes() is synced (catches up on the journal under the lock), so
+    # this reflects writes from other processes — unlike a raw storage.graph read.
+    for data in storage.get_all_nodes():
+        if node_type and data.get("type") != node_type.value:
+            continue
+
+        context_list = data.get("context", [])
+        if any(term_lower in c.lower() for c in context_list):
+            results.append(data)
+
+    results.sort(key=lambda n: n.get("timestamp", ""), reverse=True)
+    return results
+
+
+def get_incident_resolution(
+    storage: CognitionStorage,
+    node_id: str,
+) -> dict[str, Any]:
+    """Get an incident and everything that resolved it.
+
+    Follows RESOLVED_BY edges from the incident node to find all fixes,
+    and includes related discoveries.
+
+    Args:
+        storage: Cognition storage instance
+        node_id: ID of the incident node
+
+    Returns:
+        Incident details with resolutions and related discoveries
+    """
+    node_data = storage.get_node(node_id)
+    if not node_data:
+        return {"error": f"Node not found: {node_id}"}
+
+    result: dict[str, Any] = {
+        "id": node_id,
+        **node_data,
+        "resolutions": [],
+        "discoveries": [],
+        "contradictions": [],
+    }
+
+    # Get all nodes this incident is connected to
+    for target_id, edge_data in storage.get_successors(node_id):
+        target_node = storage.get_node(target_id)
+        if not target_node:
+            continue
+
+        edge_type = edge_data.get("type")
+        entry = {"id": target_id, **target_node}
+
+        if edge_type == CognitionEdgeType.RESOLVED_BY.value:
+            result["resolutions"].append(entry)
+        elif edge_type == CognitionEdgeType.LED_TO.value:
+            # Every LED_TO target is a follow-on the incident produced. Both arms of
+            # the former DISCOVERY if/else appended here identically (the type check
+            # was inert) — collapsed to one append. Filtering to DISCOVERY-only would
+            # be a behavior change with nowhere for non-discovery led_to targets to go.
+            result["discoveries"].append(entry)
+
+    # Check for contradictions (incoming CONTRADICTS edges)
+    for source_id, edge_data in storage.get_predecessors(node_id):
+        if edge_data.get("type") == CognitionEdgeType.CONTRADICTS.value:
+            source_node = storage.get_node(source_id)
+            if source_node:
+                result["contradictions"].append({"id": source_id, **source_node})
+
+    return result

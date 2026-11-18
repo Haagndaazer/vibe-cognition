@@ -1,0 +1,165 @@
+"""Standing server instructions + a SessionStart re-injection entry point.
+
+The MCP server surfaces ``SERVER_INSTRUCTIONS`` to the agent every session via the
+FastMCP ``instructions`` field (the MCP ``initialize`` handshake). It is undocumented
+whether those survive a context compaction, so the plugin ALSO re-injects them after a
+compact via a ``SessionStart`` hook (matcher ``compact``) that runs this module's
+``main()`` and emits the text as ``additionalContext``.
+
+WP-7 (530adc9e6f3f): ``main()`` ALSO regenerates the prime data digest (open
+tasks, constraints, patterns, decisions, incidents) via the SAME
+``generate_prime()`` the startup hook uses — before this, a compact restored
+only the static standing practices, silently dropping the graph's actual
+backlog in exactly the long sessions that compact, defeating "the graph IS
+the backlog." No new summarization logic; this reuses the existing (already
+v0.13.0-trimmed) prime digest unchanged.
+
+That pulls in ``CognitionStorage``/``networkx`` -- imported LAZILY inside
+``main()`` (not at module level) so merely importing ``SERVER_INSTRUCTIONS``
+elsewhere (server.py, at every session start) never pays it; only an actual
+compact invocation does. SERVER_INSTRUCTIONS itself stays plain ASCII, and
+``json.dump``'s default ``ensure_ascii=True`` \\u-escapes anything from the
+prime digest that isn't, so Windows stdout safety is unaffected either way.
+Still excludes the genuinely heavy embeddings stack (torch), which
+this entry point never needs -- SentenceTransformers backend model loading
+lives entirely behind the embedding_generator, not the graph/storage layer.
+"""
+
+import json
+import sys
+
+from . import harness
+from .config import Settings, resolve_repo_path_env
+
+_HZ = harness.current()
+
+# Surfaced to the agent every session as "MCP Server Instructions" (server.py passes
+# this to FastMCP) AND re-injected after a compact (see main()). ASCII-only on purpose.
+# THE owning channel for the record->curate loop (WP-7, 9aca47c5803d) — paid most
+# consistently (every session AND every compact) of the three places that used to
+# restate it, so the other two (readme.py's COGNITION_GUIDE, cognition_readme) now
+# point back here instead of duplicating the mechanics. Measured cost: ~545 tokens
+# (char-count/4 estimate; re-measured after the doc-fix WP appended a trailing
+# paragraph naming the prime-digest/observability-keys channel — was ~433 tokens
+# pre-doc-fix, ~370 tokens pre-DW1; re-measure and update this comment again if
+# the text changes materially — the v0.13.0 prime trim accounting did NOT include
+# this constant, see 9aca47c5803d).
+SERVER_INSTRUCTIONS = (
+    "Vibe Cognition maintains this project's knowledge graph: the durable, "
+    "cross-session record of decisions, failures, discoveries, constraints, "
+    "patterns, and reasoning. Four standing practices keep it valuable for "
+    "non-trivial work:\n"
+    "\n"
+    "1. CHECK HISTORY FIRST. Before starting a new task or writing a plan, "
+    "search the graph (cognition_search, cognition_get_history) so past "
+    "decisions and known failures are respected and not re-litigated.\n"
+    "\n"
+    "2. RECORD AS YOU WORK. Capture cognitive history with cognition_record as "
+    "it happens: decisions (with rejected alternatives), failures, non-obvious "
+    "discoveries, constraints, reusable patterns, workflows (reusable "
+    "multi-step procedures), and an episode when a unit of work completes. A "
+    "handed spec/PDF/doc is captured with cognition_store_document, then "
+    "linked via descriptor nodes citing its doc_ref in references. Include "
+    "references (issue/PR/commit) so nodes link to their episode.\n"
+    "\n"
+    "3. CHECK FOR EXISTING WORK FIRST. Before picking up work, check "
+    "cognition_list_tasks for the open backlog; before any multi-step task, "
+    "check cognition_get_workflow for an existing procedure -- both tools "
+    "already mandate this; repeated here so the pushed contract doesn't omit "
+    "it.\n"
+    "\n"
+    "4. VALIDATE SUGGESTIONS AGAINST HISTORY. Before proposing an improvement "
+    "or fix, query the graph (cognition_search, cognition_get_chain) for how "
+    "the current state came to be, and distinguish deliberate decisions (whose "
+    "reasons may still hold) from genuine oversights.\n"
+    "\n"
+    + (
+        f"After recording, run the {_HZ.skill_invoke('vibe-curate')} skill to launch the background "
+        "curator, which adds semantic edges; only deterministic part_of edges "
+        "(from shared references) are automatic. Never author semantic edges "
+        f"yourself. For full guidance, use the {_HZ.skill_invoke('vibe-cognition')} skill.\n"
+        if _HZ.curation_available
+        else "After recording, note that background curation (the /vibe-curate "
+        f"skill, which adds semantic edges) is not available on {_HZ.display_name} yet -- "
+        "it runs from Claude Code for now; only deterministic part_of edges "
+        "(from shared references) are automatic. Never author semantic edges "
+        f"yourself. For full guidance, use the {_HZ.skill_invoke('vibe-cognition')} skill.\n"
+    )
+    + "\n"
+    "Every session start, and again after a compaction, this same channel "
+    "injects a prime digest built from the graph: open tasks, active "
+    "constraints, recent patterns, decisions, and incidents, plus -- for a "
+    "registered person -- personalized sections including an identity header "
+    "naming your role and manager. get_status also exposes observability "
+    "keys (edges_outside_curation, edge_sources, rehydrate_events) for "
+    "diagnosing graph and curation health."
+)
+
+# Header so the re-injected (post-compact) block is self-explaining when it sits next to
+# any MCP instructions that may have survived the compaction.
+_REINJECT_HEADER = "# Vibe Cognition - Standing Practices (re-injected after compaction)"
+
+
+def main() -> None:
+    """Emit the standing instructions + prime data digest as SessionStart
+    ``additionalContext`` JSON.
+
+    Invoked by the ``compact``-matched SessionStart hook. Always emits the
+    standing-practices block (the matcher already gates this to post-
+    compaction, so the rules are re-armed even on a project with no
+    ``.cognition/`` data yet). ALSO appends the prime digest (WP-7,
+    530adc9e6f3f) when a non-empty graph is found -- reuses
+    ``generate_prime()`` unchanged (the same, already-trimmed digest the
+    startup hook produces), no new summarization invented. Best-effort: any
+    failure building the digest (missing config, unreadable journal, etc.)
+    is swallowed so it can never suppress the standing-practices reinject,
+    which must always get through.
+    """
+    sections = [f"{_REINJECT_HEADER}\n\n{SERVER_INSTRUCTIONS}"]
+
+    try:
+        from .cognition.prime import PrimeConfig, _identity_notice, generate_prime
+        from .cognition.storage import CognitionStorage
+
+        repo_path = resolve_repo_path_env()
+        cognition_dir = repo_path / ".cognition"
+        if cognition_dir.exists():
+            storage = CognitionStorage(cognition_dir)
+            # WP-TC15 widened get_statistics()'s return type to accommodate the
+            # new edge_sources histogram value; "nodes" itself is always int,
+            # narrowed explicitly here since pyright doesn't infer that from the
+            # union return type alone.
+            identity_note = _identity_notice(storage.cognition_dir.parent, storage.cognition_dir)
+            if identity_note:
+                sections.append(identity_note)
+            node_count = storage.get_statistics()["nodes"]
+            if isinstance(node_count, int) and node_count > 0:
+                try:
+                    settings = Settings()
+                    config = PrimeConfig(
+                        prime_constraint_limit=settings.prime_constraint_limit,
+                        prime_task_cap=settings.prime_task_cap,
+                        prime_pattern_limit=settings.prime_pattern_limit,
+                        prime_decision_limit=settings.prime_decision_limit,
+                        prime_incident_days=settings.prime_incident_days,
+                        prime_summary_maxlen=settings.prime_summary_maxlen,
+                        prime_incident_min_severity=settings.prime_incident_min_severity,
+                        prime_workflow_limit=settings.prime_workflow_limit,
+                    )
+                except Exception:  # noqa: BLE001
+                    config = PrimeConfig()
+                sections.append(generate_prime(storage, config))
+    except Exception:  # noqa: BLE001
+        pass
+
+    output = {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": "\n\n".join(sections),
+        }
+    }
+    json.dump(output, sys.stdout)
+
+
+if __name__ == "__main__":
+    main()

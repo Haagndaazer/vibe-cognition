@@ -1,0 +1,186 @@
+"""Backfill command — finds git commits without corresponding cognition episode nodes."""
+
+import argparse
+import logging
+import subprocess
+import sys
+from pathlib import Path
+
+from ..config import resolve_repo_path_env
+from .storage import CognitionStorage
+from .vcs import VCS_GIT, detect_vcs
+
+_DEFAULT_DAYS = 30
+
+logger = logging.getLogger(__name__)
+
+GIT_ONLY_MESSAGE = (
+    "This command reads git history and this project is not a git repository; nothing was run."
+)
+
+
+def _get_tracked_commit_hashes(storage: CognitionStorage) -> set[str]:
+    """Get all commit hashes already tracked in the cognition graph."""
+    hashes = set()
+    for node in storage.get_all_nodes():
+        for ref in node.get("references", []):
+            if ref.startswith("commit:"):
+                hashes.add(ref[7:])  # strip "commit:" prefix
+    return hashes
+
+
+def _get_recent_commits(repo_path: Path, days: int = _DEFAULT_DAYS) -> list[dict]:
+    """Get recent git commits from the repo. Spawns nothing off a git repository."""
+    if detect_vcs(repo_path) != VCS_GIT:
+        return []
+    try:
+        result = subprocess.run(
+            [
+                "git", "-C", str(repo_path), "log",
+                f"--since={days} days ago",
+                "--format=%H|%s|%an|%aI",
+                "--no-merges",
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return []
+
+        commits = []
+        for line in result.stdout.strip().split("\n"):
+            if not line:
+                continue
+            parts = line.split("|", 3)
+            if len(parts) >= 4:
+                commits.append({
+                    "hash": parts[0],
+                    "message": parts[1],
+                    "author": parts[2],
+                    "date": parts[3],
+                })
+        return commits
+    except Exception:
+        logger.debug("_get_recent_commits failed", exc_info=True)
+        return []
+
+
+def _get_changed_files(repo_path: Path, commit_hash: str) -> list[str]:
+    """Get list of files changed in a commit. Spawns nothing off a git repository."""
+    if detect_vcs(repo_path) != VCS_GIT:
+        return []
+    try:
+        result = subprocess.run(
+            [
+                "git", "-C", str(repo_path), "diff-tree",
+                "--no-commit-id", "--name-only", "-r", commit_hash,
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return []
+        return [f for f in result.stdout.strip().split("\n") if f]
+    except Exception:
+        logger.debug("_get_changed_files failed for %s", commit_hash, exc_info=True)
+        return []
+
+
+def main(argv: list[str] | None = None):
+    """Entry point for vibe-cognition-backfill CLI command.
+
+    Reports git commits without corresponding episode nodes, with
+    instructions for creating episodes and entity nodes from them.
+
+    WP-12/WP-13 (b9af2e60fe19, 4aaef22e25ea, H-6(b) 21232d2acaea): this CLI's
+    window is a lookback of ``--days`` (default 30) — it never checks how
+    long ago the graph was last backfilled the way the ``/vibe-backfill``
+    skill does. The skill finds a WATERMARK (the newest tracked episode's
+    ``commit:`` reference) and walks forward from there via ``git log
+    <watermark>..HEAD``, so it surfaces everything untracked regardless of
+    age. These remain genuinely different mechanisms, not a bug in either: a
+    commit older than the window that was never backfilled is invisible to
+    THIS CLI (it filters already-tracked commits out of the window, but
+    never looks further back than the window in the first place) even
+    though the skill would still find it. Prefer ``/vibe-backfill`` for a
+    graph that hasn't been touched in a while, or pass a larger ``--days``
+    here for a one-off wider check.
+
+    ``argv``: explicit args list (tests pass ``[]``); ``None`` (the real CLI
+    invocation) reads ``sys.argv[1:]`` via argparse's own default.
+    """
+    parser = argparse.ArgumentParser(
+        prog="vibe-cognition-backfill",
+        description=(
+            "Report git commits without corresponding cognition episode nodes "
+            "(a plain report, no LLM extraction -- see the /vibe-backfill skill "
+            "for that). Checks only the last --days days; an untracked commit "
+            "older than that is not found by this CLI."
+        ),
+    )
+    parser.add_argument(
+        "--days", type=int, default=_DEFAULT_DAYS,
+        help=f"How many days back to check (default: {_DEFAULT_DAYS})",
+    )
+    args = parser.parse_args(argv)
+    if args.days <= 0:
+        print(f"error: --days must be positive, got {args.days}", file=sys.stderr)
+        sys.exit(2)
+
+    repo_path = resolve_repo_path_env()
+    cognition_dir = repo_path / ".cognition"
+
+    if not cognition_dir.exists():
+        print("No .cognition/ directory found. Run the vibe-cognition MCP server first.")
+        sys.exit(1)
+
+    if detect_vcs(repo_path) != VCS_GIT:
+        print(GIT_ONLY_MESSAGE)
+        sys.exit(1)
+
+    storage = CognitionStorage(cognition_dir)
+    tracked_hashes = _get_tracked_commit_hashes(storage)
+    commits = _get_recent_commits(repo_path, days=args.days)
+
+    if not commits:
+        print(f"No recent commits found (last {args.days} days).")
+        sys.exit(0)
+
+    untracked = [c for c in commits if c["hash"] not in tracked_hashes]
+    tracked_count = len(commits) - len(untracked)
+
+    if not untracked:
+        print(
+            f"All {len(commits)} recent commits (last {args.days} days) are already "
+            f"tracked. Note: this only checked the last {args.days} days — an older "
+            "untracked commit would not be found by this CLI (pass a larger --days, "
+            "or use /vibe-backfill for a full sweep back to the graph's actual "
+            "watermark)."
+        )
+        sys.exit(0)
+
+    print(
+        f"# Untracked Commits ({len(untracked)} found, {tracked_count} already "
+        f"tracked, last {args.days} days only)"
+    )
+    print()
+
+    for commit in untracked:
+        files = _get_changed_files(repo_path, commit["hash"])
+        print(f"## Commit {commit['hash'][:8]} — \"{commit['message']}\"")
+        print(f"  Author: {commit['author']} | Date: {commit['date']}")
+        if files:
+            print(f"  Files: {', '.join(files)}")
+        print()
+
+    print("---")
+    print("For each commit above, create:")
+    print("1. An EPISODE node (node_type: \"episode\") with the commit message as summary")
+    print("   and changed files as context. Include \"commit:<hash>\" in references.")
+    print("2. ENTITY nodes for any decisions, discoveries, constraints, or patterns")
+    print("   visible in the commit. Keep entity summaries under 250 chars.")
+    print("   Use the same references so they link to the episode (deterministic")
+    print("   part_of matching). Then run /vibe-curate to launch the background")
+    print("   curator that adds semantic edges -- never author them by hand.")
+
+
+if __name__ == "__main__":
+    main()

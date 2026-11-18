@@ -1,0 +1,131 @@
+{
+  "0.49.0": [
+    "The daily update reminder now checks only installs from the coltondyck marketplace. Any other install makes no network request for it.",
+    "The README has a new section listing everything the plugin runs, downloads and sends, including the 2-4 GB first install."
+  ],
+  "0.48.0": [
+    "This what's-new note now repeats at session start until Claude confirms it told you (at most 5 times). Before, an update taken inside a running session could use the note up unseen.",
+    "cognition_readme gains changes_seen=true, the call that records you were told. It refuses from a server still running the previous version, so restart that session first."
+  ],
+  "0.47.2": [
+    "An index rebuild interrupted by the embedding model (a slow request, a session closing) now resumes in the background instead of waiting for the next session start.",
+    "Search and get_status keep saying the index is syncing until an interrupted rebuild actually finishes, and the server log gets one line instead of one per node."
+  ],
+  "0.47.1": [
+    "Searching another loaded project now says when its index is still being built (project_notes index_incomplete, exhaustive false) instead of returning partial results silently.",
+    "The standalone dashboard command (vibe-cognition-dashboard) starts again; it had crashed on a circular import since 0.28. The in-session dashboard was never affected."
+  ],
+  "0.47.0": [
+    "The search index is now SQLite instead of ChromaDB, whose native crash took Ling Lang's server down at start-up. A damaged index is set aside and rebuilt from the journal; it never stops the server.",
+    "The first session in each project rebuilds its index from the journal (about 20 minutes for a 5,000-node graph). Every tool works meanwhile; search results say index_syncing.",
+    "Search reports semantic_unavailable instead of an empty result when the index can't serve it. get_status gains vectors_path and vector_store. Start-up is nearly a second faster."
+  ],
+  "0.46.0": [
+    "On a Subversion checkout the plugin never touches git now: identity is not read from ~/.gitconfig, no .cognition/.gitignore is written, and backfill refuses to run rather than invoke git.",
+    "On a git checkout nothing Subversion-related appears: the loss warnings, hygiene announce and identity hints speak git only, and no .svn is looked for.",
+    "One VCS detector replaces four divergent checks. A .cognition/.gitignore already committed to an SVN repository is left for a human to remove. No MCP tool changed."
+  ],
+  "0.45.0": [
+    "Curation works again on current Claude Code: the curator now waits for its analyzers' reports instead of writing edges on its own judgement when a spawn comes back asynchronous.",
+    "Nothing is written before a report arrives, so an interrupted run leaves nodes uncurated for the next /vibe-curate rather than leaving unreviewed edges behind.",
+    "Codex is unchanged; no MCP tool changed."
+  ],
+  "0.44.0": [
+    "Fixed a data-loss bug: git checkout, restore or stash over .cognition used to wipe memories recorded since that commit. Your own journal file now repairs itself.",
+    "If it happens, Claude tells you at session start and the notice stays until it's sorted. Commit the repaired file so teammates get the entries too.",
+    "Switching branches still works normally: that's recognised as deliberate and left alone."
+  ],
+  "0.43.1": [
+    "Codex fixes from a live test: curation helpers no longer message other agents, and a busy-Codex hiccup that could skip the new constraint check is now retried.",
+    "Everything from the last three updates has now been checked end to end on Codex as well as Claude Code."
+  ],
+  "0.43.0": [
+    "Curation now double-checks new constraints: if one looks like it should be shared with the team, or like a personal preference that was shared by mistake, it's flagged for you.",
+    "Flags never stop your work. Claude asks you at a good moment, and they wait at your session start until you decide.",
+    "Only you see flags on your own constraints."
+  ],
+  "0.42.0": [
+    "Constraints can now be personal. A preference you give Claude (like 'don't touch my prefabs') applies only to you, and teammates never see it. Rules for everyone are marked project.",
+    "New constraints are personal unless they are true for anyone in the project; Claude asks you when it can't tell. You can switch one either way later.",
+    "Nothing changes for constraints you already have: they stay visible to the whole team."
+  ],
+  "0.41.0": [
+    "Each person's memories now go into their own file, so teammates stop colliding when they sync, on git and Subversion alike. It switches on its own; nothing is moved.",
+    "When two people change the same memory, the later change now wins everywhere, even if someone's clock is off.",
+    "Claude warns you if a teammate is still on an older version, and a memory journal line with two entries glued together is no longer lost."
+  ],
+  "0.40.0": [
+    "Subversion teams: memory files are now added to SVN for you, with the right ignore rules. Nothing is committed; each session tells you what to review and commit.",
+    "SVN memory conflicts now have a one-command fix that keeps both sides. Claude gives you the exact command when it happens.",
+    "Fixed: the manual SVN conflict instructions could throw away a teammate's edits. They now keep everything."
+  ],
+  "0.39.0": [
+    "Your identity is now tied to your machine, account and project folder, so a copied or committed identity file can't make a teammate record as you. You may be asked to confirm once.",
+    "On Subversion, resolving a memory conflict with 'use mine' or 'use theirs' used to silently delete memories. Claude now warns you at the next session and explains how to recover them.",
+    "After a plugin update, the new version is now the one that actually runs, and Claude warns you if it ever isn't."
+  ],
+  "0.38.3": [
+    "Important for Subversion teams: the setup guide's ignore instructions could let your identity file (name and email) get committed. Re-read the 'Team setup (svn)' section if you use SVN.",
+    "Claude's built-in guide was missing the tool for removing someone from the roster, and still pointed at an old file path."
+  ],
+  "0.38.2": [
+    "Documentation fix: the README and Claude's own built-in guide still described the old team model in places, which could send you (or Claude) looking for settings that no longer exist.",
+    "Releases now fail their own tests if the changelog, the what's-new notes, or the README's tool list were not updated to match, so the docs cannot silently fall behind again."
+  ],
+  "0.38.1": [
+    "Fixed: upgrading quietly wrote your team's new profile files without telling you. Claude now says what it wrote, so you can review and commit them.",
+    "Fixed: when Claude asked you to set up your identity, it reached for the wrong tool first and got blocked. It now goes straight to the one call that works.",
+    "The update-available notice is now a proper section with the command and the restart step spelled out, instead of one easily-missed line."
+  ],
+  "0.38.0": [
+    "Recording now needs your name, work email, role, seniority and who you report to -- \"nobody\" is fine on a solo project. Ask Claude to set your identity; it will ask you rather than guess.",
+    "Your team roster moved into small committed files, so a manager can set a teammate up before they onboard. Your existing team migrates automatically and Claude tells you what it wrote.",
+    "If someone else changes your profile -- especially your seniority, which affects what your searches surface -- the next session opens by saying what changed and who changed it."
+  ],
+  "0.37.0": [
+    "Vibe Cognition now refuses to record memories when it cannot tell who you are, instead of silently attributing them to nobody. Ask Claude to set your identity and it will offer the addresses it found.",
+    "Subversion users get identity too: cached SVN credentials are read as a suggestion, so a project with no git setup is no longer anonymous.",
+    "Recorded under the wrong address? The new vibe-cognition-remap-identity command corrects past attribution, dry-run by default."
+  ],
+  "0.36.3": [
+    "Fixed: non-git projects (for example Subversion) now get .cognition/.gitignore, so machine-local files like last-seen.json stop being committed by accident. Upgrading repairs an affected checkout.",
+    "New Subversion guidance: SVN cannot union-merge the journal, so concurrent appends conflict. Ask Claude for the 'Team setup (svn)' section for the keep-both-sides rule and ignore setup."
+  ],
+  "0.36.2": [
+    "Lifecycle diagnostics now retain client and sidecar supervisor identity details in startup logs for Claude Code and Codex, including when sidecar stderr is discarded.",
+    "Logging only: no new shutdown watches or process-exit changes. These diagnostics support investigation; this release does not fix orphaned processes."
+  ],
+  "0.33.0": [
+    "You can now store durable per-machine environment facts about yourself (project root, OS, tool choices) so teammates' sessions detect setup divergence -- ask Claude to remember an environment fact.",
+    "Facts are self-only to write, open to read, and always disclosed when stored; ask Claude to remove any of them at any time (one call forgets everything).",
+    "Your machines are tracked separately (hostname-keyed, capped at 10) -- facts live in small per-person files under .cognition/people/, committed like the journal."
+  ],
+  "0.31.0": [
+    "Groundwork for fixing leaked server processes: the server now identifies its real client and logs stale siblings (report-only -- nothing is acted on, exit behavior is unchanged).",
+    "get_status now includes a machine-wide stale-server sweep so you can see leaked vibe_cognition processes at a glance."
+  ],
+  "0.32.0": [
+    "Vector embeddings (chromadb) now live in the plugin's data dir, not inside your repo -- the .cognition/chromadb folder in your projects is no longer used and is SAFE TO DELETE.",
+    "Embeddings rebuild automatically at the new location the first time each project opens (one-time; larger graphs take a few minutes). Your journal and documents stay in the repo as before."
+  ],
+  "0.29.0": [
+    "Session-start now checks once a day for a newer released plugin version and shows a one-line reminder if you're behind (disable with VIBE_UPDATE_NUDGE=off).",
+    "Nothing is installed automatically -- updating is always your call; the reminder just tells you the exact /plugin update command to run."
+  ],
+  "0.30.0": [
+    "After an update, session-start shows a summary of what's new since your last session (disable with VIBE_WHATS_NEW=off).",
+    "The summary is curated and short -- full details always live in CHANGELOG.md."
+  ],
+  "0.36.0": [
+    "Codex parity: curation ($vibe-curate) and backfill ($vibe-backfill) now run on Codex, the Plan agent is installed as a Codex role, and the daily update check works against the Codex marketplace.",
+    "Edge writes now require a curation-session token minted by cognition_begin_curation, so only the curate-orchestrator can link nodes; every accepted edge records its session.",
+    "Skills and agents are rendered per harness from one set of sources (skills-src/, agents-src/) -- edit those, run tools/render_harness.py, and CI keeps both renders in step (see PARITY.md)."
+  ],
+  "0.35.0": [
+    "vibe-cognition now installs into OpenAI Codex CLI as a plugin: codex plugin marketplace add Haagndaazer/colton-claude-plugins, then codex plugin add vibe-cognition@coltondyck; restart Codex once.",
+    "On Codex the session-start hook registers the MCP server bound to whatever project you open, injects the project digest, and re-injects the standing practices after /compact."
+  ],
+  "0.36.1": [
+    "Docs: how to share your Claude Code skills with Codex without duplicating them -- link .agents/skills to .claude/skills (README, Codex CLI section, and the cognition_readme guide)."
+  ]
+}

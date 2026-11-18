@@ -1,0 +1,529 @@
+"""Configuration management for Vibe Cognition."""
+
+import hashlib
+import logging
+import os
+import re
+from pathlib import Path
+from typing import Literal
+
+from pydantic import AliasChoices, Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger(__name__)
+
+_warned = {"chromadb_dir": False}
+
+
+def _default_repo_path() -> Path:
+    """Default repository path when REPO_PATH is not set explicitly.
+
+    Claude Code injects ``CLAUDE_PROJECT_DIR`` into a plugin's spawned MCP
+    server environment, so prefer it; fall back to the current working
+    directory for non-plugin / manual launches.
+    """
+    env_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+    return Path(env_dir) if env_dir else Path.cwd()
+
+
+def resolve_repo_path_env(*, default: Path | None = None) -> Path:
+    """Read the REPO_PATH env var directly, absent-OR-empty-safe.
+
+    THE single such read (WP-6, b603f667130f) — prime.py, backfill.py, and
+    dashboard/cli.py each read this independently for their standalone-CLI
+    entry points (they don't go through the full ``Settings`` class), and
+    only cli.py's ``or``-guarded read actually handled an explicitly-empty
+    value; the others used ``os.environ.get("REPO_PATH", Path.cwd())``, whose
+    default only fires when the KEY IS ABSENT — an explicitly-empty
+    ``REPO_PATH`` (e.g. an unresolved ``${CLAUDE_PROJECT_DIR}`` substitution)
+    passed straight through as ``""``. ``Path("")`` silently aliases to the
+    current working directory (a pathlib quirk — ``Path("") == Path(".")``),
+    which for the plugin's ``uv run --directory`` launch IS the plugin's own
+    install root, not the user's project: ``.cognition/`` would get created
+    in the wrong place, silently. (The ``Settings.repo_path`` field itself
+    gets the equivalent protection via ``env_ignore_empty`` below — this
+    helper is for the non-Settings entry points.)
+    """
+    value = os.environ.get("REPO_PATH")
+    if value:
+        return Path(value)
+    return default if default is not None else Path.cwd()
+
+
+def project_store_key(repo_path: Path) -> str:
+    """Stable per-project subdirectory name under the shared vector-store root.
+
+    THE single key derivation (WP-Chroma-Home) — server lifespan, the
+    dashboard CLI, and cognition_load_project must all go through this (via
+    resolve_vectors_dir/resolve_foreign_vectors_dir), or plugin-launched
+    and standalone launches of the same project silently diverge into
+    different directories.
+
+    ``normcase`` folds Windows case-insensitive spellings of the same path to
+    one key. The readable slug is best-effort debugging aid only — identity
+    lives in the hash — so filesystem-hostile characters and Windows-hostile
+    trailing dots/spaces are stripped rather than preserved.
+    """
+    resolved = Path(repo_path).resolve()
+    digest = hashlib.sha256(os.path.normcase(str(resolved)).encode("utf-8")).hexdigest()[:12]
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", resolved.name).strip("-. ")[:40]
+    return f"{slug}-{digest}" if slug else digest
+
+
+def _home_plugins_data_dir() -> Path:
+    """Claude Code's per-plugin data root (discovery seam — tests patch this
+    so the rule-3 glob below can never touch a dev machine's real ~/.claude)."""
+    return Path.home() / ".claude" / "plugins" / "data"
+
+
+def resolve_store_data_root() -> Path | None:
+    """The plugin-data root that keyed vector-store dirs live under, or None.
+
+    Resolution (WP-Chroma-Home): VIBE_DATA_DIR (the explicit plugin.json
+    entry — the only PROVEN channel is ${CLAUDE_PLUGIN_DATA} substitution
+    there; bare-var auto-injection into MCP servers is unevidenced) → bare
+    CLAUDE_PLUGIN_DATA as a defensive second read → glob discovery of
+    ~/.claude/plugins/data/vibe-cognition-* for env-less launches (standalone
+    dashboard CLI, dev shells), used ONLY on an unambiguous single match —
+    two marketplaces both providing the plugin means two matches, and
+    guessing between them would silently split a project's vectors.
+
+    Empty-string env values are treated as absent (the same present-but-empty
+    trap resolve_repo_path_env documents), hence the truthiness checks.
+    """
+    for var in ("VIBE_DATA_DIR", "CLAUDE_PLUGIN_DATA"):
+        value = os.environ.get(var)
+        if value:
+            return Path(value)
+    try:
+        matches = [p for p in _home_plugins_data_dir().glob("vibe-cognition-*") if p.is_dir()]
+    except OSError:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def resolve_vectors_dir(repo_path: Path) -> Path:
+    """The vector-store directory for the HOME project at ``repo_path``.
+
+    VIBE_VECTORS_DIR (exact directory, no keying -- tests and power users)
+    -> ``<data root>/vectors/<project key>`` when a data root resolves
+    -> ``<repo>/.cognition/local/vectors`` as the last resort (no plugin install
+    discoverable: CI, bare dev shells), inside the already-ignored ``local/``.
+    VIBE_CHROMADB_DIR is no longer read: it named a chromadb directory, and
+    pointing the new store there would mix two formats in one folder.
+    """
+    override = os.environ.get("VIBE_VECTORS_DIR")
+    if override:
+        return Path(override)
+    if os.environ.get("VIBE_CHROMADB_DIR") and not _warned["chromadb_dir"]:
+        _warned["chromadb_dir"] = True
+        logger.warning("VIBE_CHROMADB_DIR is no longer used; set VIBE_VECTORS_DIR instead")
+    root = resolve_store_data_root()
+    if root is not None:
+        return root / "vectors" / project_store_key(repo_path)
+    return Path(repo_path) / ".cognition" / "local" / "vectors"
+
+
+def resolve_foreign_vectors_dir(repo_path: Path) -> Path | None:
+    """The vector-store directory to READ for a foreign project, or None.
+
+    Deliberately ignores VIBE_VECTORS_DIR: that override names ONE exact
+    directory for the home project, and honoring it here would collapse home
+    and foreign stores into one. The keyed data-root dir wins when it exists,
+    then the project's in-repo fallback; None when the project has never been
+    opened on a version that writes this store.
+    """
+    root = resolve_store_data_root()
+    if root is not None:
+        keyed = root / "vectors" / project_store_key(repo_path)
+        if keyed.exists():
+            return keyed
+    local = Path(repo_path) / ".cognition" / "local" / "vectors"
+    return local if local.exists() else None
+
+
+class Settings(BaseSettings):
+    """Application settings loaded from environment variables."""
+
+    model_config = SettingsConfigDict(
+        # No env_file: it would resolve against the process's cwd, which for
+        # every project's server is the SHARED plugin root (`uv run
+        # --directory`) — a project-level .env would be inert, and a
+        # plugin-root .env would silently become global config for every
+        # project (WP-6, d4a153f23a4c). Config is env-var-only; document that
+        # rather than resolve a per-project .env path (ambiguous/circular:
+        # repo_path isn't known until this class is built).
+        env_ignore_empty=True,  # WP-6 (b603f667130f): "" is absent, not an override
+        extra="ignore",
+    )
+
+    # Repository settings
+    repo_path: Path = Field(
+        default_factory=_default_repo_path,
+        description="Path to the repository to index",
+    )
+    repo_name: str | None = Field(
+        default=None,
+        description="Name of the repository (defaults to directory name)",
+    )
+    log_level: str = Field(
+        default="INFO",
+        description="Logging level",
+    )
+
+    # Version-control hygiene settings
+    vibe_cognition_no_vcs_hygiene: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "VIBE_COGNITION_NO_VCS_HYGIENE", "VIBE_COGNITION_NO_GIT_HYGIENE",
+        ),
+        description=(
+            "Set to a truthy value to suppress BOTH automatic version-control "
+            "passes: git (.gitattributes merge=union, .cognition/.gitignore) and "
+            "SVN (adding .cognition/, its svn:global-ignores property, and "
+            "scheduling new files). Use this in single-shared-checkout git repos "
+            "where union-merge is the wrong topology, or to manage SVN by hand. "
+            "VIBE_COGNITION_NO_GIT_HYGIENE is the older name and still works. "
+            "Documents the variable: git_hygiene.vcs_hygiene_opted_out reads the "
+            "environment directly, since the hygiene modules never build Settings."
+        ),
+    )
+    vibe_cognition_no_git_hygiene: bool = Field(
+        default=False,
+        description="Deprecated name for vibe_cognition_no_vcs_hygiene; still honoured.",
+    )
+
+    # WP-Nudge-1: session-start "new version available" nudge (see
+    # update_check.py). This field is documentation/config-surface for the
+    # SAME env var the SessionStart hook and update_check.py's CLI both read
+    # directly (update_check.py is stdlib-only and never constructs a
+    # Settings instance) -- not a separate config channel. Plain bool, not
+    # the prime knobs' Literal["auto","on","off"] tri-state.
+    vibe_update_nudge: bool = Field(
+        default=True,
+        description=(
+            "Whether the session-start hook checks for a newer released "
+            "plugin version and surfaces a one-line update nudge. Default on "
+            "-- the point is users stay on latest; the nudge itself names "
+            "this switch. Set VIBE_UPDATE_NUDGE=off to disable."
+        ),
+    )
+
+    # WP-WhatsNew-1: post-update "what's new" notice (see whats_new.py). Same
+    # documentation/config-surface pattern as vibe_update_nudge -- whats_new.py
+    # is stdlib-only and reads VIBE_WHATS_NEW directly, never via Settings.
+    vibe_whats_new: bool = Field(
+        default=True,
+        description=(
+            "Whether the session-start hook shows a 'what's new' summary "
+            "after a plugin update (repeated until an agent confirms it told "
+            "the user, at most 5 times). Default on. Set VIBE_WHATS_NEW=off "
+            "to disable."
+        ),
+    )
+
+    # WP-EnvFacts-A: per-person environment facts (.cognition/people/ files).
+    env_fact_machine_cap: int = Field(
+        default=10,
+        description=(
+            "Maximum distinct machine entries per person in the env-facts "
+            "store. At the cap a write for a NEW machine is rejected with a "
+            "retryable error naming the prune remedy (never silent eviction). "
+            "Set via ENV_FACT_MACHINE_CAP."
+        ),
+    )
+
+    # Embedding backend settings
+    embedding_backend: Literal["sentence-transformers", "ollama"] = Field(
+        default="sentence-transformers",
+        description="Embedding backend to use",
+    )
+    embedding_model: str = Field(
+        default="nomic-ai/nomic-embed-text-v1.5",
+        description="Model name for sentence-transformers backend",
+    )
+    embedding_dimensions: int = Field(
+        default=768,
+        description="Embedding vector dimensions",
+    )
+    embedding_revision: str | None = Field(
+        default=None,
+        description=(
+            "HuggingFace Hub revision (branch, tag, or full commit SHA) for the "
+            "sentence-transformers model. When set, pins the remote code loaded via "
+            "trust_remote_code=True to a specific commit — recommended for production. "
+            "Set via EMBEDDING_REVISION env var. Default None = use the model hub HEAD."
+        ),
+    )
+
+    # WP-Wedge-2 §W2-f: dispatch-stall self-forensics threshold, env-
+    # overridable per existing conventions (DISPATCH_STALL_THRESHOLD).
+    dispatch_stall_threshold: float = Field(
+        default=30.0,
+        description=(
+            "Seconds an in-flight tool dispatch may run during the load "
+            "window or a degraded state before an all-thread stack dump is "
+            "written to stderr (once per process). Set via "
+            "DISPATCH_STALL_THRESHOLD env var."
+        ),
+    )
+
+    # WP-Sidecar (P0 endgame): the heavy torch/scipy/sentence_transformers
+    # import lives in a child process the server supervises, never in-process
+    # -- these bound that supervision, all env-overridable per existing
+    # conventions.
+    sidecar_load_timeout: float = Field(
+        default=180.0,
+        description=(
+            "Seconds a single sidecar load attempt (spawn + mutex wait + "
+            "model load) may run before the supervisor kills it as wedged. "
+            "Generous by design -- the server no longer cares how slow a "
+            "load is, only whether it's making progress. Set via "
+            "SIDECAR_LOAD_TIMEOUT env var."
+        ),
+    )
+    sidecar_request_timeout: float = Field(
+        default=30.0,
+        description=(
+            "Seconds a single generate/ping request to a live sidecar may "
+            "run before the supervisor treats it as failed and kills the "
+            "sidecar. Set via SIDECAR_REQUEST_TIMEOUT env var."
+        ),
+    )
+    sidecar_mutex_wait_timeout: float = Field(
+        default=300.0,
+        description=(
+            "Seconds the sidecar waits to acquire the cross-process model-"
+            "load mutex before proceeding WITHOUT it (stampede risk beats "
+            "never loading). Set via SIDECAR_MUTEX_WAIT_TIMEOUT env var."
+        ),
+    )
+    sidecar_max_retry_attempts: int = Field(
+        default=3,
+        description=(
+            "In-budget kill+respawn attempts before the supervisor degrades "
+            "(after which recovery is lazy-on-demand + slow periodic retry, "
+            "never permanent). Set via SIDECAR_MAX_RETRY_ATTEMPTS env var."
+        ),
+    )
+    sidecar_retry_backoff_seconds: float = Field(
+        default=10.0,
+        description=(
+            "Seconds to wait between in-budget retry attempts. Set via "
+            "SIDECAR_RETRY_BACKOFF_SECONDS env var."
+        ),
+    )
+    sidecar_periodic_retry_interval: float = Field(
+        default=300.0,
+        description=(
+            "Seconds between slow periodic recovery attempts once degraded "
+            "-- production evidence says wedged loads eventually succeed, "
+            "so recovery must never be permanent. Also the max delay before "
+            "an on-demand recovery attempt is woken early by an actual "
+            "embedding request. Set via SIDECAR_PERIODIC_RETRY_INTERVAL "
+            "env var."
+        ),
+    )
+
+    # Ollama settings (embeddings backend only)
+    ollama_base_url: str = Field(
+        default="http://localhost:11434",
+        description="Ollama server base URL",
+    )
+    ollama_model: str = Field(
+        default="nomic-embed-text",
+        description="Ollama model name for embeddings",
+    )
+
+    # Session-start prime digest settings (see cognition/prime.py PrimeConfig).
+    # Defaults here MUST equal PrimeConfig's defaults — a Settings build failure
+    # falls back to PrimeConfig() and must degrade to the same trimmed output.
+    prime_constraint_limit: int = Field(
+        default=5,
+        description="Max constraints shown in the session-start prime digest",
+    )
+    prime_task_cap: int = Field(
+        default=5,
+        description="Max open tasks shown in the session-start prime digest",
+    )
+    prime_pattern_limit: int = Field(
+        default=3,
+        description="Max recent patterns shown in the session-start prime digest",
+    )
+    prime_decision_limit: int = Field(
+        default=3,
+        description="Max recent decisions shown in the session-start prime digest",
+    )
+    prime_incident_days: int = Field(
+        default=14,
+        description="Incident lookback window (days) for the session-start prime digest",
+    )
+    prime_summary_maxlen: int = Field(
+        default=110,
+        description="Max chars per bullet summary in the prime digest (0 = no truncation)",
+    )
+    prime_incident_min_severity: Literal["critical", "high", "normal", "low"] = Field(
+        default="high",
+        description="Minimum incident severity shown in the prime digest (severity or higher)",
+    )
+    prime_workflow_limit: int = Field(
+        default=5,
+        description="Max workflow HEAD titles shown in the session-start prime digest",
+    )
+
+    # WP-P13n-2: per-git-user prime personalization. Global sections (constraints,
+    # workflows, documents, patterns, decisions, incidents) are unaffected; these
+    # knobs only govern the personalized task split + the new "Your Recent Activity"
+    # section, both gated on `prime_personalize` and a resolvable git email.
+    prime_personalize: Literal["auto", "on", "off"] = Field(
+        default="auto",
+        description=(
+            "Prime personalization mode. 'auto': personalize when the graph has "
+            "more than one distinct stamped git-identity email OR more than one "
+            "registered person (WP-OnboardPayoff -- catches a team's "
+            "first-onboarded-member case where every node so far was written by "
+            "one person but several people are now registered); a solo graph "
+            "gets the unchanged global digest either way. 'on': force "
+            "personalized sections whenever the current git identity resolves "
+            "an email; 'off': always the global digest. Set via "
+            "PRIME_PERSONALIZE env var."
+        ),
+    )
+    prime_your_tasks_cap: int = Field(
+        default=5,
+        description="Max tasks shown in 'Your Open Tasks' (personalized mode)",
+    )
+    prime_team_critical_cap: int = Field(
+        default=5,
+        description=(
+            "Max tasks shown in 'Team Critical' (personalized mode): open "
+            "critical/high tasks not already listed under 'Your Open Tasks'"
+        ),
+    )
+    prime_your_episode_limit: int = Field(
+        default=5,
+        description="Max of your own recent episodes shown in 'Your Recent Activity'",
+    )
+    prime_your_decision_limit: int = Field(
+        default=5,
+        description="Max of your own recent decisions shown in 'Your Recent Activity'",
+    )
+    prime_your_discovery_limit: int = Field(
+        default=5,
+        description="Max of your own recent discoveries shown in 'Your Recent Activity'",
+    )
+
+    # WP-TC7: prime-triggered new-user onboarding.
+    prime_onboard: bool = Field(
+        default=True,
+        description=(
+            "Show the new-user onboarding notice in the session-start prime digest "
+            "when the current git identity's email has no matching person node and "
+            "hasn't declined (.cognition/onboard-declined). Kill switch — the "
+            "per-human path is the decline file, not this env var."
+        ),
+    )
+
+    # WP-TC16: role-aware prime (manager rollup / subordinate view). Sections
+    # self-gate on role existence (reports_to_email) — no separate on/off knob.
+    prime_stale_claim_days: int = Field(
+        default=7,
+        description=(
+            "A direct report's in_progress claim is 'stale' in 'Your Team' once its "
+            "claim age is STRICTLY greater than this many days (exactly this many "
+            "days old is not yet stale). A null/legacy claimed_at is never stale."
+        ),
+    )
+    prime_rollup_cap: int = Field(
+        default=5,
+        description="Max rows shown in 'Your Team' (manager rollup), stale first",
+    )
+    prime_manager_decision_limit: int = Field(
+        default=3,
+        description="Max decisions shown in 'Your Manager's Recent Decisions'",
+    )
+
+    # WP-TC14: "Since You Were Gone" digest. Self-gates on personalize (no
+    # separate on/off knob) -- see PrimeConfig for the full description.
+    prime_digest_cap: int = Field(
+        default=5,
+        description="Max rows shown in 'Since You Were Gone', newest-first across decisions/constraints/incidents",
+    )
+    prime_digest_fallback_days: int = Field(
+        default=7,
+        description=(
+            "Capped lookback window for 'Since You Were Gone' when no per-email "
+            "last-seen marker exists yet (first run, ephemeral sandbox, or a "
+            "corrupted/malformed marker) -- never a full-history dump."
+        ),
+    )
+
+    @field_validator("repo_path", mode="before")
+    @classmethod
+    def validate_repo_path(cls, v: str | Path) -> Path:
+        """Convert string to Path and validate it exists.
+
+        WP-6 (b603f667130f) defense in depth: reject an explicitly-empty
+        string BEFORE it reaches ``Path()`` — ``Path("")`` silently aliases
+        to ``Path(".")`` (a pathlib quirk), which trivially exists and is a
+        directory, so the checks below would NOT have caught it; the
+        resolved cwd (the plugin's own install root under ``uv run
+        --directory``, not the user's project) would have passed straight
+        through. ``env_ignore_empty`` on ``model_config`` already stops an
+        empty ``REPO_PATH`` env var from reaching this validator in the
+        normal case; this catches it too if ``Settings`` is ever constructed
+        with an explicit empty value some other way.
+        """
+        if isinstance(v, str) and not v.strip():
+            raise ValueError(
+                "repo_path resolved to an empty string — Path('') silently "
+                "aliases to the current working directory (a pathlib quirk), "
+                "which is almost certainly NOT the intended project root"
+            )
+        path = Path(v) if isinstance(v, str) else v
+        if not path.exists():
+            raise ValueError(f"Repository path does not exist: {path}")
+        if not path.is_dir():
+            raise ValueError(f"Repository path is not a directory: {path}")
+        return path.resolve()
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def validate_log_level(cls, v: str) -> str:
+        """Validate log level is valid."""
+        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        upper_v = v.upper()
+        if upper_v not in valid_levels:
+            raise ValueError(f"Invalid log level: {v}. Must be one of {valid_levels}")
+        return upper_v
+
+    @property
+    def effective_repo_name(self) -> str:
+        """Get the repository name, defaulting to directory name."""
+        return self.repo_name or self.repo_path.name
+
+    @property
+    def cognition_dir(self) -> Path:
+        """Get the cognition graph storage directory (Git-committed)."""
+        return self.repo_path / ".cognition"
+
+    @property
+    def cognition_vectors_path(self) -> Path:
+        """The vector-store directory (machine-local, regenerable from the journal).
+
+        Outside the repo by default, under the plugin data dir
+        (``${CLAUDE_PLUGIN_DATA}/vectors/<project-key>``); see resolve_vectors_dir
+        for the full resolution order.
+        """
+        return resolve_vectors_dir(self.repo_path)
+
+
+def setup_logging(level: str) -> None:
+    """Configure logging for the application."""
+    logging.basicConfig(
+        level=getattr(logging, level),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )

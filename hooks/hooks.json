@@ -1,0 +1,27 @@
+{
+  "description": "Vibe Cognition — project knowledge graph hooks",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\"",
+            "timeout": 600
+          }
+        ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/reinject-instructions.sh\"",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

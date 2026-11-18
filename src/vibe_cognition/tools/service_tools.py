@@ -1,0 +1,425 @@
+"""MCP service tools for Vibe Cognition server status."""
+
+import logging
+from typing import Any
+
+from fastmcp import Context
+
+from .. import harness
+from ..running_version import running_report
+from .dispatch import dispatch_tool
+from .project_registry import LoadedProjects
+from .utils import get_lifespan
+
+logger = logging.getLogger(__name__)
+
+
+def register_service_tools(mcp) -> None:
+    """Register service tools with the MCP server.
+
+    Args:
+        mcp: FastMCP server instance
+    """
+
+    @dispatch_tool(mcp)
+    def get_status(ctx: Context) -> dict[str, Any]:
+        """Get the current status of the Vibe Cognition server.
+
+        Returns cognition graph statistics, embedding model status, journal
+        rehydrate-reset events, and cross-project registry state.
+
+        Returns:
+            {
+              repo_name: str,
+              running_code: {version: str | None, path: str,
+                             installed_version: str | None,
+                             matches: bool | None}
+                            -- the code THIS server process is actually running,
+                            read from its own pyproject.toml, versus the version
+                            the host installed. `matches: false` means the server
+                            started on a previous version after a plugin update
+                            and none of the installed version's fixes apply until
+                            the session is restarted -- tell the user. `matches`
+                            is null when the installed version is unknown (a dev
+                            checkout, or a host that does not pass the plugin
+                            root).
+              repo_path: str,
+              vectors_path: str,   # the vector store's active database file,
+                                   # under the plugin data dir by default
+                                   # (<data>/vectors/<project key>/vectors-<g>.sqlite3),
+                                   # NOT inside the repo
+              chromadb_path: str,  # DEPRECATED alias, removed in a later release:
+                                   # the vector store's DIRECTORY (the folder
+                                   # holding vectors_path), kept so older readers
+                                   # still find where the index lives
+              vector_store: {state: "ok" | "unavailable" | "newer-schema",
+                             generation: int, path: str, reason: str | None,
+                             quarantined: [{generation, at, reason}],
+                             failed_writes: int}
+                            -- health of the search index. "unavailable": the
+                            store could not be opened or is damaged beyond
+                            automatic repair (reason says why); search reports
+                            semantic_unavailable meanwhile and graph tools keep
+                            working. "newer-schema": written by a newer plugin
+                            version, left untouched. quarantined lists damaged
+                            generations that were set aside and rebuilt from the
+                            journal (their files stay on disk; the .sqlite3,
+                            -wal and -shm files of a listed generation may be
+                            deleted once no session is open, never its .corrupt
+                            marker). failed_writes counts vectors this process
+                            could not store (busy or unavailable store); they
+                            are filled from the journal by a re-sync once the
+                            store works again. {"error": ...} when not
+                            initialized.
+              roster: {people: int, from_profiles: int,
+                       unmigrated_person_nodes: int, removed: int,
+                       incomplete_profiles: list[str]}
+                      -- who is on the project. Read THIS for roster size, not
+                      cognition_graph["person"]: since v0.38.0 the roster is
+                      committed profiles under .cognition/people/, and that node
+                      count is only whatever legacy `person` nodes have not been
+                      cleaned up yet. `unmigrated_person_nodes` is how many roster
+                      rows still come from such a node; `removed` counts people
+                      deliberately taken off the roster (tombstoned, so they stay
+                      off); `incomplete_profiles` names anyone whose profile is
+                      missing a required field, and who is therefore still
+                      refused writes. {"error": ...} when storage is not
+                      initialized.
+              cognition_graph: {nodes, edges, <count per node type>,
+                                edge_<count per edge type>, uncurated,
+                                edges_outside_curation: int, edge_sources:
+                                dict[str, int]}
+                               (or {"error": ...} if storage is not initialized).
+                               Counts cover only what this checkout's confirmed
+                               identity can see: teammates' personal constraints
+                               (and their edges) are left out.
+                               edges_outside_curation (WP-TC15) is a
+                               curation-containment smoke detector: only the
+                               background curate-orchestrator agent (via
+                               /vibe-curate) is meant to write semantic edges
+                               (cognition_add_edge / cognition_add_edges_batch);
+                               this counts edges whose `source` is NOT one of
+                               the known-legitimate values -- "deterministic"
+                               (auto part_of/relates_to), "task-parent" (task
+                               parenting), "curate-skill"/"curate-conflict"/
+                               "curate-cluster" (the curator's own passes), or
+                               "curator" (legacy default, exempted so an
+                               existing graph doesn't show a false baseline).
+                               "manual", "batch" (the tools' own defaults when
+                               a caller doesn't pass source=), and any other
+                               unrecognized value all count -- conservative by
+                               construction, a new legitimate producer must be
+                               exempted deliberately in code. edge_sources is
+                               the full histogram (every source value seen,
+                               including the exempt ones) so a nonzero count is
+                               always interpretable at a glance. Both keys are
+                               always present, even on a zero-edge graph ({}
+                               and 0). This is a visibility signal only, not
+                               an enforcement mechanism -- source is
+                               caller-declared and a deliberate misreport is
+                               out of scope (local trust domain). Remediation
+                               when edges_outside_curation is nonzero: inspect
+                               edge_sources for which value(s) are driving it;
+                               an accidental "manual"/"batch" edge from a
+                               one-off script or hand-edit is removed with
+                               cognition_remove_edge, or -- if it's intentional
+                               and meant to stay -- simply documented as an
+                               accepted baseline deviation (there is no
+                               "approve" flag). A LOW edges_outside_curation
+                               count is not itself a problem to fix -- the
+                               opposite miss (semantic edges that SHOULD exist
+                               but don't because /vibe-curate hasn't run
+                               recently) isn't visible here at all; re-run
+                               /vibe-curate periodically regardless of this
+                               count,
+              harness: {name: "claude-code" | "codex", display_name, skill_prefix
+                        ("/" or "$"), spawn_tool, curation_available, manifest_path,
+                        containment, models: {small: {model, source}, mid: {model,
+                        source}}} -- the harness policy resolved from VIBE_HARNESS;
+                        ``source`` is "default", "env" (a VIBE_MODEL_* override),
+                        or "env:inherit". Agents read ``models`` here to pin
+                        subagent models instead of hardcoding names,
+              curation_sessions: {started: int, writes: int} -- curation sessions
+                                 minted by cognition_begin_curation IN THIS SERVER
+                                 PROCESS (lifetime counts, not live) and the edges
+                                 plus curated marks they wrote. Process-local: a
+                                 launcher whose orchestrator runs against another
+                                 server process (Codex spawns one per agent
+                                 thread) sees 0/0 here while the graph gains
+                                 session-stamped edges -- use
+                                 cognition_graph.uncurated, edge_sources, and the
+                                 edge's ``curation_session`` as the cross-process
+                                 evidence,
+              journal.repair: {healed_lines, retained_files} (WP-Append-Only-Replay).
+                              healed_lines counts entries this checkout wrote that a
+                              rolled-back journal file had lost and that were appended
+                              back from this machine's own record -- tell the human and
+                              ask them to COMMIT the file. retained_files names files
+                              this checkout may NOT repair (a teammate's shard, the
+                              frozen legacy journal) that no longer hold entries already
+                              replayed here: those entries are still in the graph but not
+                              on disk, and their owner has to restore the file. Both are
+                              from the latest rebuild; an untouched project reports 0
+                              and [].
+              rehydrate_events: null when no journal rehydrate-reset has occurred
+                                in this server process; otherwise
+                                {count: int, last: {at, nodes_before, nodes_after,
+                                nodes_lost, sample_missing_ids}}. A rehydrate-reset
+                                means the journal shrank or was replaced under the
+                                live server and the in-memory graph was rebuilt
+                                from disk; nodes_lost is computed by NODE IDENTITY
+                                (nodes present before the reset but absent after),
+                                not by count — a replacement journal can have MORE
+                                total nodes while still having dropped one of
+                                ours. sample_missing_ids is up to 5 of the lost
+                                node ids, for diagnosis,
+              journal: {legacy_journal_bytes: int | None,
+                        shards: [{file: str, bytes: int}],
+                        writing_to: str | None,
+                        adopted_at: str | None,
+                        stragglers: {adopted_at, entries_after_adoption, latest_at,
+                                     authors: list[str]} | None,
+                        unresolved_entries: int, id_collisions: int,
+                        glued_lines: int}
+                       -- where the graph comes from. Since v0.41.0 each person
+                       appends only to their own file under .cognition/journal/;
+                       the legacy .cognition/journal.jsonl is read but never
+                       written. `writing_to` is this checkout's shard (null with no
+                       confirmed identity: writes are refused). `stragglers` is
+                       non-null when someone on an older plugin version wrote to the
+                       legacy journal after the project switched -- tell the user
+                       who needs to update. `unresolved_entries` counts entries
+                       whose target node is in no journal file; `id_collisions`
+                       counts two different nodes sharing an id (the earlier is
+                       kept); `glued_lines` counts lines holding several entries
+                       with no line break between them (all read; the file should
+                       be repaired). {"error": ...} when storage is not initialized.
+              cognition_embeddings: {nodes, chunks, total}
+                                    (or {"error": ...}; 0 if uninitialized),
+              embedding_status: "spawning" | "loading" | "waiting-for-load-lock" |
+                                "syncing" | "ready" | "error: <detail>". The first
+                                three (WP-Sidecar) apply to the non-ollama backend
+                                only: "spawning" while the sidecar subprocess is
+                                starting, "waiting-for-load-lock" while it queues
+                                behind another session's model load on the cross-
+                                process mutex, "loading" once it holds the lock and
+                                is actually loading. ollama (no sidecar) only ever
+                                reports "loading" pre-ready, unchanged.
+                                "syncing" (WP-4, 5340ae677931) means the embedding
+                                model is loaded and tools are usable, but the
+                                historical backfill sync (teammate-pulled nodes
+                                not yet embedded) hasn't finished — search may be
+                                silently incomplete during this window. It stays
+                                "syncing" after a pass that stopped early (the
+                                vector store or the embedding model stopped
+                                answering) until a later pass finishes; passes are
+                                retried with a backoff of up to 10 minutes for as
+                                long as the store or model stays down. embedding_
+                                ready (tool availability) still fires BEFORE sync
+                                starts, unchanged; "syncing" is purely a visibility
+                                signal, not a new gate,
+              embedding_sync_progress: null before the sync PASS finishes (covers
+                                both "still loading" and "still syncing") and after
+                                a pass that stopped early; once it
+                                finishes, {nodes, workflows, documents} counts of
+                                what THAT pass attempted to (re)embed (0/0/0 if
+                                nothing was missing, or if no pass can run here: a
+                                store from a newer plugin version, or a model or
+                                dimension mismatch),
+              home_model_drift: null when the home embedding collection's stored
+                                model/dims match this process's configured
+                                embedding_model/embedding_dimensions (the common
+                                case); otherwise {state: "dim-mismatch" |
+                                "model-mismatch" | "unknown", warning: str}.
+                                A non-null state means cognition_search on the
+                                home project (project=None) is degraded or
+                                unavailable — see its docstring. "unknown" means
+                                degraded-confidence (pre-stamp collection, search
+                                still runs); the mismatch states mean search
+                                short-circuits to an honest empty result. May be
+                                stale for a few seconds after startup (the check
+                                runs in the background init thread, same as
+                                embedding model load, before this field settles),
+              stale_server_sweep: dict | None,  # MACHINE-WIDE (all sessions/
+                                # projects, INCLUDES this server) sweep of live
+                                # vibe_cognition.server processes, deduped to
+                                # real interpreters. Log-only telemetry: nothing
+                                # is ever acted on. Keys: server_count (int),
+                                # server_pids (list[int]), oldest_server_age_
+                                # seconds (float|null), unverified_interpreter_
+                                # count (int: uv-managed pythons whose command
+                                # line was unreadable -- possible over-count,
+                                # reported separately, never folded in), method
+                                # ("cmdline" | "cmdline+image-only-degraded"),
+                                # own_pid (int), scope (str label). On POSIX:
+                                # {"skipped": "posix"}; {"error": str} on sweep
+                                # failure. Null until the background init
+                                # thread has run the sweep (~seconds after
+                                # startup). A count > live session count
+                                # suggests leaked/stale servers -- surface to
+                                # the human; do NOT kill anything.
+              loaded_foreign_projects: int,   # count of loaded foreign projects
+                                              # (use cognition_list_projects for
+                                              # details; absent if no registry)
+              curation: str,  # reminder: /vibe-curate launches the background
+                              # curate-orchestrator agent that does the linking
+            }
+        """
+        lc = get_lifespan(ctx)
+        config = lc.get("config")
+        cognition_storage = lc.get("cognition_storage")
+        cognition_embedding_storage = lc.get("cognition_embedding_storage")
+        registry: LoadedProjects | None = lc.get("loaded_projects")
+
+        result: dict[str, Any] = {
+            "repo_name": config.effective_repo_name if config else "unknown",
+            "repo_path": str(config.repo_path) if config else "unknown",
+        }
+
+        # The store lives outside the repo, so "where did my vectors go" must be
+        # answerable from here. getattr: test lifespans stub config with a
+        # SimpleNamespace that has no such property.
+        vectors_dir = getattr(config, "cognition_vectors_path", None)
+        store_status: dict[str, Any] | None = None
+        if cognition_embedding_storage is not None and hasattr(cognition_embedding_storage, "status"):
+            try:
+                store_status = cognition_embedding_storage.status()
+            except Exception as e:  # noqa: BLE001
+                store_status = {"error": str(e)}
+        if store_status is not None and "path" in store_status:
+            result["vectors_path"] = store_status["path"]
+        else:
+            result["vectors_path"] = "unknown"
+        result["chromadb_path"] = str(vectors_dir) if vectors_dir is not None else "unknown"
+        result["vector_store"] = store_status if store_status is not None else {"error": "not initialized"}
+        result["running_code"] = running_report()
+
+        # Cognition graph stats
+        if cognition_storage:
+            result["cognition_graph"] = cognition_storage.get_statistics()
+        else:
+            result["cognition_graph"] = {"error": "not initialized"}
+
+        # The roster is no longer graph content, so cognition_graph["person"]
+        # counts LEFTOVER legacy nodes and says nothing about who is on the team.
+        # Reading it as the roster size is the mistake this block prevents.
+        if cognition_storage:
+            roster = cognition_storage.roster()
+            incomplete = [
+                p.email for p in roster.all()
+                if cognition_storage.profile_missing_required(p.email)
+            ]
+            result["roster"] = {
+                "people": len(roster.people),
+                "from_profiles": sum(1 for p in roster.all() if p.source == "profile"),
+                "unmigrated_person_nodes": sum(
+                    1 for p in roster.all() if p.source == "node"
+                ),
+                "removed": len(cognition_storage.removed_profile_emails()),
+                "incomplete_profiles": incomplete,
+            }
+        else:
+            result["roster"] = {"error": "not initialized"}
+
+        # Journal rehydrate-reset events (WP-1 loss visibility): null when none
+        # occurred in this process; otherwise the count plus the last event's
+        # before/after node delta so a silent in-memory loss is diagnosable.
+        if cognition_storage and cognition_storage.last_rehydrate is not None:
+            result["rehydrate_events"] = {
+                "count": cognition_storage.rehydrate_count,
+                "last": cognition_storage.last_rehydrate,
+            }
+        else:
+            result["rehydrate_events"] = None
+
+        if cognition_storage:
+            try:
+                result["journal"] = cognition_storage.journal_status()
+            except Exception as e:  # noqa: BLE001
+                result["journal"] = {"error": str(e)}
+        else:
+            result["journal"] = {"error": "not initialized"}
+
+        # Cognition embedding count — split node vectors vs document chunk vectors
+        # (WP-D2: chunks carry is_chunk=True; don't let them silently inflate the
+        # single count). The public param is filter=, not where= (it maps to the
+        # internal _collection.get(where=)).
+        if cognition_embedding_storage:
+            try:
+                total = cognition_embedding_storage.count_documents()
+                chunks = cognition_embedding_storage.count_documents(filter={"is_chunk": True})
+                result["cognition_embeddings"] = {
+                    "nodes": total - chunks,
+                    "chunks": chunks,
+                    "total": total,
+                }
+            except Exception as e:
+                result["cognition_embeddings"] = {"error": str(e)}
+        else:
+            result["cognition_embeddings"] = 0
+
+        # WP-Lifecycle-2 Stage 1 (F4): machine-wide stale-sibling sweep result,
+        # LOG-ONLY (count + oldest age of live vibe_cognition.server real
+        # interpreters across ALL sessions/projects on this machine — labeled
+        # machine-wide inside the dict itself; nothing is ever acted on). Null
+        # until the background init thread has run the sweep.
+        result["stale_server_sweep"] = lc.get("stale_server_sweep")
+
+        # Home embedding model/dim drift (WP-2): null when clean (the common
+        # case), matching rehydrate_events' null-when-clean shape.
+        home_guard = lc.get("home_model_guard")
+        if home_guard is not None and home_guard != "match":
+            result["home_model_drift"] = {
+                "state": home_guard,
+                "warning": lc.get("home_model_guard_warning"),
+            }
+        else:
+            result["home_model_drift"] = None
+
+        # Embedding model status (WP-4 item 3: "syncing" is a THIRD state
+        # between "loading" and "ready" — embedding_ready fires before the
+        # historical backfill sync starts, unchanged, so without this a
+        # teammate joining an existing graph saw a falsely-confident "ready"
+        # while search was silently incomplete).
+        embedding_ready = lc.get("embedding_ready")
+        embedding_error = lc.get("embedding_error")
+        embedding_sync_done = lc.get("embedding_sync_done")
+        if embedding_error:
+            result["embedding_status"] = f"error: {embedding_error}"
+        elif embedding_ready and embedding_ready.is_set():
+            if embedding_sync_done is not None and not embedding_sync_done.is_set():
+                result["embedding_status"] = "syncing"
+            else:
+                result["embedding_status"] = "ready"
+        else:
+            # WP-Sidecar §S-d: while not yet ready, the sidecar supervisor
+            # (non-ollama backend only) knows a more granular state than the
+            # generic "loading" -- spawning the subprocess, waiting on the
+            # cross-process load mutex, or actually loading the model.
+            # ollama (no supervisor) keeps its unchanged, simpler "loading".
+            supervisor = lc.get("_sidecar_supervisor")
+            result["embedding_status"] = supervisor.status() if supervisor is not None else "loading"
+
+        result["embedding_sync_progress"] = lc.get("embedding_sync_progress")
+
+        # Foreign project count (XP1)
+        if registry is not None:
+            result["loaded_foreign_projects"] = registry.foreign_count()
+
+        hz = harness.current()
+        result["harness"] = hz.status_block()
+        sessions = lc.get("curation_sessions") or {}
+        result["curation_sessions"] = {
+            "started": len(sessions),
+            "writes": sum(int(s.get("writes", 0)) for s in sessions.values()),
+        }
+        if hz.curation_available:
+            result["curation"] = (
+                f"background curate-orchestrator agent, launched via {hz.skill_invoke('vibe-curate')}"
+            )
+        else:
+            result["curation"] = (
+                f"not available on {hz.display_name} yet; record here, curate from Claude Code"
+            )
+
+        return result

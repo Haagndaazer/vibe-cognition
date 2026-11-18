@@ -1,0 +1,39 @@
+{
+  "name": "vibe-cognition",
+  "version": "0.49.0",
+  "description": "Project knowledge graph \u2014 captures decisions, failures, discoveries, patterns, and reasoning chains. Fully local, no API keys.",
+  "author": {
+    "name": "Colton Dyck"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/Haagndaazer/vibe-cognition",
+  "keywords": [
+    "knowledge-graph",
+    "cognition",
+    "project-memory",
+    "mcp",
+    "local"
+  ],
+  "mcpServers": {
+    "vibe-cognition": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--frozen",
+        "--no-sync",
+        "--directory",
+        "${CLAUDE_PLUGIN_ROOT}",
+        "python",
+        "-m",
+        "vibe_cognition.server"
+      ],
+      "env": {
+        "REPO_PATH": "${CLAUDE_PROJECT_DIR}",
+        "VIBE_DATA_DIR": "${CLAUDE_PLUGIN_DATA}",
+        "UV_PROJECT_ENVIRONMENT": "${CLAUDE_PLUGIN_DATA}/.venv",
+        "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}/src",
+        "VIBE_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}"
+      }
+    }
+  }
+}

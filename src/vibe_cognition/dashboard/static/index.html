@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Vibe Cognition Dashboard</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+  <!-- Vendored (WP-D4 / audit D-4): self-hosted, not CDN — no SRI gap (a CDN
+       compromise could run arbitrary JS in a page that can DELETE nodes) and the
+       dashboard works offline. Pinned: cytoscape@3.30.2, layout-base@2.0.1,
+       cose-base@2.2.0, cytoscape-fcose@2.2.0. Loaded eagerly (small, vendored) but
+       NOT constructed into a cytoscape() instance until the Graph tab activates —
+       see app.js buildCy()/activateView() (WP-TC11, D-3 lazy-build). -->
+  <script src="/static/vendor/cytoscape.min.js"></script>
+  <script src="/static/vendor/layout-base.js"></script>
+  <script src="/static/vendor/cose-base.js"></script>
+  <script src="/static/vendor/cytoscape-fcose.js"></script>
+</head>
+<body>
+  <div class="app">
+    <nav id="nav-rail">
+      <div class="brand">vibe-cognition<small>project dashboard</small></div>
+      <button class="nav-btn active" data-view="overview" type="button">▦ Overview</button>
+      <button class="nav-btn" data-view="board" type="button">☰ Board</button>
+      <button class="nav-btn" data-view="workflows" type="button">⧉ Workflows</button>
+      <button class="nav-btn" data-view="documents" type="button">▤ Documents</button>
+      <button class="nav-btn" data-view="activity" type="button">◷ Activity</button>
+      <button class="nav-btn" data-view="people" type="button">☺ People</button>
+      <button class="nav-btn" data-view="graph" type="button">✳ Graph</button>
+      <div class="nav-foot">read-only</div>
+    </nav>
+
+    <div class="main-col">
+      <header>
+        <div id="search-wrap">
+          <input id="search" type="text" placeholder="Search nodes (loading embedding model...)" disabled autocomplete="off" />
+          <div id="search-results" hidden></div>
+        </div>
+        <div id="status-line">
+          <button id="refresh-btn" type="button" title="Reload">↻ Refresh</button>
+          <span id="stats"></span>
+          <span id="banner" class="banner-loading">Loading embedding model…</span>
+        </div>
+      </header>
+
+      <main>
+        <section class="view active" id="view-overview">
+          <h2>Overview</h2>
+          <div class="tiles" id="overview-tiles"></div>
+
+          <h3>Active constraints</h3>
+          <div class="card"><ul class="plain" id="overview-constraints"></ul></div>
+
+          <h3>Needs attention</h3>
+          <div class="card"><ul class="plain" id="overview-attention"></ul></div>
+
+          <h3>Recent episodes</h3>
+          <div class="card"><ul class="plain" id="overview-episodes"></ul></div>
+
+          <h3>Recent incidents <span class="meta">(14d, high+)</span></h3>
+          <div class="card" id="overview-incidents-card"><ul class="plain" id="overview-incidents"></ul></div>
+        </section>
+
+        <section class="view" id="view-board">
+          <h2>Board
+            <label class="mini-toggle"><input type="checkbox" id="board-show-cancelled" /> Show cancelled</label>
+          </h2>
+          <div class="board" id="board-columns"></div>
+        </section>
+
+        <section class="view" id="view-workflows">
+          <h2>Workflows</h2>
+          <div class="cardgrid" id="workflows-grid"></div>
+        </section>
+
+        <section class="view" id="view-documents">
+          <h2>Documents</h2>
+          <table class="datatable" id="documents-table">
+            <thead>
+              <tr>
+                <th>Filename</th><th>Mode</th><th>Size</th><th>Stored</th>
+                <th>Freshness</th><th>Cited by</th><th></th>
+              </tr>
+            </thead>
+            <tbody id="documents-tbody"></tbody>
+          </table>
+        </section>
+
+        <section class="view" id="view-activity">
+          <h2>Activity</h2>
+          <div class="row" id="activity-filters">
+            <div class="chipfilter" id="activity-type-filter"></div>
+            <input id="activity-author-filter" type="text" placeholder="Filter by author…" autocomplete="off" />
+          </div>
+          <ul class="plain" id="activity-list"></ul>
+        </section>
+
+        <section class="view" id="view-people">
+          <h2>People</h2>
+          <div class="cardgrid" id="people-grid"></div>
+
+          <h3>Unregistered writers <span class="meta">(stamped emails with no person node)</span></h3>
+          <div class="card"><ul class="plain" id="people-unregistered"></ul></div>
+        </section>
+
+        <section class="view" id="view-graph">
+          <h2>Graph <span class="meta">— constellation, kept for curation debugging; no longer the front door</span></h2>
+          <div id="cy"></div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <aside class="drawer" id="drawer">
+    <button class="drawer-close" id="drawer-close" type="button">✕</button>
+    <div id="drawer-content"></div>
+  </aside>
+
+  <div id="toasts"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

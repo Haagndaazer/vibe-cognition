@@ -1,0 +1,136 @@
+"""Standalone CLI entry point for the dashboard.
+
+Lets a developer iterate on the dashboard against any project's
+`.cognition/` directory without reinstalling the MCP plugin.
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import os
+import sys
+import threading
+from pathlib import Path
+from typing import Any
+
+from ..config import Settings, resolve_repo_path_env, setup_logging
+
+logger = logging.getLogger(__name__)
+
+
+def _build_lifespan_ctx(repo_path: Path, load_embeddings: bool) -> dict[str, Any]:
+    """Construct the same lifespan_ctx shape the MCP server builds."""
+    from ..cognition import CognitionStorage
+    from ..embeddings import VectorStore
+
+    os.environ["REPO_PATH"] = str(repo_path)
+    config = Settings()
+
+    cognition_storage = CognitionStorage(config.cognition_dir)
+    cognition_embedding_storage = VectorStore.open_viewer(config.cognition_vectors_path)
+    if cognition_embedding_storage is None:
+        logger.warning(
+            f"No search index at {config.cognition_vectors_path}; open a Claude Code session "
+            "in this project once to build it. The graph view still works."
+        )
+
+    ready_event = threading.Event()
+    ctx: dict[str, Any] = {
+        "config": config,
+        "cognition_storage": cognition_storage,
+        "cognition_embedding_storage": cognition_embedding_storage,
+        "embedding_generator": None,
+        "embedding_ready": ready_event,
+        "embedding_error": None,
+    }
+
+    if load_embeddings and cognition_embedding_storage is not None:
+        from ..embeddings import EmbeddingGenerator
+
+        logger.info(f"Loading embedding model ({config.embedding_backend})…")
+        try:
+            ctx["embedding_generator"] = EmbeddingGenerator.from_config(config)
+            ready_event.set()
+            logger.info("Embedding model ready")
+        except Exception as e:
+            logger.error(f"Failed to load embedding model: {e}")
+            ctx["embedding_error"] = str(e)
+            ready_event.set()
+    else:
+        ctx["embeddings_disabled"] = True
+
+    return ctx
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="vibe-cognition-dashboard",
+        description="Local dashboard for the cognition graph.",
+    )
+    parser.add_argument(
+        "--repo-path",
+        type=Path,
+        default=None,
+        help="Path to the project repo (default: $REPO_PATH or CWD)",
+    )
+    parser.add_argument("--port", type=int, default=None)
+    parser.add_argument("--no-browser", action="store_true")
+    parser.add_argument(
+        "--no-embeddings",
+        action="store_true",
+        help="Skip loading the embedding model — search will return 503 (faster startup for UI work)",
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Plugin data root holding the keyed vector-store dirs (default: $VIBE_DATA_DIR, "
+            "then auto-discovery of ~/.claude/plugins/data/vibe-cognition-*; the in-repo "
+            ".cognition/local/vectors is the last resort)"
+        ),
+    )
+    parser.add_argument("--log-level", default="INFO")
+    args = parser.parse_args()
+
+    setup_logging(args.log_level)
+
+    if args.data_dir is not None:
+        # Same channel plugin.json uses — Settings' resolution picks it up.
+        os.environ["VIBE_DATA_DIR"] = str(args.data_dir)
+
+    repo_path = args.repo_path or resolve_repo_path_env()
+    repo_path = repo_path.resolve()
+
+    if not repo_path.exists() or not repo_path.is_dir():
+        print(f"error: repo path is not a directory: {repo_path}", file=sys.stderr)
+        return 2
+
+    cognition_dir = repo_path / ".cognition"
+    if not cognition_dir.exists():
+        print(
+            f"error: {cognition_dir} not found. "
+            f"Initialize the project with the cognition MCP server first.",
+            file=sys.stderr,
+        )
+        return 2
+
+    logger.info(f"Repo path: {repo_path}")
+    ctx = _build_lifespan_ctx(repo_path, load_embeddings=not args.no_embeddings)
+
+    from .server import DEFAULT_PORT, run_dashboard_blocking
+
+    try:
+        run_dashboard_blocking(
+            ctx,
+            port=args.port if args.port is not None else DEFAULT_PORT,
+            open_browser=not args.no_browser,
+        )
+    except KeyboardInterrupt:
+        logger.info("Dashboard stopped")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

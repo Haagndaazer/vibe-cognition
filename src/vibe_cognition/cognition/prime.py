@@ -1,0 +1,1481 @@
+"""Prime command — outputs compact project context for Claude Code session injection."""
+
+import argparse
+import contextlib
+import json
+import os
+import sys
+import time
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+from ..config import Settings, resolve_repo_path_env
+from ..running_version import code_version, stale_server_warning
+from .git_hygiene import _acquire_lock, _release_lock, check_hygiene_state, format_hygiene_announce
+from .identity import identity_suggestions, resolve_identity
+from .journal_shards import format_straggler_warning, straggler_report
+from .journal_watch import LOSS_KIND_BETWEEN_SESSIONS, LOSS_KIND_HEALED, LOSS_KIND_RETAINED
+from .local_paths import read_path as local_read_path
+from .local_paths import write_path as local_write_path
+from .loss_notices import VECTOR_STORE_REBUILT_KIND, notices_lock, read_notices, write_notices
+from .models import CognitionEdgeType, CognitionNodeType
+from .people_facts import fold_email
+from .person_migration import consume_migration_report, format_migration_announce
+from .readme import ONBOARDING_BLOCK
+from .resolve_journal import resolve_journal_command
+from .roster import Person
+from .scope import SCOPE_PERSONAL, SCOPE_PROJECT, SCOPE_REVIEW_KEY, node_scope, recorded_by_email
+from .storage import REHYDRATE_FLAG_FILENAME, CognitionStorage
+from .svn_hygiene import ensure_svn_hygiene, format_svn_announce
+from .task_meta import _task_claimed_at
+from .vcs import VCS_GIT, VCS_NONE, VCS_SVN, detect_vcs
+
+SEVERITY_ORDER = {"critical": 0, "high": 1, "normal": 2, "low": 3}
+
+_TASK_CLOSED_STATUSES = frozenset({"done", "cancelled"})
+
+# WP-TC7: new-user onboarding notice. Per-machine, local file (never synced via the
+# graph/journal) -- one casefolded email per line. Written by the AGENT via an
+# ordinary file append when the human declines/snoozes (no new MCP tool, no graph
+# write); read here only. Filename referenced by git_hygiene.py's versioned writer
+# (kept as a plain string there too, not imported, matching that module's existing
+# stdlib-only/standalone convention for REHYDRATE_FLAG_FILENAME).
+ONBOARD_DECLINE_FILENAME = "onboard-declined"
+
+# WP-TC14: "Since You Were Gone" digest. Per-machine, git-ignored, UNCOMMITTED
+# marker file -- casefolded email -> aware-UTC ISO timestamp of that email's
+# last session-start (JSON object, read-modify-write preserves other emails'
+# entries -- the per-email ruling: a manager and subordinate sharing a machine
+# must not stomp each other's marker). Written ONLY by prime.py's own main()
+# (see _stamp_last_seen), never by generate_prime itself (read-only invariant).
+LAST_SEEN_FILENAME = "last-seen.json"
+_LAST_SEEN_LOCK_ATTEMPTS = 3
+_LAST_SEEN_LOCK_RETRY_DELAY_S = 0.02
+
+ONBOARDING_NOTICE = (
+    "## New Here?\n"
+    "Nobody on this project's roster matches your email, so EVERY write is "
+    "currently refused -- recording, tasks, documents, all of it.\n"
+    "- Ask the human for all five: name, work email, role, seniority "
+    "(owner|senior|mid|junior -- present the four and let them pick, never infer "
+    "one from a job title), and who they report to. \"nobody\" is a valid and "
+    "expected answer on a solo project -- say so when you ask, or someone working "
+    "alone has no true answer to give.\n"
+    "- Then call cognition_set_identity(name=..., email=..., role=..., "
+    "seniority=..., reports_to=...). That one call unblocks writing. Do NOT reach "
+    "for cognition_register_person here -- it is itself a gated write and will be "
+    "refused until an identity is confirmed.\n"
+    "- Never guess, never invent an address, and NEVER use your own agent name.\n"
+    "- There is no skipping it any more: declining leaves writes refused. If they "
+    "genuinely do not want to record anything, say so plainly and stop asking "
+    f"(the legacy .cognition/{ONBOARD_DECLINE_FILENAME} list still silences this "
+    "notice, but it does not open the gate)."
+)
+
+
+@dataclass(frozen=True)
+class PrimeConfig:
+    """Trim knobs for the session-start prime digest.
+
+    These defaults ARE the trimmed target output — main() builds a config from
+    Settings in one try/except and falls back to these on any failure, so a
+    broken env degrades to the same trimmed shape rather than the old fat one.
+    """
+
+    prime_constraint_limit: int = 5
+    prime_task_cap: int = 5
+    prime_pattern_limit: int = 3
+    prime_decision_limit: int = 3
+    prime_incident_days: int = 14
+    prime_summary_maxlen: int = 110
+    prime_incident_min_severity: str = "high"
+    prime_workflow_limit: int = 5
+
+    # WP-P13n-2: personalization knobs (see Settings for the full description of
+    # each field — these defaults must match Settings' the same way the trim
+    # knobs above do).
+    prime_personalize: str = "auto"
+    prime_your_tasks_cap: int = 5
+    prime_team_critical_cap: int = 5
+    prime_your_episode_limit: int = 5
+    prime_your_decision_limit: int = 5
+    prime_your_discovery_limit: int = 5
+
+    # WP-TC7: new-user onboarding notice.
+    prime_onboard: bool = True
+
+    # WP-TC16: role-aware prime (manager rollup / subordinate view) knobs.
+    prime_stale_claim_days: int = 7
+    prime_rollup_cap: int = 5
+    prime_manager_decision_limit: int = 3
+
+    # WP-TC14: "Since You Were Gone" digest knobs. No separate on/off knob --
+    # the section self-gates on personalize (TC16 no-dead-knob philosophy).
+    prime_digest_cap: int = 5
+    prime_digest_fallback_days: int = 7
+
+
+def _truncate(text: str, maxlen: int) -> str:
+    """Truncate text to maxlen, cutting at the last whitespace before it.
+
+    maxlen<=0 or a short-enough string is a no-op. If no whitespace is found
+    before maxlen (e.g. a long URL/hash), hard-cut at maxlen rather than
+    silently dropping only the last char.
+    """
+    if maxlen <= 0 or len(text) <= maxlen:
+        return text
+    cut = text.rfind(" ", 0, maxlen)
+    if cut <= 0:
+        cut = maxlen
+    return text[:cut].rstrip() + "…"
+
+
+def _format_node(node: dict, maxlen: int = 0) -> str:
+    """Format a single node as a compact bullet point."""
+    severity = node.get("severity")
+    suffix = f" (severity: {severity})" if severity else ""
+    summary = _truncate(node.get("summary", "No summary"), maxlen)
+    return f"- [{node.get('type', '?')}] {summary}{suffix}"
+
+
+def _format_task(node: dict, maxlen: int = 0) -> str:
+    """Format a single open task with its status/owner/priority."""
+    meta = node.get("metadata", {})
+    bits = [f"status: {meta.get('status', 'open')}"]
+    owner = meta.get("owner")
+    if owner:
+        bits.append(f"owner: {owner}")
+    priority = node.get("severity")
+    if priority:
+        bits.append(f"priority: {priority}")
+    summary = _truncate(node.get("summary", "No summary"), maxlen)
+    return f"- [task] {summary} ({', '.join(bits)})"
+
+
+def _format_tasks(storage: CognitionStorage, cap: int, maxlen: int = 0) -> str:
+    """Format open tasks (status not in done/cancelled), priority- then recency-sorted,
+    capped at the top-N with an overflow line. Mirrors _format_constraints but bounded so
+    the session-start payload can't balloon on a long backlog."""
+    nodes = storage.get_nodes_by_type(CognitionNodeType.TASK)
+    open_tasks = [
+        n for n in nodes
+        if n.get("metadata", {}).get("status", "open") not in _TASK_CLOSED_STATUSES
+    ]
+    if not open_tasks:
+        return ""
+
+    # Two-pass stable sort: recency desc, then severity asc (severity primary).
+    open_tasks.sort(key=lambda n: n.get("timestamp", ""), reverse=True)
+    open_tasks.sort(key=lambda n: SEVERITY_ORDER.get(n.get("severity", "normal"), 2))
+
+    shown = open_tasks[:cap]
+    lines = [_format_task(n, maxlen) for n in shown]
+    overflow = len(open_tasks) - len(shown)
+    if overflow > 0:
+        lines.append(f"- +{overflow} more open tasks — use cognition_list_tasks")
+    return "## Open Tasks\n" + "\n".join(lines)
+
+
+# ── WP-P13n-2: personalization ──────────────────────────────────────────────
+#
+# Email is the ONLY match key (decision, doc:aa047b0b0e0a) — owner/author are
+# free text and are never matched, to avoid both false-positive name collisions
+# and silently dropping agent-owned tasks that have no human name to match.
+
+
+def _node_email(node: dict) -> str:
+    """The stamped identity email for personalization matching, casefolded (never
+    `.lower()` — casefold is the correct Unicode-aware match normalization):
+    `recorded_by.email` (every non-task node, via _record_node) if present, else
+    `created_by.email` (task nodes, which carry created_by instead of
+    recorded_by). Never falls back to `author`/`owner` — those are
+    caller-provided free text, not server-resolved. The stamp itself (WP-P13n-1
+    provenance record) is untouched; this is a match-time normalization only."""
+    meta = node.get("metadata", {})
+    recorded = meta.get("recorded_by")
+    if isinstance(recorded, dict) and recorded.get("email"):
+        return fold_email(recorded["email"])
+    created = meta.get("created_by")
+    if isinstance(created, dict) and created.get("email"):
+        return fold_email(created["email"])
+    return ""
+
+
+def _distinct_stamped_emails(storage: CognitionStorage) -> set[str]:
+    """Every non-empty stamped email in the graph, for the multi-user auto-detect.
+
+    An empty email (unconfigured git identity) is excluded from the count itself
+    -- a solo user who sets `user.email` partway through their history must not
+    flip the graph to "multi-user" just because some nodes predate the config."""
+    return {email for n in storage.get_all_nodes() if (email := _node_email(n))}
+
+
+def _registered_person_emails(storage: CognitionStorage) -> set[str]:
+    """Every email on the roster (WP-OnboardPayoff), for the multi-user
+    auto-detect's second signal.
+
+    A SET OF EMAILS, not a row count -- two rows carrying the SAME email (a
+    journal-replay shape, same lesson as WP-TC9's 98dcca4) must not flip a solo
+    graph to "multi-user"."""
+    return storage.roster().emails()
+
+
+def _should_personalize(storage: CognitionStorage, config: PrimeConfig, current_email: str) -> bool:
+    """Whether this prime run personalizes, per `config.prime_personalize`.
+
+    No resolvable current-user email means there's nothing to match against --
+    global digest regardless of mode. 'off' is always global; 'on' is always
+    personalized (once an email exists); 'auto' personalizes when EITHER the
+    graph has more than one distinct stamped email OR more than one registered
+    person email (WP-OnboardPayoff) -- multiple REGISTERED people is a stronger
+    team signal than multiple writers (registration is an explicit team act), and
+    catches a team's first-onboarded-member case where every node so far was
+    written by one person but several people are now registered. The
+    stamped-email check runs first (short-circuits the person scan in the common
+    single-writer/unregistered case; PERSON nodes are few and this runs once per
+    prime call, not hot-path, but the ordering still avoids the extra scan when
+    unneeded). A solo graph's output stays byte-identical to the pre-WP-P13n-2
+    global digest either way -- a solo graph has at most one registered person
+    email (itself)."""
+    if not current_email or config.prime_personalize == "off":
+        return False
+    if config.prime_personalize == "on":
+        return True
+    return (
+        len(_distinct_stamped_emails(storage)) > 1
+        or len(_registered_person_emails(storage)) > 1
+    )
+
+
+def _task_matches_email(node: dict, email: str) -> bool:
+    """A task is "yours" if you created it, currently hold the claim, OR are the
+    assignee -- created_by/claimed_by are server-resolved stamp dicts (WP-P13n-1),
+    while `assigned_to` (WP-TC8) is a bare casefolded email STRING (client-declared,
+    trust-based -- see cognition_update_task), never the free-text `owner`. Matched
+    case-insensitively (casefold, not lower) on all sides -- `email` is already
+    casefolded by the single normalization point in `generate_prime`, but this
+    function folds the stamp (and re-folds `email`) so it's correct called in
+    isolation too."""
+    meta = node.get("metadata", {})
+    email = fold_email(email)
+    for key in ("created_by", "claimed_by"):
+        stamp = meta.get(key)
+        if isinstance(stamp, dict) and stamp.get("email") and fold_email(stamp["email"]) == email:
+            return True
+    assigned_to = meta.get("assigned_to")
+    return bool(isinstance(assigned_to, str) and assigned_to and fold_email(assigned_to) == email)
+
+
+def _open_tasks(storage: CognitionStorage) -> list[dict]:
+    nodes = storage.get_nodes_by_type(CognitionNodeType.TASK)
+    return [
+        n for n in nodes
+        if n.get("metadata", {}).get("status", "open") not in _TASK_CLOSED_STATUSES
+    ]
+
+
+def _sort_tasks(nodes: list[dict]) -> list[dict]:
+    """Same two-pass stable sort as _format_tasks: recency desc, then priority asc."""
+    nodes = sorted(nodes, key=lambda n: n.get("timestamp", ""), reverse=True)
+    nodes.sort(key=lambda n: SEVERITY_ORDER.get(n.get("severity", "normal"), 2))
+    return nodes
+
+
+def _format_your_tasks(
+    storage: CognitionStorage, cap: int, current_email: str, maxlen: int = 0
+) -> tuple[str, set[str]]:
+    """'Your Open Tasks': open tasks you created or currently claim, capped.
+
+    Returns (section_text, all_your_task_ids) -- the FULL id set (not just the
+    shown/capped subset) so _format_team_critical can exclude every task that's
+    already yours, including ones past the cap (already accounted for by the
+    overflow line here, not worth re-surfacing under Team Critical too)."""
+    mine = [n for n in _open_tasks(storage) if _task_matches_email(n, current_email)]
+    if not mine:
+        return "", set()
+
+    mine_sorted = _sort_tasks(mine)
+    shown = mine_sorted[:cap]
+    lines = [_format_task(n, maxlen) for n in shown]
+    overflow = len(mine_sorted) - len(shown)
+    if overflow > 0:
+        lines.append(f"- +{overflow} more of your open tasks — use cognition_list_tasks")
+    return "## Your Open Tasks\n" + "\n".join(lines), {n["id"] for n in mine}
+
+
+def _format_team_critical(
+    storage: CognitionStorage, cap: int, exclude_ids: set[str], maxlen: int = 0
+) -> str:
+    """'Team Critical': open critical/high tasks not already shown under Your
+    Open Tasks -- other people's (or unclaimed) urgent work."""
+    critical = [
+        n for n in _open_tasks(storage)
+        if n["id"] not in exclude_ids and n.get("severity") in ("critical", "high")
+    ]
+    if not critical:
+        return ""
+
+    shown = _sort_tasks(critical)[:cap]
+    lines = [_format_task(n, maxlen) for n in shown]
+    overflow = len(critical) - len(shown)
+    if overflow > 0:
+        lines.append(f"- +{overflow} more critical/high tasks — use cognition_list_tasks")
+    return "## Team Critical\n" + "\n".join(lines)
+
+
+def _format_your_activity(
+    storage: CognitionStorage, config: PrimeConfig, current_email: str, maxlen: int = 0
+) -> str:
+    """'Your Recent Activity': your own most recent episodes, decisions, and
+    discoveries (recorded_by.email match), each type capped independently and
+    grouped in that order under one header."""
+    groups = (
+        (CognitionNodeType.EPISODE, config.prime_your_episode_limit),
+        (CognitionNodeType.DECISION, config.prime_your_decision_limit),
+        (CognitionNodeType.DISCOVERY, config.prime_your_discovery_limit),
+    )
+    current_email = fold_email(current_email)
+    lines: list[str] = []
+    for node_type, limit in groups:
+        mine = [n for n in storage.get_nodes_by_type(node_type) if _node_email(n) == current_email]
+        mine.sort(key=lambda n: n.get("timestamp", ""), reverse=True)
+        lines.extend(_format_node(n, maxlen) for n in mine[:limit])
+    if not lines:
+        return ""
+    return "## Your Recent Activity\n" + "\n".join(lines)
+
+
+def _active_constraints(storage: CognitionStorage, scope: str) -> list[dict]:
+    nodes = [
+        n for n in storage.get_nodes_by_type(CognitionNodeType.CONSTRAINT)
+        if n.get("severity") != "low"
+        and node_scope(n) == scope
+        and not storage.get_predecessors(n["id"], CognitionEdgeType.SUPERSEDES)
+    ]
+    nodes.sort(key=lambda n: SEVERITY_ORDER.get(n.get("severity", "normal"), 2))
+    return nodes
+
+
+def _format_personal_constraints(storage: CognitionStorage, limit: int, maxlen: int = 0) -> str:
+    """The reader's own personal constraints; storage never returns anyone else's."""
+    nodes = _active_constraints(storage, SCOPE_PERSONAL)
+    if not nodes:
+        return ""
+    lines = [_format_node(n, maxlen) for n in nodes[:limit]]
+    if len(nodes) > limit:
+        lines.append(f"- +{len(nodes) - limit} more — use cognition_search")
+    return "## Your Personal Constraints\n" + "\n".join(lines)
+
+
+def _format_scope_reviews(storage: CognitionStorage, current_email: str, limit: int, maxlen: int = 0) -> str:
+    """Constraints the curator suggests re-scoping, shown only to their owner."""
+    if not current_email:
+        return ""
+    flagged = [
+        n for n in storage.get_nodes_by_type(CognitionNodeType.CONSTRAINT)
+        if isinstance(n.get(SCOPE_REVIEW_KEY), dict)
+        and recorded_by_email(n) == current_email
+        and not storage.get_predecessors(n["id"], CognitionEdgeType.SUPERSEDES)
+    ]
+    if not flagged:
+        return ""
+    flagged.sort(key=lambda n: n[SCOPE_REVIEW_KEY].get("flagged_at", ""))
+    lines = []
+    for n in flagged[:limit]:
+        review = n[SCOPE_REVIEW_KEY]
+        summary = _truncate(n.get("summary", ""), maxlen)
+        reason = _truncate(str(review.get("reason", "")), maxlen)
+        lines.append(
+            f"- {n['id']} [{node_scope(n)} -> {review.get('suggested')}] {summary} — {reason}"
+        )
+    if len(flagged) > limit:
+        lines.append(
+            f"- +{len(flagged) - limit} more waiting — rule on these first; "
+            "the rest are listed next session"
+        )
+    return (
+        "## Constraints to Review\n"
+        "Curation thinks these may have the wrong scope. Do not stop work for them: at a "
+        "natural pause, ask the human for each, then call cognition_update_node(node_id, "
+        "scope=...) with their answer (passing the current scope keeps it and clears the flag).\n"
+        + "\n".join(lines)
+    )
+
+
+def _format_constraints(storage: CognitionStorage, limit: int, maxlen: int = 0) -> str:
+    """Format active constraints, sorted by severity, dropping only `low` (C2).
+
+    HEAD-filtered like _format_workflows (task 0d7e84d52537, folded into
+    WP-P13n-2 per the personalized-prime scope decision): a constraint with an
+    incoming SUPERSEDES edge is an old version and is excluded -- only the
+    superseding HEAD is shown, so a revised constraint doesn't duplicate."""
+    nodes = _active_constraints(storage, SCOPE_PROJECT)
+    if not nodes:
+        return ""
+
+    shown = nodes[:limit]
+    lines = [_format_node(n, maxlen) for n in shown]
+    return "## Active Constraints\n" + "\n".join(lines)
+
+
+def _format_workflows(storage: CognitionStorage, limit: int, maxlen: int = 0) -> str:
+    """Format stored workflow HEAD titles (supersession-resolved), capped with the
+    existing overflow idiom. A workflow with an incoming SUPERSEDES edge is an old
+    version (supersedes points newer -> older), so it is excluded here -- only
+    HEADs are shown. Cheap in-memory filter; no embeddings involved."""
+    nodes = storage.get_nodes_by_type(CognitionNodeType.WORKFLOW)
+    heads = [
+        n for n in nodes
+        if not storage.get_predecessors(n["id"], CognitionEdgeType.SUPERSEDES)
+    ]
+    if not heads:
+        return ""
+
+    heads.sort(key=lambda n: n.get("timestamp", ""), reverse=True)
+    shown = heads[:limit]
+    lines = [_format_node(n, maxlen) for n in shown]
+    overflow = len(heads) - len(shown)
+    if overflow > 0:
+        lines.append(f"- +{overflow} more workflows — use cognition_get_workflow")
+    return "## Workflows\n" + "\n".join(lines)
+
+
+def _format_document_count(storage: CognitionStorage) -> str:
+    """One-line stored-document count so agents know the document tools exist,
+    even before they have a reason to call cognition_get_document. Omitted when
+    zero (consistent with every other section's empty-drops-the-section rule).
+
+    HEAD-filtered same as _format_workflows: documents version via SUPERSEDES too
+    (_validate_supersedes_shape legalizes document->document), so a naive raw count
+    would over-report a revised document once per revision instead of once."""
+    nodes = storage.get_nodes_by_type(CognitionNodeType.DOCUMENT)
+    heads = [
+        n for n in nodes
+        if not storage.get_predecessors(n["id"], CognitionEdgeType.SUPERSEDES)
+    ]
+    count = len(heads)
+    if count == 0:
+        return ""
+    noun = "document" if count == 1 else "documents"
+    return (
+        f"{count} stored {noun} — use cognition_search or cognition_get_document "
+        "to retrieve, cognition_store_document to add more."
+    )
+
+
+def _format_patterns(storage: CognitionStorage, limit: int, maxlen: int = 0) -> str:
+    """Format recent patterns."""
+    nodes = storage.get_recent_nodes(limit=limit, node_type=CognitionNodeType.PATTERN)
+    if not nodes:
+        return ""
+
+    lines = [_format_node(n, maxlen) for n in nodes]
+    return "## Recent Patterns\n" + "\n".join(lines)
+
+
+def _format_decisions(storage: CognitionStorage, limit: int, maxlen: int = 0) -> str:
+    """Format recent decisions."""
+    nodes = storage.get_recent_nodes(limit=limit, node_type=CognitionNodeType.DECISION)
+    if not nodes:
+        return ""
+
+    lines = [_format_node(n, maxlen) for n in nodes]
+    return "## Recent Decisions\n" + "\n".join(lines)
+
+
+def _format_incidents(
+    storage: CognitionStorage, days: int, min_severity: str, maxlen: int = 0
+) -> str:
+    """Format recent incidents from the last N days at or above min_severity."""
+    nodes = storage.get_nodes_by_type(CognitionNodeType.INCIDENT)
+    if not nodes:
+        return ""
+
+    cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+    min_rank = SEVERITY_ORDER.get(min_severity, 1)
+    recent = [
+        n for n in nodes
+        if n.get("timestamp", "") >= cutoff
+        and SEVERITY_ORDER.get(n.get("severity", "normal"), 2) <= min_rank
+    ]
+    if not recent:
+        return ""
+
+    recent.sort(key=lambda n: SEVERITY_ORDER.get(n.get("severity", "normal"), 2))
+    lines = [_format_node(n, maxlen) for n in recent]
+    return "## Recent Incidents\n" + "\n".join(lines)
+
+
+def _onboard_declined_emails(cognition_dir: Path) -> set[str]:
+    """Casefolded emails that declined/snoozed onboarding on THIS machine. Missing
+    file == empty set; blank/malformed lines are ignored. Never raises."""
+    path = local_read_path(cognition_dir, ONBOARD_DECLINE_FILENAME)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return set()
+    return {fold_email(line) for line in raw.splitlines() if line.strip()}
+
+
+def _has_person_node(storage: CognitionStorage, email: str) -> bool:
+    """Whether this email is on the roster (a committed profile, or a legacy
+    person node not yet migrated)."""
+    return storage.roster().is_registered(email)
+
+
+# ── WP-TC16: role-aware prime (manager rollup / subordinate view) ──────────────
+#
+# Reporting relationship (reports_to) is DISTINCT from role (a free-text job
+# title) — never conflate the two. The roster owns HUMAN roles only;
+# agent roles stay in teammate-comms (ruling 6be2e867f91e).
+
+
+@dataclass(frozen=True)
+class _RoleContext:
+    """Result of ONE roster snapshot (WP-TC16) -- built once per prime run and
+    threaded into the manager-rollup, subordinate-decisions, and (WP-OnboardPayoff)
+    identity-header sections, so a middle manager's prime never rebuilds the roster
+    for any of them."""
+
+    my_person: Person | None
+    direct_reports: list[Person]
+    my_manager_email: str  # casefolded; "" when absent
+    # WP-OnboardPayoff: resolved NAME of my_manager_email, "" when unresolved --
+    # defaulted so the early short-circuit in _derive_role (which legitimately has
+    # no manager to resolve) stays a valid construction even if that call site is
+    # ever missed in a future edit.
+    my_manager_name: str = ""
+
+
+def _derive_role(storage: CognitionStorage, current_email: str) -> _RoleContext:
+    """Resolve `current_email` (already casefolded by generate_prime's single
+    normalization point) into a `_RoleContext` from ONE roster snapshot:
+    `my_person`, `direct_reports` (everyone whose reporting line points at
+    `current_email`), `my_manager_email`, and `my_manager_name` resolved from the
+    same snapshot -- one build, no second pass for the identity header. MANAGER
+    role iff `direct_reports` non-empty; SUBORDINATE role iff `my_manager_email`
+    non-empty; both may hold (middle manager). An empty `current_email`
+    short-circuits to an all-empty context without building anything."""
+    if not current_email:
+        return _RoleContext(None, [], "", "")
+    roster = storage.roster()
+    my_person = roster.get(current_email)
+    direct_reports = roster.direct_reports(current_email)
+    my_manager_email = my_person.reports_to if my_person is not None else ""
+    my_manager_name = roster.name_for(my_manager_email) if my_manager_email else ""
+    return _RoleContext(my_person, direct_reports, my_manager_email, my_manager_name)
+
+
+def _parse_iso_datetime(value: str) -> datetime | None:
+    """Parse an ISO timestamp, tolerating a NAIVE (no-tzinfo) string -- treated
+    as UTC -- from a replayed or hand-edited journal. Write paths always stamp
+    aware timestamps, but replay validates nothing; a naive-but-valid string
+    parses fine via `fromisoformat` and would otherwise raise `TypeError` (not
+    `ValueError`) on the aware-naive subtraction downstream, crashing
+    `generate_prime` for every user of that graph (same class as WP-TC9's
+    98dcca4 lesson: write-side validation is not protection against replay).
+    Returns `None` only for a genuinely unparseable string."""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _humanize_claim_age(claimed_at: str | None) -> str:
+    """`claimed_at` (an ISO timestamp, or None for a legacy/unattributed claim) as
+    a compact human age string, day granularity -- "0d" for same-day. None input
+    (never dereferenced as a stale check here; staleness is the caller's job)
+    renders as "unknown age" so a legacy row is still readable, never crashes."""
+    if not claimed_at:
+        return "unknown age"
+    claimed = _parse_iso_datetime(claimed_at)
+    if claimed is None:
+        return "unknown age"
+    days = max(0, (datetime.now(UTC) - claimed).days)
+    return f"{days}d"
+
+
+def _format_your_team(
+    storage: CognitionStorage, config: PrimeConfig, role: _RoleContext, maxlen: int = 0
+) -> str:
+    """'Your Team' (MANAGER role, personalized-only): one TASK scan bucketed by
+    claimant email among direct reports. In-progress rows show claimant + claim
+    age; a row is STALE iff claim age is strictly greater than
+    `config.prime_stale_claim_days` (exactly-N-days-old is NOT stale; a null/
+    legacy claimed_at is NEVER stale -- unverifiable is not the same as stale,
+    the standing doctrine). Blocked rows always show. Unclaimed/unstamped tasks
+    never appear (attribution doctrine). Capped at `config.prime_rollup_cap`
+    TOTAL rows: stale first (most actionable), then blocked, then in-progress,
+    recency-desc within each group; an overflow line names the remainder."""
+    report_names = {p.email: (p.name or p.email) for p in role.direct_reports if p.email}
+    if not report_names:
+        return ""
+
+    stale_cutoff = timedelta(days=config.prime_stale_claim_days)
+    now = datetime.now(UTC)
+
+    stale_rows: list[tuple[dict, str]] = []
+    blocked_rows: list[tuple[dict, str]] = []
+    fresh_rows: list[tuple[dict, str]] = []
+    for n in storage.get_nodes_by_type(CognitionNodeType.TASK):
+        meta = n.get("metadata", {})
+        claimed_by = meta.get("claimed_by")
+        raw_claimant_email = claimed_by.get("email") if isinstance(claimed_by, dict) else None
+        # claimed_by.email is a verbatim git-config provenance stamp, never
+        # casefolded at write time (unlike person emails) -- casefold here at
+        # read time, matching the _task_matches_email/_node_email precedent,
+        # so a mixed-case git config still matches the casefolded report_names keys.
+        claimant_email = fold_email(raw_claimant_email) if raw_claimant_email else None
+        if not claimant_email or claimant_email not in report_names:
+            continue
+        status = meta.get("status", "open")
+        if status == "blocked":
+            blocked_rows.append((n, claimant_email))
+        elif status == "in_progress":
+            claimed_at = _task_claimed_at(meta.get("transitions", []))
+            is_stale = False
+            if claimed_at:
+                parsed_claimed_at = _parse_iso_datetime(claimed_at)
+                if parsed_claimed_at is not None:
+                    is_stale = (now - parsed_claimed_at) > stale_cutoff
+            (stale_rows if is_stale else fresh_rows).append((n, claimant_email))
+
+    if not stale_rows and not blocked_rows and not fresh_rows:
+        return ""
+
+    def _recency_desc(rows: list[tuple[dict, str]]) -> list[tuple[dict, str]]:
+        return sorted(rows, key=lambda pair: pair[0].get("timestamp", ""), reverse=True)
+
+    ordered = _recency_desc(stale_rows) + _recency_desc(blocked_rows) + _recency_desc(fresh_rows)
+    total = len(ordered)
+    shown = ordered[: config.prime_rollup_cap]
+
+    lines: list[str] = []
+    for n, claimant_email in shown:
+        summary = _truncate(n.get("summary", "No summary"), maxlen)
+        name = report_names.get(claimant_email, claimant_email)
+        meta = n.get("metadata", {})
+        if meta.get("status") == "blocked":
+            lines.append(f"- {summary} ({name}, blocked)")
+        else:
+            claimed_at = _task_claimed_at(meta.get("transitions", []))
+            age = _humanize_claim_age(claimed_at)
+            lines.append(f"- {summary} ({name}, claimed {age})")
+
+    overflow = total - len(shown)
+    if overflow > 0:
+        lines.append(f"- +{overflow} more of your team's tasks — use cognition_list_tasks")
+    return "## Your Team\n" + "\n".join(lines)
+
+
+def _format_manager_decisions(
+    storage: CognitionStorage, config: PrimeConfig, role: _RoleContext, maxlen: int = 0
+) -> str:
+    """'Your Manager's Recent Decisions' (SUBORDINATE role, personalized-only):
+    decision nodes whose `_node_email` matches `role.my_manager_email`, newest
+    first, capped at `config.prime_manager_decision_limit`. Deliberately NO
+    HEAD-filter -- mirrors `_format_decisions` exactly (the global Recent
+    Decisions model has no supersedes check either), so a superseded decision
+    can legitimately appear here too, same as in the global section. This is a
+    KNOWN, documented overlap with global Recent Decisions -- deduping would
+    silently change the global section's own semantics, so it is left alone.
+    A dangling manager email (nobody on the roster for it) still works:
+    decisions filter by the stamped email string, and the manager's name comes
+    from the decision's own `recorded_by`, not from a person-node lookup.
+    "Own claims" -- the other half of the manager/subordinate ruling -- is
+    ALREADY covered by 'Your Open Tasks' claimed_by branch (WP-P13n-2); this
+    section does not duplicate that."""
+    if not role.my_manager_email:
+        return ""
+    mine = [
+        n for n in storage.get_nodes_by_type(CognitionNodeType.DECISION)
+        if _node_email(n) == role.my_manager_email
+    ]
+    if not mine:
+        return ""
+    mine.sort(key=lambda n: n.get("timestamp", ""), reverse=True)
+    shown = mine[: config.prime_manager_decision_limit]
+    lines = [_format_node(n, maxlen) for n in shown]
+    return "## Your Manager's Recent Decisions\n" + "\n".join(lines)
+
+
+# ── WP-Identity-Profiles: someone else changed YOUR profile ─────────────────
+
+
+def _profile_change_alert(storage: CognitionStorage, current_email: str) -> str:
+    """Loud notice when someone OTHER than you changed your profile since you last
+    primed. Empty string otherwise.
+
+    Profiles are deliberately trust-based multi-writer -- a manager can set your
+    role and reporting line -- and the ruling that allowed that also asked for a
+    strong alert when it happens, because the alternative is your seniority
+    changing under you with nothing anywhere saying so. Seniority leads the list:
+    it reweights your search results, so a silent change quietly alters what every
+    future session surfaces to you.
+
+    Gated on the last-seen marker, so a first run says nothing: with no baseline
+    every legitimate pre-registration would read as tampering, and a fresh user
+    sees their profile in the identity header anyway.
+    """
+    if not current_email:
+        return ""
+    since = _last_seen_for(storage.cognition_dir, current_email)
+    if not since:
+        return ""
+
+    # Replay in order so each foreign change can name what it replaced.
+    previous: dict[str, Any] = {}
+    foreign: list[tuple[str, Any, Any, dict[str, Any]]] = []
+    for record in storage.profile_history(current_email):
+        field = str(record.get("field") or "")
+        if not field:
+            continue
+        author = fold_email(str((record.get("by") or {}).get("email") or ""))
+        at = str(record.get("at") or "")
+        value = record.get("value") if record.get("action") == "profile_set" else None
+        # No author means it cannot be shown to be yours: a hand-edited or
+        # externally injected line. Treated as foreign rather than skipped —
+        # silently excluding exactly the records nobody signed is backwards.
+        if author != current_email and at > since:
+            foreign.append((field, previous.get(field), value, record))
+        previous[field] = value
+    if not foreign:
+        return ""
+
+    foreign.sort(key=lambda row: (row[0] != "seniority", row[0]))
+    lines = ["## ⚠ Someone else changed YOUR profile"]
+    for field, was, now, record in foreign:
+        who = (record.get("by") or {}).get("name") or (record.get("by") or {}).get("email") or "?"
+        shown_was = "(unset)" if was in (None, "") else repr(was)
+        shown_now = "(cleared)" if now in (None, "") else repr(now)
+        note = ""
+        if field == "seniority":
+            note = " — this reweights YOUR search results"
+        lines.append(
+            f"- `{field}`: {shown_was} -> {shown_now}, by {who} at {record.get('at')}{note}"
+        )
+    lines.append(
+        "TELL THE HUMAN. If any of it is wrong, correct it with "
+        "`cognition_update_person`; the change trail is append-only, so nothing "
+        "was lost."
+    )
+    return "\n".join(lines)
+
+
+# ── WP-TC14: "Since You Were Gone" digest ───────────────────────────────────
+
+
+def _last_seen_for(cognition_dir: Path, email: str) -> str | None:
+    """My last-seen marker timestamp (aware-UTC ISO string), or None when the
+    file is missing/unreadable/malformed JSON/non-dict/the value for this
+    email is missing-or-non-string (e.g. a null entry) -- never raises (the
+    onboard-declined OSError->empty-set model, extended to JSONDecodeError).
+    None means "first run or corrupted", NEVER "no digest" -- the caller
+    falls back to a capped lookback window instead."""
+    email = fold_email(email)
+    if not email:
+        return None
+    path = local_read_path(cognition_dir, LAST_SEEN_FILENAME)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    value = data.get(email)
+    return value if isinstance(value, str) and value else None
+
+
+def _stamp_last_seen(cognition_dir: Path, email: str) -> None:
+    """Read-modify-write my (casefolded) entry in .cognition/last-seen.json to
+    now (aware UTC ISO), UNCONDITIONALLY overwriting whatever was there --
+    last-writer-wins is also the clock-skew self-heal (a future-dated marker
+    gets replaced with real now on the next session). No-op on an empty email.
+
+    Called ONLY from prime.py's own main() (the CLI/hook path), AFTER prime
+    output is produced -- generate_prime itself stays pure read-only (mirrors
+    where _consume_rehydrate_flag's mutation already lives). Guarded by
+    git_hygiene's established lock (60s stale detection) since two teammates
+    starting sessions on a shared machine concurrently is exactly the
+    per-email ruling's race -- an unlocked RMW can silently lose the other
+    email's fresh entry. A short bounded retry (3 attempts, 20ms apart, worst
+    case ~40ms) gives realistically-concurrent same-machine session-starts a
+    fair chance to both land rather than the second one being dropped by a
+    single failed attempt; retries exhausted still degrades to "skip the
+    stamp entirely" (a missed stamp just falls back to the lookback window
+    next session -- never blocks or fails the SessionStart hook). The write
+    itself is atomic (temp file in the same dir + os.replace) so a crash
+    never leaves torn JSON, and the whole body is wrapped in
+    suppress(OSError) -- a read-only filesystem must never fail the hook.
+    """
+    email = fold_email(email)
+    if not email:
+        return
+    lock_path = cognition_dir / f"{LAST_SEEN_FILENAME}.lock"
+    acquired = False
+    for attempt in range(_LAST_SEEN_LOCK_ATTEMPTS):
+        if _acquire_lock(lock_path):
+            acquired = True
+            break
+        if attempt < _LAST_SEEN_LOCK_ATTEMPTS - 1:
+            time.sleep(_LAST_SEEN_LOCK_RETRY_DELAY_S)
+    if not acquired:
+        return
+    try:
+        with contextlib.suppress(OSError):
+            path = local_write_path(cognition_dir, LAST_SEEN_FILENAME)
+            tmp_path = path.with_name(f"{LAST_SEEN_FILENAME}.tmp")
+            # Clean up a stray .tmp left by a process killed between write_text
+            # and os.replace on a prior stamp -- gate F1: unlink is a no-op if
+            # nothing is there, so this never affects the happy path. Must run
+            # BEFORE the write attempt below, so a stray survives even if THIS
+            # stamp also fails to write (a second disk hiccup, say).
+            tmp_path.unlink(missing_ok=True)
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    data = {}
+            except (OSError, json.JSONDecodeError, ValueError):
+                data = {}
+            data[email] = datetime.now(UTC).isoformat()
+            tmp_path.write_text(json.dumps(data), encoding="utf-8")
+            os.replace(tmp_path, path)
+    finally:
+        _release_lock(lock_path)
+
+
+def _format_since_you_were_gone(
+    storage: CognitionStorage, config: PrimeConfig, current_email: str, maxlen: int = 0
+) -> str:
+    """'Since You Were Gone' (personalized-only): decision/constraint/incident
+    nodes with `timestamp` STRICTLY greater than a per-email high-water-mark
+    cutoff (my last-seen marker when present, else `now -
+    prime_digest_fallback_days` -- a capped lookback, never a full-history
+    dump). Comparison is LEXICOGRAPHIC ISO string compare only -- no datetime
+    parsing anywhere in this function, so a naive/malformed node timestamp
+    simply compares low and drops out or shows (degrade, never crash -- the
+    TC16-F2 naive-timestamp crash class is structurally absent here).
+
+    Excludes nodes whose `_node_email` equals my casefolded email ("your own
+    writes are not news to you"). UNSTAMPED nodes (`_node_email` == "") are
+    INCLUDED -- an awareness view reports content, not people (deliberate
+    divergence from the rollup's attribution doctrine, which gates on
+    positive attribution because it names people).
+
+    Constraints are HEAD-filtered (mirrors Active Constraints -- the inline
+    `not storage.get_predecessors(..., SUPERSEDES)` expression, a 4th copy of
+    the same pattern already inlined 3x in this file). Decisions and
+    incidents are NOT HEAD-filtered -- mirrors their own global sections
+    exactly (same "mirror each type's existing semantics" precedent TC16
+    established for Your Manager's Recent Decisions).
+
+    Newest-first interleave across all three types, capped at
+    `config.prime_digest_cap` total with the standard overflow line. A new
+    decision can legitimately ALSO appear in Your Manager's Recent Decisions
+    and the global Recent Decisions section -- deliberate, same overlap
+    ruling as TC16 (deduping would couple sections' semantics)."""
+    marker = _last_seen_for(storage.cognition_dir, current_email)
+    if marker is not None:
+        cutoff = marker
+    else:
+        cutoff = (datetime.now(UTC) - timedelta(days=config.prime_digest_fallback_days)).isoformat()
+
+    candidates: list[tuple[dict, str]] = []
+    for node_type, label in (
+        (CognitionNodeType.DECISION, "decision"),
+        (CognitionNodeType.CONSTRAINT, "constraint"),
+        (CognitionNodeType.INCIDENT, "incident"),
+    ):
+        for n in storage.get_nodes_by_type(node_type):
+            if n.get("timestamp", "") <= cutoff:
+                continue
+            if _node_email(n) == current_email:
+                continue
+            if node_type == CognitionNodeType.CONSTRAINT and storage.get_predecessors(
+                n["id"], CognitionEdgeType.SUPERSEDES
+            ):
+                continue
+            candidates.append((n, label))
+
+    if not candidates:
+        return ""
+
+    candidates.sort(key=lambda pair: pair[0].get("timestamp", ""), reverse=True)
+    total = len(candidates)
+    shown = candidates[: config.prime_digest_cap]
+
+    lines: list[str] = []
+    for n, label in shown:
+        summary = _truncate(n.get("summary", "No summary"), maxlen)
+        recorded = n.get("metadata", {}).get("recorded_by")
+        name = recorded.get("name") if isinstance(recorded, dict) else None
+        name = name or "unattributed"
+        date = n.get("timestamp", "")[:10]
+        lines.append(f"- [{label}] {summary} ({name}, {date})")
+
+    overflow = total - len(shown)
+    if overflow > 0:
+        lines.append(f"- +{overflow} more since you were gone — use cognition_search")
+    return "## Since You Were Gone\n" + "\n".join(lines)
+
+
+_IDENTITY_UNRESOLVED_BY_VCS = {
+    VCS_GIT: "No email address resolves from git config on this machine",
+    VCS_SVN: (
+        "No email address resolves on this machine (SVN usernames are offered as "
+        "suggestions only, never assumed)"
+    ),
+    VCS_NONE: "No email address resolves on this machine",
+}
+
+
+def identity_required_notice(vcs: str) -> str:
+    """The blocked-identity banner, worded for the detected VCS only (WP-VCS-Isolation)."""
+    why = _IDENTITY_UNRESOLVED_BY_VCS.get(vcs, _IDENTITY_UNRESOLVED_BY_VCS[VCS_NONE])
+    return (
+        "## ACTION REQUIRED -- graph identity not set\n"
+        f"{why}, so **recording to the graph is currently REFUSED**. Reads still work.\n"
+        "- ASK THE HUMAN for their name and work email, then call "
+        "cognition_set_identity(name=..., email=...).\n"
+        "- Do NOT guess an address, and never use an agent name -- memories are "
+        "attributed to the person, not the agent."
+    )
+
+
+def _identity_notice(repo_path: Path, cognition_dir: Path) -> str:
+    """The blocked-identity banner, or "" when an email resolves. Never raises.
+
+    Fires ONLY when writes are actually gated -- an unconfirmed but resolvable
+    VCS identity is a working state, and nagging it every session would train
+    people to ignore the banner that matters.
+    """
+    try:
+        if resolve_identity(repo_path, cognition_dir).get("email"):
+            return ""
+        note = identity_required_notice(detect_vcs(repo_path))
+        suggestions = identity_suggestions(repo_path, cognition_dir)
+        if suggestions:
+            listed = ", ".join(
+                f"{s['name']}{' <' + s['email'] + '>' if s['email'] else ''} (from {s['source']})"
+                for s in suggestions
+            )
+            note += f"\n- Candidates found on this machine (confirm, do not assume): {listed}"
+        return note
+    except Exception:  # noqa: BLE001 - prime must never fail on a notice
+        return ""
+
+
+def _onboarding_notice(storage: CognitionStorage, config: PrimeConfig, current_email: str) -> str:
+    """The new-user onboarding notice (WP-TC7), or "" when it should not fire.
+
+    Fires when ALL: current_email resolved, prime_onboard on, no matching person
+    node, and the email hasn't declined. `current_email` here is ALREADY casefolded
+    by generate_prime's single normalization point -- this function does not
+    re-casefold, matching _task_matches_email's documented convention of trusting
+    an already-normalized caller within this module."""
+    if not current_email or not config.prime_onboard:
+        return ""
+    if _has_person_node(storage, current_email):
+        return ""
+    if current_email in _onboard_declined_emails(storage.cognition_dir):
+        return ""
+    return ONBOARDING_NOTICE
+
+
+def _format_identity_header(role: _RoleContext) -> str:
+    """The one-line preamble opening the personalized block once `current_email`
+    is on the roster (WP-OnboardPayoff, Gate D S5 fix) -- ""
+    when `role.my_person` is None. Gating is structural, not a new knob: this
+    requires a matching person node, `_onboarding_notice`'s New Here banner
+    requires NO matching person node -- mutually exclusive by construction. A
+    plain preamble line (no `##` heading -- it's not a section, just an anchor).
+
+    Format algebra (pinned, peer-review M2 -- exact punctuation, do not drift):
+    start with "You are registered as {name}"; append " — {role}" iff the
+    person's `role` is non-empty; append " ({seniority})" iff `seniority` is
+    non-empty; append ", reporting to {manager}" iff a manager email is present,
+    where `{manager}` is `role.my_manager_name` when resolved, else the raw email
+    (an unresolvable manager email falls back to showing the email rather than
+    disappearing silently); always end with '.'. Never crashes, never renders the
+    string "None" for a missing field."""
+    if role.my_person is None:
+        return ""
+    person = role.my_person
+    line = f"You are registered as {person.name}"
+    if person.role:
+        line += f" — {person.role}"
+    if person.seniority:
+        line += f" ({person.seniority})"
+    if person.reports_to:
+        line += f", reporting to {role.my_manager_name or person.reports_to}"
+    return line + "."
+
+
+def generate_prime(
+    storage: CognitionStorage,
+    config: PrimeConfig | None = None,
+    current_email: str | None = None,
+) -> str:
+    """Generate the prime markdown output.
+
+    Args:
+        storage: Hydrated CognitionStorage instance
+        config: Trim knobs; defaults to PrimeConfig() (the trimmed target shape)
+        current_email: The resolved git identity's email (WP-P13n-2), or None/""
+            when unresolvable. Gates personalization -- see `_should_personalize`.
+            Matched case-insensitively (casefolded once here, the single
+            normalization point) against stamped emails, which are themselves
+            casefolded by `_node_email`/`_task_matches_email` -- stamps stay
+            stored verbatim (WP-P13n-1 provenance untouched); this is a
+            prime.py match-time-only normalization. Global-only sections
+            (constraints, workflows, documents, patterns, decisions,
+            incidents) are unaffected either way.
+
+    When personalized AND `current_email` resolves to a registered person node,
+    the block opens with a one-line identity header ("You are registered as
+    ...", WP-OnboardPayoff) naming the user, role/seniority, and manager --
+    the registration payoff the New Here banner otherwise only implies. The
+    header and the banner are mutually exclusive by construction (the header
+    needs a matching person node, the banner needs the absence of one).
+
+    Returns:
+        Markdown string with project context
+    """
+    if config is None:
+        config = PrimeConfig()
+
+    maxlen = config.prime_summary_maxlen
+    current_email = fold_email(current_email or "")
+    personalize = _should_personalize(storage, config, current_email)
+
+    # WP-TC7: pinned FIRST section, before Active Constraints. The profile-change
+    # alert goes above even that: it is about the reader, and it is the one thing
+    # here they may need to dispute.
+    sections = [
+        _profile_change_alert(storage, current_email),
+        _onboarding_notice(storage, config, current_email),
+    ]
+    sections.append(_format_constraints(storage, config.prime_constraint_limit, maxlen))
+    sections.append(_format_personal_constraints(storage, config.prime_constraint_limit, maxlen))
+    sections.append(_format_scope_reviews(storage, current_email, config.prime_constraint_limit, maxlen))
+
+    if personalize:
+        # WP-OnboardPayoff/TC16/TC14: pinned order Identity header -> Your Tasks
+        # -> Team Critical -> Your Team -> Your Manager's Recent Decisions ->
+        # Since You Were Gone -> Your Recent Activity. Role derivation is ONE
+        # person-node scan shared by the identity header and both TC16 sections
+        # (a middle manager gets both, and the header's manager-name resolution
+        # comes from the same scan) -- moved up so it runs once, only when
+        # personalizing (never scanned for the global digest).
+        role = _derive_role(storage, current_email)
+        sections.append(_format_identity_header(role))
+        your_tasks, mine_ids = _format_your_tasks(
+            storage, config.prime_your_tasks_cap, current_email, maxlen
+        )
+        sections.append(your_tasks)
+        sections.append(_format_team_critical(storage, config.prime_team_critical_cap, mine_ids, maxlen))
+        sections.append(_format_your_team(storage, config, role, maxlen))
+        sections.append(_format_manager_decisions(storage, config, role, maxlen))
+        sections.append(_format_since_you_were_gone(storage, config, current_email, maxlen))
+        sections.append(_format_your_activity(storage, config, current_email, maxlen))
+    else:
+        sections.append(_format_tasks(storage, config.prime_task_cap, maxlen))
+
+    sections.extend([
+        _format_workflows(storage, config.prime_workflow_limit, maxlen),
+        _format_document_count(storage),
+        _format_patterns(storage, config.prime_pattern_limit, maxlen),
+        _format_decisions(storage, config.prime_decision_limit, maxlen),
+        _format_incidents(storage, config.prime_incident_days, config.prime_incident_min_severity, maxlen),
+    ])
+
+    body = "\n\n".join(s for s in sections if s)
+    if not body:
+        body = "No cognition history recorded yet."
+
+    return (
+        "# Vibe Cognition — Project Context\n\n"
+        + body
+        + "\n\nUse cognition_search and cognition_get_history for full details."
+    )
+
+
+#: How many session starts show the full repair notice before it collapses to one
+#: line. A retained loss can outlive many sessions (a teammate may never restore
+#: their file), and an unbounded banner is what teaches people to ignore banners.
+REPAIR_NOTICE_FULL_RENDERS = 3
+
+
+_ROLLBACK_CAUSE_BY_VCS = {
+    VCS_GIT: "the usual cause is `git checkout`, `git restore` or `git stash` putting",
+    VCS_SVN: "the usual cause is `svn revert` or an update to an older revision putting",
+    VCS_NONE: "the usual cause is something putting",
+}
+
+_REHYDRATE_RECOVERY_BY_VCS = {
+    VCS_GIT: "check `git log -- .cognition/journal .cognition/journal.jsonl` or a teammate's clone",
+    VCS_SVN: "check `svn log .cognition/journal .cognition/journal.jsonl` or a teammate's working copy",
+    VCS_NONE: "check a teammate's copy of .cognition",
+}
+
+_BETWEEN_SESSIONS_CAUSE_BY_VCS = {
+    VCS_GIT: (
+        "The usual cause is a merge or rebase that resolved a journal conflict by "
+        "taking one side, which deletes the other. A branch switch is recognised and "
+        "does NOT raise this. TELL THE USER, and do not attempt recovery without their "
+        "go-ahead. They are recoverable: `git log -- .cognition/journal "
+        ".cognition/journal.jsonl` shows the commit that dropped them, and `git show "
+        "<earlier>:<file>` on the person's shard under .cognition/journal/ (or the "
+        "legacy .cognition/journal.jsonl) has the lines to add back"
+    ),
+    VCS_SVN: (
+        "The usual cause on Subversion is resolving a journal conflict with 'use mine' "
+        "or 'use theirs', which deletes one side. A branch switch or an update to "
+        "an older revision is recognised and does NOT raise this. TELL THE USER, "
+        "and do not attempt recovery without their go-ahead. They are "
+        "recoverable: `svn log .cognition/journal .cognition/journal.jsonl` shows "
+        "the revision that dropped them, and `svn cat -r <earlier> <file>` on the "
+        "person's shard under .cognition/journal/ (or the legacy "
+        ".cognition/journal.jsonl) has the lines to add back"
+    ),
+    VCS_NONE: (
+        "The usual cause is a journal conflict resolved by taking one side, which "
+        "deletes the other. TELL THE USER, and do not attempt recovery without their "
+        "go-ahead. They are recoverable from a teammate's copy of the person's shard "
+        "under .cognition/journal/ (or the legacy .cognition/journal.jsonl), which "
+        "has the lines to add back"
+    ),
+}
+
+
+def _by_vcs(table: dict[str, str], vcs: str) -> str:
+    return table.get(vcs, table[VCS_NONE])
+
+
+def _repair_notice(info: dict, vcs: str = VCS_NONE) -> tuple[str, dict | None]:
+    """The WP-Append-Only-Replay notice, and the notice to keep for next time.
+
+    Unlike a loss report, this one is READ WITHOUT BEING CLEARED while its condition
+    holds: a file on disk is still missing entries. The incident this was built for
+    went unnoticed for 90 minutes precisely because the old flag showed once. Storage
+    clears it when the entries come back, or `accept-disk` does. Worded for the
+    detected VCS only (WP-VCS-Isolation).
+    """
+    shown = int(info.get("shown") or 0) + 1
+    kept = {**info, "shown": shown}
+
+    if info.get("kind") == LOSS_KIND_HEALED:
+        healed = int(info.get("healed_lines") or 0)
+        if shown > REPAIR_NOTICE_FULL_RENDERS:
+            return "", None  # the data is safe and the point has been made
+        return (
+            f"NOTE (vibe-cognition): this checkout's journal file had lost {healed} "
+            f"entr(y/ies) it had written -- {_by_vcs(_ROLLBACK_CAUSE_BY_VCS, vcs)} an "
+            "older copy of .cognition on disk. They were appended back automatically "
+            "from this machine's own record, so nothing was lost. COMMIT the journal "
+            "file so teammates get them too, and tell the user this happened."
+        ), kept
+
+    files = [str(f) for f in (info.get("retained_files") or [])]
+    named = ", ".join(files) or "a journal file"
+    # The reader's OWN shard can end up here too (mid-conflict, read-only, missing
+    # shard_start). Telling them to wait for a teammate then is worse than useless, so
+    # the notice says whose file it actually is -- storage records the own shard's key.
+    own_unrepairable = bool(info.get("own_unrepairable")) and info.get("own_shard") in files
+    whose = (
+        "this checkout's OWN file could not be repaired -- resolve the conflict, or fix "
+        "the file's permissions, and the entries go back automatically"
+        if own_unrepairable
+        else "it belongs to a teammate, or it is the frozen legacy journal, so its "
+             "owner has to restore it from version control"
+    )
+    if shown > REPAIR_NOTICE_FULL_RENDERS:
+        return (
+            f"NOTE (vibe-cognition): {named} is still missing entries this checkout "
+            "has seen; they remain readable here. (Repeat notice.)"
+        ), kept
+    return (
+        f"WARNING (vibe-cognition): {named} no longer holds entries this checkout had "
+        f"already seen, and {whose}. The memories are still readable in THIS session but "
+        "they are not on disk, so they will not survive a restart here. TELL THE USER. "
+        "This notice stays until the file is restored."
+    ), kept
+
+
+def _consume_rehydrate_flag(cognition_dir: Path) -> str:
+    """One-shot journal-loss alert for the next session start (WP-1 item 1.4).
+
+    A server process that detected a LOSSY rehydrate-reset (journal shrunk or
+    replaced under its replay offset, dropping in-memory nodes) persists a small
+    flag file (storage.REHYDRATE_FLAG_FILENAME). Prime runs in a separate
+    process, so this file IS the cross-process plumbing: read it, format a
+    warning section, and delete it (shown once — the server's own get_status
+    keeps reporting the event for its process lifetime). Never raises; an
+    unreadable flag is consumed silently so it cannot wedge every future prime.
+    """
+    flag = local_read_path(cognition_dir, REHYDRATE_FLAG_FILENAME)
+    if not flag.parent.is_dir():
+        # No .cognition/local yet: nothing to read, and prime must never CREATE files in
+        # a project that has none (taking the lock would make one).
+        return ""
+    # Under the same lock every storage-side writer takes: prime runs in its own
+    # process, and an unlocked read-modify-write here can overwrite a repair notice a
+    # live server wrote in between -- losing it before anyone reads it (peer review).
+    with notices_lock(flag):
+        return _render_notices(cognition_dir, flag)
+
+
+def _render_notices(cognition_dir: Path, flag: Path) -> str:
+    notices = read_notices(flag)
+    if not notices:
+        return ""
+
+    # Every outstanding notice is rendered, and each one decides for itself whether it
+    # has been dealt with. A repair notice stands until the file is sorted out; a loss
+    # report is shown once. Rendering only the first would hide the others (review).
+    rendered: list[str] = []
+    keep: list[dict] = []
+    vcs = detect_vcs(Path(cognition_dir).parent)
+    for info in notices:
+        if info.get("kind") == VECTOR_STORE_REBUILT_KIND:
+            rendered.append(_vector_store_rebuilt_notice(info))
+            continue
+        if info.get("kind") in (LOSS_KIND_HEALED, LOSS_KIND_RETAINED):
+            text, still = _repair_notice(info, vcs)
+            if text:
+                rendered.append(text)
+            if still is not None:
+                keep.append(still)
+            continue
+        text = _loss_notice(info, vcs)
+        if text:
+            rendered.append(text)
+    write_notices(local_write_path(cognition_dir, REHYDRATE_FLAG_FILENAME), keep)
+    return "\n\n".join(rendered)
+
+
+def _vector_store_rebuilt_notice(info: dict) -> str:
+    """One-shot: the search index was found damaged, set aside and rebuilt."""
+    at = str(info.get("at") or "recently")
+    return (
+        "NOTE (vibe-cognition): this project's search index was found damaged "
+        f"({at}) and has been rebuilt from the journal; no memories were lost. "
+        "Search results may be incomplete until the rebuild finishes."
+    )
+
+
+def _loss_notice(info: dict, vcs: str = VCS_NONE) -> str:
+    """The one-shot loss report: a rehydrate that dropped nodes, or a between-sessions
+    loss. Shown once, then gone -- the condition it describes is already over. Worded
+    for the detected VCS only (WP-VCS-Isolation)."""
+    try:
+        lost = int(info["nodes_lost"])
+        at = str(info.get("at", "unknown time"))
+    except (ValueError, TypeError, KeyError):
+        return ""
+    sample = info.get("sample_missing_ids") or []
+    sample_note = f" (e.g. {', '.join(sample)})" if sample else ""
+    if info.get("kind") == LOSS_KIND_BETWEEN_SESSIONS:
+        return (
+            f"WARNING (vibe-cognition): {lost} memor{'y' if lost == 1 else 'ies'} this "
+            f"checkout had before are GONE from the journal{sample_note}, with no "
+            "deletion record -- this happened between sessions, not during one. "
+            f"{_by_vcs(_BETWEEN_SESSIONS_CAUSE_BY_VCS, vcs)} -- only the missing "
+            "ids above, never the whole older file."
+        )
+    return (
+        "WARNING (vibe-cognition): in a previous session a journal file was replaced or "
+        f"truncated under a live server ({at}); {lost} node(s) recorded in that "
+        f"session are no longer on disk{sample_note} — "
+        f"{_by_vcs(_REHYDRATE_RECOVERY_BY_VCS, vcs)} to recover, and alert the user."
+    )
+
+
+STRAGGLER_SEEN_FILENAME = "straggler-seen.json"
+
+
+def _straggler_seen(cognition_dir: Path) -> str:
+    """The newest straggler entry this checkout has already been told about. The
+    legacy entries stay forever, so without this the warning would repeat every
+    session long after the teammate upgraded."""
+    try:
+        data = json.loads(local_read_path(cognition_dir, STRAGGLER_SEEN_FILENAME).read_text(encoding="utf-8"))
+        return str(data.get("latest_at") or "")
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def _mark_straggler_seen(cognition_dir: Path, latest_at: str) -> None:
+    with contextlib.suppress(OSError):
+        local_write_path(cognition_dir, STRAGGLER_SEEN_FILENAME).write_text(
+            json.dumps({"latest_at": latest_at}), encoding="utf-8",
+        )
+
+
+def main(argv: list[str] | None = None):
+    """Entry point for vibe-cognition-prime CLI command.
+
+    Outputs JSON for Claude Code SessionStart hooks.
+    Reads REPO_PATH env var or uses cwd. Optionally prepends, in this pinned
+    order, a migration note (VIBE_MIGRATION_NOTE, set by the hook's
+    migrate_mcp step), an update nudge (VIBE_UPDATE_NOTE, set by the hook's
+    update_check step), and a what's-new notice (VIBE_WHATSNEW_NOTE, set by
+    the hook's whats_new step) -- any subset may be present, and all are
+    surfaced in the same hook output instead of suppressing project-context
+    injection.
+
+    When the graph is empty (.cognition/ absent OR nodes == 0), injects an
+    onboarding block instructing the LLM to alert the user and call
+    cognition_readme. Migration note and onboarding are independent: both emit
+    if both conditions hold (note first, then onboarding).
+
+    Also consumes the one-shot journal-loss flag (see _consume_rehydrate_flag)
+    and injects its warning ahead of the project context when present.
+
+    ``argv``: explicit args list (tests pass ``[]``); ``None`` (the real CLI
+    invocation) reads ``sys.argv[1:]`` via argparse's own default, matching
+    migrate_mcp.py's ``main(argv=None)`` convention.
+    """
+    parser = argparse.ArgumentParser(
+        prog="vibe-cognition-prime",
+        description=(
+            "Print the session-start context digest (SessionStart hook JSON) for "
+            "the project at $REPO_PATH (or the current directory). This is the "
+            "same output the plugin's SessionStart hook injects automatically -- "
+            "run this by hand to preview it. Takes no arguments; reads REPO_PATH "
+            "and VIBE_MIGRATION_NOTE from the environment."
+        ),
+    )
+    parser.parse_args(argv)  # WP-13 (4aaef22e25ea): --help correctness only, no new flags
+
+    harness_note = os.environ.get("VIBE_HARNESS_NOTE", "").strip()
+    note = os.environ.get("VIBE_MIGRATION_NOTE", "").strip()
+    update_note = os.environ.get("VIBE_UPDATE_NOTE", "").strip()
+    whatsnew_note = os.environ.get("VIBE_WHATSNEW_NOTE", "").strip()
+    repo_path = resolve_repo_path_env()
+    cognition_dir = repo_path / ".cognition"
+
+    sections: list[str] = []
+    # First, above everything: if the server answering this session is not the
+    # installed version, nothing else in this digest describes the code in use.
+    stale = stale_server_warning(cognition_dir, code_version())
+    if stale:
+        sections.append(stale)
+    if harness_note:
+        sections.append(harness_note)
+    if note:
+        sections.append(note)
+    if update_note:
+        sections.append(update_note)
+    if whatsnew_note:
+        sections.append(whatsnew_note)
+
+    identity_note = _identity_notice(repo_path, cognition_dir)
+    if identity_note:
+        sections.append(identity_note)
+
+    # Constructed before the loss alert is consumed: when this process is the one
+    # that detects a between-session loss, the alert belongs to THIS session.
+    storage: CognitionStorage | None = None
+    if cognition_dir.exists():
+        storage = CognitionStorage(cognition_dir)
+
+    svn_report = ensure_svn_hygiene(cognition_dir) if storage is not None else None
+    if svn_report is not None:
+        sections.append(format_svn_announce(svn_report, resolve_journal_command(repo_path)))
+    else:
+        try:
+            hygiene_state = check_hygiene_state(repo_path, cognition_dir)
+            hygiene_line = format_hygiene_announce(hygiene_state)
+            if hygiene_line:
+                sections.append(hygiene_line)
+        except Exception:  # noqa: BLE001
+            pass
+
+    with contextlib.suppress(Exception):
+        stragglers = straggler_report(cognition_dir)
+        if stragglers and stragglers["latest_at"] > _straggler_seen(cognition_dir):
+            sections.append(format_straggler_warning(stragglers))
+            _mark_straggler_seen(cognition_dir, stragglers["latest_at"])
+
+    # Journal-loss alert (WP-1): surfaced BEFORE the project context so it can't
+    # be buried; consumed so it shows exactly once.
+    rehydrate_note = _consume_rehydrate_flag(cognition_dir)
+    if rehydrate_note:
+        sections.append(rehydrate_note)
+
+    if storage is not None:
+        # Announced because construction may have written committed files nobody
+        # asked for, and the leftover person nodes need a human decision.
+        # Its own report when THIS process migrated, else the one stashed by
+        # whichever process did -- usually the MCP server, which has no way to
+        # tell the user anything.
+        report = storage.person_migration_report or consume_migration_report(cognition_dir) or {}
+        incomplete = [
+            email for email in (report.get("migrated") or [])
+            if storage.profile_missing_required(email)
+        ]
+        migration_note = format_migration_announce(report, incomplete)
+        if migration_note:
+            sections.append(migration_note)
+
+    empty = storage is None or storage.get_statistics()["nodes"] == 0
+
+    if empty:
+        sections.append(ONBOARDING_BLOCK)
+    else:
+        try:
+            settings = Settings()
+            config = PrimeConfig(
+                prime_constraint_limit=settings.prime_constraint_limit,
+                prime_task_cap=settings.prime_task_cap,
+                prime_pattern_limit=settings.prime_pattern_limit,
+                prime_decision_limit=settings.prime_decision_limit,
+                prime_incident_days=settings.prime_incident_days,
+                prime_summary_maxlen=settings.prime_summary_maxlen,
+                prime_incident_min_severity=settings.prime_incident_min_severity,
+                prime_workflow_limit=settings.prime_workflow_limit,
+                prime_personalize=settings.prime_personalize,
+                prime_your_tasks_cap=settings.prime_your_tasks_cap,
+                prime_team_critical_cap=settings.prime_team_critical_cap,
+                prime_your_episode_limit=settings.prime_your_episode_limit,
+                prime_your_decision_limit=settings.prime_your_decision_limit,
+                prime_your_discovery_limit=settings.prime_your_discovery_limit,
+                prime_onboard=settings.prime_onboard,
+                prime_stale_claim_days=settings.prime_stale_claim_days,
+                prime_rollup_cap=settings.prime_rollup_cap,
+                prime_manager_decision_limit=settings.prime_manager_decision_limit,
+                prime_digest_cap=settings.prime_digest_cap,
+                prime_digest_fallback_days=settings.prime_digest_fallback_days,
+            )
+        except Exception:  # noqa: BLE001
+            config = PrimeConfig()
+        # resolve_identity is file-read-only and never raises (v0.12.1 P0
+        # contract) -- no try/except needed around it, unlike Settings() above.
+        current_email = resolve_identity(repo_path, cognition_dir).get("email") or None
+        sections.append(generate_prime(storage, config, current_email))  # type: ignore[arg-type]
+        # WP-TC14: stamp AFTER output is produced, only on this (main()'s own)
+        # CLI/hook path -- generate_prime itself stays pure read-only, and
+        # instructions.py's compact-reinject main() never reaches this branch.
+        _stamp_last_seen(cognition_dir, current_email or "")
+
+    output = {
+        "hookSpecificOutput": {
+            "hookEventName": "SessionStart",
+            "additionalContext": "\n\n".join(sections),
+        }
+    }
+    json.dump(output, sys.stdout)
+
+
+if __name__ == "__main__":
+    main()

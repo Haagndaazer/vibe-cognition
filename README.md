@@ -1,0 +1,1146 @@
+![Python Version](https://img.shields.io/badge/python-3.11--3.13-blue?style=flat&logo=python&logoColor=white)
+![License](https://img.shields.io/badge/license-MIT-green?style=flat)
+![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)
+![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)
+![MCP](https://img.shields.io/badge/MCP-Server-purple?style=flat)
+# Vibe Cognition
+
+A fully local [MCP](https://modelcontextprotocol.io/) server for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [OpenAI Codex CLI](#codex-cli) that captures project knowledge — decisions, failures, discoveries, patterns, and more — so future sessions have context on *why* the code is the way it is. After a one-time model download, all processing and storage happens on your machine — no API keys needed. (A small, optional, read-only version check reaches GitHub once a day by default; see [Update Notifications](#update-notifications).)
+
+**Works in Claude Code (the terminal app and IDE extensions) and Codex CLI only.** It runs a local server and session hooks, which chat apps such as claude.ai do not start, so its skills do nothing there. It needs [uv](https://github.com/astral-sh/uv) and downloads about 2-4 GB on first install; see [What It Runs, Downloads and Sends](#what-it-runs-downloads-and-sends).
+
+## Quick Start
+
+1. Install [uv](https://github.com/astral-sh/uv) if you don't have it:
+
+   **macOS / Linux:**
+   ```bash
+   curl -LsSf https://astral.sh/uv/install.sh | sh
+   ```
+   **Windows (PowerShell):**
+   ```powershell
+   irm https://astral.sh/uv/install.ps1 | iex
+   ```
+
+2. Add the marketplace and install the plugin:
+   ```bash
+   claude plugin marketplace add https://github.com/Haagndaazer/colton-claude-plugins
+   claude plugin install vibe-cognition@coltondyck
+   ```
+
+3. Restart Claude Code. First start is a two-stage wait: Python dependencies install via
+   `uv` (a 2-4 GB download, several minutes on a typical connection), then the embedding
+   model (~250MB) downloads automatically from Hugging Face. Subsequent sessions start
+   instantly — both are one-time costs. See
+   [What It Runs, Downloads and Sends](#what-it-runs-downloads-and-sends).
+
+That's it. The plugin handles dependency installation, MCP server registration, hooks, and skills automatically.
+
+**How do I know it worked?** Ask Claude to run the `get_status` tool, or just start
+working — a new project shows an onboarding message in your first session's context
+(the SessionStart hook injects it automatically). `get_status`'s `embedding_status` field
+moves `loading` → `ready` as the model finishes loading; cognition tools other than
+search work immediately, before that.
+
+## Table of Contents
+
+- [Features](#features)
+- [How It Works](#how-it-works)
+- [What's Included](#whats-included)
+- [Prerequisites](#prerequisites)
+- [What It Runs, Downloads and Sends](#what-it-runs-downloads-and-sends)
+- [Update Notifications](#update-notifications)
+- [What's New](#whats-new)
+- [MCP Tools](#mcp-tools)
+- [Dashboard](#dashboard)
+- [Storage](#storage)
+- [Cognition History Graph](#cognition-history-graph)
+- [Working as a Team](#working-as-a-team)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Codex CLI](#codex-cli)
+- [Uninstall / Cleanup](#uninstall--cleanup)
+- [Development](#development)
+
+## Features
+
+- **Project Knowledge Graph**: Capture decisions, failures, discoveries, assumptions, constraints, incidents, and patterns
+- **Document Storage**: Store client docs, PDFs, and specs as first-class `document` nodes (reference or copy mode) with agent-extracted, searchable text; descriptor nodes that cite the returned `doc:<hash>` auto-link to the document (see the `/vibe-document` skill)
+- **Semantic Search**: Find project history using natural language through local vector embeddings
+- **Deterministic Edge Creation**: `part_of` edges are created instantly via reference matching (shared commit/issue/PR refs) — no LLM needed
+- **Manual & Batch Edge Creation**: Create edges individually or in bulk via MCP tools, with provenance tracking
+- **Curation Skill**: `/vibe-curate` skill with edge-analyzer, conflict-analyzer, and cluster-analyzer subagents for semantic edge creation, deliberate contradiction/supersession hunting, and cluster identification
+- **Local Dashboard**: Interactive graph viewer with semantic search and node-detail sidebar — launch in your browser from Claude or the CLI
+- **Session Context Injection**: Start every session (Claude Code or Codex) with recent project context via hooks, and get the standing practices back after a compaction
+- **Local-First**: All processing and storage happens on your machine — no API keys needed (see [Update Notifications](#update-notifications) for the one narrow, optional exception)
+- **Git-Committed Knowledge**: The cognition journal is designed to be committed to Git and shared with your team
+
+## How It Works
+
+Vibe Cognition uses:
+- **SQLite + numpy** for local vector storage of cognition node embeddings (exact cosine search; since v0.47.0, replacing ChromaDB)
+- **sentence-transformers** for generating embeddings locally
+- **NetworkX** for building and querying the in-memory cognition graph
+- **Ollama** (optional) as an alternative local embeddings backend
+
+### Embedding Model
+
+By default, Vibe Cognition uses [nomic-ai/nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5) from Hugging Face. The model (~250MB) is downloaded automatically on first server start — no manual setup required.
+
+Alternatively, you can use **Ollama** as an embedding backend if you prefer to manage models separately.
+
+## What's Included
+
+The plugin bundles everything needed — no manual configuration required:
+
+| Component | What It Does |
+|-----------|-------------|
+| **MCP Server** | 39 tools for recording, searching, querying, and visualizing the knowledge graph |
+| `/vibe-cognition` skill | Teaches Claude when and how to capture decisions, failures, discoveries, patterns |
+| `/vibe-curate` skill | Curates semantic edges and identifies clusters using edge-analyzer and cluster-analyzer subagents |
+| `/vibe-backfill` skill | Backfills the cognition graph from git commit history (watermark-based — finds everything untracked since the last backfilled commit, however old) |
+| `/vibe-dashboard` skill | Launches the local graph dashboard via the `cognition_dashboard` MCP tool |
+| **SessionStart hook** | Injects recent project context (constraints, patterns, decisions, incidents) at session start |
+| **Codex adapter** | `.codex-plugin` manifest, Codex hooks with Windows wrappers, per-harness skill renders, curation reference files, and the Plan agent as a Codex role — see [Codex CLI](#codex-cli) |
+
+## Prerequisites
+
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
+- [uv](https://github.com/astral-sh/uv) — Python package manager (handles Python installation and dependencies automatically)
+- Internet access for first run (downloads 2-4 GB of Python dependencies and the ~250MB embedding model)
+
+### Resource Requirements
+
+- **Disk**: ~2-4GB for Python dependencies (includes PyTorch), ~250MB for the embedding model (cached at `~/.cache/huggingface/`)
+- **RAM**: ~1-2GB for the embedding model at runtime
+- **GPU**: Not required. CPU is the default; GPU is used automatically when available
+
+### First Run
+
+The first time a session starts after install, `uv` automatically installs the Python dependencies. That is a 2-4 GB download (mostly PyTorch), so allow several minutes on a typical connection; the session-start hook waits for it. Subsequent sessions start instantly.
+
+The embedding model (~250MB) also downloads on first use from Hugging Face. After that, it's cached locally at `~/.cache/huggingface/`.
+
+## What It Runs, Downloads and Sends
+
+Everything Vibe Cognition does on your machine and on the network, in one place.
+
+**What it runs**
+
+- A SessionStart hook (`hooks/session-start.sh`, a bash script) at the start of each session. It installs or updates the Python dependencies with `uv sync`, then runs short Python steps from this plugin that build the context shown to Claude. A second, smaller hook (`hooks/reinject-instructions.sh`) repeats the standing instructions after a context compaction.
+- A local MCP server, started by Claude Code with `uv run` over stdio. It serves the tools listed under [MCP Tools](#mcp-tools) and opens no network port.
+- A helper process that holds the embedding model in memory, started by the server.
+- The [dashboard](#dashboard), only when you ask for it: a web page served on `127.0.0.1`, reachable from your own machine only, which it opens in your default browser.
+
+**What it downloads**
+
+- **First install: about 2-4 GB of Python packages**, mostly PyTorch (CPU build), from PyPI and from PyTorch's own package index (`download.pytorch.org`). Expect several minutes on a typical connection; the exact versions are fixed by the `uv.lock` file shipped with the plugin.
+- **First start: the embedding model, about 250 MB**, from Hugging Face ([nomic-ai/nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5)). This model ships its own loading code, which is downloaded with it and runs locally. Set `EMBEDDING_REVISION` to a commit of the model repository to pin both to a revision you have reviewed (see [Configuration](#configuration)), or use the [Ollama backend](#using-ollama-for-embeddings-optional) to avoid it.
+- **Later starts**: each time the model loads, the Hugging Face library may contact `huggingface.co` to see whether the cached copy is current, and fetches a newer one if the model repository changed (pinning `EMBEDDING_REVISION` prevents that). Set `HF_HUB_OFFLINE=1` to stop these requests once the model is cached.
+- Nothing else is downloaded afterwards, apart from new package versions when you update the plugin.
+
+**What it sends**
+
+- **Nothing about you, your project or your graph**, with one exception you would have to set up yourself: with the optional [Ollama backend](#using-ollama-for-embeddings-optional), the text of your memories is sent to the Ollama server you configure for embedding, which is your own machine by default. There is no telemetry, no account and no API key.
+- One optional, read-only version check a day against GitHub, described under [Update Notifications](#update-notifications). It runs only for installs from the `coltondyck` marketplace and can be turned off.
+
+**What it stores**
+
+- Your project's knowledge graph, in a `.cognition/` folder inside the project. It is plain text that you commit and share through your own version control; see [Storage](#storage).
+- A search index, the Python environment and a few small marker files, in the plugin's data folder on your machine. None of it is committed or synced.
+
+**What it changes in your project**
+
+- Creates and writes the `.cognition/` folder.
+- In a git repository, adds a few lines to the project's `.gitattributes` and `.gitignore` so the graph files merge cleanly and machine-local files stay uncommitted; see [Automatic Git Hygiene](#automatic-git-hygiene), which also says how to opt out. In a Subversion working copy it schedules new graph files with `svn add`; see [Subversion teams](#subversion-teams).
+- Reads your name and email from your git configuration files, and reads commit history with read-only git commands (`git log`, `git diff-tree`) when you ask for a backfill. It never commits, pushes or changes history.
+- If a project still has a `vibe-cognition` entry in `.mcp.json` from a very old version, removes that one entry and leaves the rest of the file untouched.
+
+**Bundled third-party code**
+
+- The dashboard ships unmodified copies of [Cytoscape.js](https://js.cytoscape.org/) and its fCoSE layout (`src/vibe_cognition/dashboard/static/vendor/`), so that it works offline. `cytoscape.min.js` is the library's own published minified build.
+
+## Update Notifications
+
+Claude Code doesn't auto-update third-party marketplace plugins, so there's normally no signal that a new version of Vibe Cognition exists. To fix that, the SessionStart hook makes a small, read-only check once every 24 hours:
+
+- **What's fetched**: two unauthenticated HTTPS GETs to `raw.githubusercontent.com` — the marketplace's `marketplace.json` (to find the released version's pin) and that version's `plugin.json`. Nothing about your project, your graph, or your machine is sent; these are plain GET requests with no request body.
+- **What happens with it**: the fetched version string is compared to your installed version. If a newer one is available, an `## Update Available` section is added to your session-start context naming the new version, the update command, and the restart step — nothing is installed or changed automatically. Updating is always your call.
+- **After you update**: the new version is not active until the session restarts. If a server started for the project in the last few minutes is still running an older version than the one installed, the session-start context opens with a warning saying so, and `get_status` reports the code *that* session's server is running under `running_code` (`matches: false` confirms it). Claude Code and Codex are tracked separately, so updating one does not raise the warning in the other. Since 0.39.0 the server is also pinned to the installed code, so this should not happen — the warning exists so that if it ever does, you are told rather than silently running old code.
+- **Throttling**: at most once per 24 hours, tracked by a local timestamp file in the plugin's data directory (never committed, never synced). The network phase has a hard ~8 second wall-clock ceiling — a slow or stalled connection is treated as "couldn't check" and never blocks your session start beyond that.
+- **Which installs check**: on Claude Code, only an install from the `coltondyck` marketplace. Any other install makes no request and shows no reminder: a plugin added from Anthropic's plugin directory is kept up to date by Claude Code itself, and that channel publishes later than the marketplace, so a reminder there would name a version you cannot install yet. A development checkout loaded with `--plugin-dir` does not check either.
+- **How to disable**: set `VIBE_UPDATE_NUDGE=off` (also accepts `0`/`false`/`no`) in your environment. This skips the check entirely — no network request, no nudge.
+- **Contributing to this repo**: a session in this repo with the plugin installed from `coltondyck` makes the same daily check as any other project, unless you set `VIBE_UPDATE_NUDGE=off`.
+
+On Codex the same check reads the `coltondyck` Codex marketplace pin and the `.codex-plugin` manifest, and the reminder names the `codex plugin marketplace upgrade` / `codex plugin add` commands instead.
+
+## What's New
+
+The nudge above tells you a new version exists; this is the other half — after you actually update, session-start shows a short summary of what changed, and keeps showing it until Claude has confirmed it told you.
+
+- **What's shown**: a curated, hand-written list of bullets for each version between the one you last saw and the one now installed — not the raw CHANGELOG (too verbose to skim in a session-start digest; the CHANGELOG is always the full record). Capped at the 3 most recent versions and 9 bullets total, so a long gap between sessions never floods your context.
+- **When it appears**: at every session start after an update, until an agent confirms it has told you by calling `cognition_readme(changes_seen=true)` — or after 5 unconfirmed showings, so it can never nag forever. Printing the summary is not treated as you having seen it: session-start output can be lost when a plugin is updated inside a running session. A local marker file (in the plugin's data directory, never committed, never synced) tracks the last version confirmed. If several sessions start before any of them confirms, each mentions the summary once. A session whose server is still running the previous version cannot confirm; restart it.
+- **How to disable**: set `VIBE_WHATS_NEW=off` (also accepts `0`/`false`/`no`) in your environment.
+- **No network involved**: unlike the update check above, this reads only local files — the installed `plugin.json` and a bundled `whats-new.json` — nothing is fetched from anywhere.
+
+## MCP Tools
+
+### Cognition Tools
+
+| Tool | Purpose |
+|------|---------|
+| `cognition_record` | Record a knowledge node (decision, fail, discovery, pattern, episode, etc.) |
+| `cognition_add_task` | File a trackable task, server-attributed to the git user (open work + lifecycle) |
+| `cognition_list_tasks` | List the backlog: open tasks, priority-sorted, grouped by parent |
+| `cognition_update_task` | Update a task's status/owner/priority/parent/assignment in place (status-transition and assignment logged) |
+| `cognition_set_identity` | Confirm who is driving this checkout AND who they are (name, email, role, seniority, reporting line); the one call that unblocks a refused write |
+| `cognition_register_person` | Put a HUMAN (never an agent) on the roster — writes their committed profile |
+| `cognition_update_person` | Change fields on someone's profile (append-only audit trail) |
+| `cognition_get_person` | One person's profile, its audit trail, and their stored environment facts |
+| `cognition_list_people` | Everyone on the roster |
+| `cognition_remove_person` | Take someone off the roster — they left the team |
+| `cognition_set_env_fact` | Store one durable environment fact about yourself (self-only, per-machine; see [Environment Facts](#environment-facts)) |
+| `cognition_delete_env_fact` | Remove one of your own stored environment facts |
+| `cognition_clear_env_facts` | Bulk-remove your own environment facts (one machine, or all with no args) |
+| `cognition_list_env_facts` | List stored environment facts — yours by default, or any teammate's |
+| `cognition_store_document` | Store a document (reference or copy mode) + extracted text as a first-class node |
+| `cognition_get_document` | Retrieve a stored document: metadata + full text + freshness |
+| `cognition_readme` | Get the full orientation guide + getting-started walkthrough (same content as the `/vibe-cognition` skill). With `changes_seen=true`: record that the user was told the post-update [What's New](#whats-new) summary, so it stops appearing |
+| `cognition_get_node` | Read a single node's full narrative (incl. `detail`) by id |
+| `cognition_update_node` | Edit a node's narrative (summary/detail/context/severity) in place; re-embeds on text change |
+| `cognition_search` | Search project history by natural language |
+| `cognition_get_chain` | Traverse causal reasoning chains (LED_TO edges) |
+| `cognition_get_superseded_chain` | Walk a node's version history via SUPERSEDES (newest first) |
+| `cognition_get_workflow` | Find a workflow procedure by name/topic; resolves to the current HEAD version |
+| `cognition_get_incident_resolution` | Get an incident + its resolutions, follow-ons, and contradictions |
+| `cognition_get_history` | Browse nodes by context area, type, or recency |
+| `cognition_begin_curation` | Mint the curation-session token required by the edge-writing tools (curator only) |
+| `cognition_add_edge` | Create a single edge between two nodes |
+| `cognition_add_edges_batch` | Create multiple edges in one call (max 500) |
+| `cognition_get_edgeless_nodes` | Find nodes with no edges (need curation) |
+| `cognition_get_uncurated_nodes` | Find nodes not yet reviewed by the curation skill |
+| `cognition_mark_curated` | Mark a node as reviewed by the curation skill |
+| `cognition_flag_constraint_scope` | Curation only: flag a constraint whose personal/project scope looks wrong, for its owner to rule on |
+| `cognition_get_neighbors` | Get all connections to a node (all edge types) |
+| `cognition_remove_edge` | Remove a specific edge between two nodes |
+| `cognition_remove_node` | Delete a node and all its attached edges (destructive; also purges its embedding) |
+| `cognition_reload` | Force-reload the graph from the on-disk journal files (diagnostic; a running server DOES pick up teammates' new nodes automatically on its normal catch-up path — this tool is for confirming that, not the only way it happens) |
+
+### Service Tools
+
+| Tool | Purpose |
+|------|---------|
+| `get_status` | Graph statistics, embedding status (including a `syncing` state — see [Joining an Existing Graph](#joining-an-existing-graph)), edge-type breakdown |
+| `cognition_dashboard` | Launch the local web dashboard (graph viewer + semantic search). Returns the URL and opens it in your browser. |
+
+### Cross-Project Tools
+
+Query another project's cognition graph from your current session (e.g. a monorepo
+sibling, or a related repo you keep open side-by-side) without switching directories.
+Attaching is READ-ONLY — it never writes to the foreign project's journal or embeddings.
+
+| Tool | Purpose |
+|------|---------|
+| `cognition_load_project` | Attach a foreign project's `.cognition/` graph to this session by path; returns a short `tag` to reference it |
+| `cognition_unload_project` | Detach a previously-loaded foreign project |
+| `cognition_list_projects` | List all currently-loaded projects (home + foreign) and their status |
+
+Once loaded, pass `project=<tag>` (or the path) to most read tools (`cognition_search`,
+`cognition_get_node`, `cognition_get_history`, `cognition_get_neighbors`, …) to route
+that call at the foreign project instead of your home one. Pass `project="*"` on
+aggregate tools like `cognition_search` to search across every loaded project at once.
+If the foreign project's embedding model or vector dimensions differ from yours,
+semantic search on it is disabled (structural reads still work) — the load response's
+`model_guard` field tells you which case you're in.
+
+## Dashboard
+
+The dashboard is a local, read-only web view of the cognition graph, organized like a project-management tool rather than a picture of a graph. A left nav rail switches between seven views, and every view opens nodes in a shared detail drawer on the right:
+
+- **Overview** (default) — stat tiles (open/in-progress/blocked tasks, done this week, documents, workflows), active constraints, a needs-attention list (stale claims, blocked tasks), recent episodes, and recent high-severity incidents (last 14 days).
+- **Board** — a kanban view of tasks (Open / In Progress / Blocked / Done, done capped to the most recent 20 with cancelled behind a toggle), with a tree-view toggle for the epic/subtask hierarchy. Cards show priority, creator, claimant, claim age, and a ⚠ indicator when the task is contradicted or superseded.
+- **Workflows** — a card grid of HEAD-only workflows (superseded versions never appear as top-level cards); each card's version chain renders inline as clickable hops ("v3 ⟵ v2 ⟵ v1"), each reopening the drawer on that version.
+- **Documents** — a table of stored documents with mode, size, stored date, a freshness badge (unchanged/modified/missing for reference-mode docs with a source path; null/"n/a" for copy-mode docs and path-less reference docs, since neither has anything to re-check), a cited-by count derived from the graph's `part_of` edges, and a download link.
+- **Activity** — a chronological feed across episodes, decisions, fails, discoveries, incidents, constraints, patterns, and assumptions (tasks, documents, workflows, and people are covered by their own views), with client-side type and author filters and a ⚠ conflict indicator per row. Fetches on tab activation only — it does not join the 30-second poll.
+- **People** — a card grid of the registered roster (name, role, seniority, email, who they report to — a dangling manager email renders as an "unregistered" chip rather than crashing), with a "view activity" shortcut that jumps to the Activity view pre-filtered to that person. Identities elsewhere in the dashboard (Board cards, Activity rows, the drawer) gain a solid seniority chip when they resolve to a roster entry — never on an unverified free-text author, and never the mockup's dashed style, which is reserved for the unverified signal.
+- **Graph** — the original interactive force-directed constellation, kept for curation debugging (spotting edgeless clusters). It's lazy-loaded: nothing is fetched or constructed until you open the tab, and the 30-second auto-refresh updates it in place rather than rebuilding it.
+
+The shared **detail drawer** (opened from a Board card, a Graph node, or any list row) shows the full node — summary, detail, references — plus a provenance block (who recorded/created/claimed it, with a visually distinct dashed "unverified" chip for older nodes that predate server-resolved identity and only have a free-text author), a task's transition timeline, related nodes grouped by edge type, and a conflict banner when the node is contradicted (either direction — contradicts edges have no fixed direction) or superseded by a newer version. A global header keeps semantic search, the embedding-status banner, refresh, and stats — unchanged from before the redesign.
+
+The dashboard has no write path beyond node delete (it has no per-request viewer identity, so any other write would stamp misleading provenance).
+
+It runs on `127.0.0.1` and is protected by a per-session token included in the URL. No data leaves your machine.
+
+### Launch from Claude Code (recommended)
+
+Two equivalent paths inside a Claude Code session:
+
+- **Slash command** — type `/vibe-dashboard` and press enter.
+- **Natural language** — ask Claude something like *"open the cognition dashboard"* or *"show me the graph"*.
+
+Either route invokes the `cognition_dashboard` MCP tool, which boots a local HTTP server inside the already-running MCP process and opens the URL in your default browser. Calling it again returns the same URL — there's only ever one dashboard per MCP server.
+
+### Launch from the CLI
+
+The recommended route is the MCP tool / natural language above — it just works for
+plugin users. The standalone CLI below requires a checkout of THIS repository (the
+package is not a dependency of your project, and as a plugin it lives in plugin-data,
+not your project venv). From a clone of this repo:
+
+```bash
+uv run --directory /path/to/vibe-cognition vibe-cognition-dashboard --repo-path /path/to/your/project
+```
+
+(`--repo-path` defaults to the current directory, so from your own project you would
+still need the package available — hence `--directory` pointing at this repo's checkout.)
+
+Useful flags:
+
+| Flag | Effect |
+|------|--------|
+| `--port N` | Preferred port (default `7842`; falls back to `+1..+10`, then ephemeral) |
+| `--no-browser` | Don't auto-open a browser (just print the URL) |
+| `--no-embeddings` | Skip loading the embedding model — the graph view loads instantly but search returns 503. Useful when you only need to browse the structure. |
+
+The CLI runs uvicorn in the foreground; press Ctrl-C to stop.
+
+### What you can do
+
+- **Switch views** with the nav rail — Overview, Board, Graph.
+- **Click a task card, list row, or graph node** → opens the shared detail drawer with the full node, provenance, and (for tasks) the transition timeline.
+- **Toggle Board** between kanban columns and a tree view of the epic/subtask hierarchy; a checkbox reveals cancelled tasks.
+- **Pan / zoom** the Graph tab's canvas to explore connections; nodes are colored by type (decision, fail, discovery, pattern, episode, task, person, …).
+- **Search** with natural language → matching nodes get a yellow border in the Graph tab if it's loaded, and results open directly in the detail drawer either way.
+- **Delete a node** from the drawer (the deletion is recorded in your journal file and the node leaves the embedding index — irreversible; needs a confirmed identity).
+
+## Storage
+
+Vibe Cognition keeps the shared graph in a `.cognition/` directory within your project, and the machine-local vector store **outside** it, under the plugin's data directory:
+
+```
+your-project/
+├── .cognition/
+│   ├── journal/
+│   │   └── <email>.jsonl   # One journal file per person (committed, team-shared)
+│   ├── journal.jsonl       # Legacy shared journal: read, never written (committed)
+│   ├── people/             # Roster profiles and environment facts (committed)
+│   ├── documents/          # Stored documents (committed, except local-only ones)
+│   └── local/              # Machine-local state, e.g. your identity (never committed)
+└── ... your code
+
+~/.claude/plugins/data/vibe-cognition-<marketplace>/
+└── vectors/
+    └── <project>-<hash>/   # Vector embeddings (machine-local, regenerable)
+        └── vectors-1.sqlite3
+```
+
+`.cognition/` is the **only** thing the plugin writes into your project. The MCP server is declared by the plugin itself and resolves your project directory automatically (via `CLAUDE_PROJECT_DIR`), so there is no per-project `.mcp.json` to manage. Python dependencies live in the plugin's own data directory, not in your repo. (If you installed an earlier version that wrote a `vibe-cognition` entry into your project's `.mcp.json`, the plugin removes just that entry on next start — other servers are left untouched.)
+
+- **`.cognition/journal/` and `.cognition/journal.jsonl`** should be **committed** — together they are the shared project knowledge base
+- **The vector store** lives per-project under the plugin data dir (`vectors/<project>-<hash>/`) — it can never end up in source control, and it's a regenerable cache (rebuilt automatically from the journal if deleted). `get_status` reports its database file as `vectors_path` and its health as `vector_store`. If no plugin data dir can be found (bare dev shells, CI) it falls back to `.cognition/local/vectors/`, inside the already-ignored `local/`.
+- **Since v0.47.0 the store is SQLite + numpy instead of ChromaDB.** The first session in each project after updating rebuilds the index from the journal (minutes on a large graph; search results carry `index_syncing: true` until it finishes). The old `chromadb/` folders under the plugin data dir, and any leftover `.cognition/chromadb/` in a project, are no longer read by 0.47.0; delete them **once every session on the machine runs 0.47.0 or later** (a still-open 0.46 session keeps using them). `VIBE_VECTORS_DIR` replaces `VIBE_CHROMADB_DIR`, which is now ignored.
+- **A damaged index repairs itself.** If the store is found damaged, that generation is set aside (`vectors-<n>.corrupt` marks it), a fresh `vectors-<n+1>.sqlite3` is built from the journal, and the next session start says so once. Nothing is lost. The set-aside generation's `.sqlite3`, `-wal` and `-shm` files may be deleted once no session is open; leave its `.corrupt` marker in place.
+
+> **Important:** Never gitignore the entire `.cognition/` directory. The journal files must be committed for team sharing.
+
+### Personal vs project constraints
+
+People record their own working preferences as constraints ("agents never edit my
+prefabs", "ask before committing"). Since 0.42.0 a constraint has a scope:
+
+- **personal** (the default for new constraints) — applies only to the person who
+  recorded it, identified by the server-stamped `recorded_by` email. Nobody else can find
+  it through the plugin: it is left out of `cognition_search`, `cognition_get_node`
+  (reported as not found), neighbors/chains/history, the session-start prime, the
+  dashboard, curation worklists and `get_status` counts. The owner sees it in their own
+  `## Your Personal Constraints` prime section.
+- **project** — visible to everyone, shown in `## Active Constraints`.
+
+The agent decides with guidance in `cognition_record`'s docstring and the skill, and asks
+the human when unsure. Only the owner can change a constraint's scope
+(`cognition_update_node(node_id, scope=...)`); managers have no access to a report's
+personal constraints. Constraints recorded before 0.42.0 have no scope and stay project
+forever; one with no recorded owner cannot be made personal.
+
+This is visibility, not secrecy: a personal constraint is still a line in its owner's
+committed journal file, readable by anyone who opens `.cognition/journal/` directly. The
+`vibe_cognition.remap_identity` CLI sees every scope so a remap cannot orphan one.
+
+Since 0.43.0 curation reviews new constraints and flags any that look mis-scoped. A flag is
+stored on the constraint as `scope_review` and only its owner can see it. The owner's session
+start lists it under `## Constraints to Review` until they rule with
+`cognition_update_node(node_id, scope=...)` — passing the current scope keeps it and clears the
+flag. The curator's completion message also names flags on the launching person's own
+constraints, and the agent asks at a natural pause without stopping work.
+
+### A rolled-back journal cannot destroy memories
+
+Replay is APPEND-ONLY. A node leaves the graph only through an appended `remove_node`
+tombstone, never because a journal file got shorter. This closes a real data-loss class:
+an ordinary `git checkout -- .cognition` (or `git restore`, `git stash`, `svn revert`, or
+checking out a commit whose journal predates the live graph) puts an OLDER copy of a
+journal file on disk, and replay used to converge the graph down to it. Five recorded
+incidents, 1 to 93 nodes each, two unrecoverable.
+
+- **Your own file is repaired.** Every line this checkout appends is also recorded in a
+  machine-local, checkout-bound ledger (`.cognition/local/own-appends.jsonl`, ignored by
+  git and SVN) at the moment it is written. If the file later loses those lines they are
+  appended back verbatim, so the entries survive a restart — the case the incident hit.
+  COMMIT the repaired file so teammates get them back too.
+- **A teammate's shard and the legacy journal are never written by this checkout.** Their
+  lost entries stay readable in the running session and are reported, but they are only
+  safe again once that file's owner restores it. A rollback of a file this machine never
+  read is not recoverable here: the ledger holds what this checkout wrote, not what it
+  never saw.
+- **It is never silent.** One session-start alert covers all of this, READ WITHOUT BEING
+  DELETED so it stands until the condition is resolved — the reported incident went
+  unnoticed for 90 minutes because the old alert showed once. It says whose file is at
+  fault, including when it is your own (a merge conflict or a read-only file blocks the
+  repair). `get_status`'s `journal.repair` carries the same facts.
+- **Deliberate moves are left alone.** An `svn switch`, an update to an older revision, or
+  a git branch switch legitimately brings another line of history, so the repair stands
+  down and re-baselines instead of re-appending the branch you left.
+- **Loss between sessions is watched on git too** (it used to be Subversion-only, for the
+  branch-switch reason above), and the ids it compares are refreshed during a session, so
+  a teammate's rollback landing between sessions is noticed.
+
+For a deliberate rollback, `vibe-cognition-journal accept-disk [project]` accepts the files
+as they are and drops what this checkout was holding. It is not gated technically — an
+agent can run it, and a token echoed from the session-start text would only look like a
+gate, since the agent reads that text too — so every run writes an audit record into the
+graph naming what was dropped and who ran it, and a run whose audit cannot be written does
+not happen at all. An agent must ask the human first.
+
+### Per-person journal files
+
+Since 0.41.0, every person writes only to **their own file**, `.cognition/journal/<email>.jsonl`, named after the identity confirmed in that checkout. The graph everyone sees is rebuilt from all of those files plus the old shared `.cognition/journal.jsonl`.
+
+- **Why:** when several people appended to one file between syncs, their changes collided — silently merged on git, a real conflict on Subversion. With one writer per file, two teammates never touch the same file.
+- **Switching is automatic.** The first write after upgrading creates your file. Nothing is moved: the old journal is never split or rewritten, and stays part of the graph.
+- **Writing needs a confirmed identity.** With none, there is no file to write to, so writes are refused (they already were, since 0.37.0).
+- **Conflicting edits resolve by time, not by who synced first.** Each entry records when it was written; when two people change the same thing, the later change wins for everyone. A teammate whose clock runs fast cannot make your later edit lose.
+- **Teammates on an older version** still write to the old shared file. The session start names them and says to update; their entries are still read.
+- **The same person in two clones or worktrees** still shares one file; git merges it by keeping both sides, and on SVN the resolver below handles it.
+- Check the state with `get_status` (`journal`) or `vibe-cognition-journal status` (also `python -m vibe_cognition.cognition.journal_cli status`). `adopt` creates your file before your first write. Neither moves data.
+
+### Automatic Git Hygiene
+
+On first startup in a new project, vibe-cognition automatically configures two git hygiene rules for `.cognition/`:
+
+1. **`.gitattributes`** — adds `merge=union` for `.cognition/journal.jsonl`, `.cognition/journal/*.jsonl` and `.cognition/people/*.jsonl`, so concurrent appends from different branches/clones union-merge cleanly instead of conflicting. (`merge=union` is a built-in git merge driver; it only affects 3-way merge resolution and never rewrites the journal blob.)
+2. **`.cognition/.gitignore`** — keeps machine-local and per-user files out of version control: `local/` (since 0.38.0 every machine-local file lives there — the identity file, `last-seen.json`, alert flags, the hygiene flag), `*.lock`, and `chromadb/`. Repos upgraded from older versions keep their earlier per-file entries too; they are harmless. (Since v0.32.0 the vector store lives outside the repo, but the `chromadb/` line is still written: teammates on older plugin versions sharing the repo still create an in-repo cache.) A committed `last-seen.json` conflicts on every teammate's session, so this write matters more than it looks.
+
+Both writes are **idempotent** (existing files are appended, never clobbered) and happen exactly once per working copy, tracked by a local flag file `.cognition/local/.git-hygiene-managed`. The committed rules (`.gitattributes`, `.cognition/.gitignore`) travel to teammates via git; the flag is git-ignored so every fresh clone self-heals with one pass on first startup.
+
+**Opt out:** set `VIBE_COGNITION_NO_VCS_HYGIENE=1` to suppress the entire pass (useful in single-shared-checkout repos that use the worktree-flush protocol instead of union-merge). It also turns off the automatic SVN setup. The older name `VIBE_COGNITION_NO_GIT_HYGIENE` still works.
+
+**Re-arm:** delete `.cognition/local/.git-hygiene-managed` (or `.cognition/.git-hygiene-managed` on a repo last started before 0.38.0) to make the pass re-run and re-add any rule you removed.
+
+**Not a git repo?** Since v0.36.3 the `.cognition/.gitignore` write happens in **any** working copy, not just a git one — the `.gitattributes` write stays git-only, since `merge=union` is a git concept. Subversion does not read `.gitignore`; on an SVN working copy the separate SVN setup below turns that file into the `svn:global-ignores` property.
+
+### Subversion teams
+
+Since 0.40.0, **setting up `.cognition/` for SVN is automatic** — you review and commit, nothing more. It needs the `svn` command-line client on `PATH` (TortoiseSVN users: re-run the installer and enable *command line client tools*); without it, the session start says so and the manual steps below still work.
+
+**What happens automatically, every session start on an SVN working copy:**
+
+- `.cognition/` is added to version control (never committed — see below).
+- The `svn:global-ignores` property on `.cognition/` is set from `.cognition/.gitignore`, trailing slashes stripped (SVN globs have no directory-only form, so `local/` would match nothing) and merged with any value already there. If someone runs `svn revert` on it, the next session sets it again.
+- Every new file under `.cognition/` is scheduled for addition — a new teammate's `people/<email>.profile.jsonl` as soon as they onboard, and a newly stored document as soon as it is stored. `svn commit` never includes new files on its own and succeeds silently without them, so without this a new teammate never appears on anyone else's roster.
+- Never added: anything under `.cognition/local/` (your identity file and other machine-local state), `*.lock`, `chromadb/`, documents you stored as **local-only**, and conflict leftovers (`.mine`, `.rNNN`). Nothing at all is added while a conflict is unresolved.
+- The session-start context says exactly what was changed, what is still uncommitted (including the property, which shows as `M` in the **second** column of `svn status`), and names any conflicted file.
+
+**Nothing is ever committed for you.** Review with `svn status .cognition` and commit when ready. It never touches anything outside `.cognition/`. If the folder containing `.cognition/` is not itself under version control, or a rule above it ignores `.cognition`, the session start says so and adds nothing.
+
+**Opt out** with `VIBE_COGNITION_NO_VCS_HYGIENE=1` (the older name `VIBE_COGNITION_NO_GIT_HYGIENE` also works). It turns off the git setup too.
+
+**What gets committed:** `.cognition/.gitignore`, every `.cognition/journal/*.jsonl`, `.cognition/journal.jsonl`, every `.cognition/people/*.jsonl`, and `.cognition/documents/` except local-only documents. **What never gets committed:** `.cognition/local/`, `*.lock`, `chromadb/`, local-only documents and `documents/.gitignore`.
+
+**SVN has no equivalent of `merge=union`, and cannot be given one** — there is no per-path merge configuration in Subversion at any version. Since 0.41.0 each person writes only to their own journal file, so **two different people no longer conflict**. A conflict can still happen when the same person works in two checkouts, or on the old shared journal while a teammate is on an older plugin.
+
+- **Resolve with the resolver, which keeps BOTH sides.** The session start names the conflicted file and gives the exact command, which runs with the plugin's own Python:
+
+  ```bash
+  "<plugin python>" -m vibe_cognition.cognition.resolve_journal "<project>"   # add --dry-run to preview
+  ```
+
+  It keeps every line from your side and the other side exactly once, runs `svn resolve --accept working`, and never commits. Then reload the graph (`cognition_reload` or a new session) and commit. It also covers `people/*.jsonl`.
+- **Never choose "use mine" or "use theirs"** (or `mine-full` / `theirs-full`). Each deletes one side's memories. Since 0.39.0 the next session start notices memories that vanished without a deletion record and says so, with the `svn log` / `svn cat` commands to recover them. `svn switch` and `svn update -r <older>` are recognised as deliberate and stay silent.
+- **Resolving by hand?** Concatenate `<file>.mine` and the highest-numbered `<file>.rNNN`, drop lines that are **exactly identical** — never deduplicate by node `id`: `update_node` lines reuse the id of the node they change and edge lines have no id, so that deletes the other side's edits and links — then `svn resolve --accept working <file>`.
+- **`svn update` before a session, commit after one.** Most conflicts come from long uncommitted stretches rather than genuine simultaneous work.
+- **Never set `svn:eol-style` under `.cognition/`.** The journal is replayed by byte offset and the document store is content-addressed, so any line-ending rewrite is damaging. SVN does not translate unless the property is set — the safe state is the default. Watch for a repo-root `svn:auto-props` rule (e.g. `*.md = svn:eol-style=native`): it cannot be neutralized from `.cognition/`, because properties from different ancestors combine rather than override and no value means "do not translate". Exclude `.cognition/` at the root instead.
+- **If an identity file gets committed anyway, it is not trusted.** Since 0.39.0 the file records the machine, OS account and checkout folder it was written for. A teammate who receives it through `svn update` is refused rather than silently writing as you, and is told the exact `svn rm --keep-local .cognition/local/identity.json` command to stop it travelling.
+- **Committed a machine-local file by mistake?** `svn rm --keep-local <path>` takes it out of version control without deleting your copy.
+
+#### Manual setup (no `svn` client on PATH, or opted out)
+
+Run from the project root after the first vibe-cognition session has created `.cognition/`:
+
+1. Build the ignore list from the generated file — comments and blank lines dropped, **trailing slash stripped from every entry**, written **without a UTF-8 BOM**. Take it from `.cognition/.gitignore`, never from documentation: that file gains entries across releases (`local/` arrived in 0.38.0). Today the directory entries are `local/` and `chromadb/`, and `local/` holds your identity file.
+
+   ```bash
+   grep -v '^[[:space:]]*#' .cognition/.gitignore | sed -e 's#/$##' -e '/^[[:space:]]*$/d' > svn-ignores.txt
+   ```
+
+   ```powershell
+   (Get-Content .cognition\.gitignore | Where-Object { $_ -and $_ -notmatch '^\s*#' }) -replace '/$','' | Set-Content -Encoding ascii svn-ignores.txt
+   ```
+
+   Do not hand-write the list or use PowerShell's `>` / `Out-File`: Windows PowerShell 5.1 writes a BOM, and `svn propset -F` then silently kills the first rule — `local` — while `svn propget` still shows it.
+2. `svn add --depth empty .cognition`
+3. `svn propset svn:global-ignores -F svn-ignores.txt .cognition`
+4. `svn add --force .cognition`
+5. Check `svn status --no-ignore .cognition`: `local` must show `I`, and nothing under it may show `A`. Then commit, and delete `svn-ignores.txt`.
+
+The order matters: propset on an unversioned folder fails with `E155010`, and adding contents before the property sweeps `local/` into the commit.
+
+**Before every commit**, run `svn add --force .cognition` so new files (a new teammate's profile, a new document) are included. **Exception — local-only documents:** `--force` adds them too, because SVN does not read `documents/.gitignore`. If you store local-only documents, add new files individually instead, or `svn revert` those paths before committing. When a release adds an ignore entry, repeat steps 1, 3 and 5.
+
+Run `cognition_readme` for the full "Team setup (svn)" section.
+
+## Cognition History Graph
+
+The cognition graph captures project knowledge — decisions made, approaches that failed, non-obvious discoveries, constraints, incidents, and patterns — so future sessions have context on *why* the code is the way it is.
+
+### How It Works
+
+1. **Record nodes** during conversations via `cognition_record`
+2. **Deterministic matching** instantly creates `part_of` edges (and `relates_to` for document→episode) when nodes share references (commit hashes, issue/PR numbers, `doc:` keys) — the only automatic edges
+3. **Semantic edges** (led_to, resolved_by, supersedes) are the agent's job: after recording, run the `/vibe-curate` skill, the ONLY path that writes them — `cognition_add_edge`/`cognition_add_edges_batch` require a curation-session token minted by `cognition_begin_curation`, so writes outside a curation run are refused and every accepted edge is stamped with its session (`get_status`'s `edges_outside_curation` still tracks legacy/manual sources)
+4. **Query** with `cognition_search` (semantic) or `cognition_get_history` (by context/type)
+
+### Node Types
+
+| Type | Purpose |
+|------|---------|
+| `decision` | A choice between alternatives (and why) |
+| `fail` | An approach that didn't work |
+| `discovery` | A non-obvious finding |
+| `assumption` | A premise being relied on |
+| `constraint` | A hard limitation or scoping exclusion. Personal by default (visible only to whoever recorded it); `scope="project"` for rules everyone must follow — see [Personal vs project constraints](#personal-vs-project-constraints) |
+| `incident` | A production problem |
+| `pattern` | A reusable lesson learned |
+| `episode` | Full narrative of completed work (Linear task, feature, debugging session) |
+| `workflow` | A step-by-step procedure stored as ONE unit; versioned by supersession (update = new node + `supersedes` edge) |
+| `task` | Trackable open work, server-attributed to the git user; mutable status/priority + arbitrary-depth parent hierarchy (created with `cognition_add_task`) |
+| `person` | A HUMAN identity — name, role, seniority, reports-to (never an agent; agent identity lives in teammate-comms); updated in place with an audit trail (created with `cognition_register_person`) |
+
+### Edge Types
+
+| Edge | Meaning | How Created |
+|------|---------|-------------|
+| `part_of` | Entity belongs to an episode, or a descriptor to a document | Deterministic (entity↔episode on any shared ref; entity→document on a shared `doc:` ref) |
+| `led_to` | Causal chain — X led to Y | Semantic (via `/vibe-curate` skill) |
+| `resolved_by` | Problem X was fixed by Y | Semantic |
+| `supersedes` | X replaces Y (THE reconciliation edge for duplicates — same node type on both ends, no cycles, enforced) | Semantic |
+| `contradicts` | X conflicts with Y | Semantic |
+| `relates_to` | Same topic, no causal link | Deterministic (document→episode on a shared `doc:` ref) OR semantic (via `/vibe-curate` skill) |
+
+The graph uses a **MultiDiGraph** — multiple edge types between the same pair of nodes are supported (e.g., A can be both `part_of` B and `led_to` B). Each (from, to, edge_type) triple is unique.
+
+### Curation
+
+Edges are created through two mechanisms:
+
+1. **Deterministic matching** (always on): `part_of` and (for document→episode) `relates_to` edges are created automatically when nodes share references. No setup needed. This is the *only* automatic edge creation.
+2. **`/vibe-curate` skill** (launches a background curator): Triggering curation is the agent's responsibility — after recording any nodes, the agent runs the `/vibe-curate` skill to launch a background curate-orchestrator agent, which creates semantic edges (led_to, resolved_by, supersedes) and identifies clusters via Haiku subagents. The main agent never authors these edges itself. Since 0.36.0 this is enforced server-side: the edge-writing tools require a curation-session token from `cognition_begin_curation`, so a write outside a curation run is refused and every accepted edge records its `curation_session`. `get_status`'s `cognition_graph.edges_outside_curation` (WP-TC15) remains the smoke detector for legacy sources: it counts semantic-edge writes whose `source` isn't one of the curator's own values (a `cognition_add_edge`/`cognition_add_edges_batch` call outside a curation run), so accidental misuse of the exclusive-write convention surfaces instead of silently degrading edge provenance. `edge_sources` alongside it is the full per-source histogram.
+
+**Conflict pass**: a dedicated `curate-conflict-analyzer` subagent runs between edge curation and clustering, hunting deliberately for `contradicts`/`supersedes` on stance-bearing nodes (decisions, constraints, patterns, assumptions) — the general edge-analyzer treats `contradicts` as genuinely rare and never actively looks for it. Every proposal carries verbatim quoted stances from both nodes; a whole-run cap discards the entire pass if more than 20% of examined candidates (once at least 15 have been examined) come back `contradicts`, guarding against a systematic false-positive run.
+
+**Scope review**: after the conflict pass, a `curate-scope-analyzer` subagent (pinned to the mid model, Sonnet on Claude Code) reads the run's new constraints and proposes ones that clearly read as the other scope — a personal constraint stating a rule a teammate could break, or a project constraint that is really one person's preference. Each proposal quotes the words that drove it. Surviving proposals become a flag on the node (`cognition_flag_constraint_scope`); nothing about the constraint changes. If more than 40% of 10 or more examined constraints come back flagged, the whole pass is discarded as a misread.
+
+## Working as a Team
+
+The journal is designed to be shared — see the [topology guide](https://github.com/Haagndaazer/vibe-cognition/blob/main/docs/topology-guide.md)
+for choosing between **shared checkout** (multiple agents in one working directory,
+needs a specific flush protocol) and **separate clones** (each teammate's own clone,
+mostly automatic via `merge=union`), and the full protocol for whichever fits your setup.
+
+### Graph Identity
+
+Every memory is attributed to a real person, so **nothing is written until two
+things are true**:
+
+1. **This checkout is claimed** — `.cognition/local/identity.json` names you. It is
+   machine-local and never committed: it says who is driving *this* working copy,
+   not who exists on the project.
+2. **Your profile is complete** — `.cognition/people/<email>.profile.jsonl`, which
+   IS committed and shared, carries your name, email, role, seniority
+   (`owner | senior | mid | junior`) and reporting line.
+
+`cognition_set_identity(name, email, role, seniority, reports_to)` writes both in
+one call. `reports_to` is your manager's **email**, or the literal `"nobody"` —
+which is valid and the expected answer on a solo project. A manager's *name* is
+rejected, because the reporting chain is resolved by email and a name would break
+it with no error anywhere.
+
+**A working git identity is not enough on its own.** It resolves, and it is offered
+as a *candidate* to confirm, but it does not open the gate: on a shared build
+account every human on the machine would attribute to whatever address sits in git
+config, indistinguishably. That was the v0.37.0 threshold and this replaces it.
+
+Refusals are specific about what to do:
+
+| situation | what you get |
+|---|---|
+| checkout not claimed | asks for all five fields, listing candidates found on the machine |
+| claimed, profile incomplete | names *only* the missing fields |
+| identity file came from another machine, OS account or folder | says who it names, that it is not trusted here, and the command to take it out of version control |
+| identity file predates 0.39.0 | a one-time re-confirmation; name and email are enough when your profile is complete |
+| `.cognition/` not writable | says confirmation can never succeed here, and asks you nothing |
+
+**The identity file is bound to where it was written.** It records this machine's
+name, your OS account and this checkout's folder, and is trusted only where all
+three still match. It is meant to stay machine-local, but conventions leak — SVN
+never reads `.gitignore`, so `svn add --force` commits it, and copying a project
+folder copies it. Without the binding, a teammate who received your file would write
+every memory *as you*, marked confirmed; so would another person logged in to the
+same shared machine.
+
+- **The same folder is recognised however you reach it** — renamed, moved on the
+  same drive, opened through a mapped network drive or UNC path, or on a removable
+  drive that came back under a different letter. A *copy* is a different folder and
+  must be confirmed again.
+- **The account and folder are stored as short digests**, not literally, since a
+  checkout path usually contains your OS username and this is the file most likely
+  to leak.
+- **Known limits:** a dev container rebuilt with a new random hostname counts as a
+  new machine, so identity is confirmed again after each rebuild. Alternating
+  between Windows and WSL on one checkout re-confirms on each switch. A FAT/exFAT
+  removable drive that returns under a different letter re-confirms once (NTFS
+  drives do not).
+
+**SVN credentials are read but never used to attribute a write.** SVN's auth cache
+is machine-wide and realm-keyed, and no realm-to-working-copy correlation is
+attempted, so trusting it could attribute this repo's history via another
+project's credential. Cached SVN usernames are offered as *candidates* only.
+
+Reads always keep working. Ask Claude to set your identity and it will ask you for
+the values rather than guess — it must not invent an address, and must never use
+its own agent name.
+
+**Why this exists:** a Subversion working copy on a machine with no git identity
+used to resolve to an empty address, so every such teammate attributed to nobody
+and was indistinguishable from every other one.
+
+#### The roster
+
+A person is a **committed profile**, not a graph node. Profiles are append-only and
+deliberately multi-writer: a manager can pre-register a teammate with their role,
+seniority and reporting line, and that person then only has to run
+`cognition_set_identity` with their name and email to start writing. When someone
+else changes *your* profile, the next session-start digest says so at the top,
+naming who changed which field and what it replaced — seniority first, because it
+reweights your search results.
+
+Upgrading from an older version migrates your existing `person` nodes to profiles
+automatically on the first session, and says what it wrote. The old nodes are left
+in place (harmless — the roster prefers the profile) until you remove them with
+`cognition_remove_node`.
+
+People are **not searchable**: a profile carries no vector, so
+`cognition_search(node_type="person")` points you at `cognition_list_people`
+instead of returning an empty result that reads as "nobody is registered".
+
+**Already recorded under the wrong address?** Confirming a new identity only affects
+future writes. To correct history — a personal address used before a work one was
+configured, say — use the remap CLI. It is dry-run by default and infers nothing:
+
+```bash
+uv run vibe-cognition-remap-identity . --from old@example.com --to new@example.com
+uv run vibe-cognition-remap-identity . --from old@example.com --to new@example.com --apply
+```
+
+Each change is an ordinary append to the journal, so the original attribution stays
+visible in history as `remapped_from`.
+
+### Joining an Existing Graph
+
+When you attach to a project that already has cognition history (a fresh clone, or a
+new teammate's first session), there's a brief window where the graph is usable but not
+fully searchable yet:
+
+1. **Structural tools work immediately** — `cognition_get_node`, `cognition_get_history`,
+   `cognition_get_neighbors`, and friends read the on-disk journal directly; no waiting.
+2. **Semantic search needs the embedding model AND a sync pass.** `get_status`'s
+   `embedding_status` field tells you where things stand: `loading` (model still
+   downloading/initializing — only on a machine's first-ever run), then `syncing` (model
+   ready, but historical nodes recorded before this session's embedding index existed
+   are still being embedded in the background — search may miss some older nodes during
+   this window), then `ready` (fully caught up). `embedding_sync_progress` gives counts
+   while `syncing`.
+3. **How long this takes** scales with graph size, not something you need to plan
+   around for typical projects — a sync pass processes existing nodes in the background
+   without blocking any tool call; you can keep working the whole time.
+
+### Attribution — who wrote this node
+
+Provenance is verified for **tasks and deletions**, not for other node authorship:
+
+- **Task creator** (`cognition_add_task`'s `created_by`) is resolved server-side via
+  the identity chain (your confirmed identity, else your VCS identity), behind the write
+  gate — a client can't override it. This is unspoofable: the tool doesn't even
+  accept a caller-supplied creator.
+- **Who deleted a node** (`cognition_remove_node`) is likewise resolved server-side and
+  stamped as `removed_by` on the journal tombstone — verified the same way task creation is.
+- **Entity author** (the `author` argument on `cognition_record` — decisions, fails,
+  discoveries, etc.) is arbitrary client-supplied text. It's advisory, not verified —
+  in practice this is often an agent persona name rather than a human name, which is a
+  legitimate use, not a bug. Don't treat the `author` field on a decision/discovery/
+  pattern/etc. node as proof of who actually wrote it the way you can for a task's
+  `created_by` or a deletion's `removed_by`.
+
+### Team semantics — the roster and `from_agent`
+
+**The roster** (`cognition_register_person`) models your team's HUMANS — name, email,
+role, seniority (`owner | senior | mid | junior`) and `reports_to` — so the graph knows
+*about* the people behind its provenance stamps, not just their emails. Agent identity
+is never stored here; agents live in teammate-comms.
+
+A person is a **committed profile**, not a graph node:
+`.cognition/people/<email>.profile.jsonl`, append-only, one record per field change
+(`{action, field, value, by, at}`), so "who changed what, when" is always recoverable
+even though anyone sharing the graph may edit anyone's profile. Records fold
+last-write-wins **by timestamp**, not by position in the file, because `merge=union`
+does not preserve chronological order and the interleaving depends on which side
+merged — position-ordered folding would let the same two commits produce different
+values on different machines.
+
+`reports_to` is a manager's **email**, or the literal `"nobody"` — valid and the
+expected answer on a solo project. A manager's *name* is rejected: the chain is
+resolved by email, so a name would break it with no error anywhere.
+
+Profiles are deliberately **multi-writer**. A manager can pre-register a teammate with
+their role, seniority and reporting line before that person ever onboards; the person
+then only runs `cognition_set_identity` with their name and email. When someone else
+changes *your* profile, the next session-start digest opens by naming who changed which
+field and what it replaced — seniority first, because it reweights your search results.
+
+`cognition_remove_person` takes someone off the roster when they leave. It clears their
+profile fields and records a removal tombstone; their environment facts and everything
+they authored stay exactly as they are, because attribution is history. Removing
+yourself is refused — it would close the write gate on you.
+
+**`from_agent`** is a provenance bool stamped on every write from `cognition_record`,
+`cognition_add_task`, `cognition_store_document`, `cognition_register_person`, and
+`cognition_update_person` — `true` (the default) means "recorded via an agent call, as
+usual"; `false` is the deliberately marked case where a human explicitly dictated or
+authored the content themselves. It surfaces wherever provenance already does:
+`cognition_search` results, `cognition_get_node`, and `cognition_list_tasks` rows. A
+node written before this feature shipped simply has no `from_agent` key — that surfaces
+as `null`/absent ("unverified/legacy"), **never** coerced to `true` or `false`.
+
+**Stamped task assignment.** `metadata.assigned_to` (set via `assigned_to_email` on
+`cognition_add_task`/`cognition_update_task`) is who a task is directed AT — an
+email-keyed, identity-matched target distinct from the free-text, never-matched
+`owner`. An assigned task surfaces under the assignee's "Your Open Tasks" at their next
+session start even if they neither created nor claimed it. Assigning is **not**
+claiming: the assignee still accepts the work by transitioning it to `in_progress`
+themselves, same as any other claim. Every EFFECTIVE (genuinely different-email)
+assignment, reassignment, or unassignment (`assigned_to_email=""`) appends one entry to
+the append-only `metadata.assignments` audit trail (`{to, at, by}`, `by`
+server-resolved); resubmitting the same email is a no-op. The target need not be a
+on the roster yet — dangling is legal, mirroring `reports_to`.
+
+**Claim collisions and reopen warnings.** `cognition_update_task` never blocks a
+teammate from taking action, with one exception: retaking a task someone else is
+actively working (`metadata.claimed_by` present, status `in_progress`/`blocked` — an
+`open`/`done`/`cancelled` task's claim is released, not live) via `blocked` →
+`in_progress` requires `note=` (a one-retry-recoverable validation error names the
+current claimant and claim age otherwise). Every other collision-adjacent shape —
+poking an already-in_progress task without taking it over, or reopening someone else's
+closed task — never blocks; it succeeds and the response carries a `claim_warning`
+(`kind`: `claim_collision` | `takeover_note_required` | `reopen`, plus `claimant`,
+`claimed_at`, and a human-readable `message`), present only when something foreign was
+actually detected — self-actions, released claims, and unverifiable identities (either
+side's git email blank) disengage the machinery entirely, same never-wipe-on-unverified
+doctrine as `exclude_people` below. Passing `status="in_progress"` again on an
+already-in_progress task held by someone else, together with `note=`, is a single-call
+takeover: it restamps `claimed_by` and logs the seizure just like a real transition
+would.
+
+**Per-author search/task filtering.** `cognition_search` and `cognition_list_tasks`
+both take an optional `exclude_people` param (comma-separated emails, casefolded) that
+drops hits/tasks authored by those identities — matched on the same server-resolved
+stamp personalization uses (`recorded_by.email` for entities, `created_by.email` for
+tasks), never the free-text `author`/`owner` field, and never an unstamped pre-P13n
+node (unverifiable is not the same as "matches"). It is **user-invoked only** — an
+agent must never add it on its own initiative, only when a human explicitly asks to
+filter people out for that call; there is no persistent/env-var muting, by design.
+`cognition_search`'s filter exempts constraint/incident hits (never excluded, same
+never-wipe doctrine as those node types get elsewhere). Every filtered call discloses
+`excluded_count`/`excluded_for`, present iff the param was passed AND something was
+actually excluded — silent exclusion is forbidden.
+
+**Seniority + agent-origin weighting.** `cognition_search` ranks hits by
+`weighted_score` (`score * weight.multiplier`), a **penalty-only** adjustment —
+`multiplier` is always in `(0, 1.0]`, never a boost, so weighting can only push a hit
+lower relative to its peers, never hide it from `results` or inflate it above its raw
+score. Every hit always carries `weight` (`{multiplier, seniority, from_agent,
+basis}`), even neutral (`multiplier == 1.0`) hits — never silent. `basis` is
+`"exempt:<node_type>"` (constraint/incident — always pinned at 1.0, outranking no one
+but never itself down-weighted), `"agent"` (from_agent stamped `true` — the one
+multiplier guaranteed strictly below every human seniority multiplier, so human input
+always outweighs agent input), `"human:<seniority>"` (stamped + a matching registered
+on the roster), `"human:unregistered"` (stamped but not on the roster — a known,
+just-unrostered author), or `"unverified"` (no identity stamp at all). Shipped
+multipliers: `owner`/`senior` 1.0 (no penalty), `mid` 0.95, `junior` 0.9, agent 0.85.
+Applies to
+`cognition_search` only, not `cognition_get_history`/`cognition_list_tasks`/session-start
+priming; `cognition_get_workflow`'s internal top-1 match search shares `cognition_search`'s
+path and inherits weighting too, so it can change WHICH workflow a name/topic resolves
+to, not just the order of a hit list.
+
+**Search/history completeness ("returned N of M").** `cognition_search` and
+`cognition_get_history` responses always carry `total_found` (distinct matches
+discovered, post-exclusion where applicable) and `exhaustive` (`true` = that's the
+exact count; `false` = a floor — more may exist beyond what was searched/limit
+allowed). `count` (the length of `results`) can be less than `total_found` even with
+no filtering in play, whenever more matches exist than `limit` — never read `count`
+alone as proof a search was exhaustive. `cognition_get_history` is always exhaustive
+(a full structural scan); `cognition_search`'s adaptive vector search can genuinely
+stop early at an internal cap.
+
+**Known trust-model limits** (documented, not "fixed" — this is a local trust domain,
+not a security boundary): `reports_to` and `seniority` are trust-declared and
+freely peer-editable — the audit trail is the control, not an ACL, and anyone sharing
+the graph may update anyone's profile. `from_agent` is client-declared and unverifiable
+by the server (like the `author` field on `cognition_record`). `assigned_to` is
+similarly client-declared and unverifiable — the server proves who made the assignment
+(`assignments[].by`), never that the assignee accepted or even saw it; there is no
+notification beyond the assignee's next session-start prime. `exclude_people` trusts
+caller restraint (the user-invoked-only guard is behavioral, unverifiable by the
+server — same trust class as `from_agent`); excluding a prolific author on a small
+graph can legitimately under-fill results — that's disclosed via `excluded_count`, not
+padded. Person data is only as fresh as the team keeps it — nothing enforces it, though
+the onboarding notice below
+reduces how often it goes stale.
+
+**Personalized session-start prime.** `prime_personalize` (`auto` default | `on` |
+`off`, env `PRIME_PERSONALIZE`) controls whether the session-start prime shows the
+global digest or a personalized one keyed to the current git identity. `auto`
+personalizes when the graph has more than one distinct stamped writer email OR
+more than one registered person — the second condition catches a team's
+first-onboarded member, where every node so far was written by one person but
+several people are now registered (a solo user who registers only themselves
+stays global either way, byte-identical to the unregistered digest). When
+personalized AND the current identity is on the roster, the block opens with a
+one-line identity header — `You are registered as {name} — {role} ({seniority}),
+reporting to {manager}.`, degrading field-by-field when role/seniority/manager are
+blank, falling back to the raw email when the manager is not on the roster —
+mutually exclusive with the `## New Here?` onboarding notice below, by construction
+(one needs the identity on the roster, the other needs its absence). Full pinned order when personalized: identity header →
+`## Your Open Tasks` → `## Team Critical` → `## Your Team` → `## Your Manager's
+Recent Decisions` → `## Since You Were Gone` → `## Your Recent Activity`.
+
+**Role-aware session-start prime.** `reports_to` on a profile (a
+REPORTING relationship — distinct from the free-text `role` job title) drives
+two personalized sections when it resolves the current session's identity into a
+manager or subordinate relationship: `## Your Team` (manager role — a direct
+report's `in_progress` claim shows the claimant and claim age, `blocked` claims
+always show, and a claim is **stale** once its age is *strictly greater than*
+`prime_stale_claim_days`, default 7 — exactly 7 days old is not yet stale, and a
+null/legacy `claimed_at` with no recorded `in_progress` transition is never stale;
+capped at `prime_rollup_cap`, default 5, stale rows first) and `## Your Manager's
+Recent Decisions` (subordinate role — the manager's decisions, newest first,
+capped at `prime_manager_decision_limit`, default 3, deliberately with **no**
+supersession/HEAD filter, mirroring the global `## Recent Decisions` section's own
+unfiltered model). Sections self-gate on role existence — there is no separate
+on/off knob; `PRIME_PERSONALIZE=off` disables them along with every other
+personalized section. A middle manager (has both direct reports and a manager) gets
+both sections, in the pinned order identity header → Your Open Tasks → Team
+Critical → Your Team → Your Manager's Recent Decisions → Since You Were Gone →
+Your Recent Activity (see "Personalized session-start prime" above). Your own
+claimed tasks are unaffected —
+they already surface under `## Your Open Tasks`, not a new section. Single-manager
+assumption: `reports_to` is one string; matrixed/multi-manager orgs are out of
+scope. A user not on the roster, with no reports either direction, or personalization
+off sees byte-identical output to before this feature existed.
+
+**"Since You Were Gone" digest.** A machine-local, per-email marker
+(`.cognition/local/last-seen.json`, git-ignored, never synced — the manager/subordinate
+per-email ruling applies here too, so a shared machine's two identities don't stomp
+each other's marker) tracks when you last started a session in this repo.
+Personalized prime shows `## Since You Were Gone` right after `## Your Manager's
+Recent Decisions`: decisions, constraints, and incidents timestamped *strictly
+after* that marker — teammates' news since you were last here, newest first,
+capped at `prime_digest_cap`, default 5. Your own writes are excluded (not news to
+you); unstamped nodes are still included (an awareness view reports content, not
+people). Constraints are HEAD-filtered (mirroring `## Active Constraints`);
+decisions/incidents are not (mirroring their own global sections) — a node can
+legitimately also appear in `## Your Manager's Recent Decisions` or the global
+`## Recent Decisions`, deliberately not deduplicated. No marker yet (first
+session, or an ephemeral sandbox) falls back to a capped `prime_digest_fallback_days`
+(default 7) lookback window — never a full-history dump, never a silently-omitted
+section. The marker is stamped only by the real SessionStart hook (`main()`),
+never by a bare `generate_prime()` call — the function itself stays pure
+read-only, so the dashboard, library use, and tests never mark anything "seen."
+
+**New-user onboarding notice.** When a session's identity resolves to an email that
+is not on the roster, the session-start prime digest opens with a `## New Here?`
+notice. It tells the agent that **every write is currently refused**, and to ask the
+human for all five values — name, work email, role, seniority (presenting the four
+tiers rather than inferring one from a job title), and who they report to, saying that
+`"nobody"` is valid and expected on a solo project — then call
+`cognition_set_identity`. It explicitly steers *off* `cognition_register_person`, which
+is itself a gated write and would be refused until an identity is confirmed.
+
+There is no skipping it any more: declining leaves writes refused, so the notice says
+that plainly rather than offering an opt-out that does not work. The legacy
+`.cognition/local/onboard-declined` list still silences the notice, but it does not
+open the gate. The notice disappears the session after the identity is confirmed and
+the profile is complete. Set `PRIME_ONBOARD=false` to disable the notice outright —
+which silences the prompt, not the gate.
+
+### Environment Facts
+
+Teammates' machines differ — different project roots, different OSes, podman on
+one box and docker on another — and a shared graph that bakes in one person's
+setup silently misleads everyone else's sessions. **Environment facts** store
+each person's durable, per-machine setup truths in the graph so divergence can
+be detected instead of tripped over.
+
+- **Self-only writes, by construction.** `cognition_set_env_fact` /
+  `cognition_delete_env_fact` / `cognition_clear_env_facts` have **no email
+  parameter at all** — they always target the server-resolved git identity, so
+  writing someone else's facts isn't blocked by a permission check, it's
+  structurally impossible. Reads (`cognition_list_env_facts`,
+  `cognition_get_person`'s `environment` field) are open to everyone —
+  divergence checks need them.
+- **Per-machine.** Facts key by casefolded hostname (override with `machine=`
+  to record facts about your other machines). Distinct machines per person are
+  capped (`ENV_FACT_MACHINE_CAP`, default 10); at the cap a NEW machine is
+  rejected with an error naming the prune remedy — never silently evicted.
+- **Loud disclosure.** Every successful write returns a `disclosure` string the
+  agent must surface: you are always told when something about you is stored,
+  and you can have any of it removed —
+  `cognition_clear_env_facts` with no arguments is the one-call "forget
+  everything you stored about me" path.
+- **Storage shape.** Facts live in per-person delta files —
+  `.cognition/people/<slug>.jsonl`, committed to git, one JSON line per change
+  (`fact_set`/`fact_delete`/`fact_clear`), so the file itself is the audit
+  trail and the shared journal never bloats. The files union-merge like the
+  journal (git hygiene manages the `.gitattributes` rule). Deleting a fact
+  removes it from live state, but like every journal write the historical line
+  remains in git history. `cognition_remove_person` does **not** touch their
+  fact file — their facts persist (surfaced as `registered: false`) until they
+  clear them or the file is removed from git; removal is the natural moment to
+  prompt that cleanup. Deliberately not a cascade: what they authored is history,
+  not their property to take with them.
+- **Shared-checkout teams:** the flush protocol covers these files too — see
+  [the topology guide](https://github.com/Haagndaazer/vibe-cognition/blob/main/docs/topology-guide.md).
+
+## Configuration
+
+All configuration is optional. Vibe Cognition works out of the box with sensible defaults.
+
+| Environment Variable | Default | Description |
+|---------------------|---------|-------------|
+| `REPO_PATH` | Current directory | Repository path |
+| `REPO_NAME` | Directory name | Repository name |
+| `EMBEDDING_BACKEND` | `sentence-transformers` | Backend: `sentence-transformers` or `ollama` |
+| `EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5` | Model for sentence-transformers |
+| `EMBEDDING_DIMENSIONS` | `768` | Embedding vector dimensions |
+| `EMBEDDING_REVISION` | (unset — Hub HEAD) | Pin the sentence-transformers model to a specific HuggingFace Hub revision (branch, tag, or commit SHA), instead of always pulling HEAD of the model's remote code. Recommended for production/reproducible setups. |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL (if using Ollama for embeddings) |
+| `OLLAMA_MODEL` | `nomic-embed-text` | Ollama embedding model |
+| `ENV_FACT_MACHINE_CAP` | `10` | Max distinct machine entries per person in the env-facts store (see [Environment Facts](#environment-facts)) |
+| `LOG_LEVEL` | `INFO` | Logging level |
+| `VIBE_HARNESS` | `claude-code` | Which harness the server and hooks are running under (`claude-code` or `codex`); set automatically by each adapter — selects invocation syntax, model tiers, and update instructions |
+| `VIBE_MODEL_SMALL` | `haiku` (Claude Code) / `gpt-5.6-luna` (Codex) | Model for analyzer and backfill-worker subagents; `inherit` opts into the parent's model |
+| `VIBE_MODEL_MID` | `sonnet` (Claude Code) / `gpt-5.6-sol` (Codex) | Model for the curate/backfill orchestrator; `inherit` opts into the parent's model |
+| `VIBE_UPDATE_NUDGE` | on | `off` disables the daily update check (see [Update Notifications](#update-notifications)) |
+| `VIBE_COGNITION_NO_VCS_HYGIENE` | unset | `1` turns off the automatic version-control setup: the git pass (`.gitattributes`, `.cognition/.gitignore`) and the SVN pass (adding `.cognition/`, its ignore property, scheduling new files). The older `VIBE_COGNITION_NO_GIT_HYGIENE` also works |
+| `VIBE_WHATS_NEW` | on | `off` disables the post-update summary (see [What's New](#whats-new)) |
+
+### Using Ollama for Embeddings (Optional)
+
+If you prefer to use Ollama for embeddings instead of sentence-transformers:
+
+1. Install and start [Ollama](https://ollama.com)
+2. Pull an embedding model: `ollama pull nomic-embed-text`
+3. Set `EMBEDDING_BACKEND=ollama` in your environment
+
+This avoids the ~2GB sentence-transformers/PyTorch dependency.
+
+## Troubleshooting
+
+**"Embedding model is still loading"** — Search tools need the embedding model, which loads in the background on startup (2-30 seconds). Other cognition tools work immediately. Wait and try again.
+
+**MCP server fails to connect** — Ensure `uv` is installed and on your PATH. Run `uv --version` to check. The plugin uses `uv` to manage Python dependencies and launch the server.
+
+**Multiple sessions on the same project — is that supported?** Yes, running several
+Claude Code sessions against one project (multiple agents, or you + a teammate on
+separate clones) is a normal, supported mode — this is NOT single-instance software.
+The real caveat: each session's MCP server hydrates its in-memory graph from
+the journal files once at its own startup, so a session doesn't automatically see nodes a
+DIFFERENT session recorded after it started — it picks them up on its normal catch-up
+path as it makes calls, and `get_status`'s `embedding_status` reports `syncing` (rather
+than `ready`) while a just-started session's embedding index is still catching up on
+historical nodes it hasn't embedded yet. If you're setting up multiple agents in ONE
+shared working directory specifically (not just multiple independent sessions), see the
+[topology guide](https://github.com/Haagndaazer/vibe-cognition/blob/main/docs/topology-guide.md) — that setup has its own protocol.
+
+**Search reports `semantic_unavailable` with reason `vector-store-unavailable`** — the
+search index could not be used for that call; graph tools keep working. `get_status`'s
+`vector_store.reason` says why. A busy store (antivirus, backup or indexing software
+holding the file, or a heavy write from another session) clears on its own; retry in a
+few seconds. "Repeated corruption" means the index kept getting damaged in its current
+location: keep the plugin data dir off network shares and cloud-synced folders.
+Reason `newer-schema` means a newer plugin version built the index: update the plugin.
+
+**Changed the embedding model or its dimension?** The index remembers the model it was
+built with, so search then reports `semantic_unavailable` with reason `model-mismatch` or
+`dim-mismatch` (and `get_status` shows `home_model_drift`); new vectors are not written.
+To rebuild with the new model, close every session in that project, delete the folder
+that holds `vectors_path`, and open a session: the index is rebuilt from the journal.
+
+**Journal permanently shows as modified, or replay resets after merges (Windows / autocrlf)** — The journal files are replayed by byte offset, so line-ending normalization must never rewrite their bytes; on `core.autocrlf` setups this holds only by convention. If `git status` permanently shows `.cognition/journal.jsonl` or a file under `.cognition/journal/` as modified, or logs show "re-hydrated from top" after merges/pulls, add `.cognition/*.jsonl merge=union -text` to your repo-root `.gitattributes` — EARLY in the graph's life. Do not retrofit `-text` onto a grown shared-checkout journal without a planned cut-over: the first commit after adding it re-normalizes the file once, which live sessions see as a replaced journal. (Auto-configuration writes only `merge=union`, never `-text`.)
+
+**Semantic edges not appearing** — Curation is agent-driven: after recording nodes, run the `/vibe-curate` skill to launch the background curator, which creates semantic edges. Only `part_of` edges (from shared references) are automatic. Nodes are stored and searchable regardless.
+
+**Model download failures** — The embedding model (~250MB) is downloaded from Hugging Face on first run. Check your internet connection and proxy settings. Corporate firewalls may block Hugging Face downloads.
+
+**"A dependency update did not finish" / server won't start after a plugin update** — A
+plugin update that changes a heavy dependency (e.g. swapping the PyTorch build) can fail
+mid-install if another Claude Code session still has the old version's files open
+(mainly a Windows file-locking issue). The plugin self-heals: **close ALL Claude Code
+sessions and windows, then open ONE** — the next session-start hook detects the
+half-installed state and finishes the repair automatically.
+
+**Windows: several old `vibe_cognition.server` processes still running** — Each Claude
+Code session spawns its own server process; on Windows these do not always get reaped
+when their parent session ends, and orphans have been observed persisting for days,
+each holding 0.5-1GB of RAM. This is a known, still-open limitation — there is no
+automatic self-exit yet. Workaround: periodically check Task Manager (or
+`Get-Process python -ErrorAction SilentlyContinue`) for accumulated `vibe_cognition`
+processes with no corresponding open Claude Code window, and end them manually. Don't
+end a process tied to a session you're still using.
+
+**General** — the vector store (the folder holding `vectors_path` in `get_status`) is always safe to delete while no session is open. It is fully regenerated from the journal on the next server startup. Old `chromadb/` folders, under the plugin data dir or inside a project as `.cognition/chromadb/`, are unused since v0.47.0 and safe to delete once no session on the machine runs an older version.
+
+## Codex CLI
+
+Vibe Cognition also installs into OpenAI Codex CLI as a plugin (Codex 0.15x+; Windows needs Git for Windows so the hooks can run under Git Bash).
+
+```bash
+codex plugin marketplace add Haagndaazer/colton-claude-plugins
+codex plugin add vibe-cognition@coltondyck
+```
+
+Then start Codex inside any project, **send one message** (Codex runs session-start hooks on the first turn, not at launch — if a hooks-trust prompt appears, accept it), wait for the note saying the server was registered, and **restart Codex**. On that first turn the plugin's session-start hook registers the MCP server with `codex mcp add` at user level (Codex plugins cannot bind a plugin-declared server to the project you opened, so the hook registers it the way a hand-configured server would be), builds the plugin venv, and tells you to restart. From the next session on you get the same experience as Claude Code: the MCP tools bound to the project Codex was opened in, the project digest at session start, the standing practices re-injected after `/compact`, and the `$vibe-cognition`, `$vibe-document`, `$vibe-workflow`, and `$vibe-dashboard` skills.
+
+Also on Codex: the Plan agent is installed as a custom role (`~/.codex/agents/vibe-plan.toml`, kept in sync by the hook) so `spawn_agent` can use `agent_type: "vibe-plan"`; the daily update check compares your installed version with the `coltondyck` Codex marketplace pin and tells you to run `codex plugin marketplace upgrade coltondyck` then `codex plugin add vibe-cognition@coltondyck` when a newer version exists; and any extra env you add to the `vibe-cognition` MCP entry (for example `VIBE_MODEL_MID`) survives the hook's re-registration on plugin updates.
+
+Curation and backfill run on Codex too: `$vibe-curate` spawns the curate-orchestrator (`gpt-5.6-sol` by default) which fans out to `gpt-5.6-luna` analyzers, exactly as on Claude Code; if your Codex install refuses nested spawns it finishes the pass inline and reports `fan_out: unavailable`. Override the models with `VIBE_MODEL_MID` / `VIBE_MODEL_SMALL` on the `vibe-cognition` MCP entry. Edge writes on every harness require the curation-session token, so only the orchestrator can link nodes.
+
+### Sharing your Claude Code skills with Codex
+
+Codex never reads `.claude` folders. It discovers skills in `~/.agents/skills` (user-level), `.agents/skills` inside a repo (checked from the project root down to your current directory), the deprecated `~/.codex/skills`, and installed plugins. The `SKILL.md` format is the same on both harnesses, so you can share one copy with a directory junction instead of duplicating files:
+
+```powershell
+# a repo that has .claude/skills but no .agents yet
+New-Item -ItemType Directory -Force "<repo>\.agents"
+cmd /c mklink /J "<repo>\.agents\skills" "<repo>\.claude\skills"
+
+# or one personal skill at a time (~/.agents/skills already exists once any Codex plugin is installed)
+cmd /c mklink /J "$HOME\.agents\skills\<skill-name>" "$HOME\.claude\skills\<skill-name>"
+```
+
+On macOS/Linux use `ln -s` the same way. Codex then invokes each skill as `$skill-name` where Claude Code uses `/skill-name`, and new skills you add under `.claude/skills` appear automatically. Three caveats: git on Windows walks into a junction as a normal directory, so either add `.agents/` to `.gitignore` (local-only sharing) or commit `.agents/skills` as the real files and junction `.claude/skills` to it; a skill whose text names Claude-only mechanics (`/skill` invocations, the Agent tool, `subagent_type`, model names) will read wrong on Codex until its wording is harness-neutral; and `.claude/commands` and `.claude/agents` have no Codex equivalent (Codex custom prompts live in `~/.codex/prompts`, and agent definitions need a Codex role file, which is what this plugin generates for its own Plan agent).
+
+Uninstall:
+
+```bash
+codex mcp remove vibe-cognition
+codex plugin remove vibe-cognition@coltondyck
+codex plugin marketplace remove coltondyck
+rm -rf ~/.codex/plugins/data/vibe-cognition-coltondyck/
+rm ~/.codex/agents/vibe-plan.toml
+```
+
+Developers can install the current `main` instead via this repo's own dev marketplace: `codex plugin marketplace add Haagndaazer/vibe-cognition` then `codex plugin add vibe-cognition@vibe-cognition-dev` (data dir `~/.codex/plugins/data/vibe-cognition-vibe-cognition-dev/`).
+
+## Uninstall / Cleanup
+
+1. Uninstall the plugin:
+   ```bash
+   claude plugin uninstall vibe-cognition@coltondyck
+   ```
+
+2. Optionally remove the marketplace:
+   ```bash
+   claude plugin marketplace remove coltondyck
+   ```
+
+3. Delete the regenerable vector caches (all projects; also removes the plugin venv):
+   ```bash
+   rm -rf ~/.claude/plugins/data/vibe-cognition-coltondyck/
+   ```
+   Projects set up before v0.32.0 may also have a leftover in-repo cache, and env-less dev
+   launches keep one under `local/`:
+   ```bash
+   rm -rf .cognition/chromadb/ .cognition/local/vectors/
+   ```
+
+4. Optionally delete the cognition history (warning: this deletes shared project knowledge):
+   ```bash
+   rm -rf .cognition/
+   ```
+
+5. Remove the cached embedding model (shared across all projects):
+   ```bash
+   rm -rf ~/.cache/huggingface/hub/models--nomic-ai--nomic-embed-text-v1.5/
+   ```
+
+## Development
+
+To contribute or run Vibe Cognition from source:
+
+```bash
+# Clone and install
+git clone https://github.com/Haagndaazer/vibe-cognition.git
+cd vibe-cognition
+uv sync
+
+# Register as a manual MCP server (for testing against a project)
+cd /path/to/your-project
+claude mcp add vibe-cognition \
+  --env REPO_PATH="$PWD" \
+  -- uv run --directory /path/to/vibe-cognition python -m vibe_cognition.server
+
+# Run tests
+uv run pytest
+
+# Run linting
+uv run ruff check .
+
+# Skills and agents are generated: edit skills-src/ and agents-src/, then re-render
+# (CI fails on drift; see docs/HARNESSES.md and PARITY.md)
+uv run python tools/render_harness.py
+uv run python tools/render_parity.py
+
+# Run type checking
+uv run pyright
+```
+
+### Standalone CLIs (from a checkout of this repo)
+
+Like `vibe-cognition-dashboard` (see [Dashboard](#dashboard)), these run from a
+clone of this repo via `uv run --directory /path/to/vibe-cognition ...` and are
+NOT dependencies of your project:
+
+- **`vibe-cognition-backfill`** — a plain report (no LLM extraction) of git
+  commits not yet tracked as episode nodes, over a FIXED 30-day window. This
+  is a narrower, scriptable alternative to the `/vibe-backfill` skill, not a
+  substitute for it — the skill finds the watermark (the newest tracked
+  episode's commit reference) and walks forward however far back that is; the
+  CLI never looks further back than 30 days, so an untracked commit older
+  than that is invisible to it. Prefer the skill for a graph that hasn't been
+  backfilled recently.
+- **`vibe-cognition-prime`** — prints the same session-start context digest
+  the SessionStart hook injects automatically; useful for previewing it by hand.
+
+## License
+
+MIT
