@@ -1,0 +1,51 @@
+# Vibe Cognition
+
+MCP server plugin for Claude Code and OpenAI Codex CLI that maintains a project knowledge graph. Harness-specific facts live in `src/vibe_cognition/harness.py` (selected by `VIBE_HARNESS`); skills and agents are rendered per harness from `skills-src/` and `agents-src/` by `tools/render_harness.py` — never edit a rendered file under `skills/`, `agents/`, or `adapters/codex/`. `PARITY.md` (generated from `parity.json`) is the per-harness feature registry; `docs/HARNESSES.md` is the add-a-harness checklist.
+
+## MCP Setup
+
+The MCP server is **declared by the plugin** in `.claude-plugin/plugin.json` (`mcpServers`), launched via `uv run --directory ${CLAUDE_PLUGIN_ROOT}`. There is **no per-project `.mcp.json`** — the server learns the project root from `${CLAUDE_PROJECT_DIR}` (Claude Code injects it into the server env; `REPO_PATH` is also set to it explicitly, and `config.py` falls back to it). The uv virtualenv lives in `${CLAUDE_PLUGIN_DATA}/.venv` (persistent across plugin updates, outside the version-pinned cache dir) so a running server doesn't lock the cache during `/plugin update`.
+
+On Codex the plugin ships skills + hooks only; `adapters/codex/hooks/session-start.sh` registers the server at user level with `codex mcp add` (so it inherits the project cwd), installs the Plan role into `~/.codex/agents/`, and preserves user-added env keys across re-registration. Codex fires SessionStart hooks on the first turn, not at launch.
+
+The SessionStart hook (`hooks/session-start.sh`) syncs deps and injects context. It does **not** write `.mcp.json`; for users upgrading from an older version it surgically removes the stale `vibe-cognition` entry from any project `.mcp.json` (via `vibe_cognition.migrate_mcp`), leaving all other servers and keys untouched. When a removal happens the hook surfaces a one-line note (what was removed, what was preserved) via `prime`, alongside the usual context injection. `python -m vibe_cognition.migrate_mcp <path> --dry-run` previews the change (removed/preserved) without writing — handy for confirming the removal is surgical on a real file.
+
+## Plugin Release Procedure
+
+The marketplace lives in a separate repo — `Haagndaazer/colton-claude-plugins` (marketplace name `coltondyck`), maintained by Loki. This repo ships **code only** and does NOT carry its own Claude Code `marketplace.json` (a second file named `coltondyck` would collide, since Claude Code keys marketplaces by name). It DOES carry a **Codex dev marketplace** at `.agents/plugins/marketplace.json` (name `vibe-cognition-dev`, source = this repo on GitHub, `ref: main`) for installing current `main`; the release path for Codex is the `coltondyck` Codex marketplace in `colton-claude-plugins` (`.agents/plugins/marketplace.json`, source `url`, sha-pinned), which Loki maintains alongside the Claude one.
+
+1. Make your code changes. Prose changes go in `skills-src/` / `agents-src/`; run `uv run python tools/render_harness.py` and commit sources and renders together. New tools/skills/hooks/agents need `parity.json` rows (`uv run python tools/render_parity.py`).
+2. If the change is user-facing, bump the version in `pyproject.toml`, `.claude-plugin/plugin.json`, and `.codex-plugin/plugin.json` (each plugin system reads version from its own manifest; `tests/test_codex_plugin.py` fails if the three disagree), then `uv lock`. Add the `CHANGELOG.md` section and the `.claude-plugin/whats-new.json` bullets.
+
+   **The bump is a HARD GATE, enforced, not a checklist item.** `tests/test_release_sync.py` fails by name if the version in `pyproject.toml` has no `## [X.Y.Z]` CHANGELOG section, if that section has no bullets, if `whats-new.json` has no entry for it, or if the three manifests disagree. It also fails if `README.md`'s MCP tools table is missing a registered tool or lists one that no longer exists — that was "check the README by hand", which is the same as unchecked. Bumping the version is therefore what forces the release notes and the README to be written, at the point the change is still in front of you.
+3. Gates: `uv run ruff check .`, `uv run python tools/render_harness.py --check`, `uv run python tools/render_parity.py --check`, full pytest (which includes the release-sync gate above), sonnet review, and the tool-surface audit below when a tool changed. When a release touches `svn_hygiene.py`, `resolve_journal.py`, `journal_watch.py`, `journal_shards.py`, the replay engine in `storage.py`, or anything they call, ALSO run `uv run pytest -m svn` — the real-svn suite is deselected by default and CI has no svn, so a green CI run says nothing about SVN.
+4. Commit and push to `main` (this is the "code commit"; Codex installs pull from git, so it must be pushed).
+5. Ping Loki with the code-commit SHA and the version, saying the audit was run. Loki re-pins that SHA in `colton-claude-plugins`'s `.claude-plugin/marketplace.json` (Claude Code) AND `.agents/plugins/marketplace.json` (Codex) in one commit, and pushes, so installs/updates pick it up.
+6. Human gates on Colton's machine: Claude Code `/plugin update`; Codex `codex plugin marketplace upgrade coltondyck` + `codex plugin add vibe-cognition@coltondyck`, then start Codex in a project, send one message, restart, and run the relevant phases of `docs/codex-test-brief.md`. The full procedure is the cognition workflow "vibe-cognition plugin release procedure" (v6).
+
+The marketplace `sha` always points to the code commit on this repo's `main`.
+
+### Anthropic plugin directory (stable channel)
+
+The directory listing (submitted by Colton at claude.ai/directory/manage) tracks the generated `release` branch, never `main`: the directory scans every file on the branch it tracks, and `main` carries the cognition journal, tests and docs. `coltondyck` stays the fast channel; the directory follows about a week behind.
+
+**Parked since 2026-11-18: do not run steps 7-8.** The portal refuses command hooks, local MCP servers and script files from any organization that is not "Verified", Colton's is not, and there is no way to apply (cognition discovery `d8d2e209b2d7`). Nothing is submitted. `coltondyck` is the only channel until that rule changes; the builder and its test stay so the plugin remains ready. If it lifts, two findings still need fixing first: the `[[tool.uv.index]]` PyTorch source in `pyproject.toml`, and the server start form (`uv run --locked` plus a shipped `.py` file).
+
+7. Once a version has run from `coltondyck` for about a week without problems, build the branch from that version's code commit and push it:
+   `uv run python tools/build_release_branch.py --source <code-commit SHA>` then `git push origin release`.
+   The builder uses git plumbing only (no checkout, no push) and refuses a tree that breaks a directory limit. Never commit to `release` by hand.
+8. Each version is published by an Anthropic reviewer. `uv.lock` and the vendored `cytoscape.min.js` exceed the directory's 256 KiB per-file limit and the hooks run `uv`, so every version is held for manual review; that is expected, not a failure.
+
+`tests/test_release_branch.py` applies the directory's limits to the tracked files on every run (512 files, 256 KiB per non-image file, no binaries, README links that stay inside the release tree). A new file counts once it is `git add`ed. What ships is the allowlist at the top of `tools/build_release_branch.py`; a new top-level runtime directory must be added there.
+
+## HARD RULE — tool-surface audit before every release
+
+If a release adds or changes ANY MCP tool (new tool, new/renamed parameter, changed return shape, changed error semantics), the release is NOT ready to pin until the recurring tool-surface self-sufficiency audit (cognition workflow `67751ebc39bd`) has been run and its findings fixed in the same release:
+
+1. Each affected tool's docstring, read in isolation, documents every parameter in its `Args:` block (including any new gating parameter such as `curation_token`), the full `Returns:` shape (every key an agent will read), and the error semantics.
+2. `get_status`'s documented return shape lists every key the tool actually returns.
+3. `skills-src/vibe-cognition/SKILL.md`'s tool table and `README.md`'s MCP tools table carry a row for every registered tool (`tests/test_doc_drift.py` enforces the skill table; check the README by hand).
+4. `parity.json` has a row for the tool on every harness (`tools/render_parity.py --check`).
+5. The `cognition_readme` tool's guide text still describes the current record → curate loop.
+
+Say in the pin request to Loki that the audit was run. This rule exists because v0.36.0 shipped `curation_token` on three tools with the parameter missing from their `Args:` blocks and `get_status` returning two undocumented keys; the audit caught it only because Colton asked.

@@ -29,6 +29,8 @@ The marketplace `sha` always points to the code commit on this repo's `main`.
 
 The directory listing (submitted by Colton at claude.ai/directory/manage) tracks the generated `release` branch, never `main`: the directory scans every file on the branch it tracks, and `main` carries the cognition journal, tests and docs. `coltondyck` stays the fast channel; the directory follows about a week behind.
 
+**Parked since 2026-11-18: do not run steps 7-8.** The portal refuses command hooks, local MCP servers and script files from any organization that is not "Verified", Colton's is not, and there is no way to apply (cognition discovery `d8d2e209b2d7`). Nothing is submitted. `coltondyck` is the only channel until that rule changes; the builder and its test stay so the plugin remains ready. If it lifts, two findings still need fixing first: the `[[tool.uv.index]]` PyTorch source in `pyproject.toml`, and the server start form (`uv run --locked` plus a shipped `.py` file).
+
 7. Once a version has run from `coltondyck` for about a week without problems, build the branch from that version's code commit and push it:
    `uv run python tools/build_release_branch.py --source <code-commit SHA>` then `git push origin release`.
    The builder uses git plumbing only (no checkout, no push) and refuses a tree that breaks a directory limit. Never commit to `release` by hand.
