@@ -10,7 +10,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .documents import remove_blob_rel, remove_gitignore_entry, remove_text_sidecar
+from .documents import (
+    forget_local_source,
+    remove_blob_rel,
+    remove_gitignore_entry,
+    remove_text_sidecar,
+)
 from .models import CognitionNodeType
 from .storage import CognitionStorage
 
@@ -83,6 +88,8 @@ def delete_cognition_node(
             logger.warning(f"Vector delete failed for {node_id}: {e}")
 
     unlinked: list[str] = []
+    if pre is not None and pre.get("type") == CognitionNodeType.DOCUMENT.value:
+        forget_local_source(storage.cognition_dir, node_id)
     if doc_sha:
         # Sidecar reclaim: purge iff NO document with this sha remains (any mode) —
         # via the ONE shared identity predicate. Called AFTER remove_node, so the

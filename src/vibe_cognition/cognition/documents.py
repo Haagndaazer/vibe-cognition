@@ -9,12 +9,16 @@ document text, so the server never parses binaries (zero new deps).
 
 import contextlib
 import hashlib
+import json
 import os
 import re
 import shutil
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
+
+from .journal_io import journal_lock
+from .local_paths import read_path, write_path
 
 if TYPE_CHECKING:
     from .storage import CognitionStorage  # avoid the real circular import at runtime
@@ -253,10 +257,114 @@ def find_orphaned_document_artifacts(cognition_dir: Path, storage: "CognitionSto
     return sorted(orphans)
 
 
+# ── Source file location (task 48359648a816) ──────────────────────────────────
+
+SOURCES_FILENAME = "document-sources.json"
+
+
+_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _is_absolute(path: str) -> bool:
+    return path.startswith(("/", "\\")) or bool(_DRIVE_RE.match(path))
+
+
+def portable_source_path(cognition_dir: Path, file_path: Path) -> str | None:
+    """The file's project-relative POSIX path, or None when it lies outside the
+    project. The ONLY form of a source path allowed into the committed journal."""
+    try:
+        root = Path(cognition_dir).resolve().parent
+        return Path(file_path).resolve().relative_to(root).as_posix()
+    except (ValueError, OSError):
+        return None
+
+
+def read_local_sources(cognition_dir: Path) -> dict[str, str]:
+    try:
+        data = json.loads(read_path(cognition_dir, SOURCES_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _sources_lock(cognition_dir: Path):
+    target = write_path(cognition_dir, SOURCES_FILENAME)
+    return journal_lock(target.with_name(target.name + ".lock"))
+
+
+def _write_local_sources(cognition_dir: Path, sources: dict[str, str]) -> None:
+    target = write_path(cognition_dir, SOURCES_FILENAME)
+    fd, tmp = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(sources, f, indent=2, sort_keys=True)
+        os.replace(tmp, target)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
+        raise
+
+
+def remember_local_source(cognition_dir: Path, node_id: str, file_path: Path) -> bool:
+    """Record, on this machine only, where a document outside the project lives.
+    Best-effort: a failed write costs the freshness check, never the store."""
+    try:
+        with _sources_lock(cognition_dir):
+            sources = read_local_sources(cognition_dir)
+            sources[node_id] = str(file_path)
+            _write_local_sources(cognition_dir, sources)
+        return True
+    except OSError:
+        return False
+
+
+def forget_local_source(cognition_dir: Path, node_id: str) -> bool:
+    try:
+        with _sources_lock(cognition_dir):
+            sources = read_local_sources(cognition_dir)
+            if node_id not in sources:
+                return False
+            del sources[node_id]
+            _write_local_sources(cognition_dir, sources)
+        return True
+    except OSError:
+        return False
+
+
+def source_file(
+    cognition_dir: Path | None, node_id: str | None, metadata: dict,
+    local_sources: dict[str, str] | None = None,
+) -> Path | None:
+    """Where a document's source file is on THIS machine, or None when unknown.
+
+    metadata["path"] is project-relative on documents stored since v0.49.2 and
+    absolute on older ones; a source outside the project has no path in the
+    journal and is looked up in the machine-local file instead. Pass
+    ``local_sources`` (from ``read_local_sources``) when resolving many nodes."""
+    path = metadata.get("path")
+    if path:
+        if _is_absolute(path):
+            return Path(path)
+        if cognition_dir is None or ".." in PurePosixPath(path).parts:
+            return None
+        try:
+            return Path(cognition_dir).resolve().parent / path
+        except OSError:
+            return None
+    if cognition_dir is None or not node_id:
+        return None
+    if local_sources is None:
+        local_sources = read_local_sources(cognition_dir)
+    local = local_sources.get(node_id)
+    return Path(local) if isinstance(local, str) and local else None
+
+
 # ── Cheap staleness signal (WP-12, db65f1568fa5) ──────────────────────────────
 
 
-def freshness_by_rehash(metadata: dict) -> str:
+def freshness_by_rehash(
+    metadata: dict, cognition_dir: Path | None = None, node_id: str | None = None,
+) -> str:
     """Full re-hash freshness check for a document's referenced source path
     (WP-DashV2, relocated from cognition_tools._get_document — single-
     implementation doctrine). Unlike cheap_staleness_signal (path-existence
@@ -265,7 +373,7 @@ def freshness_by_rehash(metadata: dict) -> str:
     the file's size, which is why cheap_staleness_signal exists for the
     search hot path and this stays reserved for get_document / dashboard use.
 
-    No path key -> "unchanged" (the historical default: this reflects "no
+    No known source file -> "unchanged" (the historical default: this reflects "no
     check was possible", not a verified match — callers that need to
     distinguish "no path to check" from "checked and clean" must inspect
     metadata's path/mode themselves BEFORE calling this, e.g. the dashboard's
@@ -276,10 +384,9 @@ def freshness_by_rehash(metadata: dict) -> str:
     metadata["sha256"]. Never raises.
     """
     sha = metadata.get("sha256", "")
-    path = metadata.get("path")
-    if not path:
+    fp = source_file(cognition_dir, node_id, metadata)
+    if fp is None:
         return "unchanged"
-    fp = Path(path)
     if not fp.is_file():
         return "missing"
     try:
@@ -288,7 +395,9 @@ def freshness_by_rehash(metadata: dict) -> str:
         return "missing"
 
 
-def cheap_staleness_signal(metadata: dict) -> str | None:
+def cheap_staleness_signal(
+    metadata: dict, cognition_dir: Path | None = None, node_id: str | None = None,
+) -> str | None:
     """Stat-only (no file read) staleness check for a document's referenced
     source path — for surfacing in cognition_search results, where re-hashing
     every document hit (cognition_get_document's full ``freshness`` check,
@@ -302,10 +411,9 @@ def cheap_staleness_signal(metadata: dict) -> str | None:
     or the cheap check found nothing — NOT a confirmation of freshness; use
     cognition_get_document's freshness field for that).
     """
-    path = metadata.get("path")
-    if not path:
+    p = source_file(cognition_dir, node_id, metadata)
+    if p is None:
         return None
-    p = Path(path)
     try:
         if not p.is_file():
             return "path_missing"

@@ -21,7 +21,12 @@ from ..cognition import (
     CognitionStorage,
     delete_cognition_node,
 )
-from ..cognition.documents import documents_dir, freshness_by_rehash, text_sidecar_path
+from ..cognition.documents import (
+    documents_dir,
+    freshness_by_rehash,
+    source_file,
+    text_sidecar_path,
+)
 from ..cognition.people_facts import fold_email
 from ..cognition.queries import conflict_flags, get_superseded_chain
 from ..cognition.scope import node_scope
@@ -111,7 +116,9 @@ def _document_blob_path(cognition_dir: Path, node: dict[str, Any]) -> Path | Non
     return candidate
 
 
-def _document_freshness(meta: dict[str, Any]) -> str | None:
+def _document_freshness(
+    meta: dict[str, Any], cognition_dir: Path | None = None, node_id: str | None = None,
+) -> str | None:
     """Dashboard freshness badge for one document's metadata (WP-DashV2,
     peer-review-corrected null semantics — distinct from
     cognition_get_document's tool-facing default):
@@ -134,9 +141,9 @@ def _document_freshness(meta: dict[str, Any]) -> str | None:
     """
     if meta.get("mode") == "copy":
         return None
-    if not meta.get("path"):
+    if source_file(cognition_dir, node_id, meta) is None:
         return None
-    return freshness_by_rehash(meta)
+    return freshness_by_rehash(meta, cognition_dir, node_id)
 
 
 def _embedding_status(lc: dict[str, Any]) -> tuple[bool, str | None]:
@@ -622,7 +629,7 @@ def list_documents(request):
             "timestamp": n.get("timestamp", ""),
             "recorded_by": meta.get("recorded_by"),
             "has_blob": _document_has_blob(n),
-            "freshness": _document_freshness(meta),
+            "freshness": _document_freshness(meta, storage.cognition_dir, n["id"]),
             "cited_by": len(storage.get_predecessors(n["id"], CognitionEdgeType.PART_OF)),
         })
     out.sort(key=lambda d: d["timestamp"], reverse=True)  # newest first

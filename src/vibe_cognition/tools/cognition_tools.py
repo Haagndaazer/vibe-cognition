@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import platform
 from datetime import UTC, datetime
 from pathlib import Path
@@ -33,11 +34,15 @@ from ..cognition.documents import (
     doc_ref,
     freshness_by_rehash,
     gitignore_has_entry,
+    portable_source_path,
+    read_local_sources,
     read_text_sidecar,
+    remember_local_source,
     remove_gitignore_entry,
     sanitize_extension,
     sha256_bytes,
     sha256_file,
+    source_file,
     write_blob,
     write_text_sidecar,
 )
@@ -939,7 +944,9 @@ def _format_search_results(
         if node_type == CognitionNodeType.CONSTRAINT.value:
             entry["scope"] = node_scope(node)
         if node_type == CognitionNodeType.DOCUMENT.value:
-            staleness = cheap_staleness_signal(node.get("metadata", {}))
+            staleness = cheap_staleness_signal(
+                node.get("metadata", {}), storage.cognition_dir, node_id,
+            )
             if staleness:
                 entry["staleness"] = staleness
         matched = r.get("matched_text")
@@ -1296,14 +1303,14 @@ def _store_document(
         sha = sha256_file(p)
         size = p.stat().st_size
         filename = p.name
-        source_path: str | None = str(p.resolve())
+        resolved_source: Path | None = p.resolve()
         blob_src = p
     elif content_text is not None:
         data = content_text.encode("utf-8")
         sha = sha256_bytes(data)
         size = len(data)
         filename = title
-        source_path = None
+        resolved_source = None
         blob_data = data
     else:
         return {"error": "provide file_path or content_text"}
@@ -1356,10 +1363,15 @@ def _store_document(
     # design (e752ff313ad7 §8d) — this only surfaces the prior node id + a note; the
     # caller decides whether to add the edge via cognition_add_edge.
     prior_version_id: str | None = None
-    if source_path:
+    if resolved_source is not None:
+        here = os.path.normcase(str(resolved_source))
+        local_sources = read_local_sources(cognition_dir)
         for doc in storage.get_nodes_by_type(CognitionNodeType.DOCUMENT):
             dmeta = doc.get("metadata", {})
-            if dmeta.get("path") == source_path and dmeta.get("sha256") != sha:
+            if dmeta.get("sha256") == sha:
+                continue
+            prior = source_file(cognition_dir, doc["id"], dmeta, local_sources)
+            if prior is not None and os.path.normcase(str(prior)) == here:
                 prior_version_id = doc["id"]
                 break
 
@@ -1412,8 +1424,14 @@ def _store_document(
         "recorded_by": recorded_by,
         **blob_meta,
     }
-    if source_path:
-        metadata["path"] = source_path
+    # Only a project-relative path may enter the committed journal; a source
+    # outside the project is remembered on this machine alone (48359648a816).
+    stored_path = (
+        portable_source_path(cognition_dir, resolved_source)
+        if resolved_source is not None else None
+    )
+    if stored_path:
+        metadata["path"] = stored_path
 
     node = CognitionNode(
         id=node_id,
@@ -1431,6 +1449,8 @@ def _store_document(
     # BEFORE edges + embedding — else the doc node vector and every <id>#chunk-N vector
     # land under the stale id → unsearchable document + orphaned chunk vectors (A2).
     node_id = storage.add_node(node, mint_unique_id=True)
+    if resolved_source is not None and not stored_path:
+        remember_local_source(cognition_dir, node_id, resolved_source)
     storage.create_deterministic_edges(node_id)
     # WP-D2: embed the document (node vector + sidecar chunks) so it's searchable.
     # Skipped if embedding deps absent (storage-only caller, or model still loading) —
@@ -1493,8 +1513,9 @@ def _get_document(
     # file; that cost scales with the referenced document's size.) WP-DashV2:
     # relocated to documents.freshness_by_rehash (single-implementation
     # doctrine) — same behavior, no-path still defaults to "unchanged" here.
-    freshness = freshness_by_rehash(meta)
-    path = meta.get("path")
+    freshness = freshness_by_rehash(meta, cognition_dir, resolved_id)
+    source = source_file(cognition_dir, resolved_id, meta)
+    path = str(source) if source is not None else None
 
     return {
         "node_id": resolved_id,

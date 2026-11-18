@@ -59,7 +59,9 @@ def register_read_tools(mcp) -> None:
         """Store a document as a first-class DOCUMENT node.
 
         Default REFERENCE mode: the node records the document's PATH + metadata +
-        content sha256 — the bytes STAY WHERE THEY LIVE. Your extracted
+        content sha256 — the bytes STAY WHERE THEY LIVE. The recorded path is
+        project-relative; a file outside the project gets NO path in the shared
+        journal (its location is kept on this machine only). Your extracted
         `document_text` goes into a text sidecar (kept small out of the node so
         journal lines stay small; it powers document search in a later version). To
         capture what's INSIDE the document, record its facts as separate entity
@@ -161,6 +163,10 @@ def register_read_tools(mcp) -> None:
 
         Returns:
             {node_id, doc_ref, metadata, text, path, freshness} or {"error": ...}
+            `path` is the source file's absolute location on THIS machine, or null
+            when none is known here (inline text, or a file outside the project
+            that another machine stored). `metadata.path`, when present, is
+            project-relative (absolute only on documents stored before v0.49.2).
             When project is not None, also includes "project": tag.
         """
         lc = get_lifespan(ctx)

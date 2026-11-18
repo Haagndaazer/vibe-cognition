@@ -21,10 +21,11 @@ The plugin keeps its data in two places.
 **In your project, in a folder named .cognition:**
 
 - **The knowledge graph journal.** The memories your AI assistant records while you work: decisions, discoveries, failures, constraints, patterns, tasks, procedures and summaries of completed work, and the links between them. These are plain text files. Each person writes to a file named after their email address, and projects started on older versions also have one shared file. Every entry carries the name and email address of the person who recorded it and the time it was written.
-- **Stored documents.** When you ask for a document to be kept as project memory, the plugin stores the text extracted from it and, if you choose, a copy of the file itself. The journal entry for the document also records the file's name, size, the opening part of its text, and the full location the file had on your computer. That location usually includes your operating system account name.
+- **Stored documents.** When you ask for a document to be kept as project memory, the plugin stores the text extracted from it and, if you choose, a copy of the file itself. The journal entry for the document also records the file's name, size and the opening part of its text. For a file inside your project it records where the file sits within the project folder. For a file anywhere else it records no location at all. Documents stored with plugin versions before 0.49.2 recorded the file's full location on your computer, which usually includes your operating system account name, and those older entries still carry it.
 - **The people list.** For each person on the project: name, email address, role, seniority and the email address of the person they report to. This list is created when a person confirms their identity or when a teammate registers them.
 - **Environment facts.** Optional notes about a person's machine setup, such as folder locations or installed tools, stored under that person's email address and the name of the machine.
 - **A local identity file.** It records the name and email address you confirmed for that copy of the project, the name of your computer, and scrambled fingerprints of your operating system account name and the project folder location. This file stays on your machine and is not committed.
+- **A local list of document locations.** For a stored document whose file is outside your project, the file's full location on your computer, so the plugin can tell you whether the file has changed. This file stays on your machine and is not committed.
 
 **In the plugin's own data folder on your computer, outside your project:**
 
@@ -51,7 +52,8 @@ The .cognition folder is designed to be committed to your own version control (g
 - every memory in the journal, with the recording person's name and email address
 - the people list, with names, email addresses, roles and reporting lines
 - environment facts, including machine names
-- for every stored document: its extracted text, its file name, and the full location the file had on your computer, which usually includes your operating system account name
+- for every stored document: its extracted text, its file name and, for a file inside your project, where it sits within the project folder
+- for documents stored with plugin versions before 0.49.2: the full location the file had on your computer, which usually includes your operating system account name
 - the copied file of a stored document, unless you marked that document as local-only. Local-only keeps only the copied file out of version control; the items in the previous point are still shared
 
 Three points deserve attention:
@@ -101,7 +103,7 @@ Because all of the data is on your computer and in your own repository, you dele
 - **One memory.** Ask your assistant to delete it, or delete it from the dashboard. It leaves the graph and the search index. The original line stays in the journal file together with a deletion marker, so it remains readable to anyone who opens that file.
 - **Your environment facts.** Ask your assistant to clear everything stored about your machine setup. The cleared lines likewise remain in the file's history.
 - **A person on the people list.** Ask your assistant to remove them from the roster. Their profile is cleared, but its earlier lines (name, email address, role and reporting line) remain in the profile file. The memories they recorded stay in the graph, and their environment facts stay until they clear them themselves.
-- **A stored document.** Ask your assistant to delete the document's memory. This also removes the stored text and the copied file from the folder. The document's original journal line, including the file's original location and the opening part of its text, stays in the journal file.
+- **A stored document.** Ask your assistant to delete the document's memory. This also removes the stored text and the copied file from the folder. The document's original journal line, including the opening part of its text and any file location it recorded, stays in the journal file.
 - **Everything for a project.** Delete the .cognition folder.
 - **The search index and the plugin's software.** Delete the plugin's data folder.
 - **The embedding model.** Delete it from the Hugging Face cache folder.

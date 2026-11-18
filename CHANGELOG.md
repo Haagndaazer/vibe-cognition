@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.2] - 2026-11-18
+
+### Fixed
+- **Stored documents no longer put an absolute path into the shared journal.**
+  `cognition_store_document` wrote the file's full resolved location, which usually
+  contains the OS account name, into the document node's `metadata.path`, and that line is
+  committed. A file inside the project is now recorded by its project-relative path. A file
+  outside the project gets no path in the journal; its location goes to
+  `.cognition/local/document-sources.json`, which is never committed, so the freshness
+  check, the search staleness flag and the changed-file offer keep working on the machine
+  that stored it. Documents stored by earlier versions keep the absolute path they were
+  written with and are still read correctly.
+
+### Changed
+- `cognition_get_document` returns `path` as the file's location on the current machine,
+  or null when that is not known there.
+- The privacy policy describes the new behaviour and the older entries.
+
 ## [0.49.1] - 2026-11-18
 
 ### Added
