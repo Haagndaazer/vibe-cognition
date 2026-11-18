@@ -2,13 +2,13 @@
 **Acrylic Code Inc.**
 Effective date: November 18, 2026
 
-vibe-cognition is a plugin for Claude Code and OpenAI Codex CLI that keeps a knowledge graph of your project on your own computer. **Acrylic Code does not collect, receive or store any of your data.** The plugin has no account, no telemetry, no analytics and no Acrylic Code server. Everything it records stays in your project folder and on your machine, and goes only where you send it yourself, for example when you commit it to your own version control.
+vibe-cognition is a plugin for Claude Code and OpenAI Codex CLI that keeps a knowledge graph of your project on your own computer. **Acrylic Code does not collect, receive or store any of your data.** The plugin has no account, no telemetry, no analytics and no Acrylic Code server. Everything it records stays in your project folder and on your machine. It leaves your computer only through the AI assistant you use it with, as described under "Your AI assistant", and wherever you send it yourself, for example when you commit it to your own version control.
 
 ## Who this policy covers
 
 This policy covers the vibe-cognition plugin, published by Acrylic Code Inc. and available at [github.com/Haagndaazer/vibe-cognition](https://github.com/Haagndaazer/vibe-cognition). It describes what the plugin does with data on the computer where it is installed.
 
-It does not cover the AI assistant you run the plugin in, the services listed under "Network connections the plugin makes", or the place you host your code. Each of those has its own privacy policy.
+It does not cover the AI assistant you run the plugin in, the services listed under "Network connections the plugin makes", or the place you host your code. Each of those has its own privacy policy. If you open an issue or pull request on GitHub, what you post there is public and is handled under GitHub's own privacy policy.
 
 ## What Acrylic Code collects
 
@@ -38,7 +38,7 @@ The embedding model that powers search is kept in the standard Hugging Face cach
 ## Information the plugin reads from your computer
 
 - **Your name and email address from your git configuration**, and any usernames saved by Subversion on your machine. They are offered as suggestions when you confirm your identity. Nothing is attributed to you until you confirm it.
-- **Your project's commit history**, including commit messages and author names, only when you ask the plugin to build memories from past commits.
+- **Your project's commit history**, including commit messages and author names, only when you ask the plugin to build memories from past commits, or to work out who recorded memories made before the plugin tracked identities.
 - **The name of your computer**, used for the identity file and for environment facts.
 - **Your operating system account name**, used to make the scrambled fingerprint in the identity file and, when nothing better is found, offered as a suggested name.
 
@@ -58,7 +58,7 @@ Three points deserve attention:
 
 - **A public repository makes all of this public.** Think about that before committing the folder to an open-source project.
 - **Personal constraints are hidden, not secret.** A working preference recorded as personal is hidden from teammates inside the plugin, but it is still a line in a committed file that anyone with access to the repository can open.
-- **The plugin never commits or pushes on your behalf.** You decide whether, when and where these files are shared.
+- **The plugin never commits or pushes by itself.** Your AI assistant can run version control commands if you allow it to, so you decide whether, when and where these files are shared.
 
 The local identity file, the search index and other machine-local files are kept out of version control by ignore rules the plugin writes. On Subversion those rules do not cover every case; the [README](https://github.com/Haagndaazer/vibe-cognition#subversion-teams) explains what to check before committing.
 
@@ -66,7 +66,7 @@ The local identity file, the search index and other machine-local files are kept
 
 The plugin makes the following connections. None of them carries your project content or your graph. As with any internet request, each service sees your IP address and ordinary technical details of the request.
 
-- **Installing the software.** On first install and after updates, Python packages are downloaded from the Python Package Index (pypi.org) and from PyTorch's package index (download.pytorch.org).
+- **Installing the software.** On first install and after updates, Python packages are downloaded from the Python Package Index (pypi.org) and from PyTorch's package index (download.pytorch.org). If your computer does not already have a suitable version of Python, uv, the installer the plugin uses, downloads one as well.
 - **Downloading the embedding model.** On first start, the model is downloaded from Hugging Face (huggingface.co). The model comes with its own loading code, which is downloaded with it and runs on your computer. On later starts the Hugging Face software may contact huggingface.co to check whether the cached copy is current. You can fix the model to a version you have reviewed, and turn the later checks off once the model is downloaded.
 - **A daily update check.** Once every 24 hours at most, the plugin reads two small public files from GitHub (raw.githubusercontent.com) to learn whether a newer version exists. The request carries no information about you or your project. On Claude Code it runs only for installs from the coltondyck marketplace; on Codex CLI it runs for every install. It can be turned off.
 
@@ -76,7 +76,7 @@ The [README](https://github.com/Haagndaazer/vibe-cognition#what-it-runs-download
 
 ## Your AI assistant
 
-The plugin exists so that your AI assistant (Claude Code or Codex CLI) can read and write the knowledge graph. When the assistant searches or reads a memory, that content becomes part of your conversation with it and is handled by the assistant's provider under that provider's terms and privacy policy, in the same way as the source files the assistant reads. The plugin itself does not send anything to those providers.
+The plugin exists so that your AI assistant (Claude Code or Codex CLI) can read and write the knowledge graph. At the start of each session, and again when the assistant condenses a long conversation, the plugin gives the assistant a short summary of the graph, such as open tasks, active constraints and recent decisions, and, for a registered person, their name, role and who they report to. Whenever the assistant searches or reads a memory, that content is added to the conversation as well. Everything in the conversation is handled by the assistant's provider under that provider's terms and privacy policy, in the same way as the source files the assistant reads. The plugin makes no network connection to those providers itself.
 
 ## The dashboard
 
@@ -114,7 +114,7 @@ The [README](https://github.com/Haagndaazer/vibe-cognition#uninstall--cleanup) g
 
 Privacy laws may give you rights to access, correct or delete personal information that an organisation holds about you. Acrylic Code holds no personal information about users of the plugin, so there is nothing for us to provide, correct or delete. If your name or email address appears in a project's knowledge graph, the person or organisation that controls that project's repository is the one to ask.
 
-If you contact us by email, we use your email address and message only to reply to you.
+If you contact us by email, we use your email address and message only to reply to you, and keep them only as long as needed for that.
 
 ## Changes to this policy
 
