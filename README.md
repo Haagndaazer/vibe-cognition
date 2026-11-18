@@ -123,7 +123,7 @@ The embedding model (~250MB) also downloads on first use from Hugging Face. Afte
 
 ## What It Runs, Downloads and Sends
 
-Everything Vibe Cognition does on your machine and on the network, in one place.
+Everything Vibe Cognition does on your machine and on the network, in one place. The [privacy policy](https://www.acryliccode.com/vibe-cognition/privacy) covers the same ground in plain language.
 
 **What it runs**
 

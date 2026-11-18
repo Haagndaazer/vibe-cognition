@@ -1,4 +1,8 @@
 {
+  "0.49.1": [
+    "The plugin now has a privacy policy, linked from the README.",
+    "After repairing a rolled-back journal file, the agent now asks you to commit it and no longer treats that as its own job."
+  ],
   "0.49.0": [
     "The daily update reminder now checks only installs from the coltondyck marketplace. Any other install makes no network request for it.",
     "The README has a new section listing everything the plugin runs, downloads and sends, including the 2-4 GB first install."

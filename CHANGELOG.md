@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.1] - 2026-11-18
+
+### Added
+- **A privacy policy**, published at <https://www.acryliccode.com/vibe-cognition/privacy> and linked from the README. Its source text
+  is `docs/legal/privacy-policy.md`; a change to what the plugin stores, reads or sends
+  must update that file.
+- The plugin manifest names the icon, the documentation and support pages and the privacy
+  policy, which Anthropic's plugin directory reads for the listing.
+
+### Changed
+- **The journal-repair notice asks the user to commit.** When a rolled-back journal file
+  was repaired, the session-start notice told the agent to commit the file. It now tells
+  the agent to report the repair and ask the user to commit, matching the skill text.
+
 ## [0.49.0] - 2026-11-17
 
 Groundwork for listing the plugin in Anthropic's plugin directory. Nothing changes in how
