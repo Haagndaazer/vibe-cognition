@@ -7,6 +7,8 @@
 
 A fully local [MCP](https://modelcontextprotocol.io/) server for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [OpenAI Codex CLI](#codex-cli) that captures project knowledge — decisions, failures, discoveries, patterns, and more — so future sessions have context on *why* the code is the way it is. After a one-time model download, all processing and storage happens on your machine — no API keys needed. (A small, optional, read-only version check reaches GitHub once a day by default; see [Update Notifications](#update-notifications).)
 
+**Works in Claude Code (the terminal app and IDE extensions) and Codex CLI only.** It runs a local server and session hooks, which chat apps such as claude.ai do not start, so its skills do nothing there. It needs [uv](https://github.com/astral-sh/uv) and downloads about 2-4 GB on first install; see [What It Runs, Downloads and Sends](#what-it-runs-downloads-and-sends).
+
 ## Quick Start
 
 1. Install [uv](https://github.com/astral-sh/uv) if you don't have it:
@@ -128,7 +130,7 @@ Everything Vibe Cognition does on your machine and on the network, in one place.
 - A SessionStart hook (`hooks/session-start.sh`, a bash script) at the start of each session. It installs or updates the Python dependencies with `uv sync`, then runs short Python steps from this plugin that build the context shown to Claude. A second, smaller hook (`hooks/reinject-instructions.sh`) repeats the standing instructions after a context compaction.
 - A local MCP server, started by Claude Code with `uv run` over stdio. It serves the tools listed under [MCP Tools](#mcp-tools) and opens no network port.
 - A helper process that holds the embedding model in memory, started by the server.
-- The [dashboard](#dashboard), only when you ask for it: a web page served on `127.0.0.1` and reachable from your own machine only.
+- The [dashboard](#dashboard), only when you ask for it: a web page served on `127.0.0.1`, reachable from your own machine only, which it opens in your default browser.
 
 **What it downloads**
 

@@ -31,7 +31,7 @@ the tools behave.
   corrected.
 
 ### Added
-- **A plugin icon** (`.claude-plugin/icon.png`).
+- **A plugin icon**, in the `.claude-plugin` folder.
 - **`tools/build_release_branch.py`** builds the trimmed `release` branch the directory
   will track: only what an installed plugin runs (no cognition journal, tests, docs or
   Codex adapter). It never touches the working tree and never pushes, and it refuses a
