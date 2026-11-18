@@ -217,8 +217,9 @@ class Settings(BaseSettings):
     vibe_whats_new: bool = Field(
         default=True,
         description=(
-            "Whether the session-start hook shows a one-time 'what's new' "
-            "summary after a plugin update. Default on. Set VIBE_WHATS_NEW=off "
+            "Whether the session-start hook shows a 'what's new' summary "
+            "after a plugin update (repeated until an agent confirms it told "
+            "the user, at most 5 times). Default on. Set VIBE_WHATS_NEW=off "
             "to disable."
         ),
     )

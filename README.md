@@ -131,10 +131,10 @@ On Codex the same check reads the `coltondyck` Codex marketplace pin and the `.c
 
 ## What's New
 
-The nudge above tells you a new version exists; this is the other half — after you actually update, the next session-start shows a short, one-time summary of what changed.
+The nudge above tells you a new version exists; this is the other half — after you actually update, session-start shows a short summary of what changed, and keeps showing it until Claude has confirmed it told you.
 
 - **What's shown**: a curated, hand-written list of bullets for each version between the one you last saw and the one now installed — not the raw CHANGELOG (too verbose to skim in a session-start digest; the CHANGELOG is always the full record). Capped at the 3 most recent versions and 9 bullets total, so a long gap between sessions never floods your context.
-- **When it appears**: once per version bump, the first session after an update. A local marker file (in the plugin's data directory, never committed, never synced) tracks the last version you've seen; nothing repeats it after that.
+- **When it appears**: at every session start after an update, until an agent confirms it has told you by calling `cognition_readme(changes_seen=true)` — or after 5 unconfirmed showings, so it can never nag forever. Printing the summary is not treated as you having seen it: session-start output can be lost when a plugin is updated inside a running session. A local marker file (in the plugin's data directory, never committed, never synced) tracks the last version confirmed. If several sessions start before any of them confirms, each mentions the summary once. A session whose server is still running the previous version cannot confirm; restart it.
 - **How to disable**: set `VIBE_WHATS_NEW=off` (also accepts `0`/`false`/`no`) in your environment.
 - **No network involved**: unlike the update check above, this reads only local files — the installed `plugin.json` and a bundled `whats-new.json` — nothing is fetched from anywhere.
 
@@ -160,7 +160,7 @@ The nudge above tells you a new version exists; this is the other half — after
 | `cognition_list_env_facts` | List stored environment facts — yours by default, or any teammate's |
 | `cognition_store_document` | Store a document (reference or copy mode) + extracted text as a first-class node |
 | `cognition_get_document` | Retrieve a stored document: metadata + full text + freshness |
-| `cognition_readme` | Get the full orientation guide + getting-started walkthrough (same content as the `/vibe-cognition` skill) |
+| `cognition_readme` | Get the full orientation guide + getting-started walkthrough (same content as the `/vibe-cognition` skill). With `changes_seen=true`: record that the user was told the post-update [What's New](#whats-new) summary, so it stops appearing |
 | `cognition_get_node` | Read a single node's full narrative (incl. `detail`) by id |
 | `cognition_update_node` | Edit a node's narrative (summary/detail/context/severity) in place; re-embeds on text change |
 | `cognition_search` | Search project history by natural language |

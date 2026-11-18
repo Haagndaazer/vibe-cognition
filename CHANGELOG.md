@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.48.0] - 2026-11-17
+
+### Changed
+- **The post-update "what's new" note is shown until an agent confirms it told you.**
+  The session-start hook used to print the note once and immediately record the version
+  as seen. When a plugin was updated inside a running session (update, reload plugins,
+  reconnect, or a resume right after), the hook ran and advanced the marker but the note
+  never reached the model, so "printed" could not be trusted to mean "seen". Now printing
+  does not mark the note seen: it appears at every session start until an agent calls
+  `cognition_readme(changes_seen=true)`, or until it has been shown 5 times without
+  confirmation. The note's last line asks for that call. Same design as teammate-comms
+  0.17.4. Trade-offs: several sessions started before any confirms each mention the note
+  once; a resume or `/clear` runs the hook and so counts as a showing; and if the data
+  folder cannot be written the count cannot be kept, so the note repeats until it can.
+- **`cognition_readme` gains `changes_seen`** (default false). With `true` it returns
+  `{recorded, message}` instead of the guide. It refuses, writing nothing, when the
+  server answering is not running the installed version (a session left over from before
+  the update: reconnect, then confirm again), and it never moves the marker back when a
+  newer version is already confirmed. A no-op on Codex, which has no what's-new note.
+- The unconfirmed-showings count lives in `whats-new-pending.json` in the plugin's data
+  folder. Marker and counter writes use a unique temporary file name, so two session
+  starts and a server writing at once cannot collide.
+
 ## [0.47.2] - 2026-11-09
 
 ### Fixed

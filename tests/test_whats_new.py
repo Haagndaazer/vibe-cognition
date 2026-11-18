@@ -45,6 +45,19 @@ def _read_marker(plugin_data: Path) -> str:
     return (plugin_data / whats_new.SEEN_MARKER_FILENAME).read_text(encoding="utf-8")
 
 
+def _read_pending(plugin_data: Path) -> dict:
+    return json.loads((plugin_data / whats_new.PENDING_FILENAME).read_text(encoding="utf-8"))
+
+
+def _upgrade(tmp_path: Path, seen: str = "0.29.0", installed: str = "0.30.0") -> tuple[str, str]:
+    plugin_root = tmp_path / "root"
+    plugin_data = tmp_path / "data"
+    _write_plugin_json(plugin_root, installed)
+    _write_whats_new_json(plugin_root, {installed: ["New thing happened."]})
+    _seed_marker(plugin_data, seen)
+    return str(plugin_root), str(plugin_data)
+
+
 # ── version parsing / comparison ────────────────────────────────────────────
 
 
@@ -91,8 +104,11 @@ def test_format_block_exact_text_no_overflow():
         "vibe-cognition updated (v0.29.0 -> v0.30.0) - new since your last session:\n"
         "- Bullet one.\n"
         "- Bullet two.\n"
-        "(Shown once per update. Full details: the plugin's CHANGELOG.md. "
-        "Disable these notices with VIBE_WHATS_NEW=off.)"
+        "(Shown at session start until confirmed, at most 5 times. "
+        "Full details: the plugin's CHANGELOG.md. "
+        "Disable these notices with VIBE_WHATS_NEW=off.)\n"
+        "Once the user has been told, call cognition_readme(changes_seen=true) so this "
+        "note stops appearing."
     )
     assert block.isascii()
 
@@ -127,7 +143,13 @@ def test_format_block_floor_seen_renders_first_install_style():
         whats_new._HEADER_TEMPLATE,
         whats_new._VERSION_OVERFLOW_LINE,
         whats_new._FOOTER_LINE,
+        whats_new._CONFIRM_LINE,
         whats_new._SEEN_FLOOR_DISPLAY,
+        whats_new.CONFIRMED,
+        whats_new.NOTHING_TO_CONFIRM,
+        whats_new.STALE_SERVER,
+        whats_new.NEWER_CONFIRMED,
+        whats_new.NOT_RECORDED,
     ],
 )
 def test_module_template_strings_are_ascii(text):
@@ -163,7 +185,7 @@ def test_shipped_whats_new_json_covers_0290_and_0300():
 # ── check(): core lifecycle ─────────────────────────────────────────────────
 
 
-def test_check_upgrade_path_exact_block_and_marker_advances(tmp_path):
+def test_check_upgrade_path_exact_block_and_marker_stays_until_confirmed(tmp_path):
     plugin_root = tmp_path / "root"
     plugin_data = tmp_path / "data"
     _write_plugin_json(plugin_root, "0.30.0")
@@ -176,27 +198,31 @@ def test_check_upgrade_path_exact_block_and_marker_advances(tmp_path):
         "INSTRUCTION: Tell the user what's new in this plugin update before continuing.\n"
         "vibe-cognition updated (v0.29.0 -> v0.30.0) - new since your last session:\n"
         "- New thing happened.\n"
-        "(Shown once per update. Full details: the plugin's CHANGELOG.md. "
-        "Disable these notices with VIBE_WHATS_NEW=off.)"
+        "(Shown at session start until confirmed, at most 5 times. "
+        "Full details: the plugin's CHANGELOG.md. "
+        "Disable these notices with VIBE_WHATS_NEW=off.)\n"
+        "Once the user has been told, call cognition_readme(changes_seen=true) so this "
+        "note stops appearing."
     )
-    assert _read_marker(plugin_data) == "0.30.0"
+    assert _read_marker(plugin_data) == "0.29.0", "printing must not mark the note seen"
+    assert _read_pending(plugin_data) == {"version": "0.30.0", "shown": 1}
 
 
-def test_check_steady_state_after_marker_advanced_shows_nothing(tmp_path):
-    """Second call after the marker caught up to installed: no spawn's worth
-    of content -- the module itself is also silent (defense in depth on top
-    of the bash fast path)."""
+def test_check_silent_once_confirmed(tmp_path):
     plugin_root = tmp_path / "root"
     plugin_data = tmp_path / "data"
     _write_plugin_json(plugin_root, "0.30.0")
     _write_whats_new_json(plugin_root, {"0.30.0": ["New thing happened."]})
     _seed_marker(plugin_data, "0.29.0")
 
-    whats_new.check(str(plugin_root), str(plugin_data))  # first call advances the marker
-    note = whats_new.check(str(plugin_root), str(plugin_data))  # second call: steady state
+    assert whats_new.check(str(plugin_root), str(plugin_data)) != ""
+    assert whats_new.confirm(str(plugin_root), str(plugin_data), "0.30.0") == (
+        True, "Recorded: the what's-new note for v0.30.0 will not be shown again."
+    )
 
-    assert note == ""
     assert _read_marker(plugin_data) == "0.30.0"
+    assert not (plugin_data / whats_new.PENDING_FILENAME).exists()
+    assert whats_new.check(str(plugin_root), str(plugin_data)) == ""
 
 
 def test_check_rollout_day_no_marker_but_prior_use_shows_capped_backlog(tmp_path):
@@ -214,7 +240,10 @@ def test_check_rollout_day_no_marker_but_prior_use_shows_capped_backlog(tmp_path
     assert "Nudge feature." in note
     assert "Whats-new feature." in note
     assert whats_new._SEEN_FLOOR_DISPLAY in note
-    assert _read_marker(plugin_data) == "0.30.0"
+    assert not (plugin_data / whats_new.SEEN_MARKER_FILENAME).exists()
+    assert whats_new.check(str(plugin_root), str(plugin_data)) == note, (
+        "an unconfirmed rollout-day backlog must be shown again"
+    )
 
 
 def test_check_truly_fresh_install_silent_and_marker_written(tmp_path):
@@ -264,8 +293,8 @@ def test_check_entry_less_versions_skipped(tmp_path):
 
     note = whats_new.check(str(plugin_root), str(plugin_data))
 
-    assert "old" not in note  # 0.29.0 == seen, excluded by the (seen, installed] range
-    assert "new" in note
+    assert "- old" not in note  # 0.29.0 == seen, excluded by the (seen, installed] range
+    assert "- new" in note
 
 
 def test_check_all_entry_less_span_no_block_marker_advances(tmp_path):
@@ -367,9 +396,10 @@ def test_check_malformed_whats_new_json_silent_no_crash_marker_advances(tmp_path
     # valid string bullet -- everything else here is expected empty.
     if raw_content == '{"0.30.0": [123, null, "ok bullet"]}':
         assert "ok bullet" in note
+        assert _read_marker(plugin_data) == "0.29.0"
     else:
         assert note == ""
-    assert _read_marker(plugin_data) == "0.30.0"
+        assert _read_marker(plugin_data) == "0.30.0"
 
 
 def test_check_missing_whats_new_json_silent_marker_advances(tmp_path):
@@ -448,7 +478,19 @@ def test_write_seen_marker_atomic_no_leftover_tmp_file(tmp_path):
     whats_new._write_seen_marker(str(plugin_data), "0.30.0")
 
     assert (plugin_data / whats_new.SEEN_MARKER_FILENAME).exists()
-    assert not (plugin_data / f"{whats_new.SEEN_MARKER_FILENAME}.tmp").exists()
+    assert [p.name for p in plugin_data.iterdir()] == [whats_new.SEEN_MARKER_FILENAME]
+
+
+def test_write_atomic_failure_leaves_no_temp_file(tmp_path, monkeypatch):
+    plugin_data = tmp_path / "data"
+
+    def _boom(*a, **k):
+        raise OSError("locked")
+
+    monkeypatch.setattr(whats_new.os, "replace", _boom)
+
+    assert whats_new._write_seen_marker(str(plugin_data), "0.30.0") is False
+    assert list(plugin_data.iterdir()) == []
 
 
 def test_write_seen_marker_twice_last_writer_wins_no_torn_file(tmp_path):
@@ -509,7 +551,7 @@ def test_main_never_crashes_when_check_raises(tmp_path, monkeypatch):
     def _boom(*a, **k):
         raise RuntimeError("unanticipated failure")
 
-    monkeypatch.setattr(whats_new, "check", _boom)
+    monkeypatch.setattr(whats_new, "plan", _boom)
     monkeypatch.delenv("VIBE_WHATS_NEW", raising=False)
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(plugin_root))
     monkeypatch.setenv("CLAUDE_PLUGIN_DATA", str(plugin_data))
@@ -530,3 +572,185 @@ def test_main_stdout_reconfigure_failure_does_not_crash(monkeypatch):
     monkeypatch.delenv("CLAUDE_PLUGIN_DATA", raising=False)
 
     assert whats_new.main(argv=[]) == 0
+
+
+# ── shown until confirmed, capped ───────────────────────────────────────────
+
+
+def test_max_showings_is_five_and_footer_states_it():
+    assert whats_new.MAX_SHOWINGS == 5
+    assert f"at most {whats_new.MAX_SHOWINGS} times" in whats_new._FOOTER_LINE
+
+
+def test_confirm_line_is_the_only_line_naming_a_tool(tmp_path):
+    root, data = _upgrade(tmp_path)
+    lines = whats_new.check(root, data).splitlines()
+
+    assert lines[-1] == whats_new._CONFIRM_LINE
+    assert "cognition_readme(changes_seen=true)" in lines[-1]
+    assert not [line for line in lines[:-1] if "cognition_" in line or "get_status" in line]
+
+
+def test_note_repeats_until_cap_then_marker_advances(tmp_path):
+    root, data = _upgrade(tmp_path)
+    data_dir = Path(data)
+
+    for showing in range(1, whats_new.MAX_SHOWINGS):
+        assert whats_new.check(root, data) != "", f"showing {showing} must print the note"
+        assert _read_marker(data_dir) == "0.29.0"
+        assert _read_pending(data_dir) == {"version": "0.30.0", "shown": showing}
+
+    assert whats_new.check(root, data) != "", "the capped showing still prints the note"
+    assert _read_marker(data_dir) == "0.30.0"
+    assert not (data_dir / whats_new.PENDING_FILENAME).exists()
+    assert whats_new.check(root, data) == ""
+
+
+def test_plan_writes_nothing_until_commit(tmp_path):
+    root, data = _upgrade(tmp_path)
+    data_dir = Path(data)
+
+    note, commit = whats_new.plan(root, data)
+
+    assert note != ""
+    assert not (data_dir / whats_new.PENDING_FILENAME).exists()
+    assert _read_marker(data_dir) == "0.29.0"
+    commit()
+    assert _read_pending(data_dir)["shown"] == 1
+
+
+def test_main_counts_nothing_when_printing_fails(tmp_path, monkeypatch):
+    root, data = _upgrade(tmp_path)
+
+    class _BrokenStdout:
+        def write(self, *a, **k):
+            raise OSError("closed pipe")
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(whats_new.sys, "stdout", _BrokenStdout())
+    monkeypatch.delenv("VIBE_WHATS_NEW", raising=False)
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", root)
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", data)
+
+    assert whats_new.main(argv=[]) == 0
+    assert not (Path(data) / whats_new.PENDING_FILENAME).exists()
+    assert _read_marker(Path(data)) == "0.29.0"
+
+
+def test_main_records_one_showing_after_printing(tmp_path, monkeypatch, capsys):
+    root, data = _upgrade(tmp_path)
+    monkeypatch.delenv("VIBE_WHATS_NEW", raising=False)
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", root)
+    monkeypatch.setenv("CLAUDE_PLUGIN_DATA", data)
+
+    assert whats_new.main(argv=[]) == 0
+
+    assert "New thing happened." in capsys.readouterr().out
+    assert _read_pending(Path(data)) == {"version": "0.30.0", "shown": 1}
+
+
+@pytest.mark.parametrize(
+    "pending",
+    [
+        "not json",
+        "[]",
+        '{"version": "0.29.5", "shown": 4}',
+        '{"version": "0.30.0", "shown": "4"}',
+        '{"version": "0.30.0", "shown": true}',
+        '{"version": "0.30.0", "shown": -3}',
+    ],
+)
+def test_unusable_pending_file_counts_as_zero(tmp_path, pending):
+    root, data = _upgrade(tmp_path)
+    (Path(data) / whats_new.PENDING_FILENAME).write_text(pending, encoding="utf-8")
+
+    assert whats_new.check(root, data) != ""
+    assert _read_pending(Path(data)) == {"version": "0.30.0", "shown": 1}
+    assert _read_marker(Path(data)) == "0.29.0"
+
+
+# ── confirm() ───────────────────────────────────────────────────────────────
+
+
+def test_confirm_refuses_a_server_running_another_version(tmp_path):
+    root, data = _upgrade(tmp_path)
+    whats_new.check(root, data)
+
+    recorded, message = whats_new.confirm(root, data, "0.29.0")
+
+    assert recorded is False
+    assert message == whats_new.STALE_SERVER.format(running="0.29.0", installed="0.30.0")
+    assert _read_marker(Path(data)) == "0.29.0"
+    assert _read_pending(Path(data))["shown"] == 1
+
+
+def test_confirm_refuses_an_unknown_running_version(tmp_path):
+    root, data = _upgrade(tmp_path)
+
+    recorded, message = whats_new.confirm(root, data, None)
+
+    assert recorded is False
+    assert "running vunknown" in message
+    assert _read_marker(Path(data)) == "0.29.0"
+
+
+def test_confirm_never_moves_the_marker_backwards(tmp_path):
+    root, data = _upgrade(tmp_path, seen="0.31.0", installed="0.30.0")
+
+    recorded, message = whats_new.confirm(root, data, "0.30.0")
+
+    assert recorded is False
+    assert message == whats_new.NEWER_CONFIRMED.format(seen="0.31.0", installed="0.30.0")
+    assert _read_marker(Path(data)) == "0.31.0"
+
+
+def test_confirm_is_idempotent(tmp_path):
+    root, data = _upgrade(tmp_path)
+
+    first = whats_new.confirm(root, data, "0.30.0")
+    second = whats_new.confirm(root, data, "0.30.0")
+
+    assert first == second == (True, whats_new.CONFIRMED.format(version="0.30.0"))
+    assert _read_marker(Path(data)) == "0.30.0"
+
+
+@pytest.mark.parametrize("root_set, data_set", [(False, True), (True, False), (False, False)])
+def test_confirm_without_plugin_paths_writes_nothing(tmp_path, root_set, data_set):
+    root, data = _upgrade(tmp_path)
+
+    result = whats_new.confirm(root if root_set else "", data if data_set else "", "0.30.0")
+
+    assert result == (False, whats_new.NOTHING_TO_CONFIRM)
+    assert _read_marker(Path(data)) == "0.29.0"
+
+
+def test_confirm_with_unreadable_manifest_writes_nothing(tmp_path):
+    root, data = _upgrade(tmp_path)
+    _write_plugin_json(Path(root), "not-a-version")
+
+    assert whats_new.confirm(root, data, "not-a-version") == (False, whats_new.NOTHING_TO_CONFIRM)
+    assert _read_marker(Path(data)) == "0.29.0"
+
+
+def test_confirm_reports_a_failed_write(tmp_path, monkeypatch):
+    root, data = _upgrade(tmp_path)
+    monkeypatch.setattr(whats_new, "_write_seen_marker", lambda *a, **k: False)
+
+    assert whats_new.confirm(root, data, "0.30.0") == (False, whats_new.NOT_RECORDED)
+    assert _read_marker(Path(data)) == "0.29.0"
+
+
+def test_confirm_from_an_older_install_keeps_a_newer_versions_count(tmp_path):
+    """A server left over from before an update confirms its own (older)
+    version: the newer version's showings count must survive."""
+    root, data = _upgrade(tmp_path, seen="0.29.0", installed="0.30.0")
+    (Path(data) / whats_new.PENDING_FILENAME).write_text(
+        json.dumps({"version": "0.31.0", "shown": 3}), encoding="utf-8"
+    )
+
+    assert whats_new.confirm(root, data, "0.30.0")[0] is True
+
+    assert _read_marker(Path(data)) == "0.30.0"
+    assert _read_pending(Path(data)) == {"version": "0.31.0", "shown": 3}

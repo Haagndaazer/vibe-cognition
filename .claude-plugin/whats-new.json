@@ -1,4 +1,8 @@
 {
+  "0.48.0": [
+    "This what's-new note now repeats at session start until Claude confirms it told you (at most 5 times). Before, an update taken inside a running session could use the note up unseen.",
+    "cognition_readme gains changes_seen=true, the call that records you were told. It refuses from a server still running the previous version, so restart that session first."
+  ],
   "0.47.2": [
     "An index rebuild interrupted by the embedding model (a slow request, a session closing) now resumes in the background instead of waiting for the next session start.",
     "Search and get_status keep saying the index is syncing until an interrupted rebuild actually finishes, and the server log gets one line instead of one per node."
@@ -105,7 +109,7 @@
     "Nothing is installed automatically -- updating is always your call; the reminder just tells you the exact /plugin update command to run."
   ],
   "0.30.0": [
-    "After an update, session-start shows a one-time summary of what's new since your last session (disable with VIBE_WHATS_NEW=off).",
+    "After an update, session-start shows a summary of what's new since your last session (disable with VIBE_WHATS_NEW=off).",
     "The summary is curated and short -- full details always live in CHANGELOG.md."
   ],
   "0.36.0": [

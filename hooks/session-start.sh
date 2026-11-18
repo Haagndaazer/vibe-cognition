@@ -131,9 +131,12 @@ MIGRATE_NOTE=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
     python -m vibe_cognition.migrate_mcp "$MCP_JSON" 2>/dev/null) || MIGRATE_NOTE=""
 _bc "migrate_mcp_done"
 
-# ── Step 3a: Show what's new since last update, once per version bump ────
+# ── Step 3a: Show what's new since last update, until confirmed ──────────
 # The other half of the upgrade-UX pair: update_check (Step 3b) says "an
 # update is available"; this says "here's what you got" after you take it.
+# The module does NOT mark the note seen when it prints it: the marker moves
+# when an agent calls cognition_readme(changes_seen=true), or after 5
+# unconfirmed showings. So this step spawns at each start until then.
 # MUST run BEFORE Step 3b -- rollout-day validity depends on checking
 # whether update-check.json already exists BEFORE update_check writes it
 # this same session (a fresh install's own same-session stamp would

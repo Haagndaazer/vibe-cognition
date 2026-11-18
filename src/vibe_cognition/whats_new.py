@@ -1,8 +1,9 @@
 """Post-update "what's new" notice: the second half of the upgrade-UX pair.
 
 update_check.py's nudge says "an update is available"; this module says
-"here's what you got" -- surfaced once per version bump in the session-start
-prime digest. Invoked from ``hooks/session-start.sh`` as a step BEFORE
+"here's what you got" -- surfaced in the session-start prime digest at every
+session start until an agent confirms it has told the user
+(cognition_readme(changes_seen=true)), at most MAX_SHOWINGS times. Invoked from ``hooks/session-start.sh`` as a step BEFORE
 update_check (order is load-bearing -- see the ROLLOUT-DAY section below),
 mirroring migrate_mcp/update_check's standalone style: stdlib-only, no
 network, prints one block (or nothing) to stdout, always exits 0.
@@ -20,6 +21,13 @@ spawning python. Deliberately per-machine, not per-project (.cognition/ would
 show the notice once per project instead of once per machine) and deliberately
 NOT the TC7 onboarding decline-file convention (that file's per-project scope
 suits ITS purpose; aligning here would be the wrong lesson to copy).
+
+CONFIRMATION: printing the note does NOT mark it seen -- a hook's output can
+be discarded by the harness (seen in the field after an in-session update),
+so "printed" is not "seen". The marker advances only when (a) an agent
+confirms via ``confirm()``, (b) the note has been printed MAX_SHOWINGS times
+unconfirmed, or (c) there is nothing to show. The unconfirmed-showings count
+lives in ``${CLAUDE_PLUGIN_DATA}/whats-new-pending.json``.
 
 ROLLOUT-DAY: a missing marker does NOT mean "fresh install" -- on the release
 day this feature ships, EVERY existing user has no marker yet. Distinguish by
@@ -40,12 +48,17 @@ written) is misread as fresh once; it self-heals on the very next update.
 import contextlib
 import json
 import os
+import secrets
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 WHATS_NEW_FILENAME = "whats-new.json"  # under {plugin_root}/.claude-plugin/
 SEEN_MARKER_FILENAME = "whats-new-seen"  # under {plugin_data}/
 UPDATE_CHECK_STAMP_FILENAME = "update-check.json"  # under {plugin_data}/ (update_check.py's own)
+PENDING_FILENAME = "whats-new-pending.json"  # under {plugin_data}/
+
+MAX_SHOWINGS = 5
 
 MAX_VERSIONS = 3
 MAX_BULLETS = 9
@@ -54,7 +67,7 @@ _WHATSNEW_OFF_VALUES = frozenset({"off", "0", "false", "no"})
 
 # The floor a returning-but-unmarked user (rollout day) is treated as having
 # last seen -- deliberately lower than any real version, so every entry up to
-# `installed` is included in that one-time capped backlog.
+# `installed` is included in that capped backlog.
 _UNSEEN_FLOOR = "0.0.0"
 
 # Generous fixed width for version-tuple comparison: right-padding a shorter
@@ -77,9 +90,26 @@ _INSTRUCTION_LINE = "INSTRUCTION: Tell the user what's new in this plugin update
 _HEADER_TEMPLATE = "vibe-cognition updated ({seen_display} -> v{installed}) - new since your last session:"
 _VERSION_OVERFLOW_LINE = "(...and older versions - see CHANGELOG.md.)"
 _FOOTER_LINE = (
-    "(Shown once per update. Full details: the plugin's CHANGELOG.md. "
+    f"(Shown at session start until confirmed, at most {MAX_SHOWINGS} times. "
+    "Full details: the plugin's CHANGELOG.md. "
     "Disable these notices with VIBE_WHATS_NEW=off.)"
 )
+_CONFIRM_LINE = (
+    "Once the user has been told, call cognition_readme(changes_seen=true) so this "
+    "note stops appearing."
+)
+
+CONFIRMED = "Recorded: the what's-new note for v{version} will not be shown again."
+NOTHING_TO_CONFIRM = "Nothing to confirm: this session has no what's-new note."
+STALE_SERVER = (
+    "Not recorded: this server is running v{running} but the installed plugin is "
+    "v{installed}. Reconnect or restart the session, then confirm again."
+)
+NEWER_CONFIRMED = (
+    "Not recorded: v{seen} is already confirmed and this server is the older "
+    "v{installed}. Restart the session to run the installed version."
+)
+NOT_RECORDED = "Could not record the confirmation; the note may appear once more."
 # {seen} renders "first install"-style wording on the 0.0.0 floor rather than
 # the literal (and confusing) "v0.0.0" -- the brief pins the surrounding block
 # text exactly but leaves this substitution's floor-case wording to us.
@@ -152,24 +182,67 @@ def _has_prior_use(plugin_data: str) -> bool:
     return (Path(plugin_data) / UPDATE_CHECK_STAMP_FILENAME).exists()
 
 
-def _write_seen_marker(plugin_data: str, version: str) -> None:
-    """Write the marker as a PLAIN bare version string -- pinned
-    ``write_text(version, encoding="utf-8", newline="")`` with NO trailing
-    newline, ever: a trailing newline would round-trip through Windows CRLF
-    conversion and break the bash-side string-compare gate (the same
-    invisible-byte class as update_check.py's cp1252 lesson). Atomic (temp
-    sibling + os.replace); two session-starts racing is last-writer-wins, not
-    merged -- fine, since nothing else reads this file except by full
-    replacement. Never raises -- a read-only filesystem must not fail the hook."""
+def _write_atomic(plugin_data: str, filename: str, text: str) -> bool:
+    """Atomic write via a uniquely named temp sibling: two hook runs and a
+    server can write the same file at once. Never raises."""
+    data_dir = Path(plugin_data)
+    tmp_path = data_dir / f"{filename}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
     try:
-        data_dir = Path(plugin_data)
         data_dir.mkdir(parents=True, exist_ok=True)
-        marker_path = data_dir / SEEN_MARKER_FILENAME
-        tmp_path = data_dir / f"{SEEN_MARKER_FILENAME}.tmp"
-        tmp_path.write_text(version, encoding="utf-8", newline="")
-        os.replace(tmp_path, marker_path)
+        tmp_path.write_bytes(text.encode("utf-8"))
+        os.replace(tmp_path, data_dir / filename)
+        return True
     except OSError:
-        pass
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
+        return False
+
+
+def _write_seen_marker(plugin_data: str, version: str) -> bool:
+    """Write the marker as the bare version string, no trailing newline: the
+    bash hook string-compares it against the installed version."""
+    return _write_atomic(plugin_data, SEEN_MARKER_FILENAME, version)
+
+
+def _read_shown(plugin_data: str, installed: str) -> int:
+    """Unconfirmed showings of the note for `installed`. A missing, corrupt
+    or other-version file counts as 0."""
+    try:
+        data = json.loads((Path(plugin_data) / PENDING_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(data, dict) or data.get("version") != installed:
+        return 0
+    shown = data.get("shown")
+    if not isinstance(shown, int) or isinstance(shown, bool) or shown < 0:
+        return 0
+    return shown
+
+
+def _write_shown(plugin_data: str, installed: str, shown: int) -> bool:
+    return _write_atomic(
+        plugin_data, PENDING_FILENAME, json.dumps({"version": installed, "shown": shown})
+    )
+
+
+def _mark_seen(plugin_data: str, version: str) -> bool:
+    """Advance the marker and drop the showings count, unless that count
+    belongs to a newer version than the one being marked."""
+    ok = _write_seen_marker(plugin_data, version) or _write_seen_marker(plugin_data, version)
+    if ok and not _pending_is_newer(plugin_data, version):
+        with contextlib.suppress(OSError):
+            (Path(plugin_data) / PENDING_FILENAME).unlink()
+    return ok
+
+
+def _pending_is_newer(plugin_data: str, version: str) -> bool:
+    try:
+        data = json.loads((Path(plugin_data) / PENDING_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    pending_key = _version_key(data.get("version")) if isinstance(data, dict) else None
+    version_key = _version_key(version)
+    return pending_key is not None and version_key is not None and pending_key > version_key
 
 
 def _format_seen_display(seen: str) -> str:
@@ -187,59 +260,58 @@ def _format_block(seen: str, installed: str, bullets: list[str], version_overflo
     if version_overflow:
         lines.append(_VERSION_OVERFLOW_LINE)
     lines.append(_FOOTER_LINE)
+    lines.append(_CONFIRM_LINE)
     return "\n".join(lines)
 
 
 def check(plugin_root: str, plugin_data: str) -> str:
-    """Run one what's-new check and return the notice block, or "" when
-    there is nothing to show (already current, a pin rollback, a truly fresh
-    install, a corrupted marker self-healing, or every candidate version in
-    range has no usable bullets). Advances the seen marker on every path
-    except: a truly fresh install (marker set to installed, handled inline)
-    and an unparsable INSTALLED version (nothing safe to write -- see the
-    ruling below)."""
+    """The note to show, or "" when there is nothing new. Records the showing."""
+    note, commit = plan(plugin_root, plugin_data)
+    commit()
+    return note
+
+
+def plan(plugin_root: str, plugin_data: str) -> tuple[str, Callable[[], object]]:
+    """(note, commit). commit() records the outcome -- one more unconfirmed
+    showing, or the marker advancing -- and must be called only once the note
+    has been printed. An unparsable INSTALLED version writes nothing."""
     installed = _read_installed_version(plugin_root)
-    if not installed:
-        return ""
+    installed_key = _version_key(installed)
+    if not installed or installed_key is None:
+        return "", lambda: None
+
+    def finish() -> bool:
+        return _mark_seen(plugin_data, installed)
 
     seen = _read_seen_marker(plugin_data)
     if seen is None:
-        if _has_prior_use(plugin_data):
-            seen = _UNSEEN_FLOOR  # rollout-day: existing user, backfill once
-        else:
-            _write_seen_marker(plugin_data, installed)
-            return ""  # truly fresh install -- onboarding owns this, not us
-
-    installed_key = _version_key(installed)
-    if installed_key is None:
-        # Unparsable INSTALLED version (a maintainer-broken plugin.json) ->
-        # nothing safe to write, so this perpetual-spawns every session until
-        # fixed. Ruled acceptable: a broken plugin.json breaks far more than
-        # this feature, and persisting a garbage string to the marker isn't
-        # worth the extra branch.
-        return ""
+        if not _has_prior_use(plugin_data):
+            return "", finish
+        seen = _UNSEEN_FLOOR
 
     seen_key = _version_key(seen)
-    if seen_key is None:
-        # Unparsable SEEN marker (corrupted on disk) -- unlike the installed
-        # case above, self-heal it: write marker = installed and stay silent
-        # once, the same shape as the downgrade-normalize path below. Without
-        # this, a corrupted marker would never bash-side fast-path-match
-        # again, spawning the module every session while every candidate
-        # version in range keeps comparing against a None key and returning
-        # "" -- silently losing every future announcement forever.
-        _write_seen_marker(plugin_data, installed)
-        return ""
+    if seen_key is None or seen_key >= installed_key:
+        return "", finish
 
-    if seen_key >= installed_key:
-        # Already current, or a pin rollback -- normalize the marker and
-        # stay silent either way.
-        _write_seen_marker(plugin_data, installed)
-        return ""
+    note = _build_note(plugin_root, seen, seen_key, installed, installed_key)
+    if not note:
+        return "", finish
 
-    whats_new_map = _load_whats_new_map(plugin_root)
+    shown = _read_shown(plugin_data, installed) + 1
+    if shown >= MAX_SHOWINGS:
+        return note, finish
+    return note, lambda: _write_shown(plugin_data, installed, shown)
+
+
+def _build_note(
+    plugin_root: str,
+    seen: str,
+    seen_key: tuple[int, ...],
+    installed: str,
+    installed_key: tuple[int, ...],
+) -> str:
     candidates: list[tuple[tuple[int, ...], list[str]]] = []
-    for version_str, bullets in whats_new_map.items():
+    for version_str, bullets in _load_whats_new_map(plugin_root).items():
         if not isinstance(bullets, list):
             continue
         clean_bullets = [b for b in bullets if isinstance(b, str) and b]
@@ -249,23 +321,35 @@ def check(plugin_root: str, plugin_data: str) -> str:
         if v_key is None or not (seen_key < v_key <= installed_key):
             continue
         candidates.append((v_key, clean_bullets))
-
-    _write_seen_marker(plugin_data, installed)  # marker always advances on this path
-
     if not candidates:
         return ""
 
-    candidates.sort(key=lambda c: c[0], reverse=True)  # newest first
-
+    candidates.sort(key=lambda c: c[0], reverse=True)
     version_overflow = len(candidates) > MAX_VERSIONS
-    selected = candidates[:MAX_VERSIONS]
-
-    bullets: list[str] = []
-    for _, vb in selected:
-        bullets.extend(vb)
-    bullets = bullets[:MAX_BULLETS]  # bullet-only overflow: drop trailing oldest, no line
-
+    bullets = [b for _, vb in candidates[:MAX_VERSIONS] for b in vb][:MAX_BULLETS]
     return _format_block(seen, installed, bullets, version_overflow)
+
+
+def confirm(plugin_root: str, plugin_data: str, running_version: str | None) -> tuple[bool, str]:
+    """Record that the user has been told. Returns (recorded, message).
+
+    Refuses when the calling server is not running the installed version, and
+    never moves the marker backwards."""
+    if not plugin_root or not plugin_data:
+        return False, NOTHING_TO_CONFIRM
+    installed = _read_installed_version(plugin_root)
+    installed_key = _version_key(installed)
+    if not installed or installed_key is None:
+        return False, NOTHING_TO_CONFIRM
+    if installed != running_version:
+        return False, STALE_SERVER.format(running=running_version or "unknown", installed=installed)
+    seen = _read_seen_marker(plugin_data)
+    seen_key = _version_key(seen)
+    if seen_key is not None and seen_key > installed_key:
+        return False, NEWER_CONFIRMED.format(seen=seen, installed=installed)
+    if not _mark_seen(plugin_data, installed):
+        return False, NOT_RECORDED
+    return True, CONFIRMED.format(version=installed)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -295,11 +379,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        note = check(plugin_root, plugin_data)
+        note, commit = plan(plugin_root, plugin_data)
+        if note:
+            sys.stdout.write(note)
+            sys.stdout.flush()
+        commit()
     except Exception:  # noqa: BLE001
         return 0
-    if note:
-        print(note, end="")
     return 0
 
 

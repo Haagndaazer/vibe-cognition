@@ -68,6 +68,8 @@ commands and .claude/agents have no Codex equivalent.
 | Cross-project | cognition_load_project, cognition_unload_project, |
 |               | cognition_list_projects (use the project= arg on read/search tools) |
 | Service | get_status, cognition_dashboard, cognition_readme, cognition_reload |
+|         | (cognition_readme(changes_seen=true): confirm you told the user the |
+|         | session-start what's-new note after a plugin update) |
 
 ## Node types
 

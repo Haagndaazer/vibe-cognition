@@ -388,6 +388,86 @@ def test_cognition_readme_wrapper_shape(tmp_path, mock_mcp, build_lc, make_ctx):
     assert "getting_started" in result
 
 
+def _readme_confirm_env(tmp_path, monkeypatch, version):
+    import json
+
+    root = tmp_path / "plugin-root"
+    data = tmp_path / "plugin-data"
+    (root / ".claude-plugin").mkdir(parents=True)
+    (root / ".claude-plugin" / "plugin.json").write_text(
+        json.dumps({"version": version}), encoding="utf-8"
+    )
+    data.mkdir()
+    (data / "whats-new-seen").write_text("0.1.0", encoding="utf-8")
+    monkeypatch.setenv("VIBE_PLUGIN_ROOT", str(root))
+    monkeypatch.setenv("VIBE_DATA_DIR", str(data))
+    monkeypatch.delenv("VIBE_HARNESS", raising=False)
+    return data
+
+
+def test_cognition_readme_changes_seen_records_and_skips_the_guide(
+    tmp_path, mock_mcp, build_lc, make_ctx, monkeypatch
+):
+    from vibe_cognition import running_version
+
+    version = running_version.code_version()
+    data = _readme_confirm_env(tmp_path, monkeypatch, version)
+    register_readme_tool(mock_mcp)
+    ctx = make_ctx(build_lc(tmp_path))
+
+    result = mock_mcp.tools["cognition_readme"](ctx, changes_seen=True)  # type: ignore[arg-type]
+
+    assert result == {
+        "recorded": True,
+        "message": f"Recorded: the what's-new note for v{version} will not be shown again.",
+    }
+    assert (data / "whats-new-seen").read_text(encoding="utf-8") == version
+
+
+def test_cognition_readme_changes_seen_refuses_a_stale_server(
+    tmp_path, mock_mcp, build_lc, make_ctx, monkeypatch
+):
+    data = _readme_confirm_env(tmp_path, monkeypatch, "999.0.0")
+    register_readme_tool(mock_mcp)
+    ctx = make_ctx(build_lc(tmp_path))
+
+    result = mock_mcp.tools["cognition_readme"](ctx, changes_seen=True)  # type: ignore[arg-type]
+
+    assert result["recorded"] is False
+    assert "installed plugin is v999.0.0" in result["message"]
+    assert (data / "whats-new-seen").read_text(encoding="utf-8") == "0.1.0"
+
+
+def test_cognition_readme_changes_seen_is_a_no_op_on_codex(
+    tmp_path, mock_mcp, build_lc, make_ctx, monkeypatch
+):
+    from vibe_cognition import running_version
+
+    data = _readme_confirm_env(tmp_path, monkeypatch, running_version.code_version())
+    monkeypatch.setenv("VIBE_HARNESS", "codex")
+    register_readme_tool(mock_mcp)
+    ctx = make_ctx(build_lc(tmp_path))
+
+    result = mock_mcp.tools["cognition_readme"](ctx, changes_seen=True)  # type: ignore[arg-type]
+
+    assert result["recorded"] is False
+    assert result["message"].startswith("Nothing to confirm")
+    assert (data / "whats-new-seen").read_text(encoding="utf-8") == "0.1.0"
+
+
+def test_cognition_readme_changes_seen_false_still_returns_the_guide(
+    tmp_path, mock_mcp, build_lc, make_ctx, monkeypatch
+):
+    data = _readme_confirm_env(tmp_path, monkeypatch, "999.0.0")
+    register_readme_tool(mock_mcp)
+    ctx = make_ctx(build_lc(tmp_path))
+
+    result = mock_mcp.tools["cognition_readme"](ctx, changes_seen=False)  # type: ignore[arg-type]
+
+    assert set(result) == {"guide", "getting_started"}
+    assert (data / "whats-new-seen").read_text(encoding="utf-8") == "0.1.0"
+
+
 # ── cognition_record wrapper — node_type parse ────────────────────────────────
 
 
