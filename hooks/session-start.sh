@@ -89,7 +89,7 @@ if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$HASH" ]; then
     # (all sessions closed) finishes the swap and self-heals.
     _bc "probe_start"
     if UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
-        uv run --no-sync --project "${PLUGIN_ROOT}" \
+        uv run --frozen --no-sync --project "${PLUGIN_ROOT}" \
         python -c "import torch, numpy, sqlite3" 2>/dev/null; then
         _bc "probe_done_ok"
         mkdir -p "${VENV_DIR}"
@@ -127,7 +127,7 @@ fi
 MCP_JSON="${PROJECT_DIR_NATIVE}/.mcp.json"
 _bc "migrate_mcp_start"
 MIGRATE_NOTE=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
-    uv run --no-sync --project "${PLUGIN_ROOT}" \
+    uv run --frozen --no-sync --project "${PLUGIN_ROOT}" \
     python -m vibe_cognition.migrate_mcp "$MCP_JSON" 2>/dev/null) || MIGRATE_NOTE=""
 _bc "migrate_mcp_done"
 
@@ -180,7 +180,7 @@ if [ "$WHATSNEW_OFF" = false ]; then
         WHATSNEW_NOTE=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
             CLAUDE_PLUGIN_ROOT="${PLUGIN_ROOT_NATIVE}" \
             CLAUDE_PLUGIN_DATA="${PLUGIN_DATA_NATIVE}" \
-            uv run --no-sync --project "${PLUGIN_ROOT}" \
+            uv run --frozen --no-sync --project "${PLUGIN_ROOT}" \
             python -m vibe_cognition.whats_new 2>/dev/null) || WHATSNEW_NOTE=""
         _bc "whats_new_done"
     fi
@@ -232,7 +232,7 @@ if [ "$NUDGE_OFF" = false ] && [ "$STAMP_FRESH" = false ]; then
     UPDATE_NOTE=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
         CLAUDE_PLUGIN_ROOT="${PLUGIN_ROOT_NATIVE}" \
         CLAUDE_PLUGIN_DATA="${PLUGIN_DATA_NATIVE}" \
-        uv run --no-sync --project "${PLUGIN_ROOT}" \
+        uv run --frozen --no-sync --project "${PLUGIN_ROOT}" \
         python -m vibe_cognition.update_check 2>/dev/null) || UPDATE_NOTE=""
     _bc "update_check_done"
 fi
@@ -247,7 +247,7 @@ PRIME_OUTPUT=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
     VIBE_MIGRATION_NOTE="${MIGRATE_NOTE}" \
     VIBE_UPDATE_NOTE="${UPDATE_NOTE}" \
     VIBE_WHATSNEW_NOTE="${WHATSNEW_NOTE}" \
-    uv run --no-sync --project "${PLUGIN_ROOT}" \
+    uv run --frozen --no-sync --project "${PLUGIN_ROOT}" \
     python -m vibe_cognition.cognition.prime 2>/dev/null) || PRIME_OUTPUT=""
 _bc "prime_done"
 

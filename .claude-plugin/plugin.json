@@ -1,6 +1,6 @@
 {
   "name": "vibe-cognition",
-  "version": "0.48.0",
+  "version": "0.49.0",
   "description": "Project knowledge graph \u2014 captures decisions, failures, discoveries, patterns, and reasoning chains. Fully local, no API keys.",
   "author": {
     "name": "Colton Dyck"
@@ -19,6 +19,7 @@
       "command": "uv",
       "args": [
         "run",
+        "--frozen",
         "--no-sync",
         "--directory",
         "${CLAUDE_PLUGIN_ROOT}",

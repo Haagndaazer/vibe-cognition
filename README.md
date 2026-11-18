@@ -27,8 +27,10 @@ A fully local [MCP](https://modelcontextprotocol.io/) server for [Claude Code](h
    ```
 
 3. Restart Claude Code. First start is a two-stage wait: Python dependencies install via
-   `uv` (30-60 seconds), then the embedding model (~250MB) downloads automatically from
-   Hugging Face. Subsequent sessions start instantly — both are one-time costs.
+   `uv` (a 2-4 GB download, several minutes on a typical connection), then the embedding
+   model (~250MB) downloads automatically from Hugging Face. Subsequent sessions start
+   instantly — both are one-time costs. See
+   [What It Runs, Downloads and Sends](#what-it-runs-downloads-and-sends).
 
 That's it. The plugin handles dependency installation, MCP server registration, hooks, and skills automatically.
 
@@ -44,6 +46,7 @@ search work immediately, before that.
 - [How It Works](#how-it-works)
 - [What's Included](#whats-included)
 - [Prerequisites](#prerequisites)
+- [What It Runs, Downloads and Sends](#what-it-runs-downloads-and-sends)
 - [Update Notifications](#update-notifications)
 - [What's New](#whats-new)
 - [MCP Tools](#mcp-tools)
@@ -102,7 +105,7 @@ The plugin bundles everything needed — no manual configuration required:
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - [uv](https://github.com/astral-sh/uv) — Python package manager (handles Python installation and dependencies automatically)
-- Internet access for first run (downloads Python dependencies and the embedding model, ~250MB)
+- Internet access for first run (downloads 2-4 GB of Python dependencies and the ~250MB embedding model)
 
 ### Resource Requirements
 
@@ -112,9 +115,48 @@ The plugin bundles everything needed — no manual configuration required:
 
 ### First Run
 
-The first time the MCP server starts in a new session, `uv` automatically installs Python dependencies. This takes 30-60 seconds on the first run. Subsequent sessions start instantly.
+The first time a session starts after install, `uv` automatically installs the Python dependencies. That is a 2-4 GB download (mostly PyTorch), so allow several minutes on a typical connection; the session-start hook waits for it. Subsequent sessions start instantly.
 
 The embedding model (~250MB) also downloads on first use from Hugging Face. After that, it's cached locally at `~/.cache/huggingface/`.
+
+## What It Runs, Downloads and Sends
+
+Everything Vibe Cognition does on your machine and on the network, in one place.
+
+**What it runs**
+
+- A SessionStart hook (`hooks/session-start.sh`, a bash script) at the start of each session. It installs or updates the Python dependencies with `uv sync`, then runs short Python steps from this plugin that build the context shown to Claude. A second, smaller hook (`hooks/reinject-instructions.sh`) repeats the standing instructions after a context compaction.
+- A local MCP server, started by Claude Code with `uv run` over stdio. It serves the tools listed under [MCP Tools](#mcp-tools) and opens no network port.
+- A helper process that holds the embedding model in memory, started by the server.
+- The [dashboard](#dashboard), only when you ask for it: a web page served on `127.0.0.1` and reachable from your own machine only.
+
+**What it downloads**
+
+- **First install: about 2-4 GB of Python packages**, mostly PyTorch (CPU build), from PyPI and from PyTorch's own package index (`download.pytorch.org`). Expect several minutes on a typical connection; the exact versions are fixed by the `uv.lock` file shipped with the plugin.
+- **First start: the embedding model, about 250 MB**, from Hugging Face ([nomic-ai/nomic-embed-text-v1.5](https://huggingface.co/nomic-ai/nomic-embed-text-v1.5)). This model ships its own loading code, which is downloaded with it and runs locally. Set `EMBEDDING_REVISION` to a commit of the model repository to pin both to a revision you have reviewed (see [Configuration](#configuration)), or use the [Ollama backend](#using-ollama-for-embeddings-optional) to avoid it.
+- **Later starts**: each time the model loads, the Hugging Face library may contact `huggingface.co` to see whether the cached copy is current, and fetches a newer one if the model repository changed (pinning `EMBEDDING_REVISION` prevents that). Set `HF_HUB_OFFLINE=1` to stop these requests once the model is cached.
+- Nothing else is downloaded afterwards, apart from new package versions when you update the plugin.
+
+**What it sends**
+
+- **Nothing about you, your project or your graph**, with one exception you would have to set up yourself: with the optional [Ollama backend](#using-ollama-for-embeddings-optional), the text of your memories is sent to the Ollama server you configure for embedding, which is your own machine by default. There is no telemetry, no account and no API key.
+- One optional, read-only version check a day against GitHub, described under [Update Notifications](#update-notifications). It runs only for installs from the `coltondyck` marketplace and can be turned off.
+
+**What it stores**
+
+- Your project's knowledge graph, in a `.cognition/` folder inside the project. It is plain text that you commit and share through your own version control; see [Storage](#storage).
+- A search index, the Python environment and a few small marker files, in the plugin's data folder on your machine. None of it is committed or synced.
+
+**What it changes in your project**
+
+- Creates and writes the `.cognition/` folder.
+- In a git repository, adds a few lines to the project's `.gitattributes` and `.gitignore` so the graph files merge cleanly and machine-local files stay uncommitted; see [Automatic Git Hygiene](#automatic-git-hygiene), which also says how to opt out. In a Subversion working copy it schedules new graph files with `svn add`; see [Subversion teams](#subversion-teams).
+- Reads your name and email from your git configuration files, and reads commit history with read-only git commands (`git log`, `git diff-tree`) when you ask for a backfill. It never commits, pushes or changes history.
+- If a project still has a `vibe-cognition` entry in `.mcp.json` from a very old version, removes that one entry and leaves the rest of the file untouched.
+
+**Bundled third-party code**
+
+- The dashboard ships unmodified copies of [Cytoscape.js](https://js.cytoscape.org/) and its fCoSE layout (`src/vibe_cognition/dashboard/static/vendor/`), so that it works offline. `cytoscape.min.js` is the library's own published minified build.
 
 ## Update Notifications
 
@@ -124,8 +166,9 @@ Claude Code doesn't auto-update third-party marketplace plugins, so there's norm
 - **What happens with it**: the fetched version string is compared to your installed version. If a newer one is available, an `## Update Available` section is added to your session-start context naming the new version, the update command, and the restart step — nothing is installed or changed automatically. Updating is always your call.
 - **After you update**: the new version is not active until the session restarts. If a server started for the project in the last few minutes is still running an older version than the one installed, the session-start context opens with a warning saying so, and `get_status` reports the code *that* session's server is running under `running_code` (`matches: false` confirms it). Claude Code and Codex are tracked separately, so updating one does not raise the warning in the other. Since 0.39.0 the server is also pinned to the installed code, so this should not happen — the warning exists so that if it ever does, you are told rather than silently running old code.
 - **Throttling**: at most once per 24 hours, tracked by a local timestamp file in the plugin's data directory (never committed, never synced). The network phase has a hard ~8 second wall-clock ceiling — a slow or stalled connection is treated as "couldn't check" and never blocks your session start beyond that.
+- **Which installs check**: on Claude Code, only an install from the `coltondyck` marketplace. Any other install makes no request and shows no reminder: a plugin added from Anthropic's plugin directory is kept up to date by Claude Code itself, and that channel publishes later than the marketplace, so a reminder there would name a version you cannot install yet. A development checkout loaded with `--plugin-dir` does not check either.
 - **How to disable**: set `VIBE_UPDATE_NUDGE=off` (also accepts `0`/`false`/`no`) in your environment. This skips the check entirely — no network request, no nudge.
-- **Contributing to this repo**: a dev session on this repo makes the same daily check like any other project, unless you set `VIBE_UPDATE_NUDGE=off`.
+- **Contributing to this repo**: a session in this repo with the plugin installed from `coltondyck` makes the same daily check as any other project, unless you set `VIBE_UPDATE_NUDGE=off`.
 
 On Codex the same check reads the `coltondyck` Codex marketplace pin and the `.codex-plugin` manifest, and the reminder names the `codex plugin marketplace upgrade` / `codex plugin add` commands instead.
 
@@ -506,7 +549,7 @@ Edges are created through two mechanisms:
 
 ## Working as a Team
 
-The journal is designed to be shared — see the [topology guide](docs/topology-guide.md)
+The journal is designed to be shared — see the [topology guide](https://github.com/Haagndaazer/vibe-cognition/blob/main/docs/topology-guide.md)
 for choosing between **shared checkout** (multiple agents in one working directory,
 needs a specific flush protocol) and **separate clones** (each teammate's own clone,
 mostly automatic via `merge=union`), and the full protocol for whichever fits your setup.
@@ -883,7 +926,7 @@ be detected instead of tripped over.
   prompt that cleanup. Deliberately not a cascade: what they authored is history,
   not their property to take with them.
 - **Shared-checkout teams:** the flush protocol covers these files too — see
-  [the topology guide](docs/topology-guide.md).
+  [the topology guide](https://github.com/Haagndaazer/vibe-cognition/blob/main/docs/topology-guide.md).
 
 ## Configuration
 
@@ -934,7 +977,7 @@ path as it makes calls, and `get_status`'s `embedding_status` reports `syncing` 
 than `ready`) while a just-started session's embedding index is still catching up on
 historical nodes it hasn't embedded yet. If you're setting up multiple agents in ONE
 shared working directory specifically (not just multiple independent sessions), see the
-[topology guide](docs/topology-guide.md) — that setup has its own protocol.
+[topology guide](https://github.com/Haagndaazer/vibe-cognition/blob/main/docs/topology-guide.md) — that setup has its own protocol.
 
 **Search reports `semantic_unavailable` with reason `vector-store-unavailable`** — the
 search index could not be used for that call; graph tools keep working. `get_status`'s

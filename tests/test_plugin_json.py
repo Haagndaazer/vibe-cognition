@@ -42,3 +42,21 @@ def test_server_still_launched_via_python_dash_m_module():
     only a flag was added, not the launch mechanism."""
     args = _server_args()
     assert args[-3:] == ["python", "-m", "vibe_cognition.server"]
+
+
+def test_server_launch_is_frozen():
+    """Anthropic's plugin directory blocks a `uv run` launch that carries
+    neither --locked nor --frozen."""
+    args = _server_args()
+    assert args.index("--frozen") > args.index("run")
+
+
+def test_every_uv_run_in_the_claude_hooks_is_frozen():
+    launches = [
+        (script.name, line.strip())
+        for script in sorted((_REPO / "hooks").glob("*.sh"))
+        for line in script.read_text(encoding="utf-8").splitlines()
+        if "uv run " in line and not line.lstrip().startswith("#")
+    ]
+    assert launches, "no uv run launches found: the scan is broken"
+    assert [entry for entry in launches if "uv run --frozen " not in entry[1]] == []

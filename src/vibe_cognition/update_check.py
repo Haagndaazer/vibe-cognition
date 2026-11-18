@@ -8,6 +8,10 @@ no signal that a new version exists. This module is invoked from
 mirroring ``migrate_mcp`` exactly: it prints one line (or nothing) to stdout,
 which the hook captures and forwards to ``prime`` as a surfaced note.
 
+CHANNEL: on Claude Code the check runs only for an install from the
+``coltondyck`` marketplace (recognised by the plugin cache path); any other
+install gets no network call and no nudge.
+
 Nudge-only: this module performs a couple of read-only HTTPS GETs and writes
 its own throttle stamp. It never invokes ``claude``, never touches the plugin
 cache, and never mutates the install — updating is always the user's call.
@@ -64,6 +68,7 @@ def _plugin_json_url(sha: str) -> str:
 
 
 _PLUGIN_NAME = "vibe-cognition"
+_PINNED_MARKETPLACE = "coltondyck"
 
 _NUDGE_OFF_VALUES = frozenset({"off", "0", "false", "no"})
 
@@ -208,6 +213,13 @@ def _derive_marketplace_name(plugin_root: str) -> str:
         return ""
 
 
+def _tracks_the_pin(plugin_root: str) -> bool:
+    """Whether the marketplace pin is this install's update channel."""
+    if harness.current().name != harness.CLAUDE_CODE:
+        return True
+    return _derive_marketplace_name(plugin_root).casefold() == _PINNED_MARKETPLACE
+
+
 def _format_cta(marketplace: str) -> str:
     return harness.current().update_cta(marketplace or None)
 
@@ -272,8 +284,12 @@ def check(
 ) -> str:
     """Run one version check and return a nudge line, or "" when there is
     nothing to report (up to date, pin rolled back, or any failure along the
-    way -- including the network phase exceeding `wall_clock_timeout`).
+    way -- including the network phase exceeding `wall_clock_timeout`), or
+    when the pin is not this install's update channel (no network call).
     Always writes the throttle stamp before returning."""
+    if not _tracks_the_pin(plugin_root):
+        _write_stamp(plugin_data, None)
+        return ""
     installed = _read_installed_version(plugin_root)
     remote = _fetch_remote_bounded(plugin_root, timeout, wall_clock_timeout)
     _write_stamp(plugin_data, remote)

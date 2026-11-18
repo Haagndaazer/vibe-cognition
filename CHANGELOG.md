@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-11-17
+
+Groundwork for listing the plugin in Anthropic's plugin directory. Nothing changes in how
+the tools behave.
+
+### Changed
+- **The update reminder checks only installs from the `coltondyck` marketplace.** On Claude
+  Code, any other install now makes no network request and shows no reminder. An install
+  from Anthropic's plugin directory is updated by Claude Code itself, and the directory
+  publishes later than the marketplace, so the reminder would have named a version that
+  install could not get yet. Trade-off: a development checkout loaded with `--plugin-dir`
+  no longer gets the reminder either. Codex is unchanged.
+- **The server and hook launches carry `--frozen`** (`uv run --frozen --no-sync`). The
+  directory refuses a `uv run` launch without it. Dependency installation is unchanged.
+- **The 38 cognition tool definitions moved out of `tools/cognition_tools.py`** into
+  `record_tools.py`, `read_tools.py` and `graph_tools.py`, because the directory holds any
+  source file over 256 KiB for manual review. Tool names, parameters, descriptions and
+  registration order are identical.
+- README: a new "What It Runs, Downloads and Sends" section states the 2-4 GB first
+  install, the model download and the code it carries, the daily version check, and what
+  is stored where. The first-run time estimate was wrong (it said 30-60 seconds) and is
+  corrected.
+
+### Added
+- **A plugin icon** (`.claude-plugin/icon.png`).
+- **`tools/build_release_branch.py`** builds the trimmed `release` branch the directory
+  will track: only what an installed plugin runs (no cognition journal, tests, docs or
+  Codex adapter). It never touches the working tree and never pushes, and it refuses a
+  tree that breaks a directory limit. A test applies the same limits to the repository on
+  every run. Known and accepted: `uv.lock` and the vendored `cytoscape.min.js` exceed
+  256 KiB, so every directory version is held for a human reviewer.
+
 ## [0.48.0] - 2026-11-17
 
 ### Changed

@@ -25,6 +25,17 @@ The marketplace lives in a separate repo — `Haagndaazer/colton-claude-plugins`
 
 The marketplace `sha` always points to the code commit on this repo's `main`.
 
+### Anthropic plugin directory (stable channel)
+
+The directory listing (submitted by Colton at claude.ai/directory/manage) tracks the generated `release` branch, never `main`: the directory scans every file on the branch it tracks, and `main` carries the cognition journal, tests and docs. `coltondyck` stays the fast channel; the directory follows about a week behind.
+
+7. Once a version has run from `coltondyck` for about a week without problems, build the branch from that version's code commit and push it:
+   `uv run python tools/build_release_branch.py --source <code-commit SHA>` then `git push origin release`.
+   The builder uses git plumbing only (no checkout, no push) and refuses a tree that breaks a directory limit. Never commit to `release` by hand.
+8. Each version is published by an Anthropic reviewer. `uv.lock` and the vendored `cytoscape.min.js` exceed the directory's 256 KiB per-file limit and the hooks run `uv`, so every version is held for manual review; that is expected, not a failure.
+
+`tests/test_release_branch.py` applies the directory's limits to the tracked files on every run (512 files, 256 KiB per non-image file, no binaries, README links that stay inside the release tree). A new file counts once it is `git add`ed. What ships is the allowlist at the top of `tools/build_release_branch.py`; a new top-level runtime directory must be added there.
+
 ## HARD RULE — tool-surface audit before every release
 
 If a release adds or changes ANY MCP tool (new tool, new/renamed parameter, changed return shape, changed error semantics), the release is NOT ready to pin until the recurring tool-surface self-sufficiency audit (cognition workflow `67751ebc39bd`) has been run and its findings fixed in the same release:

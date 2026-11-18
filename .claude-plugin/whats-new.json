@@ -1,4 +1,8 @@
 {
+  "0.49.0": [
+    "The daily update reminder now checks only installs from the coltondyck marketplace. Any other install makes no network request for it.",
+    "The README has a new section listing everything the plugin runs, downloads and sends, including the 2-4 GB first install."
+  ],
   "0.48.0": [
     "This what's-new note now repeats at session start until Claude confirms it told you (at most 5 times). Before, an update taken inside a running session could use the note up unseen.",
     "cognition_readme gains changes_seen=true, the call that records you were told. It refuses from a server still running the previous version, so restart that session first."

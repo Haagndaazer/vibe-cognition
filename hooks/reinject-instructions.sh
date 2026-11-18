@@ -32,7 +32,7 @@ VENV_DIR="${PLUGIN_DATA_NATIVE}/.venv"
 # already synced the venv. Capture-then-print so a non-zero exit under set -e still
 # yields valid JSON ('{}') instead of a torn/empty stdout.
 OUT=$(UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
-    uv run --no-sync --project "${PLUGIN_ROOT_NATIVE}" \
+    uv run --frozen --no-sync --project "${PLUGIN_ROOT_NATIVE}" \
     python -m vibe_cognition.instructions 2>/dev/null) || OUT=""
 
 if [ -n "$OUT" ]; then
