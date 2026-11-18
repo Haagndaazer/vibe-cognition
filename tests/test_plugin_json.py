@@ -60,3 +60,15 @@ def test_every_uv_run_in_the_claude_hooks_is_frozen():
     ]
     assert launches, "no uv run launches found: the scan is broken"
     assert [entry for entry in launches if "uv run --frozen " not in entry[1]] == []
+
+
+def test_directory_listing_fields_are_https_and_the_icon_exists():
+    data = json.loads(_PLUGIN_JSON.read_text(encoding="utf-8"))
+    for field in ("documentationUrl", "supportUrl", "privacyPolicyUrl"):
+        assert data[field].startswith("https://"), field
+    assert (_REPO / data["icon"]).is_file()
+
+
+def test_readme_links_the_privacy_policy_named_in_the_manifest():
+    data = json.loads(_PLUGIN_JSON.read_text(encoding="utf-8"))
+    assert data["privacyPolicyUrl"] in (_REPO / "README.md").read_text(encoding="utf-8")

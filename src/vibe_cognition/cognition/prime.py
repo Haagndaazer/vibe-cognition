@@ -1181,8 +1181,8 @@ def _repair_notice(info: dict, vcs: str = VCS_NONE) -> tuple[str, dict | None]:
             f"NOTE (vibe-cognition): this checkout's journal file had lost {healed} "
             f"entr(y/ies) it had written -- {_by_vcs(_ROLLBACK_CAUSE_BY_VCS, vcs)} an "
             "older copy of .cognition on disk. They were appended back automatically "
-            "from this machine's own record, so nothing was lost. COMMIT the journal "
-            "file so teammates get them too, and tell the user this happened."
+            "from this machine's own record, so nothing was lost. Now tell the user this happened "
+            "and ask them to COMMIT the journal file so teammates get them too."
         ), kept
 
     files = [str(f) for f in (info.get("retained_files") or [])]
