@@ -15,6 +15,8 @@ import json
 from typing import Any
 from unittest.mock import patch
 
+import pytest
+
 from tests.conftest import identity_stamp
 from vibe_cognition.cognition import CognitionStorage
 from vibe_cognition.cognition.models import CognitionNode, CognitionNodeType
@@ -92,6 +94,36 @@ def test_get_status_defers_to_sidecar_supervisor_status_while_not_ready(
 
     result = mock_mcp.tools["get_status"](ctx)  # type: ignore[arg-type]
     assert result["embedding_status"] == "waiting-for-load-lock"
+
+
+@pytest.mark.parametrize(("supervisor_status", "expected"), [("idle", "idle"), ("ready", "ready")])
+def test_get_status_reports_idle_once_ready_and_the_sidecar_was_stopped(
+    tmp_path, mock_mcp, build_lc, make_ctx, supervisor_status, expected
+):
+    """Stage C: embeddings are usable but the model process is stopped."""
+    from types import SimpleNamespace
+
+    register_service_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    lc["_sidecar_supervisor"] = SimpleNamespace(status=lambda: supervisor_status)
+    ctx = make_ctx(lc)
+
+    result = mock_mcp.tools["get_status"](ctx)  # type: ignore[arg-type]
+    assert result["embedding_status"] == expected
+
+
+def test_get_status_syncing_wins_over_idle(tmp_path, mock_mcp, build_lc, make_ctx):
+    import threading
+    from types import SimpleNamespace
+
+    register_service_tools(mock_mcp)
+    lc = build_lc(tmp_path, embeddings_ready=True)
+    lc["embedding_sync_done"] = threading.Event()
+    lc["_sidecar_supervisor"] = SimpleNamespace(status=lambda: "idle")
+    ctx = make_ctx(lc)
+
+    result = mock_mcp.tools["get_status"](ctx)  # type: ignore[arg-type]
+    assert result["embedding_status"] == "syncing"
 
 
 def test_get_status_falls_back_to_loading_when_no_sidecar_supervisor(

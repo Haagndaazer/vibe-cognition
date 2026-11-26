@@ -52,6 +52,10 @@ class SidecarError(RuntimeError):
     """A sidecar request timed out, failed, or the process is unavailable."""
 
 
+class SidecarRestartingError(SidecarError):
+    """The sidecar is still coming back from an idle stop; nothing failed."""
+
+
 class _SidecarProcess:
     """One live sidecar subprocess. See module docstring for the IPC shape."""
 
@@ -269,8 +273,15 @@ class SidecarSupervisor:
         self._config = config
         self._context = context
         self._state_lock = threading.RLock()
+        # Same lock: generate() waits here while an idle-stopped sidecar restarts.
+        self._state_changed = threading.Condition(self._state_lock)
         self._process: _SidecarProcess | None = None
         self._degraded = False
+        self._idle = False
+        self._wake_requested = False
+        self._in_flight = 0
+        self._last_used = time.monotonic()
+        self._last_retry = time.monotonic()
         self._last_lock_event: str | None = None
         self._shutdown_event = threading.Event()
         self._demand_event = threading.Event()
@@ -377,6 +388,7 @@ class SidecarSupervisor:
                     "search degraded -- will keep retrying in the background"
                 )
                 self._degraded = True
+            self._last_used = time.monotonic()
         self._context["embedding_ready"].set()
 
         self._recovery_thread = threading.Thread(
@@ -392,24 +404,148 @@ class SidecarSupervisor:
         permanent (a supervisor that gives up after the in-budget attempts
         would be strictly worse than v0.15.4's late recovery). Wakes either
         on its own periodic schedule OR early when `notify_demand()` pokes
-        it (an actual embedding request arrived while degraded)."""
+        it (an actual embedding request arrived while degraded).
+
+        Also owns the idle stop and the restart after it, so every spawn
+        after the first load happens on this one thread: an idle-stopped
+        sidecar is brought back here when generate() asks, never on the
+        caller's dispatch thread."""
+        self._last_retry = time.monotonic()
         while not self._shutdown_event.is_set():
-            self._demand_event.wait(timeout=self._config.sidecar_periodic_retry_interval)
+            woken = self._demand_event.wait(timeout=self._tick_seconds())
             self._demand_event.clear()
             if self._shutdown_event.is_set():
                 return
-            with self._state_lock:
-                degraded = self._degraded
-            if not degraded:
-                continue
-            if self._attempt_load():
-                from .generator import EmbeddingGenerator  # wp2-import-free: sanctioned
+            try:
+                self._recovery_tick(woken)
+            except Exception as e:  # noqa: BLE001 - this thread must outlive any one bad tick
+                # Callers wait on this thread to bring an idle sidecar back;
+                # if a tick dies with them waiting they must be told, not
+                # left to time out forever.
+                sys.stderr.write(f"[vibe-sidecar-client] recovery tick failed: {e!r}\n")
+                with self._state_changed:
+                    if self._idle:
+                        self._idle = False
+                        self._wake_requested = False
+                        self._degraded = True
+                        self._context["embedding_error"] = (
+                            f"sidecar supervisor error after an idle stop ({e!r}); "
+                            "search degraded -- will keep retrying in the background"
+                        )
+                    self._state_changed.notify_all()
+            self._discard_process_if_shut_down()
 
-                with self._state_lock:
-                    self._context["embedding_generator"] = EmbeddingGenerator(SidecarBackend(self))
-                    self._context["embedding_error"] = None
-                    self._degraded = False
-                _startup_timing.stamp("sidecar_late_recovery")
+    def _recovery_tick(self, woken: bool) -> None:
+        with self._state_lock:
+            degraded = self._degraded
+            wake = self._idle and self._wake_requested
+        if wake:
+            self._restart_from_idle()
+            return
+        if not degraded:
+            self._stop_if_idle()
+            return
+        if not woken and time.monotonic() - self._last_retry < self._config.sidecar_periodic_retry_interval:
+            return
+        self._last_retry = time.monotonic()
+        if self._attempt_load():
+            from .generator import EmbeddingGenerator  # wp2-import-free: sanctioned
+
+            with self._state_changed:
+                self._context["embedding_generator"] = EmbeddingGenerator(SidecarBackend(self))
+                self._context["embedding_error"] = None
+                self._degraded = False
+                self._last_used = time.monotonic()
+                self._state_changed.notify_all()
+            _startup_timing.stamp("sidecar_late_recovery")
+
+    def _discard_process_if_shut_down(self) -> None:
+        """A load that finished after shutdown() ran would otherwise leave
+        its process behind (shutdown saw no process to end)."""
+        if not self._shutdown_event.is_set():
+            return
+        with self._state_lock:
+            proc = self._process
+            self._process = None
+        if proc is not None:
+            proc.kill()
+
+    # ── idle stop / restart ───────────────────────────────────────────────
+
+    def _tick_seconds(self) -> float:
+        """How long the recovery loop sleeps between looks. Short enough to
+        notice an idle sidecar within a quarter of the idle timeout."""
+        retry_interval = self._config.sidecar_periodic_retry_interval
+        idle_timeout = self._config.sidecar_idle_timeout
+        if idle_timeout <= 0:
+            return retry_interval
+        return min(retry_interval, max(0.05, min(60.0, idle_timeout / 4)))
+
+    def _stop_if_idle(self) -> None:
+        idle_timeout = self._config.sidecar_idle_timeout
+        if idle_timeout <= 0:
+            return
+        with self._state_lock:
+            if (
+                self._idle
+                or self._degraded
+                or self._process is None
+                or self._in_flight
+                or not self._context["embedding_ready"].is_set()
+                or time.monotonic() - self._last_used < idle_timeout
+            ):
+                return
+            proc = self._process
+            self._process = None
+            self._idle = True
+        # Our own child, by our own Popen handle; no request holds it
+        # (in_flight was zero under the lock that cleared _process).
+        proc.kill()
+        _startup_timing.stamp("sidecar_idle_stop")
+
+    def _restart_from_idle(self) -> None:
+        ok = self._attempt_load()
+        with self._state_changed:
+            self._wake_requested = False
+            self._idle = False
+            self._last_used = time.monotonic()
+            if not ok:
+                self._degraded = True
+                self._context["embedding_error"] = (
+                    "sidecar failed to restart after an idle stop; "
+                    "search degraded -- will keep retrying in the background"
+                )
+                # The next degraded retry waits a full interval from now; the
+                # waiters' pokes during this attempt are not a new demand.
+                self._last_retry = time.monotonic()
+                self._demand_event.clear()
+            self._state_changed.notify_all()
+        _startup_timing.stamp("sidecar_idle_restart" if ok else "sidecar_idle_restart_failed")
+
+    def _checkout(self) -> _SidecarProcess:
+        """The live sidecar for one request, counted as in flight. Blocks
+        while an idle-stopped sidecar restarts."""
+        deadline: float | None = None
+        with self._state_changed:
+            while True:
+                if self._degraded or (self._process is None and not self._idle):
+                    raise SidecarError(self._context.get("embedding_error") or "sidecar unavailable")
+                if not self._idle:
+                    assert self._process is not None
+                    self._in_flight += 1
+                    return self._process
+                if self._shutdown_event.is_set():
+                    raise SidecarError("sidecar unavailable (shutting down)")
+                self._wake_requested = True
+                self._demand_event.set()
+                now = time.monotonic()
+                if deadline is None:
+                    deadline = now + self._config.sidecar_idle_restart_wait
+                if now >= deadline:
+                    raise SidecarRestartingError(
+                        "embedding model is still restarting after an idle stop; try again shortly"
+                    )
+                self._state_changed.wait(timeout=min(1.0, deadline - now))
 
     def notify_demand(self) -> None:
         """Cheap poke: wake the recovery loop NOW instead of waiting for its
@@ -421,11 +557,15 @@ class SidecarSupervisor:
     # ── live requests ─────────────────────────────────────────────────────
 
     def generate(self, texts: list[str], is_query: bool) -> list[list[float]]:
-        with self._state_lock:
-            degraded = self._degraded
-            proc = self._process
-        if degraded or proc is None:
-            raise SidecarError(self._context.get("embedding_error") or "sidecar unavailable")
+        proc = self._checkout()
+        try:
+            return self._generate_on(proc, texts, is_query)
+        finally:
+            with self._state_lock:
+                self._in_flight -= 1
+                self._last_used = time.monotonic()
+
+    def _generate_on(self, proc: _SidecarProcess, texts: list[str], is_query: bool) -> list[list[float]]:
         try:
             return proc.send(
                 "generate",
@@ -452,11 +592,14 @@ class SidecarSupervisor:
     # ── status / shutdown ────────────────────────────────────────────────
 
     def status(self) -> str:
-        """spawning | loading | waiting-for-load-lock | ready | error: ...
-        -- for get_status (§S-d)."""
+        """spawning | loading | waiting-for-load-lock | ready | idle |
+        error: ... -- for get_status (§S-d). "idle" lasts until a restart
+        has finished loading, including while it queues on the load mutex."""
         with self._state_lock:
             if self._degraded:
                 return f"error: {self._context.get('embedding_error')}"
+            if self._idle:
+                return "idle"
             if self._process is None:
                 return "spawning"
             if self._last_lock_event == "lock_wait":
@@ -468,9 +611,10 @@ class SidecarSupervisor:
     def shutdown(self) -> None:
         self._shutdown_event.set()
         self._demand_event.set()  # wake the recovery thread so it can exit
-        with self._state_lock:
+        with self._state_changed:
             proc = self._process
             self._process = None
+            self._state_changed.notify_all()
         if proc is not None:
             proc.kill()
 

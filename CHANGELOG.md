@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-11-26
+
+### Added
+- **The embedding model process now stops when a session has not needed it for ten
+  minutes, and starts again on the next search or record.** A loaded model holds about
+  1 GB per open session. The server itself stays up and every tool keeps working; only
+  the model process goes away. The first embedding request after a stop waits for the
+  model to load again (about 8 seconds on a 24-core machine with the model cached) and
+  then answers normally. `get_status`
+  reports `embedding_status: "idle"` while the process is stopped.
+- `SIDECAR_IDLE_TIMEOUT` sets the quiet period in seconds (default 600; 0 turns the idle
+  stop off). `SIDECAR_IDLE_RESTART_WAIT` bounds how long a request waits for the restart
+  (default 120) before it fails with a retry-shortly error while the restart carries on.
+
+### Changed
+- The stop and the restart both run on the supervisor's existing recovery thread. A
+  request that is in flight is never stopped under, concurrent requests after a stop
+  start exactly one process, and a restart that fails degrades through the same recovery
+  path as any other failed load. A degraded supervisor still retries once per
+  `SIDECAR_PERIODIC_RETRY_INTERVAL`, although the thread now wakes more often.
+
 ## [0.50.0] - 2026-11-26
 
 ### Added

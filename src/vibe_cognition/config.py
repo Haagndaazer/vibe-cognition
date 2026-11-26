@@ -327,6 +327,27 @@ class Settings(BaseSettings):
         ),
     )
 
+    sidecar_idle_timeout: float = Field(
+        default=600.0,
+        ge=0,
+        description=(
+            "Seconds without an embedding request after which the supervisor "
+            "stops the sidecar to give its memory back. The next request "
+            "starts it again. 0 disables the idle stop. Set via "
+            "SIDECAR_IDLE_TIMEOUT env var."
+        ),
+    )
+    sidecar_idle_restart_wait: float = Field(
+        default=120.0,
+        ge=0,
+        description=(
+            "Seconds an embedding request waits for the sidecar to come back "
+            "after an idle stop before it fails with a retry-shortly error. "
+            "The restart itself keeps going. Set via "
+            "SIDECAR_IDLE_RESTART_WAIT env var."
+        ),
+    )
+
     # Ollama settings (embeddings backend only)
     ollama_base_url: str = Field(
         default="http://localhost:11434",

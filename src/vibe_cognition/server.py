@@ -244,6 +244,9 @@ class _EmbedFailures:
         _model_stoppers.pop(node_id, None)
 
     def failed(self, node_id: str, error: Exception) -> None:
+        if isinstance(error, sidecar_client.SidecarRestartingError):
+            # Still loading after an idle stop: no node is to blame.
+            raise _EmbedderUnavailableError(f"the embedding model is restarting: {error}") from error
         if isinstance(error, sidecar_client.SidecarError):
             if self.answered:
                 _model_stoppers[node_id] = _model_stoppers.get(node_id, 0) + 1

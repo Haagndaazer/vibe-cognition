@@ -1,4 +1,8 @@
 {
+  "0.51.0": [
+    "A session that has not searched or recorded for ten minutes now gives back the memory its embedding model was holding (about 1 GB). The next search waits several seconds while it reloads.",
+    "Set SIDECAR_IDLE_TIMEOUT to change the quiet period in seconds, or to 0 to keep the model loaded all the time."
+  ],
   "0.50.0": [
     "On Claude Code, the plugin's background processes now close themselves when their Claude Code window is closed or killed, so they no longer pile up and hold memory.",
     "The live-server count in get_status now works with any Python install, including the Microsoft Store one."

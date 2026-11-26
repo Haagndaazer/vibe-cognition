@@ -407,6 +407,20 @@ def test_sidecar_request_timeout_defaults_and_overridable(tmp_path, monkeypatch)
     assert s.sidecar_request_timeout == 15.0
 
 
+def test_sidecar_idle_settings_default_override_and_reject_negatives(tmp_path, monkeypatch):
+    s = Settings(repo_path=tmp_path)
+    assert s.sidecar_idle_timeout == 600.0
+    assert s.sidecar_idle_restart_wait == 120.0
+    monkeypatch.setenv("SIDECAR_IDLE_TIMEOUT", "0")
+    monkeypatch.setenv("SIDECAR_IDLE_RESTART_WAIT", "30")
+    s = Settings(repo_path=tmp_path)
+    assert s.sidecar_idle_timeout == 0.0
+    assert s.sidecar_idle_restart_wait == 30.0
+    monkeypatch.setenv("SIDECAR_IDLE_TIMEOUT", "-1")
+    with pytest.raises(ValueError):
+        Settings(repo_path=tmp_path)
+
+
 def test_sidecar_mutex_wait_timeout_defaults_and_overridable(tmp_path, monkeypatch):
     s = Settings(repo_path=tmp_path)
     assert s.sidecar_mutex_wait_timeout == 300.0

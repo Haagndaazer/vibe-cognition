@@ -197,7 +197,13 @@ def register_service_tools(mcp) -> None:
               cognition_embeddings: {nodes, chunks, total}
                                     (or {"error": ...}; 0 if uninitialized),
               embedding_status: "spawning" | "loading" | "waiting-for-load-lock" |
-                                "syncing" | "ready" | "error: <detail>". The first
+                                "syncing" | "ready" | "idle" | "error: <detail>".
+                                "idle" means everything works but the model
+                                process was stopped after a quiet period
+                                (SIDECAR_IDLE_TIMEOUT, default 600 s, 0 turns
+                                it off) to give its memory back; the next
+                                search or record starts it again and waits
+                                for it, typically under ten seconds. The first
                                 three (WP-Sidecar) apply to the non-ollama backend
                                 only: "spawning" while the sidecar subprocess is
                                 starting, "waiting-for-load-lock" while it queues
@@ -389,8 +395,11 @@ def register_service_tools(mcp) -> None:
         if embedding_error:
             result["embedding_status"] = f"error: {embedding_error}"
         elif embedding_ready and embedding_ready.is_set():
+            supervisor = lc.get("_sidecar_supervisor")
             if embedding_sync_done is not None and not embedding_sync_done.is_set():
                 result["embedding_status"] = "syncing"
+            elif supervisor is not None and supervisor.status() == "idle":
+                result["embedding_status"] = "idle"
             else:
                 result["embedding_status"] = "ready"
         else:

@@ -1,7 +1,7 @@
 # WP-Memory-Lifecycle: cut per-session RAM and make the server tree close with its client
 
-Status: rev 3, 2026-11-26. Stage A shipped as v0.49.3 (50f6833), field test
-pending. Rulings R1 to R3 answered (section 4). Rev 2 (rev 1 sonnet peer review: PASS WITH CHANGES,
+Status: rev 4, 2026-11-26. Stage A shipped as v0.49.3 (50f6833) and Stage B as
+v0.50.0 (9f3bf50); both passed their field tests. Stage C built as v0.51.0. Rulings R1 to R3 answered (section 4). Rev 2 (rev 1 sonnet peer review: PASS WITH CHANGES,
 1 blocker, 3 major, 5 minor, all folded in). Solo work on `main`, one release per stage.
 Each stage is: implement, gate, sonnet peer review of the diff, release,
 Colton tests on his machine with a plugin update and reload, then the next
@@ -186,21 +186,55 @@ stays up; only the model process goes away. The stop is the supervisor's
 existing kill of its own child (the one sanctioned exception in constraint
 8f49b174c660). `embedding_status` gains the value `idle`.
 
-Design points to settle in the Stage C brief, after Stage B is in the
-field: which existing thread owns the idle timer (no new thread after the
-load window, WP-Wedge INV-1); how a request that arrives during the stop is
-serialised; that a restart goes through the same load mutex; that a failed
-restart degrades through the existing recovery loop.
+Design as built (the rev 2 review asked for these to be settled before
+coding):
+
+- Owner thread. The supervisor's existing recovery thread does both the
+  stop and the restart, so every spawn after the first load still happens
+  on that one thread (as the degraded-recovery respawn already did). No
+  request thread ever spawns, and no new thread is added. The loop's wait
+  drops from the retry interval to a quarter of the idle timeout (60 s at
+  most); degraded retries keep their own interval by elapsed time.
+- State. `_idle`, `_wake_requested`, `_in_flight` and `_last_used` live
+  under the existing state lock, with a Condition on that lock.
+- A request in flight. `generate` checks the process out under the lock
+  and counts itself in flight; the idle stop clears `_process` under the
+  same lock only when the count is zero. A request can never hold a
+  process that the idle stop then ends.
+- Restart. `generate` on an idle supervisor sets `_wake_requested`, pokes
+  the recovery thread and waits on the Condition. One thread restarts, so
+  concurrent callers spawn one process. The load goes through the same
+  `_attempt_load` and the same machine-wide load mutex as any other load.
+- Wait bound. A waiter gives up after `sidecar_idle_restart_wait` (120 s)
+  with a retry-shortly error; the restart carries on and the supervisor is
+  not marked degraded. That wait is separate from `sidecar_request_timeout`.
+  Up to the dispatch pool's size of embedding requests can wait at once;
+  tools that do not embed are queued behind them only if every worker is
+  waiting.
+- Failure. A restart that fails marks the supervisor degraded with its own
+  error text and wakes the waiters; recovery then follows the existing loop.
+- From the Stage C diff review: the recovery loop catches a failing tick
+  (callers depend on that thread now) and degrades and wakes any waiters;
+  a load that finishes after shutdown is ended; a failed restart resets
+  the retry clock; the restart-wait timeout is its own error class so the
+  sync blames no node for it. Declined: closing the sidecar's stdin in
+  `kill()` to hasten the interpreter's exit. A writer thread blocked in a
+  full pipe holds that file's lock, so a close from another thread can
+  hang the kill; the interpreter already goes by its depth-1 watch the
+  moment the launcher dies, and C1 now asserts that it does. C6's pool
+  claim is covered as a bounded wait per caller, not a pool test.
+- Dashboard. Unchanged on purpose: it reports whether embeddings can be
+  used, and they can while idle. `get_status` is where `idle` shows.
 
 Acceptance:
 - C1. With the timeout set to a few seconds in a test, the launcher AND the
   real sidecar interpreter are gone after the quiet period
   (`_SidecarProcess.kill()` ends only the launcher; the interpreter goes by
   its own depth-1 watch).
-- C2. `embedding_status` reads `idle` in `get_status` and in the dashboard.
-  Both compute the status themselves from `embedding_ready`
-  (`service_tools.py`, `dashboard/api.py`), so a new value in
-  `SidecarSupervisor.status()` alone changes nothing.
+- C2. `embedding_status` reads `idle` in `get_status`, which computes the
+  status itself from `embedding_ready`, so a new value in
+  `SidecarSupervisor.status()` alone changes nothing. The dashboard keeps
+  reporting ready (see the design notes).
 - C3. The next `generate` call returns correct vectors and the status
   returns to `ready`.
 - C4. A request racing the stop never returns an error and never marks the
