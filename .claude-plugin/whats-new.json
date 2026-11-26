@@ -1,4 +1,8 @@
 {
+  "0.50.0": [
+    "On Claude Code, the plugin's background processes now close themselves when their Claude Code window is closed or killed, so they no longer pile up and hold memory.",
+    "The live-server count in get_status now works with any Python install, including the Microsoft Store one."
+  ],
   "0.49.3": [
     "Each open session now reserves much less memory, under half of what it did on a machine with many CPU cores. Search speed is unchanged.",
     "Restart a session to pick this up. Sessions that stay open keep their old memory use until they are restarted."

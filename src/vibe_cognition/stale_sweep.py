@@ -1,13 +1,14 @@
-"""WP-Lifecycle-2 Stage 1 (F4): machine-wide stale-sibling sweep — LOG-ONLY.
+"""WP-Lifecycle-2 (F4): machine-wide stale-sibling sweep — LOG-ONLY.
 
-Counts live `vibe_cognition.server` processes machine-wide, deduped to REAL
-interpreters only (image path under the uv-managed base-interpreter dir,
-e.g. ``AppData\\Roaming\\uv\\python\\cpython-...\\python.exe``) — each server
-tree otherwise triple-counts via uv + trampoline + real. This is the only
+Counts live `vibe_cognition.server` processes machine-wide, one per server
+tree. A tree shows the server command line up to three times (uv, the venv
+launcher, the real interpreter), so only python images are enumerated (uv
+is never a row) and only the LEAF is counted: a row with the server marker
+and no child row that also carries it. Where the interpreter lives does not
+matter (uv-managed, Microsoft Store, python.org). This is the only
 detection for the mode no death watch can catch: client alive but session
 logically dead (/reload-plugins leaving the old pair running, a lingering
-/exit'd claude.exe). It also doubles as leak-recurrence telemetry for the
-Stage-2 go/no-go.
+/exit'd claude.exe).
 
 NEVER kills, signals, or otherwise acts on anything — enumeration + read-only
 ``PROCESS_QUERY_LIMITED_INFORMATION`` opens only, every handle closed before
@@ -18,9 +19,9 @@ Command lines are read via ``NtQueryInformationProcess(
 ProcessCommandLineInformation)`` (class 60, Win8.1+, needs only
 QUERY_LIMITED rights) — pinned by the rev-4 review: NO cross-process PEB
 walking (out of ctypes budget per rev 3) and no shelled-out WMI. A pid whose
-command line can't be read degrades to image-path-only counting: it is
-reported separately as *unverified*, over-count accepted and labeled, never
-silently folded into the server count.
+command line can't be read is reported separately as *unverified*,
+over-count accepted and labeled, never silently folded into the server
+count.
 
 Execution site (pinned, rev 3): the server's existing background init thread
 (``_load_embeddings_and_sync``) — never pre-yield (enumeration costs
@@ -32,6 +33,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import re
 import sys
 import time
 
@@ -40,16 +42,9 @@ from . import lifecycle
 _IS_WINDOWS = sys.platform == "win32"
 
 SERVER_CMDLINE_MARKER = "vibe_cognition.server"
-
-# The uv-managed base-interpreter dir's stable path segment. The trampoline
-# lives under `...\.venv\Scripts\python.exe` and uv.exe elsewhere entirely, so
-# this segment uniquely selects the REAL interpreter of each tree. Hardcoded
-# backslashes, NOT os.sep: the rows come from the Windows-only Toolhelp
-# enumerator, so the paths are Windows paths regardless of the host analyzing
-# them — an os.sep marker silently broke classify_rows' pure-function
-# semantics on POSIX (caught by the ubuntu CI legs the first time they got
-# past the month-red pyright gate).
-_REAL_INTERPRETER_MARKER = "\\uv\\python\\"
+# The module launch form only: a script or `-c` string that merely mentions
+# the name is not a server.
+_SERVER_CMDLINE_RE = re.compile(r"-m\s+" + re.escape(SERVER_CMDLINE_MARKER) + r"(?![\w.])")
 
 # FILETIME (100ns ticks since 1601-01-01) to Unix-epoch conversion.
 _FILETIME_EPOCH_DIFF_SECONDS = 11_644_473_600
@@ -94,29 +89,35 @@ if _IS_WINDOWS:
     _kernel32.Process32NextW.restype = wintypes.BOOL
 
 
-def _enumerate_python_pids() -> list[int]:
-    """Toolhelp snapshot: pids whose exe basename is python.exe/pythonw.exe."""
-    pids: list[int] = []
+def is_python_image(exe_name: str) -> bool:
+    """python.exe, pythonw.exe, python3.13.exe (the Store interpreter's name)."""
+    name = exe_name.lower()
+    return name.startswith("python") and name.endswith(".exe")
+
+
+def _enumerate_python_procs() -> list[tuple[int, int]]:
+    """Toolhelp snapshot: (pid, parent pid) of every python image."""
+    procs: list[tuple[int, int]] = []
     snapshot = _kernel32.CreateToolhelp32Snapshot(_TH32CS_SNAPPROCESS, 0)
     if snapshot == _INVALID_HANDLE_VALUE or not snapshot:
-        return pids
+        return procs
     try:
         entry = _ProcessEntry32W()
         entry.dwSize = ctypes.sizeof(_ProcessEntry32W)
         ok = _kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
         while ok:
-            if entry.szExeFile.lower() in ("python.exe", "pythonw.exe"):
-                pids.append(int(entry.th32ProcessID))
+            if is_python_image(entry.szExeFile):
+                procs.append((int(entry.th32ProcessID), int(entry.th32ParentProcessID)))
             ok = _kernel32.Process32NextW(snapshot, ctypes.byref(entry))
     finally:
         lifecycle._kernel32.CloseHandle(snapshot)
-    return pids
+    return procs
 
 
 def _read_command_line(handle) -> str | None:
     """Command line via NtQueryInformationProcess(ProcessCommandLineInformation).
     None on any failure (old Windows, gone process, odd rights) — callers
-    degrade to image-only counting, never guess."""
+    report the row as unverified, never guess."""
     needed = ctypes.c_ulong(0)
     status = lifecycle._NtQueryInformationProcess(
         handle, _PROCESS_COMMAND_LINE_INFORMATION, None, 0, ctypes.byref(needed)
@@ -135,7 +136,7 @@ def _read_command_line(handle) -> str | None:
     return ctypes.wstring_at(us.Buffer, us.Length // 2)
 
 
-def _probe_pid(pid: int) -> dict | None:
+def _probe_pid(pid: int, parent_pid: int | None = None) -> dict | None:
     """Read-only probe: image path, command line, creation time. None when
     the pid can't even be opened (gone, or a protected process)."""
     handle = lifecycle._raw_open_process(lifecycle._PROCESS_QUERY_LIMITED_INFORMATION, pid)
@@ -144,6 +145,7 @@ def _probe_pid(pid: int) -> dict | None:
     try:
         return {
             "pid": pid,
+            "parent_pid": parent_pid,
             "image_path": lifecycle._query_image_name(handle),
             "cmdline": _read_command_line(handle),
             "created_filetime": lifecycle._get_process_creation_time(handle),
@@ -154,22 +156,24 @@ def _probe_pid(pid: int) -> dict | None:
 
 def classify_rows(rows: list[dict], now: float | None = None) -> dict:
     """Pure classification (unit-testable without processes). Rows are
-    _probe_pid dicts. Only real interpreters (image path under the uv base
-    dir) are considered; of those, a row counts as a SERVER only when its
-    command line positively carries the marker. Unreadable command lines are
-    counted separately as unverified — over-count accepted and labeled."""
+    _probe_pid dicts of python images. A row is a SERVER when its command
+    line carries the marker and no child row carries it too (the leaf of
+    launcher -> interpreter). A child counts only if it was not created
+    before its parent, which rules out a reused parent pid. Rows with an
+    unreadable command line are counted separately as unverified — a possible
+    over-count, labeled, never folded into the server count."""
     now = time.time() if now is None else now
-    verified: list[dict] = []
-    unverified: list[dict] = []
-    for row in rows:
-        image = (row.get("image_path") or "").lower()
-        if _REAL_INTERPRETER_MARKER.lower() not in image:
-            continue
-        cmdline = row.get("cmdline")
-        if cmdline is None:
-            unverified.append(row)
-        elif SERVER_CMDLINE_MARKER in cmdline:
-            verified.append(row)
+    marked = [r for r in rows if _SERVER_CMDLINE_RE.search(r.get("cmdline") or "")]
+    unverified = [r for r in rows if r.get("cmdline") is None]
+
+    def _is_child_of(child: dict, parent: dict) -> bool:
+        if child.get("parent_pid") != parent["pid"]:
+            return False
+        child_created = child.get("created_filetime")
+        parent_created = parent.get("created_filetime")
+        return not (child_created and parent_created and child_created < parent_created)
+
+    verified = [row for row in marked if not any(_is_child_of(other, row) for other in marked)]
 
     def _oldest_age(pool: list[dict]) -> float | None:
         ages = [
@@ -189,12 +193,16 @@ def classify_rows(rows: list[dict], now: float | None = None) -> dict:
 
 
 def run_stale_sweep() -> dict:
-    """The Stage-1 sweep. Returns a labeled result dict; never raises and
-    never touches any process (read-only opens, all closed)."""
+    """The sweep. Returns a labeled result dict; never raises and never
+    touches any process (read-only opens, all closed)."""
     if not _IS_WINDOWS:
         return {"skipped": "posix"}
     try:
-        rows = [row for pid in _enumerate_python_pids() if (row := _probe_pid(pid))]
+        rows = [
+            row
+            for pid, parent_pid in _enumerate_python_procs()
+            if (row := _probe_pid(pid, parent_pid))
+        ]
         result = classify_rows(rows)
         result["own_pid"] = os.getpid()
         result["scope"] = "machine-wide (all sessions/projects, includes this one); log-only, nothing is acted on"

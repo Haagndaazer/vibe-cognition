@@ -301,7 +301,8 @@ def _pid_is_alive(pid: int) -> bool:
     GetExitCodeProcess. If we can't even open it anymore, it's gone."""
     handle = _raw_open_process(_PROCESS_QUERY_LIMITED_INFORMATION, pid)
     if not handle:
-        return False
+        # A denied open says nothing about liveness; only a failed lookup does.
+        return _raw_last_error() == _ERROR_ACCESS_DENIED
     try:
         exit_code = wintypes.DWORD()
         if not _kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
@@ -326,14 +327,18 @@ def _exit_now(reason: str, detail: str = "") -> None:
     os._exit(0)
 
 
-# ── WP-Lifecycle-2 Stage 1: report-only identification ──────────────────────
-# Everything below in this section only OBSERVES and LOGS. No watch is armed,
-# no exit behavior changes, no process other than ourselves is ever touched
-# (read-only PROCESS_QUERY_LIMITED_INFORMATION opens, closed before return).
-# Stage 2 arms these resolutions only after field logs prove them correct
-# (docs/wp-lifecycle2-plan.md rev 4, two-stage rollout ruling 2026-07-29).
+# ── WP-Lifecycle-2: owner identification ────────────────────────────────────
+# The two resolve/log functions below only OBSERVE and LOG (read-only
+# PROCESS_QUERY_LIMITED_INFORMATION opens, closed before return). Their
+# results feed client_watch_entry / supervisor_watch_entry further down,
+# which arm the watches (docs/wp-memory-lifecycle-plan.md Stage B). No
+# process other than ourselves is ever touched.
 
 SUPERVISOR_PID_ENV = "VIBE_SUPERVISOR_PID"
+
+PARENT_WATCH_REASON = "parent_death_exit"
+CLIENT_WATCH_REASON = "client_watch_exit"
+SUPERVISOR_WATCH_REASON = "supervisor_watch_exit"
 
 
 def _log_identity(kind: str, result: dict) -> None:
@@ -458,8 +463,8 @@ def resolve_stdin_pipe_peer() -> dict:
 
 def log_supervisor_identity() -> dict:
     """Sidecar-side (report-only): resolve the supervisor pid the server
-    handed us via VIBE_SUPERVISOR_PID and breadcrumb what we find. Stage 1
-    arms nothing on it; the existing depth-1 parent watch is unchanged.
+    handed us via VIBE_SUPERVISOR_PID and breadcrumb what we find. Arms
+    nothing itself; `supervisor_watch_entry` turns the result into a watch.
 
     Verdicts: ok | env_absent | env_invalid | skipped_posix |
     supervisor_gone | access_denied | younger_than_self."""
@@ -485,9 +490,8 @@ def log_supervisor_identity() -> dict:
 
         probe = _open_ancestor(pid)
         if probe.pid_gone:
-            # Report-only in Stage 1; Stage 2 pins this to exit-now (a dead
-            # supervisor at arm time is unambiguous orphaning, the mirror of
-            # F1's pre-dead-peer rule).
+            # supervisor_watch_entry exits on this: the pid was handed to us,
+            # so a dead supervisor at arm time is unambiguous orphaning.
             result["verdict"] = "supervisor_gone"
         elif probe.access_denied:
             result["verdict"] = "access_denied"
@@ -510,9 +514,87 @@ def log_supervisor_identity() -> dict:
         return result
 
 
+def _owner_watch_entry(
+    pid: int, reason: str, label: str, exit_fn: Callable[[str, str], None]
+) -> list[Any] | None:
+    """A wait-set entry for `arm_ancestor_watch(extra_entries=...)` on a pid
+    this process was told is its owner. None after `exit_fn` fired (owner
+    already gone, or its pid reused by a younger process)."""
+    probe = _open_ancestor(pid)
+    if probe.pid_gone:
+        exit_fn(reason, f"{label} {pid} already gone at arm time")
+        return None
+    if probe.access_denied:
+        return ["poll", None, pid, reason]
+    if is_younger_than_self(probe.handle) is True:
+        _kernel32.CloseHandle(probe.handle)
+        exit_fn(reason, f"{label} pid {pid} reused by a younger process")
+        return None
+    return ["wait", probe.handle, pid, reason]
+
+
+def _note_not_armed(kind: str, verdict: object) -> None:
+    _startup_timing.stamp(f"{kind}_not_armed")
+    try:
+        sys.stderr.write(f"[vibe-lifecycle] {kind}_not_armed: verdict={verdict}\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+
+def note_client_watch_skipped(why: str) -> None:
+    _note_not_armed("client_watch", why)
+
+
+def client_watch_entry(peer_result: dict) -> list[Any] | None:
+    """Wait-set entry for the resolved stdin pipe peer (the real client), or
+    None when nothing is armed. Only verdict `ok` arms. A peer that already
+    looks dead at arm time arms nothing and never exits: the pipe peer is
+    inferred, not handed to us, and a wrong inference must cost a missed
+    watch, never a server that refuses to start."""
+    if not _IS_WINDOWS:
+        return None
+    verdict = peer_result.get("verdict")
+    pid = peer_result.get("peer_pid")
+    if verdict != "ok" or not pid:
+        _note_not_armed("client_watch", verdict)
+        return None
+    not_armed: list[str] = []
+    entry = _owner_watch_entry(
+        pid, CLIENT_WATCH_REASON, "client", lambda _reason, detail: not_armed.append(detail)
+    )
+    if entry is None:
+        _note_not_armed("client_watch", not_armed[0] if not_armed else "open_failed")
+        return None
+    if entry[0] != "wait":
+        _note_not_armed("client_watch", "reopen_access_denied")
+        return None
+    return entry
+
+
+def supervisor_watch_entry(
+    supervisor_result: dict, exit_fn: Callable[[str, str], None] = _exit_now
+) -> list[Any] | None:
+    """Wait-set entry for the supervisor pid the server handed this sidecar,
+    or None. The pid is explicit, so a supervisor that is gone (or whose pid
+    was reused) at arm time is unambiguous orphaning: exit now."""
+    if not _IS_WINDOWS:
+        return None
+    verdict = supervisor_result.get("verdict")
+    pid = supervisor_result.get("supervisor_pid")
+    if verdict in ("supervisor_gone", "younger_than_self") and pid:
+        exit_fn(SUPERVISOR_WATCH_REASON, f"supervisor {pid}: {verdict} at arm time")
+        return None
+    if verdict != "ok" or not pid:
+        _note_not_armed("supervisor_watch", verdict)
+        return None
+    return _owner_watch_entry(pid, SUPERVISOR_WATCH_REASON, "supervisor", exit_fn)
+
+
 def arm_ancestor_watch(
     depth: int = DEFAULT_ANCESTOR_DEPTH,
     exit_fn: Callable[[str, str], None] = _exit_now,
+    extra_entries: list[list[Any]] | None = None,
 ) -> threading.Thread | None:
     """§L-a: start a daemon thread that forces `exit_fn` when a watched
     ancestor dies. Returns the thread, or None on non-Windows (POSIX
@@ -521,6 +603,9 @@ def arm_ancestor_watch(
     `depth` follows the brief's reuse requirement: 1 watches only the direct
     parent (WP-Sidecar's parent=server, no intermediary); 2 (default) also
     resolves and watches the grandparent (this WP's uv intermediary case).
+    `extra_entries` are owner entries from `client_watch_entry` /
+    `supervisor_watch_entry`, waited on in the same set; each entry carries
+    the exit reason it fires with.
     """
     if not _IS_WINDOWS:
         return arm_ancestor_watch_posix(exit_fn=exit_fn)
@@ -529,10 +614,14 @@ def arm_ancestor_watch(
     own_parent_pid = get_parent_pid_via_handle(_kernel32.GetCurrentProcess())
     chain_breadcrumb = [f"self={own_pid}"]
 
-    # Each entry is a mutable [kind ("wait"|"poll"), handle_or_None, pid] list —
-    # see _watch below, which flips kinds in place on WAIT_FAILED.
+    # Each entry is a mutable [kind ("wait"|"poll"), handle_or_None, pid,
+    # exit reason] list -- see _watch below, which flips kinds in place on
+    # WAIT_FAILED.
     watched_handles: list[list[Any]] = []
     degraded = False
+    for extra in extra_entries or []:
+        watched_handles.append(extra)
+        chain_breadcrumb.append(f"{extra[3]}={extra[2]}({extra[0]})")
 
     if own_parent_pid is None:
         # Should not happen (querying our own process never races an exit),
@@ -550,7 +639,7 @@ def arm_ancestor_watch(
         elif parent_result.access_denied:
             # Can't get a wait handle, but the pid is alive -- degrade to
             # slow polling for this ancestor rather than failing the watch.
-            watched_handles.append(["poll", None, own_parent_pid])
+            watched_handles.append(["poll", None, own_parent_pid, PARENT_WATCH_REASON])
         else:
             handle = parent_result.handle
             if is_younger_than_self(handle) is True:
@@ -562,7 +651,7 @@ def arm_ancestor_watch(
                     f"direct parent pid {own_parent_pid} reused by a younger process",
                 )
                 return None
-            watched_handles.append(["wait", handle, own_parent_pid])
+            watched_handles.append(["wait", handle, own_parent_pid, PARENT_WATCH_REASON])
             parent_image = _query_image_name(handle)
             if parent_image:
                 chain_breadcrumb.append(f"parent_image={parent_image}")
@@ -583,7 +672,7 @@ def arm_ancestor_watch(
                         chain_breadcrumb.append("grandparent=GONE(degraded)")
                         degraded = True
                     elif gp_result.access_denied:
-                        watched_handles.append(["poll", None, grandparent_pid])
+                        watched_handles.append(["poll", None, grandparent_pid, PARENT_WATCH_REASON])
                     else:
                         gp_handle = gp_result.handle
                         image = _query_image_name(gp_handle)
@@ -596,7 +685,9 @@ def arm_ancestor_watch(
                         else:
                             if image:
                                 chain_breadcrumb.append(f"grandparent_image={image}")
-                            watched_handles.append(["wait", gp_handle, grandparent_pid])
+                            watched_handles.append(
+                                ["wait", gp_handle, grandparent_pid, PARENT_WATCH_REASON]
+                            )
 
     def _watch() -> None:
         # Mutable per-entry [kind, handle_or_None, pid] lists (not tuples) --
@@ -618,7 +709,8 @@ def arm_ancestor_watch(
                     len(wait_entries), handle_array, False, timeout_ms
                 )
                 if _WAIT_OBJECT_0 <= result < _WAIT_OBJECT_0 + len(wait_entries):
-                    exit_fn("parent_death_exit", "watched ancestor handle signaled")
+                    fired = wait_entries[result - _WAIT_OBJECT_0]
+                    exit_fn(fired[3], f"watched pid {fired[2]} handle signaled")
                     return
                 if result == _WAIT_FAILED:
                     # A WAIT_FAILED result returns near-instantly -- retrying
@@ -640,7 +732,7 @@ def arm_ancestor_watch(
             if poll_entries:
                 for e in poll_entries:
                     if not _pid_is_alive(e[2]):
-                        exit_fn("parent_death_exit", f"polled ancestor pid {e[2]} no longer alive")
+                        exit_fn(e[3], f"polled pid {e[2]} no longer alive")
                         return
                 if not wait_entries:
                     time.sleep(_POLL_INTERVAL_SECONDS)

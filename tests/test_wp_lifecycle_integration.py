@@ -360,3 +360,169 @@ def test_wpl_ac3_server_exits_within_grace_when_stdin_closes_and_loop_is_frozen(
         assert died_at <= _EXIT_BOUND_SECONDS + _TEST_SLACK_SECONDS
     finally:
         _cleanup(ancestor, leaf_pid)
+
+
+# ── Stage B (docs/wp-memory-lifecycle-plan.md): owner watches ────────────────
+#
+# Both stand-ins below CREATE the stdin pipe themselves (so they are the pipe
+# peer the server resolves), hand a copy of its write end to a holder that
+# outlives them, and end by os._exit when a sentinel file appears. The held
+# write end keeps the pipe open after the stand-in is gone -- the field mode
+# where the stdin watch never fires -- so only an owner watch can end the
+# leaf. Nothing here ends a process it did not spawn; holders expire alone.
+
+_HOLDER_SECONDS = 60
+
+_PIPE_AND_HOLDER = r"""
+import os, subprocess, sys, time
+read_fd, write_fd = os.pipe()
+os.set_inheritable(write_fd, True)
+subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(%d)" % HOLDER_SECONDS],
+    close_fds=False,
+)
+"""
+
+_CLIENT_STAND_IN_SCRIPT = (
+    f"HOLDER_SECONDS = {_HOLDER_SECONDS}\n"
+    + _PIPE_AND_HOLDER
+    + r"""
+import json
+uv_exe, repo_dir, launcher_path, env_extra_json, stderr_log_path, exit_sentinel, own_pid_path = sys.argv[1:8]
+env = dict(os.environ)
+env.update(json.loads(env_extra_json))
+subprocess.Popen(
+    [uv_exe, "run", "--no-sync", "--directory", repo_dir, "python", launcher_path],
+    stdin=read_fd,
+    stdout=subprocess.DEVNULL,
+    stderr=open(stderr_log_path, "wb"),
+    env=env,
+)
+with open(own_pid_path, "w") as f:
+    f.write(str(os.getpid()))
+while not os.path.exists(exit_sentinel):
+    time.sleep(0.05)
+os._exit(0)
+"""
+)
+
+_SERVER_STAND_IN_SCRIPT = (
+    f"HOLDER_SECONDS = {_HOLDER_SECONDS}\n"
+    + _PIPE_AND_HOLDER
+    + r"""
+python_exe, stub_module, repo_root, stderr_log_path, exit_sentinel, own_pid_path, stub_pid_path = sys.argv[1:8]
+env = dict(os.environ)
+env["VIBE_SUPERVISOR_PID"] = str(os.getpid())
+env["WP_SIDECAR_STUB_MODE"] = "normal"
+env["WP_SIDECAR_STUB_PIDFILE"] = stub_pid_path
+subprocess.Popen(
+    [python_exe, "-m", stub_module],
+    stdin=read_fd,
+    stdout=subprocess.DEVNULL,
+    stderr=open(stderr_log_path, "wb"),
+    cwd=repo_root,
+    env=env,
+)
+with open(own_pid_path, "w") as f:
+    f.write(str(os.getpid()))
+while not os.path.exists(exit_sentinel):
+    time.sleep(0.05)
+os._exit(0)
+"""
+)
+
+
+def _wait_dead(pid: int, bound: float) -> float | None:
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < bound:
+        if not _is_alive(pid):
+            return time.monotonic() - t0
+        time.sleep(_POLL_INTERVAL_SECONDS)
+    return None
+
+
+@pytest.mark.timeout(120)
+def test_stage_b_server_exits_by_client_watch_when_client_dies_and_stdin_stays_open(lifecycle_env):
+    """client stand-in -> uv -> venv launcher -> server: the client sits above
+    the depth-2 ancestor walk and the stdin pipe never breaks, so the leaf
+    ends only if it waits on the pipe peer itself."""
+    tmp_path = lifecycle_env["tmp_path"]
+    pidfile = lifecycle_env["pidfile"]
+    exit_sentinel = tmp_path / "client_exit.sentinel"
+    client_pid_path = tmp_path / "client.pid"
+    stderr_log = tmp_path / "server_stderr.log"
+
+    stand_in = subprocess.Popen(
+        [
+            sys.executable, "-c", _CLIENT_STAND_IN_SCRIPT,
+            _UV_EXE, str(_REPO_ROOT), str(_LAUNCHER), json.dumps(_base_env(tmp_path, pidfile)),
+            str(stderr_log), str(exit_sentinel), str(client_pid_path),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    leaf_pid = None
+    try:
+        leaf_pid = _read_leaf_pid(pidfile, timeout=_ARM_TIMEOUT_SECONDS)
+        client_pid = _read_leaf_pid(client_pid_path, timeout=_ARM_TIMEOUT_SECONDS)
+        assert _wait_for_file_containing(
+            stderr_log, f"client_watch_exit={client_pid}(wait)", timeout=_ARM_TIMEOUT_SECONDS
+        ), "the client watch never armed on the pipe creator:\n" + stderr_log.read_text(
+            encoding="utf-8", errors="replace"
+        )
+
+        exit_sentinel.write_text("go", encoding="utf-8")
+        died_at = _wait_dead(leaf_pid, _EXIT_BOUND_SECONDS + _TEST_SLACK_SECONDS)
+
+        log = stderr_log.read_text(encoding="utf-8", errors="replace")
+        assert died_at is not None, f"server {leaf_pid} outlived its client:\n{log}"
+        assert "[vibe-lifecycle] client_watch_exit:" in log
+        assert "stdin_pipe_closed_exit" not in log
+        assert "[vibe-lifecycle] parent_death_exit" not in log
+    finally:
+        exit_sentinel.write_text("go", encoding="utf-8")
+        _cleanup(stand_in, leaf_pid)
+
+
+@pytest.mark.timeout(120)
+def test_stage_b_sidecar_exits_by_supervisor_watch_when_server_dies_by_os_exit(tmp_path):
+    """server stand-in -> venv launcher -> sidecar stub. The stand-in dies by
+    os._exit; the stub's direct parent (its launcher) and its stdin both
+    survive, so the stub ends only if it waits on VIBE_SUPERVISOR_PID."""
+    exit_sentinel = tmp_path / "server_exit.sentinel"
+    server_pid_path = tmp_path / "server.pid"
+    stub_pid_path = tmp_path / "stub.pid"
+    stderr_log = tmp_path / "stub_stderr.log"
+
+    stand_in = subprocess.Popen(
+        [
+            sys.executable, "-c", _SERVER_STAND_IN_SCRIPT,
+            sys.executable, "tests.wp_sidecar_test_stub", str(_REPO_ROOT),
+            str(stderr_log), str(exit_sentinel), str(server_pid_path), str(stub_pid_path),
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        cwd=str(_REPO_ROOT),
+    )
+    stub_pid = None
+    try:
+        stub_pid = _read_leaf_pid(stub_pid_path, timeout=_ARM_TIMEOUT_SECONDS)
+        server_pid = _read_leaf_pid(server_pid_path, timeout=_ARM_TIMEOUT_SECONDS)
+        assert _wait_for_file_containing(
+            stderr_log, f"supervisor_watch_exit={server_pid}(wait)", timeout=_ARM_TIMEOUT_SECONDS
+        ), "the supervisor watch never armed:\n" + stderr_log.read_text(encoding="utf-8", errors="replace")
+        arm_line = stderr_log.read_text(encoding="utf-8", errors="replace")
+        assert "parent=" in arm_line, "the depth-1 parent watch must stay armed alongside"
+        time.sleep(0.5)
+        assert _is_alive(stub_pid)
+
+        exit_sentinel.write_text("go", encoding="utf-8")
+        died_at = _wait_dead(stub_pid, _EXIT_BOUND_SECONDS + _TEST_SLACK_SECONDS)
+
+        log = stderr_log.read_text(encoding="utf-8", errors="replace")
+        assert died_at is not None, f"sidecar {stub_pid} outlived its server:\n{log}"
+        assert "[vibe-lifecycle] supervisor_watch_exit:" in log
+        assert "[vibe-lifecycle] parent_death_exit" not in log
+    finally:
+        exit_sentinel.write_text("go", encoding="utf-8")
+        _cleanup(stand_in, stub_pid)

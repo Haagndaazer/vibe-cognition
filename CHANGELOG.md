@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-11-26
+
+### Added
+- **On Claude Code, the server now closes itself when its Claude Code process dies, even
+  if nothing closes its input.** The server waits on the process at the far end of its stdin
+  pipe, the real client, alongside the two ancestors it already watched. On Windows the
+  client sits above those two (client, `uv`, venv launcher, server), which is why a tree
+  could outlive a killed client. The watch arms only when the client was identified
+  cleanly and a wait handle on it could be opened; any other outcome arms nothing and is
+  written to the startup log. Exit reason: `client_watch_exit`. On Codex the client is
+  still identified and logged but not watched, because no Codex session has yet confirmed
+  that the process that creates the pipe is the client itself; the existing ancestor and
+  stdin watches are unchanged there.
+- **The embedding sidecar now closes itself when its server dies.** The server hands the
+  sidecar its own process id, and the sidecar waits on it as well as on its direct parent.
+  A server that is already gone when the sidecar starts ends the sidecar at once. Exit
+  reason: `supervisor_watch_exit`.
+- Each watched process carries its own exit reason, so the log line names which one ended
+  the process. Every mechanism only ever exits the process it runs in.
+
+### Fixed
+- `get_status.stale_server_sweep` counted zero servers on machines whose Python is not
+  managed by uv (the Microsoft Store Python, python.org). It now counts one per server
+  tree wherever the interpreter lives: any `python*.exe` launched as
+  `-m vibe_cognition.server` which has no child launched the same way.
+- A polled watch no longer reads a denied process lookup as that process having died.
+- Two lifecycle tests assumed the interpreter is named `python.exe` and failed on the
+  Microsoft Store Python.
+
 ## [0.49.3] - 2026-11-26
 
 ### Fixed

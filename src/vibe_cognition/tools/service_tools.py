@@ -242,12 +242,14 @@ def register_service_tools(mcp) -> None:
                                 embedding model load, before this field settles),
               stale_server_sweep: dict | None,  # MACHINE-WIDE (all sessions/
                                 # projects, INCLUDES this server) sweep of live
-                                # vibe_cognition.server processes, deduped to
-                                # real interpreters. Log-only telemetry: nothing
-                                # is ever acted on. Keys: server_count (int),
+                                # vibe_cognition.server processes, one per
+                                # server tree (the real interpreter, whichever
+                                # Python install it comes from). Log-only
+                                # telemetry: nothing is ever acted on. Keys:
+                                # server_count (int),
                                 # server_pids (list[int]), oldest_server_age_
                                 # seconds (float|null), unverified_interpreter_
-                                # count (int: uv-managed pythons whose command
+                                # count (int: python processes whose command
                                 # line was unreadable -- possible over-count,
                                 # reported separately, never folded in), method
                                 # ("cmdline" | "cmdline+image-only-degraded"),

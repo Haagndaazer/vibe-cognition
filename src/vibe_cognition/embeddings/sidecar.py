@@ -25,17 +25,15 @@ a time (this is a synchronous request/response wire, not a concurrent
 server) -- "generate" already takes a list of texts, so there is no need
 for request pipelining.
 
-Parent-death safety (corrected by WP-Lifecycle-2): arms WP-Lifecycle's
-ancestor-death watch at depth=1 -- which in PRODUCTION watches this
-process's uv-trampoline parent, NOT the server. The server's
-subprocess.Popen targets the venv's Scripts\\python.exe, which is a uv
-trampoline that stays resident and spawns the real interpreter (this
-process) as ITS child. When the server dies via os._exit (every
-death-watch path), that trampoline survives, so the depth-1 watch never
-fires and the sidecar pair can leak. Stage 1 therefore also receives the
-server's pid explicitly (VIBE_SUPERVISOR_PID) and LOGS its resolution --
-report-only; Stage 2 arms a second watch on that pid once field logs prove
-the identification correct (docs/wp-lifecycle2-plan.md rev 4).
+Parent-death safety: two watches in one wait set. The depth=1 ancestor
+watch covers this process's direct parent, which in PRODUCTION is a venv
+launcher, NOT the server (the server's subprocess.Popen targets the venv's
+Scripts\\python.exe, which stays resident and spawns the real interpreter
+as ITS child). That launcher survives a server that dies via os._exit, so
+the server also hands over its own pid (VIBE_SUPERVISOR_PID) and this
+process waits on that pid too (docs/wp-memory-lifecycle-plan.md Stage B).
+The depth-1 watch stays: it is what ends this process when the supervisor
+kills only the launcher.
 """
 
 from __future__ import annotations
@@ -142,14 +140,14 @@ def _do_load(args: dict) -> EmbeddingBackend:
 
 def main() -> None:
     _startup_timing.stamp_and_flush("sidecar_start")
-    lifecycle.arm_ancestor_watch(depth=1)
-    # WP-Lifecycle-2 Stage 1 (report-only): breadcrumb what the supervisor
-    # pid the server handed us resolves to. Arms nothing; see module
-    # docstring for why the depth-1 watch above is not sufficient alone.
-    lifecycle.log_supervisor_identity()
+    supervisor_result = lifecycle.log_supervisor_identity()
     # This process has no MCP handshake. Persist identity before a load can
-    # wedge; stderr is discarded by the supervisor. No new watch is armed.
+    # wedge; stderr is discarded by the supervisor.
     _startup_timing.flush_to_disk()
+    supervisor_entry = lifecycle.supervisor_watch_entry(supervisor_result)
+    lifecycle.arm_ancestor_watch(
+        depth=1, extra_entries=[supervisor_entry] if supervisor_entry else None
+    )
 
     backend: EmbeddingBackend | None = None
 

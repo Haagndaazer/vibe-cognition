@@ -57,10 +57,29 @@ class IdentityLoggingTests(unittest.TestCase):
         calls = [
             ast.unparse(n.value.func)
             for n in main.body
-            if isinstance(n, ast.Expr) and isinstance(n.value, ast.Call)
+            if isinstance(n, (ast.Expr, ast.Assign)) and isinstance(n.value, ast.Call)
         ]
         i = calls.index("lifecycle.log_supervisor_identity")
         self.assertEqual(calls[i + 1], "_startup_timing.flush_to_disk")
+        arm = next(
+            n.value
+            for n in main.body
+            if isinstance(n, ast.Expr)
+            and isinstance(n.value, ast.Call)
+            and ast.unparse(n.value.func) == "lifecycle.arm_ancestor_watch"
+        )
+        self.assertIn("extra_entries", [k.arg for k in arm.keywords])
+        self.assertIn("supervisor_entry", ast.unparse(arm))
+        self.assertIn("lifecycle.supervisor_watch_entry(supervisor_result)", ast.unparse(main))
+
+    def test_server_arms_the_client_watch_on_claude_code_only(self):
+        path = Path(__file__).parents[1] / "src/vibe_cognition/server.py"
+        source = path.read_text(encoding="utf-8")
+        gate = source.index("if harness.is_codex():")
+        arm = source.index("lifecycle.client_watch_entry(peer_result)")
+        self.assertLess(source.index("lifecycle.resolve_stdin_pipe_peer()"), gate)
+        self.assertLess(gate, arm)
+        self.assertLess(arm, source.index("lifecycle.arm_ancestor_watch(extra_entries=owner_entries)"))
 
 
 if __name__ == "__main__":

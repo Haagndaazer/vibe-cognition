@@ -37,7 +37,7 @@ from .embeddings import EmbeddingGenerator, VectorStore
 from .embeddings.vector_store import DIMENSION_MISMATCH, STATE_NEWER_SCHEMA, warm_numpy
 from .embeddings import sidecar_client
 from .instructions import SERVER_INSTRUCTIONS
-from . import lifecycle
+from . import harness, lifecycle
 from .running_version import stamp_running_server
 from .stale_sweep import run_stale_sweep
 from .tools import register_all_tools
@@ -947,26 +947,32 @@ async def lifespan(server: FastMCP):
     # optional safety net -- consistent with this WP's own degraded-arm
     # philosophy elsewhere (NULL-grandparent, ACCESS_DENIED) of "even if
     # part of this doesn't work, keep serving."
+    # The stdin pipe PEER is the real client (claude.exe: uv passes stdio
+    # handles through, it does not re-pipe). It sits above the depth-2
+    # ancestor walk, so it is resolved first and waited on in the same set.
+    # Handle-opens only -- pre-yield-safe, no extra thread (INV-1).
+    # Armed on Claude Code only: that is the one client whose pipe creator
+    # has been confirmed in the field to be the client itself. Elsewhere the
+    # peer is still resolved and logged, which is the evidence for arming it.
+    owner_entries = []
     try:
-        lifecycle.arm_ancestor_watch()
+        peer_result = lifecycle.resolve_stdin_pipe_peer()
+        if harness.is_codex():
+            lifecycle.note_client_watch_skipped("harness=codex")
+        else:
+            client_entry = lifecycle.client_watch_entry(peer_result)
+            if client_entry is not None:
+                owner_entries.append(client_entry)
+    except Exception as e:
+        logger.warning(f"Failed to resolve the client for the client watch (non-fatal): {e}")
+    try:
+        lifecycle.arm_ancestor_watch(extra_entries=owner_entries)
     except Exception as e:
         logger.warning(f"Failed to arm ancestor-death watch (non-fatal): {e}")
     try:
         lifecycle.arm_stdin_watch()
     except Exception as e:
         logger.warning(f"Failed to arm stdin-pipe watch (non-fatal): {e}")
-
-    # WP-Lifecycle-2 Stage 1 (report-only): identify the stdin pipe PEER --
-    # the real client (claude.exe: uv passes stdio handles through, it does
-    # not re-pipe) -- and breadcrumb pid + image + verdict. IDENTIFICATION
-    # ONLY: the resolved peer is NOT watched and no exit behavior changes in
-    # this release; Stage 2 arms it only after field logs prove the
-    # identification correct (docs/wp-lifecycle2-plan.md rev 4). Handle-opens
-    # only, closed before return -- pre-yield-safe, no new threads (INV-1).
-    try:
-        lifecycle.resolve_stdin_pipe_peer()
-    except Exception as e:
-        logger.warning(f"Pipe-peer identification failed (non-fatal, log-only): {e}")
 
     bg_thread = threading.Thread(
         target=_load_embeddings_and_sync,

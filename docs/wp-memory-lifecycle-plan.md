@@ -109,11 +109,23 @@ Stage 1 has been logging.
   handle is passed in. Each wait-set entry carries its own exit reason; the
   loop fires one shared reason today. Verdict table:
   - `ok`: arm the watch.
-  - `peer_gone`, `peer_younger_than_self`: exit now (a dead pipe creator is
-    unambiguous orphaning; lifecycle2 plan F1).
-  - `peer_inside_ancestor_set`, `ends_disagree`, `api_failed`,
-    `peer_access_denied`, `peer_is_self`, `skipped_console`,
-    `skipped_posix`, `unresolved`: arm nothing, breadcrumb the verdict.
+  - every other verdict, including `peer_gone` and
+    `peer_younger_than_self`: arm nothing, breadcrumb the verdict.
+  Amendment at implementation (differs from lifecycle2 plan F1 and from rev
+  2 of this plan, which exited at once on a pre-dead peer): the client is
+  INFERRED from the pipe, and the only field evidence is Claude Code on one
+  machine (no Codex session is in the logs). A wrong inference on another
+  harness or a future client version must cost a missed watch, never a
+  server that refuses to start. The stdin watch and the ancestor watch
+  still cover a client that is really gone. The sidecar side keeps
+  exit-at-once, because its supervisor pid is handed over explicitly.
+  Second amendment, from the Stage B diff review: the client watch arms on
+  Claude Code only (`harness.is_codex()` skips it). The pipe CREATOR is
+  what gets watched, and a client whose pipes are created by a helper that
+  exits while the client lives would lose a healthy server. Codex keeps
+  logging the resolved peer; arm it there once its logs show the peer is
+  the client. The client entry also has no polling fallback: a denied
+  re-open arms nothing.
 - B-F2. The sidecar opens a handle on `VIBE_SUPERVISOR_PID` and waits on it
   in addition to its depth-1 parent watch. Exit reason
   `supervisor_watch_exit`. A supervisor already dead at arm time exits at
@@ -134,6 +146,16 @@ Every mechanism is self-closing: a process watches a read-only handle and
 calls `os._exit(0)` on itself. Constraint 8f49b174c660 holds. Kill commands
 appear only in tests and only against stand-ins the test spawned
 (tests/test_containment_gate.py enforces this).
+
+As built: `lifecycle.client_watch_entry` and
+`lifecycle.supervisor_watch_entry` return entries for
+`arm_ancestor_watch(extra_entries=...)`; AC1 and AC2 are the two
+`test_stage_b_*` tests in tests/test_wp_lifecycle_integration.py (the
+stand-in dies by `os._exit` on a sentinel and a holder keeps the pipe's
+write end open, so no test ends a process it did not spawn); AC2b's
+both-arms assertion is inside the AC2 test and the kill-and-respawn path
+stays covered by tests/test_wp_sidecar.py; AC2c and B2 are
+tests/test_lifecycle_owner_watch.py; B3 is tests/test_stale_sweep.py.
 
 Acceptance: AC1, AC2, AC2b, AC2c, AC3, AC4, AC5 of
 docs/wp-lifecycle2-plan.md as written. Dropped on purpose: AC2d (the

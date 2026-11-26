@@ -13,6 +13,7 @@ instead of depending on a real multi-second sentence-transformers load.
 Env vars (all optional):
   WP_SIDECAR_STUB_MODE  -- "normal" (default) | "wedge_forever" | "chatty" |
                            "stubborn_reader"
+  WP_SIDECAR_STUB_PIDFILE -- write this process's own pid here at start
   WP_SIDECAR_STUB_LOAD_DELAY -- seconds to sleep before "loading" completes
                            (simulates queueing/contention timing; default 0)
 """
@@ -80,7 +81,14 @@ def _chatty_flood_loop() -> None:
 
 
 def main() -> None:
-    lifecycle.arm_ancestor_watch(depth=1)
+    pidfile = os.environ.get("WP_SIDECAR_STUB_PIDFILE")
+    if pidfile:
+        with open(pidfile, "w") as f:
+            f.write(str(os.getpid()))
+    supervisor_entry = lifecycle.supervisor_watch_entry(lifecycle.log_supervisor_identity())
+    lifecycle.arm_ancestor_watch(
+        depth=1, extra_entries=[supervisor_entry] if supervisor_entry else None
+    )
 
     if _MODE == "chatty":
         threading.Thread(target=_chatty_flood_loop, daemon=True).start()

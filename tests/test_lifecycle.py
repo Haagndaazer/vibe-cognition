@@ -130,6 +130,7 @@ def test_pid_is_alive_true_for_the_real_current_process():
 
 def test_pid_is_alive_false_when_open_fails(monkeypatch):
     monkeypatch.setattr(lifecycle, "_raw_open_process", lambda rights, pid: 0)
+    monkeypatch.setattr(lifecycle, "_raw_last_error", lambda: lifecycle._ERROR_INVALID_PARAMETER)
     assert lifecycle._pid_is_alive(999999) is False
 
 

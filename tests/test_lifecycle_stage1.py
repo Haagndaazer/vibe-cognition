@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from vibe_cognition import lifecycle
+from vibe_cognition import lifecycle, stale_sweep
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "win32",
@@ -177,9 +177,8 @@ def test_supervisor_resolution_against_real_self(monkeypatch):
     monkeypatch.setenv(lifecycle.SUPERVISOR_PID_ENV, str(os.getpid()))
     result = lifecycle.log_supervisor_identity()
     assert result["verdict"] == "ok"
-    assert result["supervisor_image"] and result["supervisor_image"].lower().endswith(
-        ("python.exe", "pythonw.exe")
-    )
+    assert result["supervisor_image"]
+    assert stale_sweep.is_python_image(Path(result["supervisor_image"]).name)
 
 
 # ── G4 fold: the HEALTHY arm path breadcrumbs its chain ──────────────────────
@@ -279,4 +278,4 @@ def test_pipe_peer_resolves_creator_through_two_intermediaries(tmp_path: Path):
 
     assert resolved["verdict"] == "ok", resolved
     assert resolved["peer_pid"] == payload["stand_in_pid"], resolved
-    assert resolved["peer_image"].lower().endswith(("python.exe", "pythonw.exe"))
+    assert stale_sweep.is_python_image(Path(resolved["peer_image"]).name)
