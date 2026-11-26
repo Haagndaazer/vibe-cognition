@@ -1,4 +1,8 @@
 {
+  "0.49.3": [
+    "Each open session now reserves much less memory, under half of what it did on a machine with many CPU cores. Search speed is unchanged.",
+    "Restart a session to pick this up. Sessions that stay open keep their old memory use until they are restarted."
+  ],
   "0.49.2": [
     "Storing a document no longer writes its full location on your computer into the shared project memory.",
     "A document inside the project is recorded by its place in the project. One outside it has its location kept on your machine only."

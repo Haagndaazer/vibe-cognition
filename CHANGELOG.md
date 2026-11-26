@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.49.3] - 2026-11-26
+
+### Fixed
+- **Each session now reserves far less memory.** numpy and scipy bundle OpenBLAS, which
+  reserves a buffer per CPU thread when it loads. On a 24-core machine that was about
+  790 MB in the server process and about 1.5 GB of the embedding process's 2.6 GB, per
+  session. The package now sets `OPENBLAS_NUM_THREADS=1` before anything can import
+  numpy, unless the variable is already set. Measured on that machine: importing numpy
+  commits 50 MB, down from 789 MB, and the embedding process with its model loaded
+  commits about 1.1 GB, down from about 2.6 GB. Embedding speed is unchanged, because
+  torch's own thread pool is not touched. Search is one matrix-vector product and does
+  not need more than one BLAS thread.
+- The session-start dependency check runs with the same cap, so it no longer reserves
+  the uncapped amount for a moment at every session start.
+
 ## [0.49.2] - 2026-11-18
 
 ### Fixed

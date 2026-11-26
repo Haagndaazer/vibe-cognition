@@ -89,6 +89,7 @@ if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP" 2>/dev/null)" != "$HASH" ]; then
     # (all sessions closed) finishes the swap and self-heals.
     _bc "probe_start"
     if UV_PROJECT_ENVIRONMENT="${VENV_DIR}" \
+        OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}" \
         uv run --frozen --no-sync --project "${PLUGIN_ROOT}" \
         python -c "import torch, numpy, sqlite3" 2>/dev/null; then
         _bc "probe_done_ok"
