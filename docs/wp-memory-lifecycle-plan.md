@@ -1,6 +1,7 @@
 # WP-Memory-Lifecycle: cut per-session RAM and make the server tree close with its client
 
-Status: rev 2, 2026-11-26 (rev 1 sonnet peer review: PASS WITH CHANGES,
+Status: rev 3, 2026-11-26. Stage A shipped as v0.49.3 (50f6833), field test
+pending. Rulings R1 to R3 answered (section 4). Rev 2 (rev 1 sonnet peer review: PASS WITH CHANGES,
 1 blocker, 3 major, 5 minor, all folded in). Solo work on `main`, one release per stage.
 Each stage is: implement, gate, sonnet peer review of the diff, release,
 Colton tests on his machine with a plugin update and reload, then the next
@@ -123,7 +124,7 @@ Stage 1 has been logging.
   command line has the server marker and which has no child with the same
   marker. `uv.exe` is never counted (its command line carries the marker
   too). `tests/test_stale_sweep.py` pins the old path gate and changes.
-- B-F4 (needs ruling R2). A Job Object with kill-on-close, created and held
+- B-F4 (DROPPED by ruling R2). A Job Object with kill-on-close, created and held
   by the server, around the sidecar. `subprocess.Popen` cannot place a
   child in a job at creation, and assigning afterwards races the launcher
   spawning the real interpreter outside the job. So either the spawn is
@@ -155,7 +156,7 @@ pass when the session's tools still work and `get_status` counts every
 live server. Reload leaves claude.exe alive, so an old server left behind
 by a reload is detected by the sweep, not closed by the watch.
 
-### Stage C (v0.51.0): stop the sidecar when idle (needs ruling R3)
+### Stage C (v0.51.0): stop the sidecar when idle (10 minutes, ruling R3)
 
 Change: the supervisor stops its sidecar after a quiet period with no
 embedding request, and starts it again on the next request. The server
@@ -197,16 +198,14 @@ Acceptance:
 Field test (Colton): leave a session idle past the timeout, confirm its
 sidecar pid is gone, run a search, confirm hits and a new sidecar pid.
 
-## 4. Rulings needed
+## 4. Rulings (Colton, 2026-11-26, graph decision recorded)
 
-- R1. Stage B arms shutdown behaviour. Epic b2970b15de79 says this needs
-  Colton's explicit approval. The 2026-11-26 instruction to implement in
-  stages is read as that approval; confirmed by question before Stage B
-  starts.
-- R2. Job Object around the sidecar (B-F4): include or leave out.
-- R3. Idle stop of the sidecar (Stage C): include, and the default timeout.
-
-Stage A needs no ruling.
+- R1. Arming the Stage B watches is approved. This is the explicit approval
+  epic b2970b15de79 requires.
+- R2. No Job Object around the sidecar. B-F4 is dropped; Stage B relies on
+  the two self-exit watches.
+- R3. Stage C is in. The sidecar stops after 10 minutes without an
+  embedding request and restarts on the next one.
 
 ## 5. Known-intentional
 
